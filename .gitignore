@@ -1,0 +1,10 @@
+*.bin
+
+# Folder
+build
+vsxmake2022
+.xmake
+.vscode
+.idea
+.vs
+.cache

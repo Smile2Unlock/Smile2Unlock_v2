@@ -1,0 +1,3 @@
+[submodule "local-repo"]
+	path = local-repo
+	url = https://github.com/Smile2Unlock/local-repo.git
