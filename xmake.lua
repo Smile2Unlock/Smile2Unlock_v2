@@ -1,17 +1,17 @@
 add_rules("mode.debug", "mode.release")
 
+add_repositories("myrepo local-repo")
+add_requires("SeetaFace6Open")
+add_requires("localopencv")
 
 target("FaceRecognizer")
     set_languages("c++26")
     set_kind("binary")
     add_files("FaceRecognizer/src/*.cpp")
     add_headerfiles("FaceRecognizer/src/*.h")
-    add_includedirs("D:\\Libs\\opencv4.2\\build\\include")
-    add_links("opencv_world420","opencv_world420d")
-    add_links("SeetaAgePredictor600","SeetaAgePredictor600d","SeetaEyeStateDetector200","SeetaEyeStateDetector200d","SeetaFaceAntiSpoofingX600","SeetaFaceAntiSpoofingX600d","SeetaFaceDetector600","SeetaFaceDetector600d","SeetaFaceLandmarker600","SeetaFaceLandmarker600d","SeetaFaceRecognizer610","SeetaFaceRecognizer610d","SeetaFaceTracking600","SeetaFaceTracking600d","SeetaGenderPredictor600","SeetaGenderPredictor600d","SeetaMaskDetector200","SeetaMaskDetector200d","SeetaPoseEstimation600","SeetaPoseEstimation600d","SeetaQualityAssessor300","SeetaQualityAssessor300d")
-    add_linkdirs("D:\\Libs\\opencv4.2\\build\\x64\\vc15\\lib")
-    add_includedirs("D:\\Libs\\sf6.0_windows\\include")
-    add_linkdirs("D:\\Libs\\sf6.0_windows\\lib\\x64")
+    add_packages("SeetaFace6Open")
+    add_packages("localopencv")
+
 
 target("CredentialProvider")
     set_languages("c++17")
