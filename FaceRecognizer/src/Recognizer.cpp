@@ -1,6 +1,7 @@
 #pragma optimize("", off)
 #include "Recognizer.h"
 
+
 std::shared_ptr<float> Recognizer::img2features(seeta::FaceDetector* fd, seeta::FaceLandmarker* fl,
 	seeta::FaceRecognizer* fr, SeetaImageData cap_img)
 {

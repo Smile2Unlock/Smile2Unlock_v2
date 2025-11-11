@@ -1,9 +1,5 @@
 #include "Utils.h"
 #include <vector>
-#include <cstring>
-#include <fstream>
-#include <cstdint>
-#include <algorithm>
 #include <windows.h>
 
 // CRC32 表（标准多项式 0xEDB88320）
