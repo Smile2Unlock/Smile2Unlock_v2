@@ -1,6 +1,8 @@
 add_rules("mode.debug", "mode.release")
-set_languages("c++26")
-target("Smile2Unlock_v2")
+
+
+target("FaceRecognizer")
+    set_languages("c++26")
     set_kind("binary")
     add_files("FaceRecognizer/src/*.cpp")
     add_headerfiles("FaceRecognizer/src/*.h")
@@ -10,6 +12,14 @@ target("Smile2Unlock_v2")
     add_linkdirs("D:\\Libs\\opencv4.2\\build\\x64\\vc15\\lib")
     add_includedirs("D:\\Libs\\sf6.0_windows\\include")
     add_linkdirs("D:\\Libs\\sf6.0_windows\\lib\\x64")
+
+target("CredentialProvider")
+    set_languages("c++17")
+    set_kind("shared")
+    add_files("CredentialProvider/*.cpp")
+    add_headerfiles("CredentialProvider/*.h")
+    add_defines("UNICODE", "_UNICODE") -- 添加这一行，强制使用 Unicode API
+    add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
 
 -- TODO: 将resources内的文件复制到exe目录
 
