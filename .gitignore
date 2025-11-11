@@ -39,3 +39,13 @@
 
 # debug information files
 *.dwo
+
+
+*.bin
+
+# Folder
+build
+vsxmake2022
+.xmake
+.vscode
+.idea
