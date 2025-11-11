@@ -1,11 +1,9 @@
 #pragma optimize("", off)
-#include <iostream>  
 #include <opencv2/opencv.hpp>  
 #include "CapThread.h" // 将尖括号替换为双引号以包含本地头文件
 #include <seeta/FaceDatabase.h>
 #include "Recognizer.h"
-#include <thread>
-#include <chrono>
+import std;
 
 
 namespace seeta

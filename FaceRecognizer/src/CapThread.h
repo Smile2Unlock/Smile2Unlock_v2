@@ -1,9 +1,7 @@
 #pragma once
 #include <opencv2/opencv.hpp>
-#include <thread>
-#include <mutex>
-#include <vector>
-#include <iostream>
+
+
 
 class CapThread
 {

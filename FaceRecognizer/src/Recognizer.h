@@ -1,12 +1,9 @@
 #pragma once
 #include <seeta/FaceRecognizer.h>
-#include <mutex>
-#include <thread>
-#include <memory>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceDetector.h>
 #include "Utils.h"
-#include <windows.h>
+
 
 
 class Recognizer
