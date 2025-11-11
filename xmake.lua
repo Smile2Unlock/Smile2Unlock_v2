@@ -6,12 +6,20 @@ add_requires("localopencv")
 
 target("FaceRecognizer")
     set_languages("c++26")
+    set_policy("build.c++.modules", true)
     set_kind("binary")
     add_files("FaceRecognizer/src/*.cpp")
     add_headerfiles("FaceRecognizer/src/*.h")
     add_packages("SeetaFace6Open")
     add_packages("localopencv")
 
+    after_build(function (target)
+        if is_plat("windows") then
+            os.cp("$(projectdir)/local-repo/packages/l/localopencv/windows/opencv/build/x64/vc16/bin/*.dll", target:targetdir())
+            os.cp("$(projectdir)/local-repo/packages/s/SeetaFace6Open/windows/lib/*.dll", target:targetdir())
+        end
+        os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
+    end)
 
 target("CredentialProvider")
     set_languages("c++17")
