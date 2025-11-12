@@ -1,8 +1,8 @@
 #pragma optimize("", off)
 #include <opencv2/opencv.hpp>  
-#include "CapThread.h" // 将尖括号替换为双引号以包含本地头文件
+#include "src/CapThread.h" // 将尖括号替换为双引号以包含本地头文件
 #include <seeta/FaceDatabase.h>
-#include "Recognizer.h"
+#include "src/Recognizer.h"
 import std;
 
 
