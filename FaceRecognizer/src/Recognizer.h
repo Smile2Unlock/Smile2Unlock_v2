@@ -3,7 +3,8 @@
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceDetector.h>
 #include "Utils.h"
-
+#include <seeta/FaceAntiSpoofing.h>
+#include <iostream>
 
 
 class Recognizer
@@ -13,6 +14,7 @@ private:
 	seeta::FaceRecognizer* pFR = new_fr();
 	seeta::FaceLandmarker* pFL = new_fl();
 	seeta::FaceDetector* pFD = new_fd();
+	seeta::FaceAntiSpoofing* pFAS = new_fas_v2();
 	SeetaImageData cap_image;
 	float threshold = 0.7f;
 
@@ -29,6 +31,9 @@ private:
 	seeta::FaceRecognizer* new_fr();
 	seeta::FaceDetector* new_fd();
 	SeetaRect detect(seeta::FaceDetector* fd, SeetaImageData cap_img);
+	seeta::FaceAntiSpoofing* new_fas_v2();
+	bool predict(const SeetaImageData& image, const SeetaRect& face, const SeetaPointF* points);
+
 public:
 	Recognizer();
 	~Recognizer();
@@ -36,4 +41,6 @@ public:
 	void savefeat(std::shared_ptr<float> feat, const std::string data_file);
 	std::shared_ptr<float> loadfeat(const std::string data_file);
 	float feat_compare(std::shared_ptr<float> feat1, std::shared_ptr<float> feat2);
+	void reset_video();
+	bool anti_face(const SeetaImageData& image);
 };

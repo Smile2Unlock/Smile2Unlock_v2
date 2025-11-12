@@ -1,9 +1,10 @@
 #pragma optimize("", off)
 #include "Recognizer.h"
+import std;
 
 
 std::shared_ptr<float> Recognizer::img2features(seeta::FaceDetector* fd, seeta::FaceLandmarker* fl,
-	seeta::FaceRecognizer* fr, SeetaImageData cap_img)
+                                                seeta::FaceRecognizer* fr, SeetaImageData cap_img)
 {
 	SeetaRect pos = Recognizer::detect(pFD, cap_img);
 	points = Recognizer::mark(pFL, cap_img, pos);
@@ -30,7 +31,7 @@ float Recognizer::feat_compare(std::shared_ptr<float> feat1, std::shared_ptr<flo
 
 Recognizer::Recognizer()
 {
-
+	pFAS->SetThreshold(0.3f, 0.6f);
 }
 
 Recognizer::~Recognizer()
@@ -119,4 +120,43 @@ SeetaRect Recognizer::detect(seeta::FaceDetector* fd, SeetaImageData cap_img)
 		// 捕获所有其他未知异常
 		return SeetaRect{ 0, 0, 0, 0 };
 	}
+}
+
+seeta::FaceAntiSpoofing* Recognizer::new_fas_v2()
+{
+	seeta::ModelSetting setting;
+	std::string project_root = Utils::GetProjectRoot();
+	setting.append((project_root + "\\resources\\models\\fas_first.csta").c_str());
+	setting.append((project_root + "\\resources\\models\\fas_second.csta").c_str());
+	return new seeta::FaceAntiSpoofing(setting);
+}
+
+bool Recognizer::predict(const SeetaImageData& image, const SeetaRect& face,
+	const SeetaPointF* points)
+{
+
+	auto status = pFAS->Predict(image, face, points);
+	switch (status) {
+	case seeta::FaceAntiSpoofing::REAL:
+		std::println("真实人脸"); return true;
+	case seeta::FaceAntiSpoofing::SPOOF:
+		std::println("攻击人脸"); return false;
+	case seeta::FaceAntiSpoofing::FUZZY:
+		std::println("无法判断"); return false;
+	case seeta::FaceAntiSpoofing::DETECTING:
+		std::println("正在检测"); return false;
+	}
+	return false;
+}
+
+void Recognizer::reset_video()
+{
+	pFAS->ResetVideo();
+}
+
+bool Recognizer::anti_face(const SeetaImageData& image)
+{
+	SeetaRect pos = Recognizer::detect(pFD, image);
+	points = Recognizer::mark(pFL, image, pos);
+	return Recognizer::predict(image, pos, points.data());
 }

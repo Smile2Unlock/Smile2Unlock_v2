@@ -66,13 +66,26 @@ int main() {
 		auto feat1 = recognizer->loadfeat("face_data.bin");
 		std::shared_ptr<float> feat2;
         int time_count = 0;
+        int anti_count = 0;
         while (true)
         {
+            //TODO:活体检测
 			frame = capThread->getImage();
             SeetaImageData image_data_frame = seeta::cv::ImageData(frame);
+			auto anti = recognizer->anti_face(image_data_frame);
+            if (!anti)
+            {
+                anti_count++;
+            }
+            if (anti_count > 50)
+            {
+	            break;
+            }
+
+            //人脸识别
 			feat2 = recognizer->tofeats(image_data_frame);
 			auto similar = recognizer->feat_compare(feat1, feat2);
-            if (similar > 0.62f)
+            if (similar > 0.62f and anti)
             {
                 std::cout << "识别成功，相似度：" << similar << std::endl;
                 break;
