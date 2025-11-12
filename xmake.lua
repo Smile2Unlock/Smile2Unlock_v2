@@ -9,6 +9,7 @@ target("FaceRecognizer")
     set_policy("build.c++.modules", true)
     set_kind("binary")
     add_files("FaceRecognizer/src/*.cpp")
+    add_files("FaceRecognizer/Face.cpp")
     add_headerfiles("FaceRecognizer/src/*.h")
     add_packages("SeetaFace6Open")
     add_packages("localopencv")
@@ -21,6 +22,19 @@ target("FaceRecognizer")
         os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
     end)
 
+target("FaceRecognizelib")
+    set_languages("c++26")
+    set_policy("build.c++.modules", true)
+    set_kind("shared")
+    add_files("FaceRecognizer/src/*.cpp")
+    add_files("FaceRecognizer/DllLoader.cpp")
+    add_headerfiles("FaceRecognizer/DllLoader.h")
+    add_headerfiles("FaceRecognizer/src/*.h")
+    add_packages("SeetaFace6Open")
+    add_packages("localopencv")
+    add_defines("FRLIBRARY_EXPORTS")
+
+
 target("CredentialProvider")
     set_languages("c++17")
     set_kind("shared")
@@ -28,6 +42,7 @@ target("CredentialProvider")
     add_headerfiles("CredentialProvider/*.h")
     add_defines("UNICODE", "_UNICODE") -- 添加这一行，强制使用 Unicode API
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
+    add_deps("FaceRecognizelib")
 
 -- TODO: 将resources内的文件复制到exe目录
 
