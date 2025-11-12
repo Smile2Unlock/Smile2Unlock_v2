@@ -35,14 +35,23 @@ target("FaceRecognizelib")
     add_defines("FRLIBRARY_EXPORTS")
 
 
-target("CredentialProvider")
+target("SampleV2CredentialProvider")
     set_languages("c++17")
     set_kind("shared")
+    set_arch("x64")  -- 设置架构
     add_files("CredentialProvider/*.cpp")
     add_headerfiles("CredentialProvider/*.h")
-    add_defines("UNICODE", "_UNICODE") -- 添加这一行，强制使用 Unicode API
+    add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
-    add_deps("FaceRecognizelib")
+    add_links("Credui", "Shlwapi", "Secur32")
+    add_files("CredentialProvider/samplev2credentialprovider.def")
+    
+    -- 资源文件处理
+    add_files("CredentialProvider/resources.rc")
+
+    -- add_deps("FaceRecognizelib")
+    -- add_packages("SeetaFace6Open")
+    -- add_packages("localopencv")
 
 -- TODO: 将resources内的文件复制到exe目录
 
