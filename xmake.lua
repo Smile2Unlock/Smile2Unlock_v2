@@ -49,7 +49,7 @@ target("SampleV2CredentialProvider")
     -- 资源文件处理
     add_files("CredentialProvider/resources.rc")
 
-    -- add_deps("FaceRecognizelib")
+    add_deps("FaceRecognizelib")
     -- add_packages("SeetaFace6Open")
     -- add_packages("localopencv")
 
