@@ -19,6 +19,8 @@
 #include <strsafe.h>
 #include <shlguid.h>
 #include <propkey.h>
+#include <thread>
+#include <atomic>
 #include "common.h"
 #include "dll.h"
 #include "resource.h"
@@ -117,4 +119,32 @@ public:
     DWORD                                   _dwComboIndex;                                  // Tracks the current index of our combobox.
     bool                                    _fShowControls;                                 // Tracks the state of our show/hide controls link.
     bool                                    _fIsLocalUser;                                  // If the cred prov is assosiating with a local user tile
+    
+    // 人脸识别相关成员变量
+    std::thread                             _faceRecogThread;                              // 人脸识别线程
+    std::atomic<bool>                       _faceRecogRunning;                             // 人脸识别运行状态
+    std::atomic<bool>                       _faceRecogSuccess;                             // 人脸识别成功状态
+    HMODULE                                 _hFaceRecogDll;                                // 人脸识别DLL句柄
+    
+    // 人脸识别函数指针类型定义
+    typedef bool (*FR_InitializeCameraFunc)();
+    typedef bool (*FR_FaceRecognitionFunc)(const char*);
+    typedef float (*FR_GetSimilarityFunc)();
+    typedef int (*FR_GetRecognitionStatusFunc)();
+    typedef void (*FR_CleanupFunc)();
+    
+    // 人脸识别函数指针
+    FR_InitializeCameraFunc                 _pFR_InitializeCamera;
+    FR_FaceRecognitionFunc                  _pFR_FaceRecognition;
+    FR_GetSimilarityFunc                    _pFR_GetSimilarity;
+    FR_GetRecognitionStatusFunc             _pFR_GetRecognitionStatus;
+    FR_CleanupFunc                          _pFR_Cleanup;
+    
+private:
+    // 人脸识别相关方法
+    void PerformFaceRecognition();                          // 执行人脸识别
+    bool LoadFaceRecognitionDll();                          // 加载人脸识别DLL
+    void UnloadFaceRecognitionDll();                        // 卸载人脸识别DLL
+    void StartFaceRecognition();                            // 启动人脸识别
+    void StopFaceRecognition();                             // 停止人脸识别
 };

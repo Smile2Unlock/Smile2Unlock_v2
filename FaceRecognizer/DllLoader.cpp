@@ -148,7 +148,7 @@ bool Dllloader::FaceRecognition(const std::string& dataFile)
             return true;
         }
         
-        if (currentSimilarity < 0.62f && time_count > 10)
+        if (currentSimilarity < 0.62f && time_count > 100)
         {
             recognitionStatus = 3; // 识别失败
             return false;

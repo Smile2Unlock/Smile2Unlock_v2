@@ -13,6 +13,11 @@
 #define WIN32_NO_STATUS
 #endif
 #include <unknwn.h>
+#include <thread>
+#include <atomic>
+#include <windows.h>
+#include <string>
+#include <vector>
 #include "CSampleCredential.h"
 #include "guid.h"
 
@@ -24,7 +29,15 @@ CSampleCredential::CSampleCredential():
     _fIsLocalUser(false),
     _fChecked(false),
     _fShowControls(false),
-    _dwComboIndex(0)
+    _dwComboIndex(0),
+    _faceRecogRunning(false),
+    _faceRecogSuccess(false),
+    _hFaceRecogDll(nullptr),
+    _pFR_InitializeCamera(nullptr),
+    _pFR_FaceRecognition(nullptr),
+    _pFR_GetSimilarity(nullptr),
+    _pFR_GetRecognitionStatus(nullptr),
+    _pFR_Cleanup(nullptr)
 {
     DllAddRef();
 
@@ -35,6 +48,12 @@ CSampleCredential::CSampleCredential():
 
 CSampleCredential::~CSampleCredential()
 {
+    // 停止人脸识别线程
+    StopFaceRecognition();
+    
+    // 清理人脸识别DLL
+    UnloadFaceRecognitionDll();
+    
     if (_rgFieldStrings[SFI_PASSWORD])
     {
         size_t lenPassword = wcslen(_rgFieldStrings[SFI_PASSWORD]);
@@ -200,7 +219,18 @@ HRESULT CSampleCredential::UnAdvise()
 // selected, you would do it here.
 HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 {
-    *pbAutoLogon = FALSE;
+    OutputDebugString(L"[FaceRecog] SetSelected called - credential selected\n");
+    
+    // 启动人脸识别
+    StartFaceRecognition();
+    
+    // 设置自动登录标志
+    *pbAutoLogon = FALSE; // 初始不自动登录，等待人脸识别成功
+    
+    wchar_t logMsg[100];
+    swprintf_s(logMsg, L"[FaceRecog] AutoLogon set to: %s\n", *pbAutoLogon ? L"TRUE" : L"FALSE");
+    OutputDebugString(logMsg);
+    
     return S_OK;
 }
 
@@ -209,6 +239,11 @@ HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 // is to clear out the password field.
 HRESULT CSampleCredential::SetDeselected()
 {
+    OutputDebugString(L"[FaceRecog] SetDeselected called - credential deselected\n");
+    
+    // 停止人脸识别
+    StopFaceRecognition();
+    
     HRESULT hr = S_OK;
     if (_rgFieldStrings[SFI_PASSWORD])
     {
@@ -224,6 +259,7 @@ HRESULT CSampleCredential::SetDeselected()
         }
     }
 
+    OutputDebugString(L"[FaceRecog] SetDeselected completed\n");
     return hr;
 }
 
@@ -510,6 +546,22 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     *pcpsiOptionalStatusIcon = CPSI_NONE;
     ZeroMemory(pcpcs, sizeof(*pcpcs));
 
+    // 检查人脸识别是否成功
+    if (_faceRecogSuccess)
+    {
+        // 人脸识别成功，准备自动登录
+        // 这里需要准备一个空的密码，因为人脸识别已经验证了用户身份
+        // 设置一个默认密码（实际使用时应该根据人脸识别结果设置正确的凭证）
+        if (_rgFieldStrings[SFI_PASSWORD] == nullptr || wcslen(_rgFieldStrings[SFI_PASSWORD]) == 0)
+        {
+            // 如果密码为空，设置一个默认密码
+            CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
+            SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]);
+        }
+        
+        // 继续正常的登录流程
+    }
+
     // For local user, the domain and user name can be split from _pszQualifiedUserName (domain\username).
     // CredPackAuthenticationBuffer() cannot be used because it won't work with unlock scenario.
     if (_fIsLocalUser)
@@ -697,4 +749,269 @@ HRESULT CSampleCredential::GetFieldOptions(DWORD dwFieldID,
     }
 
     return S_OK;
+}
+
+// 人脸识别相关方法实现
+
+// 加载人脸识别DLL
+bool CSampleCredential::LoadFaceRecognitionDll()
+{
+    if (_hFaceRecogDll != nullptr)
+    {
+        OutputDebugString(L"[FaceRecog] DLL already loaded\n");
+        return true; // 已经加载
+    }
+    
+    // 尝试多个可能的DLL路径
+    const wchar_t* dllPaths[] = {
+        L"FaceRecognizelib.dll",
+        L"build\\windows\\x64\\release\\FaceRecognizelib.dll",
+        L"..\\build\\windows\\x64\\release\\FaceRecognizelib.dll"
+    };
+    
+    for (int i = 0; i < 3; i++)
+    {
+        wchar_t debugMsg[200];
+        swprintf_s(debugMsg, L"[FaceRecog] Trying to load DLL from: %s\n", dllPaths[i]);
+        OutputDebugString(debugMsg);
+        
+        _hFaceRecogDll = LoadLibrary(dllPaths[i]);
+        if (_hFaceRecogDll != nullptr)
+        {
+            swprintf_s(debugMsg, L"[FaceRecog] Successfully loaded DLL from: %s\n", dllPaths[i]);
+            OutputDebugString(debugMsg);
+            break;
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            swprintf_s(debugMsg, L"[FaceRecog] Failed to load from %s, error: %d\n", dllPaths[i], error);
+            OutputDebugString(debugMsg);
+        }
+    }
+    
+    if (_hFaceRecogDll == nullptr)
+    {
+        OutputDebugString(L"[FaceRecog] Failed to load FaceRecognizelib.dll from all paths\n");
+        return false;
+    }
+    OutputDebugString(L"[FaceRecog] FaceRecognizelib.dll loaded successfully\n");
+    
+    // 获取函数指针
+    OutputDebugString(L"[FaceRecog] Getting function pointers...\n");
+    _pFR_InitializeCamera = (FR_InitializeCameraFunc)GetProcAddress(_hFaceRecogDll, "FR_InitializeCamera");
+    _pFR_FaceRecognition = (FR_FaceRecognitionFunc)GetProcAddress(_hFaceRecogDll, "FR_FaceRecognition");
+    _pFR_GetSimilarity = (FR_GetSimilarityFunc)GetProcAddress(_hFaceRecogDll, "FR_GetSimilarity");
+    _pFR_GetRecognitionStatus = (FR_GetRecognitionStatusFunc)GetProcAddress(_hFaceRecogDll, "FR_GetRecognitionStatus");
+    _pFR_Cleanup = (FR_CleanupFunc)GetProcAddress(_hFaceRecogDll, "FR_Cleanup");
+    
+    // 检查所有函数是否成功加载
+    if (_pFR_InitializeCamera == nullptr)
+        OutputDebugString(L"[FaceRecog] Failed to get FR_InitializeCamera function\n");
+    if (_pFR_FaceRecognition == nullptr)
+        OutputDebugString(L"[FaceRecog] Failed to get FR_FaceRecognition function\n");
+    if (_pFR_GetSimilarity == nullptr)
+        OutputDebugString(L"[FaceRecog] Failed to get FR_GetSimilarity function\n");
+    if (_pFR_GetRecognitionStatus == nullptr)
+        OutputDebugString(L"[FaceRecog] Failed to get FR_GetRecognitionStatus function\n");
+    if (_pFR_Cleanup == nullptr)
+        OutputDebugString(L"[FaceRecog] Failed to get FR_Cleanup function\n");
+    
+    if (_pFR_InitializeCamera == nullptr || _pFR_FaceRecognition == nullptr || 
+        _pFR_GetSimilarity == nullptr || _pFR_GetRecognitionStatus == nullptr || 
+        _pFR_Cleanup == nullptr)
+    {
+        OutputDebugString(L"[FaceRecog] Failed to load all required functions\n");
+        UnloadFaceRecognitionDll();
+        return false;
+    }
+    
+    OutputDebugString(L"[FaceRecog] All functions loaded successfully\n");
+    return true;
+}
+
+// 卸载人脸识别DLL
+void CSampleCredential::UnloadFaceRecognitionDll()
+{
+    if (_hFaceRecogDll != nullptr)
+    {
+        FreeLibrary(_hFaceRecogDll);
+        _hFaceRecogDll = nullptr;
+        _pFR_InitializeCamera = nullptr;
+        _pFR_FaceRecognition = nullptr;
+        _pFR_GetSimilarity = nullptr;
+        _pFR_GetRecognitionStatus = nullptr;
+        _pFR_Cleanup = nullptr;
+    }
+}
+
+// 执行人脸识别
+void CSampleCredential::PerformFaceRecognition()
+{
+    OutputDebugString(L"[FaceRecog] Starting face recognition thread...\n");
+    
+    // 加载人脸识别DLL
+    if (!LoadFaceRecognitionDll())
+    {
+        OutputDebugString(L"[FaceRecog] Failed to load face recognition DLL\n");
+        _faceRecogSuccess = false;
+        return;
+    }
+    
+    OutputDebugString(L"[FaceRecog] Initializing camera...\n");
+    // 初始化摄像头
+    if (!_pFR_InitializeCamera())
+    {
+        OutputDebugString(L"[FaceRecog] Failed to initialize camera - function returned false\n");
+        _faceRecogSuccess = false;
+        return;
+    }
+    OutputDebugString(L"[FaceRecog] Camera initialized successfully\n");
+    
+    // 检查数据文件是否存在
+    std::vector<std::string> dataFilePaths;
+    dataFilePaths.push_back("face_data.dat");
+    dataFilePaths.push_back("face_data.bin");
+    dataFilePaths.push_back("build\\windows\\x64\\release\\face_data.dat");
+    dataFilePaths.push_back("build\\windows\\x64\\release\\face_data.bin");
+    dataFilePaths.push_back("..\\build\\windows\\x64\\release\\face_data.dat");
+    dataFilePaths.push_back("..\\build\\windows\\x64\\release\\face_data.bin");
+    
+    // 添加system32目录路径
+    char system32Path[MAX_PATH];
+    if (GetSystemDirectoryA(system32Path, MAX_PATH) > 0) {
+        std::string system32FaceData = std::string(system32Path) + "\\face_data.bin";
+        dataFilePaths.push_back(system32FaceData);
+        OutputDebugStringA(("[FaceRecog] Checking system32 path: " + system32FaceData).c_str());
+    }
+    
+    std::string dataFile;
+    bool dataFileFound = false;
+    
+    for (const auto& path : dataFilePaths) {
+        FILE* fileCheck = fopen(path.c_str(), "rb");
+        if (fileCheck != nullptr) {
+            dataFile = path;
+            dataFileFound = true;
+            OutputDebugStringA(("[FaceRecog] Data file found: " + dataFile).c_str());
+            fclose(fileCheck);
+            break;
+        }
+    }
+    
+    if (!dataFileFound) {
+        OutputDebugStringA("[FaceRecog] Data file not found in any path");
+        OutputDebugStringA("[FaceRecog] Failed to start face recognition - no data file");
+        return;
+    }
+    
+    OutputDebugString(L"[FaceRecog] Starting face recognition with data file...\n");
+    // 开始人脸识别
+    if (!_pFR_FaceRecognition(dataFile.c_str()))
+    {
+        wchar_t errorMsg[200];
+        swprintf_s(errorMsg, L"[FaceRecog] Failed to start face recognition with data file: %hs\n", dataFile.c_str());
+        OutputDebugString(errorMsg);
+        _faceRecogSuccess = false;
+        return;
+    }
+    OutputDebugString(L"[FaceRecog] Face recognition started successfully\n");
+    
+    OutputDebugString(L"[FaceRecog] Entering face recognition loop...\n");
+    // 人脸识别循环
+    int frameCount = 0;
+    while (_faceRecogRunning)
+    {
+        frameCount++;
+        
+        // 检查识别状态
+        int status = _pFR_GetRecognitionStatus();
+        
+        if (status == 2) // 识别成功
+        {
+            //TODO: 处理识别成功逻辑
+        }
+        else if (status == 3 || status == 4) // 识别失败或活体检测失败
+        {
+            wchar_t statusMsg[100];
+            swprintf_s(statusMsg, L"[FaceRecog] Frame %d: Recognition failed, status: %d\n", frameCount, status);
+            OutputDebugString(statusMsg);
+            _faceRecogSuccess = false;
+            break;
+        }
+        else if (status == 1) // 检测中
+        {
+            if (frameCount % 50 == 0) // 每50帧输出一次状态
+            {
+                wchar_t statusMsg[100];
+                swprintf_s(statusMsg, L"[FaceRecog] Frame %d: Detecting face...\n", frameCount);
+                OutputDebugString(statusMsg);
+            }
+        }
+        
+        // 短暂休眠，避免过度占用CPU
+        Sleep(100);
+    }
+    
+    if (!_faceRecogSuccess)
+    {
+        OutputDebugString(L"[FaceRecog] Face recognition failed or stopped\n");
+    }
+    
+    OutputDebugString(L"[FaceRecog] Cleaning up resources...\n");
+    // 清理资源
+    _pFR_Cleanup();
+    OutputDebugString(L"[FaceRecog] Face recognition thread finished\n");
+}
+
+// 启动人脸识别
+void CSampleCredential::StartFaceRecognition()
+{
+    OutputDebugString(L"[FaceRecog] StartFaceRecognition called\n");
+    
+    if (_faceRecogRunning)
+    {
+        OutputDebugString(L"[FaceRecog] Face recognition is already running\n");
+        return; // 已经在运行
+    }
+    
+    _faceRecogRunning = true;
+    _faceRecogSuccess = false;
+    
+    OutputDebugString(L"[FaceRecog] Creating face recognition thread...\n");
+    // 启动人脸识别线程
+    _faceRecogThread = std::thread(&CSampleCredential::PerformFaceRecognition, this);
+    OutputDebugString(L"[FaceRecog] Face recognition thread created successfully\n");
+}
+
+// 停止人脸识别
+void CSampleCredential::StopFaceRecognition()
+{
+    OutputDebugString(L"[FaceRecog] StopFaceRecognition called\n");
+    
+    if (!_faceRecogRunning)
+    {
+        OutputDebugString(L"[FaceRecog] Face recognition is not running\n");
+        return; // 没有在运行
+    }
+    
+    OutputDebugString(L"[FaceRecog] Stopping face recognition...\n");
+    _faceRecogRunning = false;
+    
+    // 等待线程结束
+    if (_faceRecogThread.joinable())
+    {
+        OutputDebugString(L"[FaceRecog] Waiting for thread to finish...\n");
+        _faceRecogThread.join();
+        OutputDebugString(L"[FaceRecog] Thread stopped successfully\n");
+    }
+    else
+    {
+        OutputDebugString(L"[FaceRecog] Thread is not joinable\n");
+    }
+    
+    OutputDebugString(L"[FaceRecog] Cleaning up DLL resources...\n");
+    // 清理DLL资源
+    UnloadFaceRecognitionDll();
+    OutputDebugString(L"[FaceRecog] StopFaceRecognition completed\n");
 }
