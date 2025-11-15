@@ -3,6 +3,7 @@ add_rules("mode.debug", "mode.release")
 add_repositories("myrepo local-repo")
 add_requires("SeetaFace6Open")
 add_requires("localopencv")
+add_requires("HuskarUI")
 
 target("FaceRecognizer")
     set_languages("c++26")
@@ -53,7 +54,22 @@ target("SampleV2CredentialProvider")
     -- add_packages("SeetaFace6Open")
     -- add_packages("localopencv")
 
--- TODO: 将resources内的文件复制到exe目录
+
+target("qt_Smile2Unlock")
+    add_rules("qt.quickapp")
+    add_headerfiles("Smile2Unlock/cpp/*.h")
+    add_files("Smile2Unlock/cpp/*.cpp")
+    add_files("Smile2Unlock/qml/qml.qrc")
+
+    add_packages("HuskarUI")
+    
+    after_build(function (target)
+        if is_plat("windows") then
+            -- 复制HuskarUI的DLL文件
+            os.cp("$(projectdir)/local-repo/packages/h/HuskarUI/windows/bin/*.dll", target:targetdir())
+        end
+    end)
+
 
 
 --
