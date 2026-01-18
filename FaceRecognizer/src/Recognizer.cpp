@@ -31,12 +31,54 @@ float Recognizer::feat_compare(std::shared_ptr<float> feat1, std::shared_ptr<flo
 
 Recognizer::Recognizer()
 {
-	pFAS->SetThreshold(0.3f, 0.6f);
+	std::cout << "[Recognizer] 初始化中..." << std::endl;
+	
+	// 初始化模型路径字符串 (避免悬空指针)
+	std::string project_root = Utils::GetProjectRoot();
+	model_path_fd = project_root + "\\resources\\models\\face_detector.csta";
+	model_path_fl = project_root + "\\resources\\models\\face_landmarker_pts5.csta";
+	model_path_fr = project_root + "\\resources\\models\\face_recognizer.csta";
+	model_path_fas1 = project_root + "\\resources\\models\\fas_first.csta";
+	model_path_fas2 = project_root + "\\resources\\models\\fas_second.csta";
+	
+	try {
+		// 加载人脸检测器
+		seeta::ModelSetting setting_fd;
+		setting_fd.append(model_path_fd.c_str());
+		pFD = new seeta::FaceDetector(setting_fd);
+		
+		// 加载特征点定位器
+		seeta::ModelSetting setting_fl;
+		setting_fl.append(model_path_fl.c_str());
+		pFL = new seeta::FaceLandmarker(setting_fl);
+		
+		// 加载人脸识别器
+		seeta::ModelSetting setting_fr;
+		const char* models[] = { model_path_fr.c_str(), NULL };
+		setting_fr.model = models;
+		pFR = new seeta::FaceRecognizer(setting_fr);
+		
+		// 活体检测暂时禁用
+		pFAS = nullptr;
+		
+		std::cout << "[Recognizer] 初始化完成" << std::endl;
+	}
+	catch (const std::exception& e) {
+		std::cerr << "[Recognizer] 初始化失败: " << e.what() << std::endl;
+		if (pFD) delete pFD;
+		if (pFL) delete pFL;
+		if (pFR) delete pFR;
+		if (pFAS) delete pFAS;
+		throw;
+	}
 }
 
 Recognizer::~Recognizer()
 {
-
+	if (pFD) delete pFD;
+	if (pFL) delete pFL;
+	if (pFR) delete pFR;
+	if (pFAS) delete pFAS;
 }
 
 std::shared_ptr<float> Recognizer::tofeats(SeetaImageData image)
@@ -61,97 +103,47 @@ float Recognizer::compare(seeta::FaceRecognizer* fr,
 	return fr->CalculateSimilarity(feat1.get(), feat2.get());
 }
 
-seeta::FaceLandmarker* Recognizer::new_fl()
-{
-	seeta::ModelSetting setting;
-	std::string project_root = Utils::GetProjectRoot();
-	std::string model_path = project_root + "\\resources\\models\\face_landmarker_pts5.csta";
-	
-	setting.append(model_path.c_str());
-	return new seeta::FaceLandmarker(setting);
-}
-
 std::vector<SeetaPointF> Recognizer::mark(seeta::FaceLandmarker* fl, const SeetaImageData& image, const SeetaRect& face)
 {
 	std::vector<SeetaPointF> points = fl->mark(image, face);
 	return points;
 }
 
-seeta::FaceRecognizer* Recognizer::new_fr()
-{
-	seeta::ModelSetting setting;
-	std::string project_root = Utils::GetProjectRoot();
-	std::string model_path = project_root + "\\resources\\models\\face_recognizer.csta";
-	
-	const char* models[] = { model_path.c_str(), NULL };
-	setting.model = models;
-	return new seeta::FaceRecognizer(setting);
-}
-
-seeta::FaceDetector* Recognizer::new_fd()
-{
-	seeta::ModelSetting setting;
-	std::string project_root = Utils::GetProjectRoot();
-	std::string model_path = project_root + "\\resources\\models\\face_detector.csta";
-	
-	setting.append(model_path.c_str());
-	return new seeta::FaceDetector(setting);
-}
-
 SeetaRect Recognizer::detect(seeta::FaceDetector* fd, SeetaImageData cap_img)
 {
-	try
-	{
-		SeetaFaceInfoArray faces = fd->detect(cap_img);
-		if (faces.size == 0) {
-			throw std::runtime_error("No face detected\n");
-		}
-		return faces.data[0].pos;
+	SeetaFaceInfoArray faces = fd->detect(cap_img);
+	if (faces.size == 0) {
+		throw std::runtime_error("No face detected");
 	}
-	catch (const std::exception& e)
-	{
-		printf("SeetaRect{ 0, 0, 0, 0 }\n");
-		// 返回一个无效的人脸框表示检测失败
-		return SeetaRect{ 0, 0, 0, 0 };
-	}
-	catch (...)
-	{
-		printf("SeetaRect{ 0, 0, 0, 0 }\n");
-		// 捕获所有其他未知异常
-		return SeetaRect{ 0, 0, 0, 0 };
-	}
-}
-
-seeta::FaceAntiSpoofing* Recognizer::new_fas_v2()
-{
-	seeta::ModelSetting setting;
-	std::string project_root = Utils::GetProjectRoot();
-	setting.append((project_root + "\\resources\\models\\fas_first.csta").c_str());
-	setting.append((project_root + "\\resources\\models\\fas_second.csta").c_str());
-	return new seeta::FaceAntiSpoofing(setting);
+	return faces.data[0].pos;
 }
 
 bool Recognizer::predict(const SeetaImageData& image, const SeetaRect& face,
 	const SeetaPointF* points)
 {
-
+	if (!pFAS) return true; // 活体检测禁用时默认通过
+	
 	auto status = pFAS->Predict(image, face, points);
 	switch (status) {
 	case seeta::FaceAntiSpoofing::REAL:
-		std::println("真实人脸"); return true;
+		std::cout << "真实人脸" << std::endl;
+		return true;
 	case seeta::FaceAntiSpoofing::SPOOF:
-		std::println("攻击人脸"); return false;
+		std::cout << "攻击人脸" << std::endl;
+		return false;
 	case seeta::FaceAntiSpoofing::FUZZY:
-		std::println("无法判断"); return false;
+		std::cout << "无法判断" << std::endl;
+		return false;
 	case seeta::FaceAntiSpoofing::DETECTING:
-		std::println("正在检测"); return false;
+		std::cout << "正在检测" << std::endl;
+		return false;
 	}
 	return false;
 }
 
 void Recognizer::reset_video()
 {
-	pFAS->ResetVideo();
+	if (pFAS) pFAS->ResetVideo();
 }
 
 bool Recognizer::anti_face(const SeetaImageData& image)

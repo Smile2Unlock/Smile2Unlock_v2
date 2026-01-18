@@ -11,12 +11,19 @@ class Recognizer
 {
 private:
 	std::vector<SeetaPointF> points;
-	seeta::FaceRecognizer* pFR = new_fr();
-	seeta::FaceLandmarker* pFL = new_fl();
-	seeta::FaceDetector* pFD = new_fd();
-	seeta::FaceAntiSpoofing* pFAS = new_fas_v2();
+	seeta::FaceRecognizer* pFR = nullptr;
+	seeta::FaceLandmarker* pFL = nullptr;
+	seeta::FaceDetector* pFD = nullptr;
+	seeta::FaceAntiSpoofing* pFAS = nullptr;
 	SeetaImageData cap_image;
 	float threshold = 0.7f;
+	
+	// 保存模型路径字符串,防止悬空指针
+	std::string model_path_fd;
+	std::string model_path_fl;
+	std::string model_path_fr;
+	std::string model_path_fas1;
+	std::string model_path_fas2;
 
 	std::shared_ptr<float> extract(
 		seeta::FaceRecognizer* pFD,
@@ -25,13 +32,9 @@ private:
 	float compare(seeta::FaceRecognizer* fr,
 		const std::shared_ptr<float>& feat1,
 		const std::shared_ptr<float>& feat2);
-	seeta::FaceLandmarker* new_fl();
 	std::shared_ptr<float> img2features(seeta::FaceDetector* fd, seeta::FaceLandmarker* fl, seeta::FaceRecognizer* fr, SeetaImageData cap_img);
 	std::vector<SeetaPointF> mark(seeta::FaceLandmarker* fl, const SeetaImageData& image, const SeetaRect& face);
-	seeta::FaceRecognizer* new_fr();
-	seeta::FaceDetector* new_fd();
 	SeetaRect detect(seeta::FaceDetector* fd, SeetaImageData cap_img);
-	seeta::FaceAntiSpoofing* new_fas_v2();
 	bool predict(const SeetaImageData& image, const SeetaRect& face, const SeetaPointF* points);
 
 public:
