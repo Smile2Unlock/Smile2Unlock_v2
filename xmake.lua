@@ -41,7 +41,10 @@ target("SampleV2CredentialProvider")
     set_kind("shared")
     set_arch("x64")  -- 设置架构
     add_files("CredentialProvider/*.cpp")
+    add_files("Smile2Unlock/ipc/IPCReceiver.cpp")  -- 添加IPC接收器
     add_headerfiles("CredentialProvider/*.h")
+    add_headerfiles("Smile2Unlock/ipc/IPCReceiver.h")
+    add_includedirs("Smile2Unlock/ipc")  -- 添加IPC头文件路径
     add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
     add_links("Credui", "Shlwapi", "Secur32")
@@ -50,14 +53,32 @@ target("SampleV2CredentialProvider")
     -- 资源文件处理
     add_files("CredentialProvider/resources.rc")
 
-    add_deps("FaceRecognizelib")
+    -- 不再直接依赖 FaceRecognizelib，改用IPC通信
+    -- add_deps("FaceRecognizelib")
     -- add_packages("SeetaFace6Open")
     -- add_packages("localopencv")
 
 
+-- Smile2Unlock Server (IPC通信服务)
+target("Smile2UnlockServer")
+    set_languages("c++20")
+    set_kind("binary")
+    add_files("Smile2Unlock/server/main.cpp")
+    add_files("Smile2Unlock/ipc/IPCSender.cpp")
+    add_files("FaceRecognizer/src/Camera.cpp")
+    add_headerfiles("Smile2Unlock/ipc/*.h")
+    add_headerfiles("FaceRecognizer/src/Camera.h")
+    add_packages("localopencv")
+    add_includedirs("FaceRecognizer/src")
+    
+    after_build(function (target)
+        if is_plat("windows") then
+            os.cp("$(projectdir)/local-repo/packages/l/localopencv/windows/opencv/build/x64/vc16/bin/*.dll", target:targetdir())
+        end
+    end)
+
 target("qt_Smile2Unlock")
     add_rules("qt.quickapp")
-    add_headerfiles("Smile2Unlock/cpp/*.h")
     add_files("Smile2Unlock/cpp/*.cpp")
     add_files("Smile2Unlock/qml/qml.qrc")
 
