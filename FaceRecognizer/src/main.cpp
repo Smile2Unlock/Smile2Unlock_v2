@@ -255,6 +255,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
     // 清理资源
     cv::destroyAllWindows();
     cam.~camera();
+    ipc.~ipc_sender();
 
     std::cout << "人脸识别结束。" << std::endl;
     return 0;

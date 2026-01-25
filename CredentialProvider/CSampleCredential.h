@@ -19,9 +19,14 @@
 #include <strsafe.h>
 #include <shlguid.h>
 #include <propkey.h>
+#include <memory>
+#include <thread>
+#include <mutex>
 #include "common.h"
 #include "dll.h"
 #include "resource.h"
+
+class ipc_receiver;
 
 class CSampleCredential : public ICredentialProviderCredential2, ICredentialProviderCredentialWithFieldOptions
 {
@@ -117,4 +122,17 @@ public:
     DWORD                                   _dwComboIndex;                                  // Tracks the current index of our combobox.
     bool                                    _fShowControls;                                 // Tracks the state of our show/hide controls link.
     bool                                    _fIsLocalUser;                                  // If the cred prov is assosiating with a local user tile
+    
+    // 新增：人脸识别相关成员
+    std::unique_ptr<ipc_receiver>           _pIpcReceiver;                                  // IPC接收器
+    HANDLE                                  _hFaceRecognizerProcess;                        // FaceRecognizer进程句柄
+    std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
+    std::mutex                              _faceMutex;                                     // 线程同步互斥量
+    bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
+
+    // 辅助函数
+    HRESULT LaunchFaceRecognizer();         // 启动FaceRecognizer.exe
+    HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
+    HRESULT DecryptPasswordFromRegistry(PWSTR* ppwszPassword); // 从注册表解密密码
+    void TerminateFaceRecognizer();         // 终止FaceRecognizer进程
 };

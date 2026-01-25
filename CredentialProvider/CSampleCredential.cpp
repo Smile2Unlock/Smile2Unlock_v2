@@ -16,6 +16,42 @@
 #include "CSampleCredential.h"
 #include "guid.h"
 
+// 新增包含
+#include "Crypto.h"
+#include "ipc_receiver.h"
+#include "registryhelper.h"
+#include <chrono>
+#include <cwchar>
+#include <mutex>
+#include <thread>
+#include <stdio.h>
+#include <stdarg.h>
+
+// 日志辅助函数
+inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
+  HANDLE hEventLog = RegisterEventSourceW(nullptr, L"Smile2Unlock_v2");
+  if (hEventLog != nullptr) {
+    const wchar_t* lpszStrings[1] = { message };
+    ReportEventW(hEventLog, wType, 0, 0, nullptr, 1, 0, lpszStrings, nullptr);
+    DeregisterEventSource(hEventLog);
+  }
+}
+
+inline void LogDebugMessage(const wchar_t* format, ...) {
+  wchar_t buffer[1024];
+  va_list args;
+  va_start(args, format);
+  vswprintf_s(buffer, sizeof(buffer) / sizeof(wchar_t), format, args);
+  va_end(args);
+  
+  // 输出到调试器
+  OutputDebugStringW(buffer);
+  OutputDebugStringW(L"\n");
+  
+  // 输出到事件日志
+  LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
+}
+
 CSampleCredential::CSampleCredential():
     _cRef(1),
     _pCredProvCredentialEvents(nullptr),
@@ -24,7 +60,9 @@ CSampleCredential::CSampleCredential():
     _fIsLocalUser(false),
     _fChecked(false),
     _fShowControls(false),
-    _dwComboIndex(0)
+    _dwComboIndex(0),
+    _hFaceRecognizerProcess(nullptr),
+    _fFaceRecognitionRunning(false)
 {
     DllAddRef();
 
@@ -35,6 +73,9 @@ CSampleCredential::CSampleCredential():
 
 CSampleCredential::~CSampleCredential()
 {
+    // 停止人脸识别
+    TerminateFaceRecognizer();
+
     if (_rgFieldStrings[SFI_PASSWORD])
     {
         size_t lenPassword = wcslen(_rgFieldStrings[SFI_PASSWORD]);
@@ -179,21 +220,38 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
 // LogonUI calls this in order to give us a callback in case we need to notify it of anything.
 HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpce)
 {
+    LogDebugMessage(L"[INFO] CSampleCredential::Advise - 初始化IPC接收器");
+    
     if (_pCredProvCredentialEvents != nullptr)
     {
         _pCredProvCredentialEvents->Release();
     }
+
+    // 初始化IPC接收器
+    if (!_pIpcReceiver)
+    {
+        _pIpcReceiver = std::make_unique<ipc_receiver>();
+        LogDebugMessage(L"[INFO] IPC接收器创建成功");
+    }
+
     return pcpce->QueryInterface(IID_PPV_ARGS(&_pCredProvCredentialEvents));
 }
 
 // LogonUI calls this to tell us to release the callback.
 HRESULT CSampleCredential::UnAdvise()
 {
+    // 停止人脸识别
+    TerminateFaceRecognizer();
+
     if (_pCredProvCredentialEvents)
     {
         _pCredProvCredentialEvents->Release();
     }
     _pCredProvCredentialEvents = nullptr;
+
+    // 清理IPC接收器
+    _pIpcReceiver.reset();
+
     return S_OK;
 }
 
@@ -452,11 +510,236 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
     return hr;
 }
 
+// ============ 人脸识别辅助函数实现 ============
+
+HRESULT CSampleCredential::LaunchFaceRecognizer() {
+  // 构建FaceRecognizer.exe的路径
+  wchar_t szFaceRecognizerPath[MAX_PATH];
+  if (!GetModuleFileNameW(nullptr, szFaceRecognizerPath, MAX_PATH)) {
+    LogDebugMessage(L"[ERROR] 获取模块路径失败");
+    return HRESULT_FROM_WIN32(GetLastError());
+  }
+
+  LogDebugMessage(L"[INFO] DLL模块路径: %s", szFaceRecognizerPath);
+
+  // 获取当前DLL所在的目录
+  wchar_t *pLastSlash = wcsrchr(szFaceRecognizerPath, L'\\');
+  if (pLastSlash) {
+    *(pLastSlash + 1) = L'\0';
+  }
+
+  // 拼接FaceRecognizer.exe的路径
+  wcscat_s(szFaceRecognizerPath, MAX_PATH, L"FaceRecognizer.exe");
+
+  LogDebugMessage(L"[INFO] 目标exe路径: %s", szFaceRecognizerPath);
+
+  // 检查文件是否存在
+  DWORD attrib = GetFileAttributesW(szFaceRecognizerPath);
+  if (attrib == INVALID_FILE_ATTRIBUTES) {
+    LogDebugMessage(L"[ERROR] FaceRecognizer.exe不存在: %s", szFaceRecognizerPath);
+    return E_FAIL;
+  }
+
+  // 准备启动参数：--mode recognize
+  wchar_t szCmdLine[MAX_PATH];
+  wcscpy_s(szCmdLine, MAX_PATH, szFaceRecognizerPath);
+  wcscat_s(szCmdLine, MAX_PATH, L" --mode recognize");
+
+  LogDebugMessage(L"[INFO] 启动命令行: %s", szCmdLine);
+
+  // 创建进程
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+
+  if (!CreateProcessW(nullptr,          // lpApplicationName
+                      szCmdLine,        // lpCommandLine
+                      nullptr,          // lpProcessAttributes
+                      nullptr,          // lpThreadAttributes
+                      FALSE,            // bInheritHandles
+                      CREATE_NO_WINDOW, // dwCreationFlags
+                      nullptr,          // lpEnvironment
+                      nullptr,          // lpCurrentDirectory
+                      &si,              // lpStartupInfo
+                      &pi))             // lpProcessInformation
+  {
+    DWORD dwError = GetLastError();
+    LogDebugMessage(L"[ERROR] CreateProcessW失败，错误代码: 0x%08X", dwError);
+    return HRESULT_FROM_WIN32(dwError);
+  }
+
+  // 保存进程句柄
+  _hFaceRecognizerProcess = pi.hProcess;
+  LogDebugMessage(L"[INFO] FaceRecognizer进程已启动，PID: %u", pi.dwProcessId);
+  
+  CloseHandle(pi.hThread); // 不需要线程句柄
+
+  return S_OK;
+}
+
+HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
+  const int RECOGNITION_TIMEOUT_MS = 30000; // 30秒超时
+  const int CHECK_INTERVAL_MS = 100;        // 每100ms检查一次
+  int elapsed = 0;
+
+  {
+    std::lock_guard<std::mutex> lock(_faceMutex);
+    _fFaceRecognitionRunning = true;
+  }
+
+  // 外部全局变量，由IPC接收器更新
+  extern int face_reconizer_status;
+
+  LogDebugMessage(L"[INFO] 开始等待人脸识别结果，超时时间: %dms", RECOGNITION_TIMEOUT_MS);
+
+  while (elapsed < RECOGNITION_TIMEOUT_MS) {
+    {
+      std::lock_guard<std::mutex> lock(_faceMutex);
+      if (!_fFaceRecognitionRunning) {
+        LogDebugMessage(L"[INFO] 识别被取消");
+        break;
+      }
+    }
+
+    // 检查识别结果
+    if (face_reconizer_status == 1) {
+      LogDebugMessage(L"[INFO] 识别成功！耗时: %dms", elapsed);
+      return S_OK; // 识别成功
+    }
+
+    Sleep(CHECK_INTERVAL_MS);
+    elapsed += CHECK_INTERVAL_MS;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(_faceMutex);
+    _fFaceRecognitionRunning = false;
+  }
+
+  LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d", elapsed, face_reconizer_status);
+  return E_FAIL; // 超时或失败
+}
+
+HRESULT CSampleCredential::DecryptPasswordFromRegistry(PWSTR *ppwszPassword) {
+  *ppwszPassword = nullptr;
+
+  try {
+    LogDebugMessage(L"[INFO] 开始从注册表读取加密数据...");
+    
+    // 从注册表读取加密的密码、密钥和IV
+    std::string passwordHex = RegistryHelper::ReadStringFromRegistry(
+        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\password");
+    std::string keyHex = RegistryHelper::ReadStringFromRegistry(
+        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\key");
+    std::string ivHex = RegistryHelper::ReadStringFromRegistry(
+        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\iv");
+
+    // 检查是否成功读取
+    if (passwordHex.empty() || keyHex.empty() || ivHex.empty()) {
+      LogDebugMessage(L"[ERROR] 从注册表读取数据失败: password=%s, key=%s, iv=%s",
+                     passwordHex.empty() ? L"空" : L"有", 
+                     keyHex.empty() ? L"空" : L"有",
+                     ivHex.empty() ? L"空" : L"有");
+      return E_FAIL;
+    }
+    
+    LogDebugMessage(L"[INFO] 注册表数据读取成功，长度: pwd=%zu, key=%zu, iv=%zu",
+                   passwordHex.length(), keyHex.length(), ivHex.length());
+
+    // 将十六进制密文转换为二进制
+    std::vector<CryptoPP::byte> passwordCipherBytes =
+        Crypto::hexToBytes(passwordHex);
+    std::string passwordCipher(
+        reinterpret_cast<const char *>(passwordCipherBytes.data()),
+        passwordCipherBytes.size());
+
+    LogDebugMessage(L"[INFO] 十六进制转换完成，密文长度: %zu", passwordCipher.length());
+
+    // 创建Crypto对象并设置密钥和IV
+    Crypto crypto;
+    if (!crypto.setKeyHex(keyHex)) {
+      LogDebugMessage(L"[ERROR] 密钥设置失败");
+      return E_FAIL;
+    }
+    if (!crypto.setIvHex(ivHex)) {
+      LogDebugMessage(L"[ERROR] IV设置失败");
+      return E_FAIL;
+    }
+    
+    LogDebugMessage(L"[INFO] 密钥和IV设置成功，开始解密...");
+
+    // 解密
+    std::string decryptedPassword = crypto.decrypt(passwordCipher);
+    if (decryptedPassword.empty()) {
+      LogDebugMessage(L"[ERROR] 解密失败或密码为空");
+      return E_FAIL;
+    }
+    
+    LogDebugMessage(L"[INFO] 解密成功，密码长度: %zu", decryptedPassword.length());
+
+    // 转换为宽字符
+    int bufferSize = MultiByteToWideChar(CP_UTF8, 0, decryptedPassword.c_str(),
+                                         -1, nullptr, 0);
+    if (bufferSize == 0) {
+      LogDebugMessage(L"[ERROR] 计算宽字符缓冲区大小失败");
+      return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    PWSTR pwszPassword = (PWSTR)CoTaskMemAlloc(bufferSize * sizeof(wchar_t));
+    if (!pwszPassword) {
+      LogDebugMessage(L"[ERROR] 内存分配失败");
+      return E_OUTOFMEMORY;
+    }
+
+    if (!MultiByteToWideChar(CP_UTF8, 0, decryptedPassword.c_str(), -1,
+                             pwszPassword, bufferSize)) {
+      CoTaskMemFree(pwszPassword);
+      LogDebugMessage(L"[ERROR] 多字节字符转宽字符失败");
+      return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    *ppwszPassword = pwszPassword;
+    LogDebugMessage(L"[INFO] 密码转换为宽字符成功");
+
+    // 立即清零密码缓冲区
+    SecureZeroMemory((PVOID)decryptedPassword.data(), decryptedPassword.size());
+    LogDebugMessage(L"[INFO] 密码缓冲区已清零");
+
+    return S_OK;
+  } catch (const std::exception &e) {
+    LogDebugMessage(L"[ERROR] 异常捕获: %hs", e.what());
+    return E_FAIL;
+  }
+}
+
+void CSampleCredential::TerminateFaceRecognizer() {
+  {
+    std::lock_guard<std::mutex> lock(_faceMutex);
+    _fFaceRecognitionRunning = false;
+  }
+
+  // 等待识别线程退出
+  if (_faceRecognitionThread.joinable()) {
+    _faceRecognitionThread.join();
+  }
+
+  // 结束FaceRecognizer进程
+  if (_hFaceRecognizerProcess) {
+    // 等待进程退出，超时5秒
+    if (WaitForSingleObject(_hFaceRecognizerProcess, 5000) == WAIT_TIMEOUT) {
+      // 如果超时，强制结束进程
+      TerminateProcess(_hFaceRecognizerProcess, 1);
+    }
+
+    CloseHandle(_hFaceRecognizerProcess);
+    _hFaceRecognizerProcess = nullptr;
+  }
+}
+
 // Called when the user clicks a command link.
 HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
 {
     HRESULT hr = S_OK;
-
     CREDENTIAL_PROVIDER_FIELD_STATE cpfsShow = CPFS_HIDDEN;
 
     // Validate parameter.
@@ -464,9 +747,6 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
         (CPFT_COMMAND_LINK == _rgCredProvFieldDescriptors[dwFieldID].cpft))
     {
         HWND hwndOwner = nullptr;
-
-            PWSTR password = nullptr;
-            bool isVerified = false;
 
         switch (dwFieldID)
         {
@@ -498,38 +778,83 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
                 _pCredProvCredentialEvents->OnCreatingWindow(&hwndOwner);
             }
 
-            // 1. 调用面部识别模块进行验证
+            // 重置识别状态
+            extern int face_reconizer_status;
+            face_reconizer_status = 0;
 
-
-            // TODO: 实现面部识别逻辑，从其他地方获取密码
-            // 例如：isVerified = FaceRecognizer.VerifyUser(&password);
-
-            if (isVerified && password != nullptr)
+            // 1. 启动FaceRecognizer进程
+            hr = LaunchFaceRecognizer();
+            if (FAILED(hr))
             {
-                // 2. 设置密码到密码字段
-                CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
-                hr = SHStrDupW(password, &_rgFieldStrings[SFI_PASSWORD]);
+                LogDebugMessage(L"[ERROR] 启动人脸识别模块失败，错误代码: 0x%08X", hr);
+                ::MessageBox(hwndOwner, L"启动人脸识别模块失败", L"错误", MB_ICONERROR);
+                return hr;
+            }
+            
+            LogDebugMessage(L"[INFO] 人脸识别进程已启动，等待识别结果...");
 
-                if (SUCCEEDED(hr) && _pCredProvCredentialEvents)
-                {
-                    _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, _rgFieldStrings[SFI_PASSWORD]);
+            // 显示等待提示
+            if (_pCredProvCredentialEvents)
+            {
+                _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT,
+                                                           L"正在进行人脸识别...");
+            }
+
+            // 2. 在后台线程中等待识别结果
+            _faceRecognitionThread = std::thread([this, hwndOwner]() {
+              LogDebugMessage(L"[INFO] 后台识别线程已启动");
+              HRESULT waitResult = WaitForFaceRecognitionResult();
+
+              if (SUCCEEDED(waitResult)) {
+                LogDebugMessage(L"[INFO] 人脸识别成功，正在解密密码...");
+                // 识别成功，从注册表解密密码
+                PWSTR pwszPassword = nullptr;
+                HRESULT decryptResult = DecryptPasswordFromRegistry(&pwszPassword);
+
+                if (SUCCEEDED(decryptResult) && pwszPassword) {
+                  LogDebugMessage(L"[INFO] 密码解密成功，正在设置密码字段...");
+                  // 3. 设置密码到密码字段
+                  {
+                    std::lock_guard<std::mutex> lock(_faceMutex);
+                    if (_rgFieldStrings[SFI_PASSWORD]) {
+                      CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
+                    }
+                    _rgFieldStrings[SFI_PASSWORD] = pwszPassword;
+                  }
+
+                  if (_pCredProvCredentialEvents) {
+                    _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD,
+                                                               pwszPassword);
+                    _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT,
+                                                               L"人脸识别成功");
+                    LogDebugMessage(L"[INFO] 密码已设置，等待LogonUI调用GetSerialization...");
+                    // 注意：不需要显式调用OnUserAuthentication
+                    // LogonUI会监听字段变化并自动调用GetSerialization
+                  }
+                } else {
+                  LogDebugMessage(L"[ERROR] 密码解密失败，错误代码: 0x%08X", decryptResult);
+                  ::MessageBox(hwndOwner, L"密码解密失败", L"错误", MB_ICONERROR);
                 }
+              } else {
+                LogDebugMessage(L"[ERROR] 人脸识别失败或超时，原因：%s", 
+                               waitResult == E_FAIL ? L"超时或识别失败" : L"异常错误");
+                ::MessageBox(hwndOwner, L"人脸识别失败或超时，请重试", L"识别失败",
+                             MB_ICONERROR);
 
-                // 3. 自动提交登录
-                // 这里需要调用GetSerialization来完成登录
-                // 由于GetSerialization是由LogonUI调用的，我们需要触发它
-                // 一种方法是设置密码后，自动触发提交按钮
-                // 或者使用其他方式通知LogonUI进行验证
+                // 清空密码字段
+                if (_pCredProvCredentialEvents) {
+                  _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, L"");
+                  _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT,
+                                                             L"人脸识别失败");
+                }
+              }
 
-                // 显示验证成功消息
-                ::MessageBox(hwndOwner, L"面部识别成功，正在登录...", L"验证成功", MB_OK);
+              // 终止FaceRecognizer进程
+              LogDebugMessage(L"[INFO] 正在终止FaceRecognizer进程...");
+              TerminateFaceRecognizer();
+              LogDebugMessage(L"[INFO] 后台识别线程已结束");
+            });
 
-                // TODO: 触发登录流程
-            }
-            else
-            {
-                ::MessageBox(hwndOwner, L"面部识别失败，请重试", L"验证失败", MB_ICONERROR);
-            }
             break;
         default:
             hr = E_INVALIDARG;
