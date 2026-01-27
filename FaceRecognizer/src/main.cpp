@@ -9,11 +9,13 @@
 #include <string>
 #include <filesystem>  // 用于路径操作
 #include <chrono>      // 用于时间控制
+#include <memory>      // 用于std::unique_ptr
 #include "input_hide.h"
 #include "registryhelper.h"
 
 
-// ipc_sender* ipc = new ipc_sender(); // TODO: Initialize when needed
+// 全局IPC发送器 - 保持整个程序生命周期
+std::unique_ptr<ipc_sender> g_ipc;
 // camera* cam = new camera();         // TODO: Initialize when needed
 std::queue<cv::Mat> frames;
 
@@ -125,8 +127,13 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
         return -1;
     }
     
-    // 初始化IPC发送器，用于发送解锁信号
-    ipc_sender ipc;
+    // 使用全局IPC发送器，用于发送解锁信号
+    if (!g_ipc) {
+        g_ipc = std::make_unique<ipc_sender>();
+        std::cout << "IPC发送器已初始化" << std::endl;
+    } else {
+        std::cout << "IPC发送器已存在，重用现有实例" << std::endl;
+    }
     
     // 查找已注册的用户特征文件
     std::vector<std::string> registeredUsers;
@@ -167,6 +174,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
         std::cout << "  - " << user << std::endl;
     }
     
+    int used_time = 0;
     // 主识别循环
     while (true) {
         // 等待队列中有帧可用
@@ -184,6 +192,12 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
             int key = cv::waitKey(1) & 0xFF; // 使用waitKey(1)以便快速响应键盘输入
             if (key == 'q') {
                 break; // 退出循环
+            }
+            if (status_code == 1) {
+                break;
+            }
+            if (used_time >= 10000) {
+                break;
             }
             
             // 转换为SeetaFace所需的格式
@@ -228,9 +242,14 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
                                                        
                                 std::cout << "识别成功！用户: " << username 
                                           << ", 相似度: " << similarity << std::endl;
+                                std::cout << "[DEBUG] 设置 status_code = 1 进行IPC通信" << std::endl;
                                 
                                 // 发送解锁信号
                                 status_code = 1; // 设置解锁状态
+                                
+                                // 等待足够的时间让凭证程序接收状态
+                                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                                std::cout << "[DEBUG] 已等待500ms，status_code = " << status_code << std::endl;
                                 
                                 recognized = true;
                                 break; // 找到匹配项，跳出循环
@@ -249,14 +268,21 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
         } else {
             // 如果队列为空，短暂休眠避免CPU占用过高
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            used_time += 10;
         }
     }
     
     // 清理资源
     cv::destroyAllWindows();
     cam.~camera();
-    ipc.~ipc_sender();
-
+    
+    // 如果识别成功，保持IPC发送器运行一段时间以确保凭证程序接收
+    if (status_code == 1) {
+        std::cout << "[INFO] 识别成功，保持IPC连接2秒以确保凭证程序接收" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+    
+    // 不要手动销毁g_ipc，让它的析构函数自动处理
     std::cout << "人脸识别结束。" << std::endl;
     return 0;
 }
@@ -375,6 +401,12 @@ int main(int argc, char* argv[]) {
     }
 
     status_code = 0;
+    
+    // 在主函数开始时初始化全局IPC发送器
+    if (!g_ipc) {
+        g_ipc = std::make_unique<ipc_sender>();
+        std::cout << "[Main] 全局IPC发送器已初始化" << std::endl;
+    }
     
     // Handle set-password functionality separately
     if (set_password) {

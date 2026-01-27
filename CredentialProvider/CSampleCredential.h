@@ -134,5 +134,4 @@ public:
     HRESULT LaunchFaceRecognizer();         // 启动FaceRecognizer.exe
     HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
     HRESULT DecryptPasswordFromRegistry(PWSTR* ppwszPassword); // 从注册表解密密码
-    void TerminateFaceRecognizer();         // 终止FaceRecognizer进程
 };
