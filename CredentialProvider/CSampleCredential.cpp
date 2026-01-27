@@ -269,7 +269,7 @@ HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpc
         _pIpcReceiver = std::make_unique<ipc_receiver>();
         LogDebugMessage(L"[INFO] IPC接收器创建成功，接收线程应已启动");
         // 给接收器线程一点时间来连接
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         LogDebugMessage(L"[INFO] Advise已完成，等待500ms后返回");
     }
     else
@@ -914,9 +914,10 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
 
     // For local user, the domain and user name can be split from _pszQualifiedUserName (domain\username).
     // CredPackAuthenticationBuffer() cannot be used because it won't work with unlock scenario.
-    if (_fIsLocalUser)
+    // 对于所有本地和Microsoft账户，都使用KerbInteractiveUnlockLogon方式处理
+    // 这种方式对本地用户和Microsoft账户都有效
     {
-        LogDebugMessage(L"[INFO] 本地用户分支，开始处理本地认证");
+        LogDebugMessage(L"[INFO] 使用KerbInteractiveUnlockLogon方式处理凭证");
         PWSTR pwzProtectedPassword;
         hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
         LogDebugMessage(L"[DEBUG] ProtectIfNecessaryAndCopyPassword返回: 0x%08X", hr);
@@ -932,8 +933,8 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
             if (SUCCEEDED(hr))
             {
                 KERB_INTERACTIVE_UNLOCK_LOGON kiul;
-                // 关键修改：使用 _rgFieldStrings[SFI_PASSWORD] 而不是 _pwzPassword
-                hr = KerbInteractiveUnlockLogonInit(pszDomain, pszUsername, _rgFieldStrings[SFI_PASSWORD], _cpus, &kiul);
+                // 使用原始密码（受保护的）而不是_rgFieldStrings[SFI_PASSWORD]
+                hr = KerbInteractiveUnlockLogonInit(pszDomain, pszUsername, pwzProtectedPassword, _cpus, &kiul);
                 LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonInit返回: 0x%08X", hr);
                 
                 if (SUCCEEDED(hr))
@@ -979,66 +980,6 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
             CoTaskMemFree(pwzProtectedPassword);
         } else {
             LogDebugMessage(L"[ERROR] ProtectIfNecessaryAndCopyPassword失败");
-        }
-    }
-    else
-    {
-        LogDebugMessage(L"[INFO] 非本地用户分支（可能是域用户）");
-        DWORD dwAuthFlags = CRED_PACK_PROTECTED_CREDENTIALS | CRED_PACK_ID_PROVIDER_CREDENTIALS;
-
-        // First get the size of the authentication buffer to allocate
-        if (!CredPackAuthenticationBuffer(dwAuthFlags, _pszQualifiedUserName, const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), nullptr, &pcpcs->cbSerialization) &&
-            (GetLastError() == ERROR_INSUFFICIENT_BUFFER))
-        {
-            LogDebugMessage(L"[DEBUG] 需要缓冲区大小: %d", pcpcs->cbSerialization);
-            pcpcs->rgbSerialization = static_cast<byte *>(CoTaskMemAlloc(pcpcs->cbSerialization));
-            if (pcpcs->rgbSerialization != nullptr)
-            {
-                hr = S_OK;
-
-                // Retrieve the authentication buffer
-                if (CredPackAuthenticationBuffer(dwAuthFlags, _pszQualifiedUserName, const_cast<PWSTR>(_rgFieldStrings[SFI_PASSWORD]), pcpcs->rgbSerialization, &pcpcs->cbSerialization))
-                {
-                    LogDebugMessage(L"[DEBUG] CredPackAuthenticationBuffer成功");
-                    ULONG ulAuthPackage;
-                    hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-                    if (SUCCEEDED(hr))
-                    {
-                        pcpcs->ulAuthenticationPackage = ulAuthPackage;
-                        pcpcs->clsidCredentialProvider = CLSID_CSample;
-
-                        // At this point the credential has created the serialized credential used for logon
-                        // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-                        // that we have all the information we need and it should attempt to submit the
-                        // serialized credential.
-                        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                        LogDebugMessage(L"[INFO] 域用户GetSerialization成功！状态设为CPGSR_RETURN_CREDENTIAL_FINISHED");
-                    } else {
-                        LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
-                    }
-                }
-                else
-                {
-                    hr = HRESULT_FROM_WIN32(GetLastError());
-                    LogDebugMessage(L"[ERROR] CredPackAuthenticationBuffer失败: 0x%08X", hr);
-                    if (SUCCEEDED(hr))
-                    {
-                        hr = E_FAIL;
-                    }
-                }
-
-                if (FAILED(hr))
-                {
-                    CoTaskMemFree(pcpcs->rgbSerialization);
-                }
-            }
-            else
-            {
-                hr = E_OUTOFMEMORY;
-                LogDebugMessage(L"[ERROR] 内存分配失败");
-            }
-        } else {
-            LogDebugMessage(L"[ERROR] CredPackAuthenticationBuffer首次调用失败，无法获取缓冲区大小");
         }
     }
     

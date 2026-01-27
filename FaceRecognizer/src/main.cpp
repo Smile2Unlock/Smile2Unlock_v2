@@ -187,7 +187,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
             }
             
             // 显示实时画面
-            cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
+            // cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
             
             int key = cv::waitKey(1) & 0xFF; // 使用waitKey(1)以便快速响应键盘输入
             if (key == 'q') {
