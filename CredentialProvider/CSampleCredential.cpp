@@ -26,6 +26,8 @@
 #include <thread>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string>
+#include <vector>
 
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
@@ -50,6 +52,42 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
   
   // 输出到事件日志
   LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
+  
+  // 输出到文件
+  HANDLE hFile = CreateFileW(L"D:\\Smile2Unlock_v2.log", 
+                             FILE_APPEND_DATA, 
+                             FILE_SHARE_READ,
+                             nullptr,
+                             OPEN_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL,
+                             nullptr);
+  if (hFile != INVALID_HANDLE_VALUE) {
+    // 添加时间戳
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t timeBuffer[256];
+    swprintf_s(timeBuffer, sizeof(timeBuffer) / sizeof(wchar_t),
+               L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
+               st.wYear, st.wMonth, st.wDay,
+               st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    
+    // 转换为UTF-8并写入文件
+    int utf8Size = WideCharToMultiByte(CP_UTF8, 0, timeBuffer, -1, nullptr, 0, nullptr, nullptr);
+    std::string utf8Time(utf8Size - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, timeBuffer, -1, &utf8Time[0], utf8Size, nullptr, nullptr);
+    
+    DWORD bytesWritten;
+    WriteFile(hFile, utf8Time.c_str(), (DWORD)utf8Time.size(), &bytesWritten, nullptr);
+    
+    utf8Size = WideCharToMultiByte(CP_UTF8, 0, buffer, -1, nullptr, 0, nullptr, nullptr);
+    std::string utf8Message(utf8Size - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buffer, -1, &utf8Message[0], utf8Size, nullptr, nullptr);
+    
+    WriteFile(hFile, utf8Message.c_str(), (DWORD)utf8Message.size(), &bytesWritten, nullptr);
+    WriteFile(hFile, "\n", 1, &bytesWritten, nullptr);
+    
+    CloseHandle(hFile);
+  }
 }
 
 CSampleCredential::CSampleCredential():
