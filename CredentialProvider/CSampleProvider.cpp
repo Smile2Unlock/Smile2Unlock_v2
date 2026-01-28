@@ -19,7 +19,10 @@
 CSampleProvider::CSampleProvider():
     _cRef(1),
     _pCredential(nullptr),
-    _pCredProviderUserArray(nullptr)
+    _pCredProviderUserArray(nullptr),
+    _pcpe(nullptr),
+    _upAdviseContext(0),
+    _fCredentialReady(false)
 {
     DllAddRef();
 }
@@ -35,6 +38,11 @@ CSampleProvider::~CSampleProvider()
     {
         _pCredProviderUserArray->Release();
         _pCredProviderUserArray = nullptr;
+    }
+    if (_pcpe != nullptr)
+    {
+        _pcpe->Release();
+        _pcpe = nullptr;
     }
 
     DllRelease();
@@ -101,16 +109,42 @@ HRESULT CSampleProvider::SetSerialization(
 // Called by LogonUI to give you a callback.  Providers often use the callback if they
 // some event would cause them to need to change the set of tiles that they enumerated.
 HRESULT CSampleProvider::Advise(
-    _In_ ICredentialProviderEvents * /*pcpe*/,
-    _In_ UINT_PTR /*upAdviseContext*/)
+    _In_ ICredentialProviderEvents *pcpe,
+    _In_ UINT_PTR upAdviseContext)
 {
-    return E_NOTIMPL;
+    if (_pcpe != nullptr)
+    {
+        _pcpe->Release();
+    }
+    _pcpe = pcpe;
+    _upAdviseContext = upAdviseContext;
+    if (_pcpe != nullptr)
+    {
+        _pcpe->AddRef();
+    }
+    return S_OK;
 }
 
 // Called by LogonUI when the ICredentialProviderEvents callback is no longer valid.
 HRESULT CSampleProvider::UnAdvise()
 {
-    return E_NOTIMPL;
+    if (_pcpe != nullptr)
+    {
+        _pcpe->Release();
+        _pcpe = nullptr;
+    }
+    return S_OK;
+}
+
+// 新增：当后台线程准备好凭证时调用此方法通知LogonUI
+void CSampleProvider::OnCredentialReady()
+{
+    _fCredentialReady = true;
+    if (_pcpe != nullptr)
+    {
+        // 通知LogonUI凭证已改变，让它重新枚举
+        _pcpe->CredentialsChanged(_upAdviseContext);
+    }
 }
 
 // Called by LogonUI to determine the number of fields in your tiles.  This
@@ -169,7 +203,17 @@ HRESULT CSampleProvider::GetCredentialCount(
         _CreateEnumeratedCredentials();
     }
 
-    *pdwCount = 1;
+    // 如果凭证已准备好，返回1并设置自动登录
+    if (_fCredentialReady)
+    {
+        *pdwCount = 1;
+        *pdwDefault = 0;
+        *pbAutoLogonWithDefault = TRUE;
+    }
+    else
+    {
+        *pdwCount = 1;
+    }
 
     return S_OK;
 }
@@ -243,7 +287,8 @@ HRESULT CSampleProvider::_EnumerateCredentials()
                 _pCredential = new(std::nothrow) CSampleCredential();
                 if (_pCredential != nullptr)
                 {
-                    hr = _pCredential->Initialize(_cpus, s_rgCredProvFieldDescriptors, s_rgFieldStatePairs, pCredUser);
+                    // 传递Provider指针给CSampleCredential
+                    hr = _pCredential->Initialize(_cpus, s_rgCredProvFieldDescriptors, s_rgFieldStatePairs, pCredUser, this);
                     if (FAILED(hr))
                     {
                         _pCredential->Release();

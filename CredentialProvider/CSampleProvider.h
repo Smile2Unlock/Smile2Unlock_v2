@@ -51,6 +51,9 @@ class CSampleProvider : public ICredentialProvider,
 
     IFACEMETHODIMP Advise(_In_ ICredentialProviderEvents *pcpe, _In_ UINT_PTR upAdviseContext);
     IFACEMETHODIMP UnAdvise();
+    
+    // 新增：当凭证已准备好时通知LogonUI
+    void OnCredentialReady();
 
     IFACEMETHODIMP GetFieldDescriptorCount(_Out_ DWORD *pdwCount);
     IFACEMETHODIMP GetFieldDescriptorAt(DWORD dwIndex,  _Outptr_result_nullonfailure_ CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR **ppcpfd);
@@ -81,5 +84,8 @@ private:
     bool                                    _fRecreateEnumeratedCredentials;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO      _cpus;
     ICredentialProviderUserArray            *_pCredProviderUserArray;
+    ICredentialProviderEvents               *_pcpe;           // 凭证事件回调
+    UINT_PTR                                _upAdviseContext; // 回调上下文
+    bool                                    _fCredentialReady; // 凭证是否已准备好
 
 };

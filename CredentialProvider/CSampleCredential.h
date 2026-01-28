@@ -27,6 +27,7 @@
 #include "resource.h"
 
 class ipc_receiver;
+class CSampleProvider;  // 前向声明
 
 class CSampleCredential : public ICredentialProviderCredential2, ICredentialProviderCredentialWithFieldOptions
 {
@@ -103,7 +104,8 @@ public:
     HRESULT Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
                        _In_ CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR const *rgcpfd,
                        _In_ FIELD_STATE_PAIR const *rgfsp,
-                       _In_ ICredentialProviderUser *pcpUser);
+                       _In_ ICredentialProviderUser *pcpUser,
+                       _In_opt_ CSampleProvider *pProvider = nullptr);
     CSampleCredential();
 
   private:
@@ -116,6 +118,8 @@ public:
     PWSTR                                   _rgFieldStrings[SFI_NUM_FIELDS];                // An array holding the string value of each field. This is different from the name of the field held in _rgCredProvFieldDescriptors.
     PWSTR                                   _pszUserSid;
     PWSTR                                   _pszQualifiedUserName;                          // The user name that's used to pack the authentication buffer
+    PWSTR                                   _pwzUsername;                                   // Sparkin: 用户名
+    PWSTR                                   _pwzPassword;                                   // Sparkin: 密码
     ICredentialProviderCredentialEvents2*    _pCredProvCredentialEvents;                    // Used to update fields.
                                                                                             // CredentialEvents2 for Begin and EndFieldUpdates.
     BOOL                                    _fChecked;                                      // Tracks the state of our checkbox.
@@ -129,6 +133,7 @@ public:
     std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
+    CSampleProvider                         *_pProvider;                                    // Provider指针，用于通知凭证准备好
 
     // 辅助函数
     HRESULT LaunchFaceRecognizer();         // 启动FaceRecognizer.exe

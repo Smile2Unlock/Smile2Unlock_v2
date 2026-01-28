@@ -20,6 +20,7 @@
 #include "Crypto.h"
 #include "ipc_receiver.h"
 #include "registryhelper.h"
+#include "CSampleProvider.h"
 #include <chrono>
 #include <cwchar>
 #include <mutex>
@@ -28,6 +29,10 @@
 #include <stdarg.h>
 #include <string>
 #include <vector>
+
+// 调试开关：启用自动识别成功模式（用于测试整个流程）
+// 注释掉这行以使用真实人脸识别
+#define AUTO_RECOGNIZE_SUCCESS 1
 
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
@@ -100,7 +105,10 @@ CSampleCredential::CSampleCredential():
     _fShowControls(false),
     _dwComboIndex(0),
     _hFaceRecognizerProcess(nullptr),
-    _fFaceRecognitionRunning(false)
+    _fFaceRecognitionRunning(false),
+    _pwzUsername(nullptr),
+    _pwzPassword(nullptr),
+    _pProvider(nullptr)
 {
     DllAddRef();
 
@@ -132,10 +140,12 @@ CSampleCredential::~CSampleCredential()
 HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
                                       _In_ CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR const *rgcpfd,
                                       _In_ FIELD_STATE_PAIR const *rgfsp,
-                                      _In_ ICredentialProviderUser *pcpUser)
+                                      _In_ ICredentialProviderUser *pcpUser,
+                                      _In_opt_ CSampleProvider *pProvider)
 {
     HRESULT hr = S_OK;
     _cpus = cpus;
+    _pProvider = pProvider;  // 保存Provider指针
 
     GUID guidProvider;
     pcpUser->GetProviderID(&guidProvider);
@@ -243,6 +253,28 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     {
         hr = pcpUser->GetSid(&_pszUserSid);
     }
+
+    // 初始化 _pwzUsername 和 _pwzPassword（来自 Sparkin 实现）
+    if (SUCCEEDED(hr) && _pszQualifiedUserName)
+    {
+        // 从 QualifiedUserName 中提取用户名部分（可能是 domain\username 或 MicrosoftAccount\email）
+        PWSTR pwzBackslash = wcschr(_pszQualifiedUserName, L'\\');
+        if (pwzBackslash)
+        {
+            // 使用反斜杠后的部分作为用户名
+            _pwzUsername = pwzBackslash + 1;
+            LogDebugMessage(L"[INFO] 从QualifiedUserName提取用户名: %s", _pwzUsername);
+        }
+        else
+        {
+            // 如果没有反斜杠，直接使用整个字符串
+            _pwzUsername = _pszQualifiedUserName;
+            LogDebugMessage(L"[INFO] 使用整个QualifiedUserName作为用户名: %s", _pwzUsername);
+        }
+    }
+    
+    // _pwzPassword 在 GetSerialization 时从密码字段获取
+    _pwzPassword = nullptr;
 
     if (SUCCEEDED(hr))
     {
@@ -563,26 +595,42 @@ HRESULT CSampleCredential::LaunchFaceRecognizer() {
   LogDebugMessage(L"[INFO] DLL模块路径: %s", szFaceRecognizerPath);
 
   // 获取当前DLL所在的目录
-  wchar_t *pLastSlash = wcsrchr(szFaceRecognizerPath, L'\\');
+  wchar_t szModuleDir[MAX_PATH];
+  wcscpy_s(szModuleDir, MAX_PATH, szFaceRecognizerPath);
+  wchar_t *pLastSlash = wcsrchr(szModuleDir, L'\\');
   if (pLastSlash) {
     *(pLastSlash + 1) = L'\0';
   }
 
-  // 拼接FaceRecognizer.exe的路径
-  wcscat_s(szFaceRecognizerPath, MAX_PATH, L"FaceRecognizer.exe");
+  // 检查人脸数据目录
+  wchar_t szFaceDataDir[MAX_PATH];
+  wcscpy_s(szFaceDataDir, MAX_PATH, szModuleDir);
+  wcscat_s(szFaceDataDir, MAX_PATH, L"data\\face");
+  
+  DWORD faceDataAttrib = GetFileAttributesW(szFaceDataDir);
+  if (faceDataAttrib == INVALID_FILE_ATTRIBUTES || !(faceDataAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
+    LogDebugMessage(L"[WARNING] 人脸数据目录不存在: %s，FaceRecognizer可能无法进行识别", szFaceDataDir);
+  } else {
+    LogDebugMessage(L"[INFO] 人脸数据目录已确认: %s", szFaceDataDir);
+  }
 
-  LogDebugMessage(L"[INFO] 目标exe路径: %s", szFaceRecognizerPath);
+  // 拼接FaceRecognizer.exe的路径
+  wchar_t szExePath[MAX_PATH];
+  wcscpy_s(szExePath, MAX_PATH, szModuleDir);
+  wcscat_s(szExePath, MAX_PATH, L"FaceRecognizer.exe");
+
+  LogDebugMessage(L"[INFO] 目标exe路径: %s", szExePath);
 
   // 检查文件是否存在
-  DWORD attrib = GetFileAttributesW(szFaceRecognizerPath);
+  DWORD attrib = GetFileAttributesW(szExePath);
   if (attrib == INVALID_FILE_ATTRIBUTES) {
-    LogDebugMessage(L"[ERROR] FaceRecognizer.exe不存在: %s", szFaceRecognizerPath);
+    LogDebugMessage(L"[ERROR] FaceRecognizer.exe不存在: %s", szExePath);
     return E_FAIL;
   }
 
   // 准备启动参数：--mode recognize
   wchar_t szCmdLine[MAX_PATH];
-  wcscpy_s(szCmdLine, MAX_PATH, szFaceRecognizerPath);
+  wcscpy_s(szCmdLine, MAX_PATH, szExePath);
   wcscat_s(szCmdLine, MAX_PATH, L" --mode recognize");
 
   LogDebugMessage(L"[INFO] 启动命令行: %s", szCmdLine);
@@ -599,7 +647,7 @@ HRESULT CSampleCredential::LaunchFaceRecognizer() {
                       FALSE,            // bInheritHandles
                       CREATE_NO_WINDOW, // dwCreationFlags
                       nullptr,          // lpEnvironment
-                      nullptr,          // lpCurrentDirectory
+                      szModuleDir,      // lpCurrentDirectory - 在模块目录运行
                       &si,              // lpStartupInfo
                       &pi))             // lpProcessInformation
   {
@@ -610,7 +658,8 @@ HRESULT CSampleCredential::LaunchFaceRecognizer() {
 
   // 保存进程句柄
   _hFaceRecognizerProcess = pi.hProcess;
-  LogDebugMessage(L"[INFO] FaceRecognizer进程已启动，PID: %u", pi.dwProcessId);
+  LogDebugMessage(L"[INFO] FaceRecognizer进程已启动，PID: %u，请检查摄像头和人脸数据", pi.dwProcessId);
+  LogDebugMessage(L"[INFO] 进程工作目录: %s", szModuleDir);
   
   CloseHandle(pi.hThread); // 不需要线程句柄
 
@@ -650,7 +699,8 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
 
     // 每秒输出一次状态日志
     if (elapsed % 1000 == 0) {
-      LogDebugMessage(L"[DEBUG] 等待中... 已耗时: %dms，当前状态码: %d", elapsed, face_reconizer_status);
+      LogDebugMessage(L"[DEBUG] 等待中... 已耗时: %dms，当前状态码: %d，IPC状态应该从%d变为1", 
+                      elapsed, face_reconizer_status, face_reconizer_status);
     }
 
     Sleep(CHECK_INTERVAL_MS);
@@ -662,7 +712,8 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     _fFaceRecognitionRunning = false;
   }
 
-  LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d", elapsed, face_reconizer_status);
+  LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d，请检查FaceRecognizer是否正常运行", 
+                  elapsed, face_reconizer_status);
   return E_FAIL; // 超时或失败
 }
 
@@ -758,7 +809,6 @@ HRESULT CSampleCredential::DecryptPasswordFromRegistry(PWSTR *ppwszPassword) {
   }
 }
 
-// Called when the user clicks a command link.
 HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
 {
     HRESULT hr = S_OK;
@@ -804,6 +854,14 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
             extern int face_reconizer_status;
             face_reconizer_status = 0;
 
+            // DEBUG: 检查是否启用自动识别成功模式（用于测试）
+            // 注释掉这行以使用真实人脸识别
+            // #define AUTO_RECOGNIZE_SUCCESS 1
+
+            #ifdef AUTO_RECOGNIZE_SUCCESS
+            LogDebugMessage(L"[DEBUG] 进入自动识别成功模式（用于测试）");
+            #endif
+
             // 1. 启动FaceRecognizer进程
             hr = LaunchFaceRecognizer();
             if (FAILED(hr))
@@ -825,7 +883,20 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
             // 2. 在后台线程中等待识别结果
             _faceRecognitionThread = std::thread([this, hwndOwner]() {
               LogDebugMessage(L"[INFO] 后台识别线程已启动");
-              HRESULT waitResult = WaitForFaceRecognitionResult();
+              
+              HRESULT waitResult = S_OK; // 默认成功
+              
+              #ifdef AUTO_RECOGNIZE_SUCCESS
+              // 调试模式：自动设置识别成功（5秒后）用于测试
+              LogDebugMessage(L"[DEBUG] 进入AUTO_RECOGNIZE_SUCCESS模式，5秒后模拟识别成功");
+              extern int face_reconizer_status;
+              Sleep(5000);
+              face_reconizer_status = 1;
+              LogDebugMessage(L"[DEBUG] 已手动设置status=1进行测试");
+              // waitResult已经是S_OK
+              #else
+              waitResult = WaitForFaceRecognitionResult();
+              #endif
 
               if (SUCCEEDED(waitResult)) {
                 LogDebugMessage(L"[INFO] 人脸识别成功，正在解密密码...");
@@ -857,7 +928,13 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
                     LogDebugMessage(L"[INFO] 提示文本已更新");
                     
                     _pCredProvCredentialEvents->EndFieldUpdates();
-                    LogDebugMessage(L"[INFO] 字段更新已完成，等待LogonUI调用GetSerialization...");
+                    LogDebugMessage(L"[INFO] 字段更新已完成");
+                    
+                    // 4. 通知Provider凭证已准备好，Provider会通知LogonUI
+                    if (_pProvider) {
+                      LogDebugMessage(L"[INFO] 调用Provider::OnCredentialReady()通知凭证已准备好");
+                      _pProvider->OnCredentialReady();
+                    }
                   }
                 } else {
                   LogDebugMessage(L"[ERROR] 密码解密失败，错误代码: 0x%08X", decryptResult);
@@ -907,80 +984,79 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     *ppwszOptionalStatusText = nullptr;
     *pcpsiOptionalStatusIcon = CPSI_NONE;
     ZeroMemory(pcpcs, sizeof(*pcpcs));
-    
-    LogDebugMessage(L"[INFO] GetSerialization被调用，_fIsLocalUser=%d", _fIsLocalUser);
+
+    LogDebugMessage(L"[INFO] GetSerialization被调用");
+    LogDebugMessage(L"[DEBUG] _pwzUsername: %s", _pwzUsername ? _pwzUsername : L"NULL");
     LogDebugMessage(L"[DEBUG] 密码字段内容: %s", _rgFieldStrings[SFI_PASSWORD] ? L"已填写" : L"为空");
     LogDebugMessage(L"[DEBUG] QualifiedUserName: %s", _pszQualifiedUserName ? _pszQualifiedUserName : L"NULL");
 
-    // For local user, the domain and user name can be split from _pszQualifiedUserName (domain\username).
-    // CredPackAuthenticationBuffer() cannot be used because it won't work with unlock scenario.
-    // 对于所有本地和Microsoft账户，都使用KerbInteractiveUnlockLogon方式处理
-    // 这种方式对本地用户和Microsoft账户都有效
+    // 获取计算机名称作为域
+    WCHAR wsz[MAX_COMPUTERNAME_LENGTH+1];
+    DWORD cch = ARRAYSIZE(wsz);
+    if (!GetComputerNameW(wsz, &cch)) {
+        LogDebugMessage(L"[ERROR] GetComputerNameW失败");
+        return E_FAIL;
+    }
+    
+    LogDebugMessage(L"[INFO] 计算机名称: %s", wsz);
+    
+    // 设置 _pwzPassword 为当前密码字段值（来自Sparkin的方式）
+    _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
+    
+    // 对所有用户类型使用统一的 KerbInteractiveUnlockLogon 方式
+    LogDebugMessage(L"[INFO] 使用KerbInteractiveUnlockLogon方式处理凭证");
+    PWSTR pwzProtectedPassword;
+    hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
+    LogDebugMessage(L"[DEBUG] ProtectIfNecessaryAndCopyPassword返回: 0x%08X", hr);
+    
+    if (SUCCEEDED(hr))
     {
-        LogDebugMessage(L"[INFO] 使用KerbInteractiveUnlockLogon方式处理凭证");
-        PWSTR pwzProtectedPassword;
-        hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
-        LogDebugMessage(L"[DEBUG] ProtectIfNecessaryAndCopyPassword返回: 0x%08X", hr);
+        KERB_INTERACTIVE_UNLOCK_LOGON kiul;
+        
+        // 关键：使用原始用户名（格式: domain\username 或 MicrosoftAccount\email）
+        // 这里直接使用原始密码而非受保护的密码
+        hr = KerbInteractiveUnlockLogonInit(wsz, _pwzUsername, _pwzPassword, _cpus, &kiul);
+        LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonInit返回: 0x%08X, 使用用户名: %s, 密码: %s", 
+                       hr, _pwzUsername ? _pwzUsername : L"NULL", _pwzPassword ? L"****" : L"NULL");
         
         if (SUCCEEDED(hr))
         {
-            PWSTR pszDomain;
-            PWSTR pszUsername;
-            hr = SplitDomainAndUsername(_pszQualifiedUserName, &pszDomain, &pszUsername);
-            LogDebugMessage(L"[DEBUG] SplitDomainAndUsername返回: 0x%08X, Domain=%s, Username=%s", 
-                           hr, pszDomain ? pszDomain : L"NULL", pszUsername ? pszUsername : L"NULL");
+            // We use KERB_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
+            // KERB_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
+            // as necessary.
+            hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
+            LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonPack返回: 0x%08X, 序列化大小: %d", 
+                           hr, pcpcs->cbSerialization);
             
             if (SUCCEEDED(hr))
             {
-                KERB_INTERACTIVE_UNLOCK_LOGON kiul;
-                // 使用原始密码（受保护的）而不是_rgFieldStrings[SFI_PASSWORD]
-                hr = KerbInteractiveUnlockLogonInit(pszDomain, pszUsername, pwzProtectedPassword, _cpus, &kiul);
-                LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonInit返回: 0x%08X", hr);
+                ULONG ulAuthPackage;
+                hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
+                LogDebugMessage(L"[DEBUG] RetrieveNegotiateAuthPackage返回: 0x%08X, AuthPackage: %u", 
+                               hr, ulAuthPackage);
                 
                 if (SUCCEEDED(hr))
                 {
-                    // We use KERB_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
-                    // KERB_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
-                    // as necessary.
-                    hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
-                    LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonPack返回: 0x%08X, 序列化大小: %d", 
-                                   hr, pcpcs->cbSerialization);
-                    
-                    if (SUCCEEDED(hr))
-                    {
-                        ULONG ulAuthPackage;
-                        hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-                        LogDebugMessage(L"[DEBUG] RetrieveNegotiateAuthPackage返回: 0x%08X, AuthPackage: %u", 
-                                       hr, ulAuthPackage);
-                        
-                        if (SUCCEEDED(hr))
-                        {
-                            pcpcs->ulAuthenticationPackage = ulAuthPackage;
-                            pcpcs->clsidCredentialProvider = CLSID_CSample;
-                            // At this point the credential has created the serialized credential used for logon
-                            // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-                            // that we have all the information we need and it should attempt to submit the
-                            // serialized credential.
-                            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                            LogDebugMessage(L"[INFO] GetSerialization成功！凭证已打包，状态设为CPGSR_RETURN_CREDENTIAL_FINISHED");
-                        } else {
-                            LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
-                        }
-                    } else {
-                        LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonPack失败");
-                    }
+                    pcpcs->ulAuthenticationPackage = ulAuthPackage;
+                    pcpcs->clsidCredentialProvider = CLSID_CSample;
+                    // At this point the credential has created the serialized credential used for logon
+                    // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
+                    // that we have all the information we need and it should attempt to submit the
+                    // serialized credential.
+                    *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+                    LogDebugMessage(L"[INFO] GetSerialization成功！凭证已打包，状态设为CPGSR_RETURN_CREDENTIAL_FINISHED");
                 } else {
-                    LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonInit失败");
+                    LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
                 }
-                CoTaskMemFree(pszDomain);
-                CoTaskMemFree(pszUsername);
             } else {
-                LogDebugMessage(L"[ERROR] SplitDomainAndUsername失败");
+                LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonPack失败");
             }
-            CoTaskMemFree(pwzProtectedPassword);
         } else {
-            LogDebugMessage(L"[ERROR] ProtectIfNecessaryAndCopyPassword失败");
+            LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonInit失败");
         }
+        CoTaskMemFree(pwzProtectedPassword);
+    } else {
+        LogDebugMessage(L"[ERROR] ProtectIfNecessaryAndCopyPassword失败");
     }
     
     LogDebugMessage(L"[INFO] GetSerialization返回: hr=0x%08X, pcpgsr=%d", hr, *pcpgsr);
