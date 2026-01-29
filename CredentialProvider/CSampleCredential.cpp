@@ -8,6 +8,10 @@
 //
 //
 
+// 必须在其他 Windows 头文件之前包含 Winsock（用于 UDP 通讯）
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #ifndef WIN32_NO_STATUS
 #include <ntstatus.h>
 #define WIN32_NO_STATUS
@@ -18,7 +22,7 @@
 
 // 新增包含
 #include "Crypto.h"
-#include "ipc_receiver.h"
+#include "udp_receiver.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
 #include <chrono>
@@ -287,26 +291,26 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
 // LogonUI calls this in order to give us a callback in case we need to notify it of anything.
 HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpce)
 {
-    LogDebugMessage(L"[INFO] CSampleCredential::Advise - 初始化IPC接收器");
-    
+    LogDebugMessage(L"[INFO] CSampleCredential::Advise - 初始化UDP接收器");
+
     if (_pCredProvCredentialEvents != nullptr)
     {
         _pCredProvCredentialEvents->Release();
     }
 
-    // 初始化IPC接收器
-    if (!_pIpcReceiver)
+    // 初始化UDP接收器
+    if (!_pUdpReceiver)
     {
-        LogDebugMessage(L"[INFO] 正在创建IPC接收器...");
-        _pIpcReceiver = std::make_unique<ipc_receiver>();
-        LogDebugMessage(L"[INFO] IPC接收器创建成功，接收线程应已启动");
+        LogDebugMessage(L"[INFO] 正在创建UDP接收器...");
+        _pUdpReceiver = std::make_unique<udp_receiver>();
+        LogDebugMessage(L"[INFO] UDP接收器创建成功，接收线程应已启动");
         // 给接收器线程一点时间来连接
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-        LogDebugMessage(L"[INFO] Advise已完成，等待500ms后返回");
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        LogDebugMessage(L"[INFO] Advise已完成");
     }
     else
     {
-        LogDebugMessage(L"[INFO] IPC接收器已存在，重用现有实例");
+        LogDebugMessage(L"[INFO] UDP接收器已存在，重用现有实例");
     }
 
     return pcpce->QueryInterface(IID_PPV_ARGS(&_pCredProvCredentialEvents));
@@ -321,8 +325,11 @@ HRESULT CSampleCredential::UnAdvise()
     }
     _pCredProvCredentialEvents = nullptr;
 
-    // 清理IPC接收器
-    _pIpcReceiver.reset();
+    // 清理UDP接收器
+    if (_pUdpReceiver) {
+        _pUdpReceiver->stop();
+    }
+    _pUdpReceiver.reset();
 
     return S_OK;
 }
@@ -701,11 +708,11 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     _fFaceRecognitionRunning = true;
   }
 
-  // 外部全局变量，由IPC接收器更新
-  extern int face_reconizer_status;
+  // 外部全局变量，由UDP接收器更新
+  extern std::atomic<int> face_recognition_status;
 
   LogDebugMessage(L"[INFO] 开始等待人脸识别结果，超时时间: %dms", RECOGNITION_TIMEOUT_MS);
-  LogDebugMessage(L"[DEBUG] 初始状态码: %d", face_reconizer_status);
+  LogDebugMessage(L"[DEBUG] 初始状态码: %d", face_recognition_status.load());
 
   while (elapsed < RECOGNITION_TIMEOUT_MS) {
     {
@@ -716,16 +723,17 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
       }
     }
 
-    // 检查识别结果
-    if (face_reconizer_status == 1) {
-      LogDebugMessage(L"[INFO] 识别成功！耗时: %dms，最终状态码: %d", elapsed, face_reconizer_status);
+    // 检查识别结果（RecognitionStatus::SUCCESS = 2）
+    int currentStatus = face_recognition_status.load();
+    if (currentStatus == 2) {
+      LogDebugMessage(L"[INFO] 识别成功！耗时: %dms，最终状态码: %d", elapsed, currentStatus);
       return S_OK; // 识别成功
     }
 
     // 每秒输出一次状态日志
     if (elapsed % 1000 == 0) {
-      LogDebugMessage(L"[DEBUG] 等待中... 已耗时: %dms，当前状态码: %d，IPC状态应该从%d变为1", 
-                      elapsed, face_reconizer_status, face_reconizer_status);
+      LogDebugMessage(L"[DEBUG] 等待中... 已耗时: %dms，当前状态码: %d",
+                      elapsed, currentStatus);
     }
 
     Sleep(CHECK_INTERVAL_MS);
@@ -737,8 +745,8 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     _fFaceRecognitionRunning = false;
   }
 
-  LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d，请检查FaceRecognizer是否正常运行", 
-                  elapsed, face_reconizer_status);
+  LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d，请检查FaceRecognizer是否正常运行",
+                  elapsed, face_recognition_status.load());
   return E_FAIL; // 超时或失败
 }
 
@@ -876,8 +884,8 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
             }
 
             // 重置识别状态
-            extern int face_reconizer_status;
-            face_reconizer_status = 0;
+            extern std::atomic<int> face_recognition_status;
+            face_recognition_status = 0;
 
             // DEBUG: 检查是否启用自动识别成功模式（用于测试）
             // 注释掉这行以使用真实人脸识别
@@ -895,7 +903,7 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
                 ::MessageBox(hwndOwner, L"启动人脸识别模块失败", L"错误", MB_ICONERROR);
                 return hr;
             }
-            
+
             LogDebugMessage(L"[INFO] 人脸识别进程已启动，等待识别结果...");
 
             // 显示等待提示
@@ -908,16 +916,16 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
             // 2. 在后台线程中等待识别结果
             _faceRecognitionThread = std::thread([this, hwndOwner]() {
               LogDebugMessage(L"[INFO] 后台识别线程已启动");
-              
+
               HRESULT waitResult = S_OK; // 默认成功
-              
+
               #ifdef AUTO_RECOGNIZE_SUCCESS
               // 调试模式：自动设置识别成功（5秒后）用于测试
               LogDebugMessage(L"[DEBUG] 进入AUTO_RECOGNIZE_SUCCESS模式，5秒后模拟识别成功");
-              extern int face_reconizer_status;
+              extern std::atomic<int> face_recognition_status;
               Sleep(5000);
-              face_reconizer_status = 1;
-              LogDebugMessage(L"[DEBUG] 已手动设置status=1进行测试");
+              face_recognition_status = 2;  // RecognitionStatus::SUCCESS
+              LogDebugMessage(L"[DEBUG] 已手动设置status=2进行测试");
               // waitResult已经是S_OK
               #else
               waitResult = WaitForFaceRecognitionResult();

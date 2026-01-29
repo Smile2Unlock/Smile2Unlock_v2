@@ -26,7 +26,7 @@
 #include "dll.h"
 #include "resource.h"
 
-class ipc_receiver;
+class udp_receiver;
 class CSampleProvider;  // 前向声明
 
 class CSampleCredential : public ICredentialProviderCredential2, ICredentialProviderCredentialWithFieldOptions
@@ -128,7 +128,7 @@ public:
     bool                                    _fIsLocalUser;                                  // If the cred prov is assosiating with a local user tile
     
     // 新增：人脸识别相关成员
-    std::unique_ptr<ipc_receiver>           _pIpcReceiver;                                  // IPC接收器
+    std::unique_ptr<udp_receiver>            _pUdpReceiver;                                   // UDP接收器
     HANDLE                                  _hFaceRecognizerProcess;                        // FaceRecognizer进程句柄
     std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
