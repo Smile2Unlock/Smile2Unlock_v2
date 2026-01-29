@@ -401,13 +401,39 @@ int main(int argc, char* argv[]) {
     }
 
     status_code = 0;
-    
+
     // 在主函数开始时初始化全局IPC发送器
     if (!g_ipc) {
         g_ipc = std::make_unique<ipc_sender>();
         std::cout << "[Main] 全局IPC发送器已初始化" << std::endl;
     }
-    
+
+    // 如果是 register 模式，自动将当前路径写入注册表
+    if (mode == "register") {
+        try {
+            // 获取当前可执行文件的路径
+            std::string exePath;
+#ifdef _WIN32
+            char buffer[MAX_PATH];
+            GetModuleFileNameA(NULL, buffer, MAX_PATH);
+            std::filesystem::path fullPath(buffer);
+            exePath = fullPath.parent_path().string();
+#else
+            exePath = Utils::getCurrentDirectory();
+#endif
+
+            RegistryHelper registryHelper;
+            if (registryHelper.WriteStringToRegistry(
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", exePath)) {
+                std::cout << "[INFO] FaceRecognizer 路径已写入注册表: " << exePath << std::endl;
+            } else {
+                std::cerr << "[WARNING] 无法写入注册表路径，将使用本地查找" << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[WARNING] 获取当前路径失败: " << e.what() << std::endl;
+        }
+    }
+
     // Handle set-password functionality separately
     if (set_password) {
         std::string password1, password2;

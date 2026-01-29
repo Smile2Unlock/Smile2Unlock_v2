@@ -32,7 +32,7 @@
 
 // 调试开关：启用自动识别成功模式（用于测试整个流程）
 // 注释掉这行以使用真实人脸识别
-#define AUTO_RECOGNIZE_SUCCESS 1
+// #define AUTO_RECOGNIZE_SUCCESS 1
 
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
@@ -585,28 +585,54 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
 // ============ 人脸识别辅助函数实现 ============
 
 HRESULT CSampleCredential::LaunchFaceRecognizer() {
-  // 构建FaceRecognizer.exe的路径
-  wchar_t szFaceRecognizerPath[MAX_PATH];
-  if (!GetModuleFileNameW(nullptr, szFaceRecognizerPath, MAX_PATH)) {
-    LogDebugMessage(L"[ERROR] 获取模块路径失败");
-    return HRESULT_FROM_WIN32(GetLastError());
+  // 首先尝试从注册表获取 FaceRecognizer.exe 的路径
+  wchar_t szModuleDir[MAX_PATH] = {0};
+  wchar_t szExePath[MAX_PATH] = {0};
+
+  // 从注册表读取路径
+  std::string registryPath = RegistryHelper::ReadStringFromRegistry(
+    "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", "");
+
+  bool useRegistryPath = false;
+  if (!registryPath.empty()) {
+    // 转换为宽字符
+    int len = MultiByteToWideChar(CP_UTF8, 0, registryPath.c_str(), -1, szModuleDir, MAX_PATH);
+    if (len > 0) {
+      // 确保路径以反斜杠结尾
+      size_t pathLen = wcslen(szModuleDir);
+      if (pathLen > 0 && szModuleDir[pathLen - 1] != L'\\') {
+        wcscat_s(szModuleDir, MAX_PATH, L"\\");
+      }
+      useRegistryPath = true;
+      LogDebugMessage(L"[INFO] 从注册表读取 FaceRecognizer 路径: %s", szModuleDir);
+    }
   }
 
-  LogDebugMessage(L"[INFO] DLL模块路径: %s", szFaceRecognizerPath);
+  // 如果注册表读取失败，回退到原来的逻辑（从DLL所在目录查找）
+  if (!useRegistryPath) {
+    LogDebugMessage(L"[WARNING] 未能从注册表读取路径，使用DLL所在目录");
 
-  // 获取当前DLL所在的目录
-  wchar_t szModuleDir[MAX_PATH];
-  wcscpy_s(szModuleDir, MAX_PATH, szFaceRecognizerPath);
-  wchar_t *pLastSlash = wcsrchr(szModuleDir, L'\\');
-  if (pLastSlash) {
-    *(pLastSlash + 1) = L'\0';
+    wchar_t szFaceRecognizerPath[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, szFaceRecognizerPath, MAX_PATH)) {
+      LogDebugMessage(L"[ERROR] 获取模块路径失败");
+      return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    LogDebugMessage(L"[INFO] DLL模块路径: %s", szFaceRecognizerPath);
+
+    // 获取当前DLL所在的目录
+    wcscpy_s(szModuleDir, MAX_PATH, szFaceRecognizerPath);
+    wchar_t *pLastSlash = wcsrchr(szModuleDir, L'\\');
+    if (pLastSlash) {
+      *(pLastSlash + 1) = L'\0';
+    }
   }
 
   // 检查人脸数据目录
   wchar_t szFaceDataDir[MAX_PATH];
   wcscpy_s(szFaceDataDir, MAX_PATH, szModuleDir);
   wcscat_s(szFaceDataDir, MAX_PATH, L"data\\face");
-  
+
   DWORD faceDataAttrib = GetFileAttributesW(szFaceDataDir);
   if (faceDataAttrib == INVALID_FILE_ATTRIBUTES || !(faceDataAttrib & FILE_ATTRIBUTE_DIRECTORY)) {
     LogDebugMessage(L"[WARNING] 人脸数据目录不存在: %s，FaceRecognizer可能无法进行识别", szFaceDataDir);
@@ -615,7 +641,6 @@ HRESULT CSampleCredential::LaunchFaceRecognizer() {
   }
 
   // 拼接FaceRecognizer.exe的路径
-  wchar_t szExePath[MAX_PATH];
   wcscpy_s(szExePath, MAX_PATH, szModuleDir);
   wcscat_s(szExePath, MAX_PATH, L"FaceRecognizer.exe");
 
