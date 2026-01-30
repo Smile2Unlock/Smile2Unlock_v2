@@ -19,6 +19,7 @@ target("FaceRecognizer")
     add_packages("cryptopp")
     add_packages("cxxopts")
     add_links("Advapi32")
+    add_links("ws2_32")  -- 添加 Winsock 库支持 UDP
 
     after_build(function (target)
         if is_plat("windows") then
@@ -39,8 +40,9 @@ target("SampleV2CredentialProvider")
     add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
     add_links("Credui", "Shlwapi", "Secur32")
+    add_links("ws2_32")  -- 添加 Winsock 库支持 UDP
     add_files("CredentialProvider/samplev2credentialprovider.def")
-    
+
     -- 资源文件处理
     add_files("CredentialProvider/resources.rc")
 

@@ -1,5 +1,5 @@
 #include "camera.h"
-#include "ipc_sender.h"
+#include "udp_sender.h"
 // #include "clipp.h"
 #include "crypto.h"
 #include "seetaface.h"
@@ -9,11 +9,13 @@
 #include <string>
 #include <filesystem>  // 用于路径操作
 #include <chrono>      // 用于时间控制
+#include <memory>      // 用于std::unique_ptr
 #include "input_hide.h"
 #include "registryhelper.h"
 
 
-// ipc_sender* ipc = new ipc_sender(); // TODO: Initialize when needed
+// 全局UDP发送器 - 保持整个程序生命周期
+std::unique_ptr<udp_sender> g_udp_sender;
 // camera* cam = new camera();         // TODO: Initialize when needed
 std::queue<cv::Mat> frames;
 
@@ -124,10 +126,15 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
         std::cerr << "错误：无法打开摄像头" << std::endl;
         return -1;
     }
-    
-    // 初始化IPC发送器，用于发送解锁信号
-    ipc_sender ipc;
-    
+
+    // 初始化UDP发送器
+    if (!g_udp_sender) {
+        g_udp_sender = std::make_unique<udp_sender>();
+        std::cout << "UDP发送器已初始化" << std::endl;
+    } else {
+        std::cout << "UDP发送器已存在，重用现有实例" << std::endl;
+    }
+
     // 查找已注册的用户特征文件
     std::vector<std::string> registeredUsers;
     std::vector<std::string> featureFiles;
@@ -167,6 +174,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
         std::cout << "  - " << user << std::endl;
     }
     
+    int used_time = 0;
     // 主识别循环
     while (true) {
         // 等待队列中有帧可用
@@ -179,11 +187,17 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
             }
             
             // 显示实时画面
-            cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
+            // cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
             
             int key = cv::waitKey(1) & 0xFF; // 使用waitKey(1)以便快速响应键盘输入
             if (key == 'q') {
                 break; // 退出循环
+            }
+            if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
+                break;
+            }
+            if (used_time >= 10000) {
+                break;
             }
             
             // 转换为SeetaFace所需的格式
@@ -226,11 +240,19 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
                                                        filename.substr(0, underscore_pos) : 
                                                        "Unknown";
                                                        
-                                std::cout << "识别成功！用户: " << username 
+                                std::cout << "识别成功！用户: " << username
                                           << ", 相似度: " << similarity << std::endl;
-                                
+                                std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
+
                                 // 发送解锁信号
-                                status_code = 1; // 设置解锁状态
+                                udp_status_code = static_cast<int>(RecognitionStatus::SUCCESS);
+                                if (g_udp_sender) {
+                                    g_udp_sender->send_status(RecognitionStatus::SUCCESS, username);
+                                }
+
+                                // 等待足够的时间让凭证程序接收状态
+                                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                                std::cout << "[DEBUG] 已发送识别成功信号" << std::endl;
                                 
                                 recognized = true;
                                 break; // 找到匹配项，跳出循环
@@ -249,6 +271,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
         } else {
             // 如果队列为空，短暂休眠避免CPU占用过高
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            used_time += 10;
         }
     }
     
@@ -256,6 +279,13 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
     cv::destroyAllWindows();
     cam.~camera();
 
+    // 如果识别成功，保持UDP发送器运行一段时间以确保凭证程序接收
+    if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
+        std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    }
+
+    // 不要手动销毁g_udp_sender，让它的析构函数自动处理
     std::cout << "人脸识别结束。" << std::endl;
     return 0;
 }
@@ -373,8 +403,41 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    status_code = 0;
-    
+    // 初始化UDP发送器
+    if (!g_udp_sender) {
+        g_udp_sender = std::make_unique<udp_sender>();
+        std::cout << "[Main] 全局UDP发送器已初始化" << std::endl;
+    }
+
+    // 重置状态码
+    udp_status_code = static_cast<int>(RecognitionStatus::IDLE);
+
+    // 如果是 register 模式，自动将当前路径写入注册表
+    if (mode == "register") {
+        try {
+            // 获取当前可执行文件的路径
+            std::string exePath;
+#ifdef _WIN32
+            char buffer[MAX_PATH];
+            GetModuleFileNameA(NULL, buffer, MAX_PATH);
+            std::filesystem::path fullPath(buffer);
+            exePath = fullPath.parent_path().string();
+#else
+            exePath = Utils::getCurrentDirectory();
+#endif
+
+            RegistryHelper registryHelper;
+            if (registryHelper.WriteStringToRegistry(
+                "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", exePath)) {
+                std::cout << "[INFO] FaceRecognizer 路径已写入注册表: " << exePath << std::endl;
+            } else {
+                std::cerr << "[WARNING] 无法写入注册表路径，将使用本地查找" << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[WARNING] 获取当前路径失败: " << e.what() << std::endl;
+        }
+    }
+
     // Handle set-password functionality separately
     if (set_password) {
         std::string password1, password2;

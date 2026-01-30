@@ -57,15 +57,15 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
     { CPFS_DISPLAY_IN_BOTH,            CPFIS_NONE    },    // SFI_LARGE_TEXT
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_FOCUSED },    // SFI_PASSWORD
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_SUBMIT_BUTTON
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_LAUNCHWINDOW_LINK
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_HIDECONTROLS_LINK
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_FULLNAME_TEXT
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_DISPLAYNAME_TEXT
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_LOGONSTATUS_TEXT
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_CHECKBOX
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_EDIT_TEXT
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_COMBOBOX
-    { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE },
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_LAUNCHWINDOW_LINK
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_HIDECONTROLS_LINK - 隐藏
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_FULLNAME_TEXT - 隐藏
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_DISPLAYNAME_TEXT - 隐藏
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_LOGONSTATUS_TEXT - 隐藏
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_CHECKBOX - 隐藏
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_EDIT_TEXT - 隐藏
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_COMBOBOX - 隐藏
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_FACE_RECOGNITION_LINK
 };
 
 // Field descriptors for unlock and logon.
@@ -76,7 +76,7 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
 {
     { SFI_TILEIMAGE,         CPFT_TILE_IMAGE,    const_cast<LPWSTR>(L"Image"),                      CPFG_CREDENTIAL_PROVIDER_LOGO  },
     { SFI_LABEL,             CPFT_SMALL_TEXT,    const_cast<LPWSTR>(L"Tooltip"),                    CPFG_CREDENTIAL_PROVIDER_LABEL },
-    { SFI_LARGE_TEXT,        CPFT_LARGE_TEXT,    const_cast<LPWSTR>(L"Sample Credential Provider")                                 },
+    { SFI_LARGE_TEXT,        CPFT_LARGE_TEXT,    const_cast<LPWSTR>(L"Smile2Unlock Provider")                                 },
     { SFI_PASSWORD,          CPFT_PASSWORD_TEXT, const_cast<LPWSTR>(L"Password text")                                              },
     { SFI_SUBMIT_BUTTON,     CPFT_SUBMIT_BUTTON, const_cast<LPWSTR>(L"Submit")                                                     },
     { SFI_LAUNCHWINDOW_LINK, CPFT_COMMAND_LINK,  const_cast<LPWSTR>(L"Launch helper window")                                       },
