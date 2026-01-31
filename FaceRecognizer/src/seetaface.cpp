@@ -264,19 +264,28 @@ SeetaRect seetaface::detect(SeetaImageData cap_img) {
  * @param points 人脸关键点
  * @return bool true表示是真实人脸，false表示是攻击或无法判断
  */
-bool seetaface::predict(const SeetaImageData& image, const SeetaRect& face, const SeetaPointF* points) {
-    // 使用SeetaFace反欺骗模块预测
-    auto status = pFAS->Predict(image, face, points);
-    
-    // 根据预测状态返回结果
-    switch (status) {
-        case seeta::FaceAntiSpoofing::REAL:
-            std::println("真实人脸"); return true;
-        case seeta::FaceAntiSpoofing::SPOOF:
-            std::println("攻击人脸"); return false;
-        default: // 包括FUZZY和DETECTING状态
-            std::println("无法判断或正在检测"); return false;
-    }
+bool seetaface::predict(const SeetaImageData& image,
+                        const SeetaRect& face,
+                        const SeetaPointF* points,
+                        float liveness_threshold) {
+  //设置活体检测阈值
+  pFAS->SetThreshold(0.3f,0.8f);
+
+  // 使用SeetaFace反欺骗模块预测
+  auto status = pFAS->Predict(image, face, points);
+
+  // 根据预测状态返回结果
+  switch (status) {
+    case seeta::FaceAntiSpoofing::REAL:
+      std::println("真实人脸");
+      return true;
+    case seeta::FaceAntiSpoofing::SPOOF:
+      std::println("攻击人脸");
+      return false;
+    default:  // 包括FUZZY和DETECTING状态
+      std::println("无法判断或正在检测");
+      return false;
+  }
 }
 
 /**
@@ -290,7 +299,7 @@ bool seetaface::predict(const SeetaImageData& image, const SeetaRect& face, cons
  * @param image 输入图像
  * @return bool true表示是真实人脸，false表示是攻击或无法判断
  */
-bool seetaface::anti_face(const SeetaImageData& image) {
+bool seetaface::anti_face(const SeetaImageData& image, float liveness_threshold) {
     // 检测人脸位置
     SeetaRect pos = detect(image);
     
@@ -301,5 +310,5 @@ bool seetaface::anti_face(const SeetaImageData& image) {
     auto points = mark(image, pos);
     
     // 进行活体检测
-    return predict(image, pos, points.data());
+    return predict(image, pos, points.data(), liveness_threshold);
 }

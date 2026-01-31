@@ -54,7 +54,7 @@ public:
     void savefeat(std::shared_ptr<float> feat, const std::string data_file);
     std::shared_ptr<float> loadfeat(const std::string data_file);
     float feat_compare(std::shared_ptr<float> feat1, std::shared_ptr<float> feat2);
-    bool anti_face(const SeetaImageData& image);
+    bool anti_face(const SeetaImageData& image, float liveness_threshold);
     SeetaRect detect(SeetaImageData cap_img);
 
 private:
@@ -72,5 +72,8 @@ private:
 
     std::shared_ptr<float> extract(const SeetaImageData& image, const std::vector<SeetaPointF>& points);
     std::vector<SeetaPointF> mark(const SeetaImageData& image, const SeetaRect& face);
-    bool predict(const SeetaImageData& image, const SeetaRect& face, const SeetaPointF* points);
+    bool predict(const SeetaImageData& image,
+                 const SeetaRect& face,
+                 const SeetaPointF* points,
+                 float liveness_threshold);
 };
