@@ -111,183 +111,194 @@ int registerFace(int camera_index, float face_threshold, bool debug) {
 }
 
 // 人脸识别函数 - 简化版
-int recognizeFace(int camera_index, float face_threshold, bool liveness_detection, bool debug) {
-    // 初始化摄像头
-    camera cam(camera_index);
-    
-    // 初始化人脸检测器
-    seetaface recognizer;
-    
-    std::cout << "开始人脸识别，请面对摄像头..." << std::endl;
-    std::cout << "按 'q' 键退出识别" << std::endl;
-    
-    // 检查摄像头是否打开
-    if (!cam.isOpened()) {
-        std::cerr << "错误：无法打开摄像头" << std::endl;
-        return -1;
-    }
+int recognizeFace(int camera_index,
+                  float face_threshold,
+                  bool liveness_detection,
+                  float liveness_threshold,
+                  bool debug) {
+  // 初始化摄像头
+  camera cam(camera_index);
 
-    // 初始化UDP发送器
-    if (!g_udp_sender) {
-        g_udp_sender = std::make_unique<udp_sender>();
-        std::cout << "UDP发送器已初始化" << std::endl;
+  // 初始化人脸检测器
+  seetaface recognizer;
+
+  std::cout << "开始人脸识别，请面对摄像头..." << std::endl;
+  std::cout << "按 'q' 键退出识别" << std::endl;
+
+  // 检查摄像头是否打开
+  if (!cam.isOpened()) {
+    std::cerr << "错误：无法打开摄像头" << std::endl;
+    return -1;
+  }
+
+  // 初始化UDP发送器
+  if (!g_udp_sender) {
+    g_udp_sender = std::make_unique<udp_sender>();
+    std::cout << "UDP发送器已初始化" << std::endl;
+  } else {
+    std::cout << "UDP发送器已存在，重用现有实例" << std::endl;
+  }
+
+  // 查找已注册的用户特征文件
+  std::vector<std::string> registeredUsers;
+  std::vector<std::string> featureFiles;
+
+  try {
+    std::string currentDir = Utils::getCurrentDirectory();
+    std::filesystem::path faceDir =
+        std::filesystem::path(currentDir) / "data" / "face";
+
+    if (std::filesystem::exists(faceDir) &&
+        std::filesystem::is_directory(faceDir)) {
+      for (const auto& entry : std::filesystem::directory_iterator(faceDir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".dat") {
+          featureFiles.push_back(entry.path().filename().string());
+
+          // 从文件名中提取用户名（假设格式为 username_index.dat）
+          std::string filename = entry.path().stem().string();
+          size_t underscore_pos = filename.find('_');
+          if (underscore_pos != std::string::npos) {
+            std::string username = filename.substr(0, underscore_pos);
+            if (std::find(registeredUsers.begin(), registeredUsers.end(),
+                          username) == registeredUsers.end()) {
+              registeredUsers.push_back(username);
+            }
+          }
+        }
+      }
+    }
+  } catch (const std::exception& e) {
+    std::cerr << "警告：无法访问特征数据库，错误：" << e.what() << std::endl;
+  }
+
+  if (registeredUsers.empty()) {
+    std::cerr << "错误：没有找到已注册的用户数据" << std::endl;
+    return -1;
+  }
+
+  std::cout << "检测到已注册的用户：" << std::endl;
+  for (const auto& user : registeredUsers) {
+    std::cout << "  - " << user << std::endl;
+  }
+
+  int used_time = 0;
+  // 主识别循环
+  while (true) {
+    // 等待队列中有帧可用
+    if (!frames.empty()) {
+      // 获取队列中的最新帧（移除旧帧）
+      cv::Mat latest_frame;
+      while (!frames.empty()) {
+        latest_frame = frames.front();
+        frames.pop();
+      }
+
+      // 显示实时画面
+      // cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
+
+      int key = cv::waitKey(1) & 0xFF;  // 使用waitKey(1)以便快速响应键盘输入
+      if (key == 'q') {
+        break;  // 退出循环
+      }
+      if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
+        break;
+      }
+      if (used_time >= 10000) {
+        break;
+      }
+
+      // 转换为SeetaFace所需的格式
+      seeta::cv::ImageData img_data(latest_frame);
+
+      // 检测人脸
+      SeetaRect face_rect = recognizer.detect(img_data);
+
+      if (face_rect.width > 0 && face_rect.height > 0) {
+        // 检测到人脸，提取特征
+        auto current_features = recognizer.img2features(img_data);
+
+        if (current_features) {
+          // 如果启用了活体检测，验证是否为真实人脸
+          if (liveness_detection) {
+            bool is_real = recognizer.anti_face(img_data, liveness_threshold);
+            if (!is_real) {
+              std::cout << "检测到非真实人脸，跳过识别" << std::endl;
+              continue;
+            }
+          }
+
+          // 与已注册的特征进行比较
+          bool recognized = false;
+          for (const auto& feature_file : featureFiles) {
+            try {
+              // 加载已注册的特征
+              auto registered_features = recognizer.loadfeat(feature_file);
+
+              // 计算相似度
+              float similarity = recognizer.feat_compare(current_features,
+                                                         registered_features);
+
+              // 如果相似度超过阈值，认为匹配成功
+              if (similarity > face_threshold) {
+                // 从文件名中提取用户名
+                std::string filename =
+                    std::filesystem::path(feature_file).stem().string();
+                size_t underscore_pos = filename.find('_');
+                std::string username = (underscore_pos != std::string::npos)
+                                           ? filename.substr(0, underscore_pos)
+                                           : "Unknown";
+
+                std::cout << "识别成功！用户: " << username
+                          << ", 相似度: " << similarity << std::endl;
+                std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
+
+                // 发送解锁信号
+                udp_status_code = static_cast<int>(RecognitionStatus::SUCCESS);
+                if (g_udp_sender) {
+                  g_udp_sender->send_status(RecognitionStatus::SUCCESS,
+                                            username);
+                }
+
+                // 等待足够的时间让凭证程序接收状态
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                std::cout << "[DEBUG] 已发送识别成功信号" << std::endl;
+
+                recognized = true;
+                break;  // 找到匹配项，跳出循环
+              }
+            } catch (const std::exception& e) {
+              std::cerr << "加载特征文件时出错: " << feature_file
+                        << ", 错误: " << e.what() << std::endl;
+              continue;
+            }
+          }
+
+          if (!recognized) {
+            std::cout << "未识别到已注册用户" << std::endl;
+          }
+        }
+      }
     } else {
-        std::cout << "UDP发送器已存在，重用现有实例" << std::endl;
+      // 如果队列为空，短暂休眠避免CPU占用过高
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      used_time += 10;
     }
+  }
 
-    // 查找已注册的用户特征文件
-    std::vector<std::string> registeredUsers;
-    std::vector<std::string> featureFiles;
-    
-    try {
-        std::string currentDir = Utils::getCurrentDirectory();
-        std::filesystem::path faceDir = std::filesystem::path(currentDir) / "data" / "face";
-        
-        if (std::filesystem::exists(faceDir) && std::filesystem::is_directory(faceDir)) {
-            for (const auto& entry : std::filesystem::directory_iterator(faceDir)) {
-                if (entry.is_regular_file() && entry.path().extension() == ".dat") {
-                    featureFiles.push_back(entry.path().filename().string());
-                    
-                    // 从文件名中提取用户名（假设格式为 username_index.dat）
-                    std::string filename = entry.path().stem().string();
-                    size_t underscore_pos = filename.find('_');
-                    if (underscore_pos != std::string::npos) {
-                        std::string username = filename.substr(0, underscore_pos);
-                        if (std::find(registeredUsers.begin(), registeredUsers.end(), username) == registeredUsers.end()) {
-                            registeredUsers.push_back(username);
-                        }
-                    }
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        std::cerr << "警告：无法访问特征数据库，错误：" << e.what() << std::endl;
-    }
-    
-    if (registeredUsers.empty()) {
-        std::cerr << "错误：没有找到已注册的用户数据" << std::endl;
-        return -1;
-    }
-    
-    std::cout << "检测到已注册的用户：" << std::endl;
-    for (const auto& user : registeredUsers) {
-        std::cout << "  - " << user << std::endl;
-    }
-    
-    int used_time = 0;
-    // 主识别循环
-    while (true) {
-        // 等待队列中有帧可用
-        if (!frames.empty()) {
-            // 获取队列中的最新帧（移除旧帧）
-            cv::Mat latest_frame;
-            while (!frames.empty()) {
-                latest_frame = frames.front();
-                frames.pop();
-            }
-            
-            // 显示实时画面
-            // cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
-            
-            int key = cv::waitKey(1) & 0xFF; // 使用waitKey(1)以便快速响应键盘输入
-            if (key == 'q') {
-                break; // 退出循环
-            }
-            if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
-                break;
-            }
-            if (used_time >= 10000) {
-                break;
-            }
-            
-            // 转换为SeetaFace所需的格式
-            seeta::cv::ImageData img_data(latest_frame);
+  // 清理资源
+  cv::destroyAllWindows();
+  cam.~camera();
 
-            
-            // 检测人脸
-            SeetaRect face_rect = recognizer.detect(img_data);
-            
-            if (face_rect.width > 0 && face_rect.height > 0) {
-                // 检测到人脸，提取特征
-                auto current_features = recognizer.img2features(img_data);
-                
-                if (current_features) {
-                    // 如果启用了活体检测，验证是否为真实人脸
-                    if (liveness_detection) {
-                        bool is_real = recognizer.anti_face(img_data);
-                        if (!is_real) {
-                            std::cout << "检测到非真实人脸，跳过识别" << std::endl;
-                            continue;
-                        }
-                    }
-                    
-                    // 与已注册的特征进行比较
-                    bool recognized = false;
-                    for (const auto& feature_file : featureFiles) {
-                        try {
-                            // 加载已注册的特征
-                            auto registered_features = recognizer.loadfeat(feature_file);
-                            
-                            // 计算相似度
-                            float similarity = recognizer.feat_compare(current_features, registered_features);
-                            
-                            // 如果相似度超过阈值，认为匹配成功
-                            if (similarity > face_threshold) {
-                                // 从文件名中提取用户名
-                                std::string filename = std::filesystem::path(feature_file).stem().string();
-                                size_t underscore_pos = filename.find('_');
-                                std::string username = (underscore_pos != std::string::npos) ? 
-                                                       filename.substr(0, underscore_pos) : 
-                                                       "Unknown";
-                                                       
-                                std::cout << "识别成功！用户: " << username
-                                          << ", 相似度: " << similarity << std::endl;
-                                std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
+  // 如果识别成功，保持UDP发送器运行一段时间以确保凭证程序接收
+  if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
+    std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收"
+              << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  }
 
-                                // 发送解锁信号
-                                udp_status_code = static_cast<int>(RecognitionStatus::SUCCESS);
-                                if (g_udp_sender) {
-                                    g_udp_sender->send_status(RecognitionStatus::SUCCESS, username);
-                                }
-
-                                // 等待足够的时间让凭证程序接收状态
-                                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                                std::cout << "[DEBUG] 已发送识别成功信号" << std::endl;
-                                
-                                recognized = true;
-                                break; // 找到匹配项，跳出循环
-                            }
-                        } catch (const std::exception& e) {
-                            std::cerr << "加载特征文件时出错: " << feature_file << ", 错误: " << e.what() << std::endl;
-                            continue;
-                        }
-                    }
-                    
-                    if (!recognized) {
-                        std::cout << "未识别到已注册用户" << std::endl;
-                    }
-                }
-            }
-        } else {
-            // 如果队列为空，短暂休眠避免CPU占用过高
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            used_time += 10;
-        }
-    }
-    
-    // 清理资源
-    cv::destroyAllWindows();
-    cam.~camera();
-
-    // 如果识别成功，保持UDP发送器运行一段时间以确保凭证程序接收
-    if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
-        std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收" << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-    }
-
-    // 不要手动销毁g_udp_sender，让它的析构函数自动处理
-    std::cout << "人脸识别结束。" << std::endl;
-    return 0;
+  // 不要手动销毁g_udp_sender，让它的析构函数自动处理
+  std::cout << "人脸识别结束。" << std::endl;
+  return 0;
 }
 
 int main(int argc, char* argv[]) {
@@ -498,7 +509,7 @@ int main(int argc, char* argv[]) {
     }
     else if (mode == "recognize") {
         // 调用人脸识别函数
-        return recognizeFace(current_config.camera, current_config.face_threshold, current_config.liveness, current_config.debug);
+        return recognizeFace(current_config.camera, current_config.face_threshold, current_config.liveness, current_config.liveness_threshold, current_config.debug);
     }
     else if (mode == "test") {
         // TODO: Initialize camera when needed
