@@ -3,6 +3,7 @@
 // #include "clipp.h"
 #include "crypto.h"
 #include "seetaface.h"
+#include "fast_detector.h"  // 轻量级检测器
 #include "config.h"
 #include <cxxopts.hpp>
 #include <iostream>
@@ -111,33 +112,121 @@ int registerFace(int camera_index, float face_threshold, bool debug) {
 }
 
 // 人脸识别函数 - 简化版
+// 轻量级人脸检测模式 - 只检测人脸，不做识别
+int warmupFace(int camera_index, bool debug) {
+  std::cout << "[Warmup] 启动预热模式 - 快速初始化..." << std::endl;
+
+  // 初始化UDP发送器（如果尚未初始化）
+  if (!g_udp_sender) {
+    g_udp_sender = std::make_unique<udp_sender>();
+  }
+
+  // 使用轻量级检测器（只加载检测模型，速度快）
+  FastDetector detector;
+
+  // 初始化摄像头
+  camera cam(camera_index);
+
+  std::cout << "[Warmup] 初始化完成，等待检测到人脸..." << std::endl;
+
+  // 检查摄像头是否打开
+  if (!cam.isOpened()) {
+    std::cerr << "[Warmup] 错误：无法打开摄像头" << std::endl;
+    return -1;
+  }
+
+  const int WARMUP_TIMEOUT_MS = 60000; // 60秒预热超时
+  const int CHECK_INTERVAL_MS = 50;    // 更快的检测频率
+  int elapsed = 0;
+
+  std::cout << "[Warmup] 开始监视摄像头..." << std::endl;
+
+  // 预热循环 - 快速人脸检测
+  while (elapsed < WARMUP_TIMEOUT_MS) {
+    if (!frames.empty()) {
+      // 获取最新帧
+      cv::Mat latest_frame;
+      while (!frames.empty()) {
+        latest_frame = frames.front();
+        frames.pop();
+      }
+
+      // 进行人脸检测
+      seeta::cv::ImageData img_data(latest_frame);
+      SeetaRect face_rect = detector.detect(img_data);
+
+      if (face_rect.width > 0 && face_rect.height > 0) {
+        // 检测到人脸，发送信号
+        std::cout << "[Warmup] 检测到人脸！发送 FACE_DETECTED 信号" << std::endl;
+        if (g_udp_sender) {
+          g_udp_sender->send_status(RecognitionStatus::FACE_DETECTED, "");
+        }
+        // 等待凭证程序接收信号
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        break; // 退出预热循环
+      }
+
+      // 检查是否收到退出信号
+      if (udp_status_code == static_cast<int>(RecognitionStatus::TIMEOUT)) {
+        std::cout << "[Warmup] 收到退出信号" << std::endl;
+        break;
+      }
+
+      int key = cv::waitKey(1) & 0xFF;
+      if (key == 'q') {
+        std::cout << "[Warmup] 用户按 q 退出" << std::endl;
+        break;
+      }
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(CHECK_INTERVAL_MS));
+      elapsed += CHECK_INTERVAL_MS;
+    }
+  }
+
+  if (elapsed >= WARMUP_TIMEOUT_MS) {
+    std::cout << "[Warmup] 超时（60秒），未检测到人脸，退出" << std::endl;
+  }
+
+  // 清理资源
+  cv::destroyAllWindows();
+  cam.~camera();
+
+  std::cout << "[Warmup] 模式已结束" << std::endl;
+  return 0;
+}
+
 int recognizeFace(int camera_index,
                   float face_threshold,
                   bool liveness_detection,
                   float liveness_threshold,
                   bool debug) {
-  // 初始化摄像头
+  std::cout << "[Recognize] 启动人脸识别模式..." << std::endl;
+
+  // 初始化UDP发送器（优先初始化，用于状态通知）
+  if (!g_udp_sender) {
+    g_udp_sender = std::make_unique<udp_sender>();
+  }
+
+  // 发送 RECOGNIZING 状态
+  if (g_udp_sender) {
+    g_udp_sender->send_status(RecognitionStatus::RECOGNIZING, "");
+  }
+
+  std::cout << "[Recognize] [1/3] 初始化摄像头..." << std::endl;
   camera cam(camera_index);
-
-  // 初始化人脸检测器
-  seetaface recognizer;
-
-  std::cout << "开始人脸识别，请面对摄像头..." << std::endl;
-  std::cout << "按 'q' 键退出识别" << std::endl;
 
   // 检查摄像头是否打开
   if (!cam.isOpened()) {
-    std::cerr << "错误：无法打开摄像头" << std::endl;
+    std::cerr << "[Recognize] 错误：无法打开摄像头" << std::endl;
     return -1;
   }
+  std::cout << "[Recognize] [1/3] 摄像头初始化完成" << std::endl;
 
-  // 初始化UDP发送器
-  if (!g_udp_sender) {
-    g_udp_sender = std::make_unique<udp_sender>();
-    std::cout << "UDP发送器已初始化" << std::endl;
-  } else {
-    std::cout << "UDP发送器已存在，重用现有实例" << std::endl;
-  }
+  std::cout << "[Recognize] [2/3] 加载人脸识别模型（耗时较长，请稍候）..." << std::endl;
+  seetaface recognizer;
+  std::cout << "[Recognize] [2/3] 模型加载完成" << std::endl;
+
+  std::cout << "[Recognize] [3/3] 准备就绪，开始识别..." << std::endl;
 
   // 查找已注册的用户特征文件
   std::vector<std::string> registeredUsers;
@@ -507,6 +596,11 @@ int main(int argc, char* argv[]) {
         // 调用人脸注册函数
         return registerFace(current_config.camera, current_config.face_threshold, current_config.debug);
     }
+    else if (mode == "warmup") {
+        // 调用预热函数 - 轻量级人脸检测
+        std::cout << "[INFO] 启动预热模式（人脸检测）" << std::endl;
+        return warmupFace(current_config.camera, current_config.debug);
+    }
     else if (mode == "recognize") {
         // 调用人脸识别函数
         return recognizeFace(current_config.camera, current_config.face_threshold, current_config.liveness, current_config.liveness_threshold, current_config.debug);
@@ -514,7 +608,7 @@ int main(int argc, char* argv[]) {
     else if (mode == "test") {
         // TODO: Initialize camera when needed
         // camera* cam = new camera(camera_index);
-        
+
         // TODO: Implement test mode
         // - Test camera functionality
         // - Test face detection
@@ -523,7 +617,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Test mode: Testing face recognition pipeline..." << std::endl;
     }
     else {
-        std::cerr << "Error: Invalid mode. Use 'register', 'recognize', or 'test'." << std::endl;
+        std::cerr << "Error: Invalid mode. Use 'register', 'recognize', 'warmup' or 'test'." << std::endl;
         std::cout << options.help() << std::endl;
         return -1;
     }
