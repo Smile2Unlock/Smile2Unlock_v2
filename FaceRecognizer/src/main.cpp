@@ -167,7 +167,7 @@ int warmupFace(int camera_index, bool debug) {
       }
 
       // 检查是否收到退出信号
-      if (udp_status_code == static_cast<int>(RecognitionStatus::TIMEOUT)) {
+      if (udp_status_code == RecognitionStatus::TIMEOUT) {
         std::cout << "[Warmup] 收到退出信号" << std::endl;
         break;
       }
@@ -289,7 +289,7 @@ int recognizeFace(int camera_index,
       if (key == 'q') {
         break;  // 退出循环
       }
-      if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
+      if (udp_status_code == RecognitionStatus::SUCCESS) {
         break;
       }
       if (used_time >= 10000) {
@@ -342,7 +342,7 @@ int recognizeFace(int camera_index,
                 std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
 
                 // 发送解锁信号
-                udp_status_code = static_cast<int>(RecognitionStatus::SUCCESS);
+                udp_status_code = RecognitionStatus::SUCCESS;
                 if (g_udp_sender) {
                   g_udp_sender->send_status(RecognitionStatus::SUCCESS,
                                             username);
@@ -379,7 +379,7 @@ int recognizeFace(int camera_index,
   cam.~camera();
 
   // 如果识别成功，保持UDP发送器运行一段时间以确保凭证程序接收
-  if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
+  if (udp_status_code == RecognitionStatus::SUCCESS) {
     std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收"
               << std::endl;
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
@@ -510,7 +510,7 @@ int main(int argc, char* argv[]) {
     }
 
     // 重置状态码
-    udp_status_code = static_cast<int>(RecognitionStatus::IDLE);
+    udp_status_code = RecognitionStatus::IDLE;
 
     // 如果是 register 模式，自动将当前路径写入注册表
     if (mode == "register") {

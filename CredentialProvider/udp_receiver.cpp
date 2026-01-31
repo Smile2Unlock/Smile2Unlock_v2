@@ -136,7 +136,8 @@ void udp_receiver::receive_loop() {
         }
 
         // 更新全局状态码
-        int old_status = face_recognition_status.exchange(packet.status_code);
+        RecognitionStatus old_status = face_recognition_status.exchange(
+            static_cast<RecognitionStatus>(packet.status_code));
 
         // 更新用户名
         if (packet.username[0] != '\0') {
@@ -144,7 +145,7 @@ void udp_receiver::receive_loop() {
         }
 
         std::cout << "[UDP Receiver] 收到状态更新: " << packet.status_code
-                  << " (旧状态: " << old_status << ")"
+                  << " (旧状态: " << static_cast<int>(old_status) << ")"
                   << ", 用户: " << (packet.username[0] ? packet.username : "(无)") << std::endl;
 
         // 调用回调函数

@@ -109,14 +109,14 @@ void udp_sender::stop_auto_send() {
 }
 
 void udp_sender::auto_send_loop() {
-    int last_status = -1;
+    RecognitionStatus last_status = RecognitionStatus::IDLE;
 
     while (auto_send_running) {
-        int current_status = udp_status_code.load();
+        RecognitionStatus current_status = udp_status_code.load();
 
         // 只有状态改变时才发送
         if (current_status != last_status) {
-            send_status(static_cast<RecognitionStatus>(current_status));
+            send_status(current_status);
             last_status = current_status;
         }
 
