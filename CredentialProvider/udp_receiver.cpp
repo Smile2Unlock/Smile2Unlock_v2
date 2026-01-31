@@ -124,8 +124,8 @@ void udp_receiver::receive_loop() {
         }
 
         // 验证魔术字
-        if (packet.magic != MAGIC_NUMBER) {
-            std::cerr << "[UDP Receiver] 无效的魔术字: 0x" << std::hex << packet.magic << std::dec << std::endl;
+        if (packet.magic_number != MAGIC_NUMBER) {
+            std::cerr << "[UDP Receiver] 无效的魔术字: 0x" << std::hex << packet.magic_number << std::dec << std::endl;
             continue;
         }
 

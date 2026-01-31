@@ -48,7 +48,7 @@ bool udp_sender::send_status(RecognitionStatus status, const std::string& userna
 
     // 构建数据包
     UdpStatusPacket packet;
-    packet.magic = MAGIC_NUMBER;
+    packet.magic_number = MAGIC_NUMBER;
     packet.version = PROTOCOL_VERSION;
     packet.status_code = static_cast<int32_t>(status);
 
