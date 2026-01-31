@@ -130,13 +130,20 @@ public:
     // 新增：人脸识别相关成员
     std::unique_ptr<udp_receiver>            _pUdpReceiver;                                   // UDP接收器
     HANDLE                                  _hFaceRecognizerProcess;                        // FaceRecognizer进程句柄
+    DWORD                                   _dwFaceRecognizerPID;                           // FaceRecognizer进程ID
     std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
+    bool                                    _fAutoStartEnabled;                             // 自动启动人脸识别
+    bool                                    _fWarmupModeEnabled;                            // 启用预热模式（智能检测）
     CSampleProvider                         *_pProvider;                                    // Provider指针，用于通知凭证准备好
 
     // 辅助函数
-    HRESULT LaunchFaceRecognizer();         // 启动FaceRecognizer.exe
+    HRESULT LaunchFaceRecognizer(const wchar_t* pszMode = L"recognize");  // 启动FaceRecognizer.exe
+    HRESULT TerminateFaceRecognizer();      // 终止FaceRecognizer进程
     HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
     HRESULT DecryptPasswordFromRegistry(PWSTR* ppwszPassword); // 从注册表解密密码
+    HRESULT StartFaceRecognitionAsync();    // 异步启动人脸识别
+    void StopFaceRecognition();             // 停止人脸识别
+    bool IsProcessStillRunning();           // 检查进程是否仍在运行
 };

@@ -26,7 +26,9 @@ enum class RecognitionStatus : int32_t {
     SUCCESS = 2,        // 识别成功
     FAILED = 3,         // 识别失败
     TIMEOUT = 4,        // 超时
-    RECOGNITION_ERROR = 5  // 错误（避免与 Windows ERROR 宏冲突）
+    RECOGNITION_ERROR = 5,  // 错误（避免与 Windows ERROR 宏冲突）
+    FACE_DETECTED = 6,  // 检测到人脸（预热模式）
+    PROCESS_ENDED = 7   // 进程已结束
 };
 
 // UDP 数据包结构
