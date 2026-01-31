@@ -21,6 +21,7 @@ class camera {
         ~camera() {
             threads.clear();
             cap.release();
+            cv::destroyAllWindows();
         }
 
         bool isOpened() {

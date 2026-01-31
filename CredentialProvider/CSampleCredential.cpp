@@ -22,7 +22,7 @@
 
 // 新增包含
 #include "Crypto.h"
-#include "udp_receiver.h"
+#include "managers/ipc/udp/udp_receiver.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
 #include <chrono>
@@ -325,7 +325,7 @@ HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpc
     if (!_pUdpReceiver)
     {
         LogDebugMessage(L"[INFO] 正在创建UDP接收器...");
-        _pUdpReceiver = std::make_unique<udp_receiver>();
+        _pUdpReceiver = std::make_unique<UdpReceiver>();
         LogDebugMessage(L"[INFO] UDP接收器创建成功，接收线程应已启动");
         // 给接收器线程一点时间来连接
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -348,10 +348,7 @@ HRESULT CSampleCredential::UnAdvise()
     }
     _pCredProvCredentialEvents = nullptr;
 
-    // 清理UDP接收器
-    if (_pUdpReceiver) {
-        _pUdpReceiver->stop();
-    }
+    // UDP接收器会在 unique_ptr 析构时自动清理
     _pUdpReceiver.reset();
 
     return S_OK;
