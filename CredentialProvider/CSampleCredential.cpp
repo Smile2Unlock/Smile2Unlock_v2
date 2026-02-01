@@ -13,9 +13,10 @@
 #include <ws2tcpip.h>
 
 #ifndef WIN32_NO_STATUS
-#include <ntstatus.h>
 #define WIN32_NO_STATUS
 #endif
+#include <ntstatus.h>
+#undef WIN32_NO_STATUS
 #include <unknwn.h>
 #include "CSampleCredential.h"
 #include "guid.h"
@@ -1049,8 +1050,8 @@ struct REPORT_RESULT_STATUS_INFO
 
 static const REPORT_RESULT_STATUS_INFO s_rgLogonStatusInfo[] =
 {
-    { STATUS_LOGON_FAILURE, STATUS_SUCCESS, const_cast<PWSTR>(L"Incorrect password or username."), CPSI_ERROR, },
-    { STATUS_ACCOUNT_RESTRICTION, STATUS_ACCOUNT_DISABLED, const_cast<PWSTR>(L"The account is disabled."), CPSI_WARNING },
+    { (NTSTATUS)0xC000006E, (NTSTATUS)0x00000000, const_cast<PWSTR>(L"Incorrect password or username."), CPSI_ERROR, },
+    { (NTSTATUS)0xC0000202, (NTSTATUS)0xC0000001, const_cast<PWSTR>(L"The account is disabled."), CPSI_WARNING },
 };
 
 // ReportResult is completely optional.  Its purpose is to allow a credential to customize the string
@@ -1216,30 +1217,40 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
 
             // 第一步：如果启用了预热模式，先启动预热
             if (_fWarmupModeEnabled) {
-                LogDebugMessage(L"[INFO] 启用预热模式，先进行轻量级人脸检测");
-                HRESULT hr = LaunchFaceRecognizer(L"warmup");
-                if (SUCCEEDED(hr)) {
-                    // 等待预热完成（检测到人脸或超时）
-                    const int WARMUP_TIMEOUT_MS = 60000; // 60秒
-                    const int CHECK_INTERVAL_MS = 100;
-                    int elapsed = 0;
+              std::this_thread::sleep_for(std::chrono::milliseconds(500));
+              LogDebugMessage(L"[INFO] 启用预热模式，先进行轻量级人脸检测");
+              HRESULT hr = LaunchFaceRecognizer(L"warmup");
+              if (SUCCEEDED(hr)) {
+                // 无限期等待预热完成（检测到人脸、用户切换、锁屏或系统休眠时退出）
+                const int CHECK_INTERVAL_MS = 100;
 
-                    extern std::atomic<RecognitionStatus> face_recognition_status;
-                    while (elapsed < WARMUP_TIMEOUT_MS) {
-                        RecognitionStatus status = face_recognition_status.load();
-                        if (status == RecognitionStatus::FACE_DETECTED) {
-                            LogDebugMessage(L"[INFO] 预热模式检测到人脸，切换到完整识别");
-                            face_recognition_status = RecognitionStatus::IDLE;
-                            break;
-                        }
-                        std::this_thread::sleep_for(std::chrono::milliseconds(CHECK_INTERVAL_MS));
-                        elapsed += CHECK_INTERVAL_MS;
+                extern std::atomic<RecognitionStatus> face_recognition_status;
+                while (true) {
+                  // 检查识别是否被取消
+                  {
+                    std::lock_guard<std::mutex> lock(_faceMutex);
+                    if (!_fFaceRecognitionRunning) {
+                      LogDebugMessage(L"[INFO] 预热模式被取消");
+                      break;
                     }
+                  }
 
-                    // 终止预热进程
-                    TerminateFaceRecognizer();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                  RecognitionStatus status = face_recognition_status.load();
+                  if (status == RecognitionStatus::FACE_DETECTED) {
+                    LogDebugMessage(
+                        L"[INFO] 预热模式检测到人脸，切换到完整识别");
+                    face_recognition_status = RecognitionStatus::IDLE;
+                    break;
+                  }
+                  
+                  std::this_thread::sleep_for(
+                      std::chrono::milliseconds(CHECK_INTERVAL_MS));
                 }
+
+                // 终止预热进程
+                TerminateFaceRecognizer();
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+              }
             }
 
             // 第二步：启动完整识别
