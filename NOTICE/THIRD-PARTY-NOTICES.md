@@ -57,3 +57,15 @@
 
     Copyright (c) Microsoft Corporation
    - 许可证原文见: licenses/Windows-classic-samples-MIT.txt
+
+   **Boost** (https://www.boost.org)
+   - 许可证: BSL-1.0 (SPDX: BSL-1.0)
+   - 版权:
+
+    Copyright © 2003, 2004 Jeremy B. Maitin-Shepard
+    Copyright © 2005-2008 Daniel James
+    Copyright © 2022-2025 Christian Mazakas
+    Copyright © 2022-2025 Joaquín M López Muñoz
+    Copyright © 2022-2023 Peter Dimov
+    Copyright © 2024 Braden Ganetsky
+   - 许可证原文见: licenses/Boost-BSL-1.0.txt

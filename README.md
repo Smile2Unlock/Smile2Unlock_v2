@@ -43,6 +43,7 @@ This project uses several third-party libraries. See [NOTICE/THIRD-PARTY-NOTICES
 - **cxxopts** - MIT
 - **INIcpp** - MIT
 - **Windows-classic-samples** - MIT
+- **Boost** - BSL-1.0
 
 ## Contributing
 
