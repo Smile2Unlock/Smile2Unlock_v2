@@ -1,6 +1,5 @@
 #include "camera.h"
-#include "udp_sender.h"
-// #include "clipp.h"
+#include "managers/ipc/udp/udp_sender.h"
 #include "crypto.h"
 #include "seetaface.h"
 #include "fast_detector.h"  // 轻量级检测器
@@ -15,8 +14,8 @@
 #include "registryhelper.h"
 
 
-// 全局UDP发送器 - 保持整个程序生命周期
-std::unique_ptr<udp_sender> g_udp_sender;
+// 全局UDP发送器 - 使用 Boost.Asio 实现
+std::unique_ptr<UdpSender> g_udp_sender;
 // camera* cam = new camera();         // TODO: Initialize when needed
 std::queue<cv::Mat> frames;
 
@@ -103,10 +102,6 @@ int registerFace(int camera_index, float face_threshold, bool debug) {
         }
     }
     
-    // 清理资源
-    cv::destroyAllWindows();
-    cam.~camera();
-    
     std::cout << "人脸录入完成！用户 " << username << " 的 " << captureCount << " 个人脸数据已保存。" << std::endl;
     return 0;
 }
@@ -118,7 +113,7 @@ int warmupFace(int camera_index, bool debug) {
 
   // 初始化UDP发送器（如果尚未初始化）
   if (!g_udp_sender) {
-    g_udp_sender = std::make_unique<udp_sender>();
+    g_udp_sender = std::make_unique<UdpSender>();
   }
 
   // 使用轻量级检测器（只加载检测模型，速度快）
@@ -166,11 +161,11 @@ int warmupFace(int camera_index, bool debug) {
         break; // 退出预热循环
       }
 
-      // 检查是否收到退出信号
-      if (udp_status_code == static_cast<int>(RecognitionStatus::TIMEOUT)) {
-        std::cout << "[Warmup] 收到退出信号" << std::endl;
-        break;
-      }
+      // TODO: 接收来自 CredentialProvider 的退出信号
+      // if (udp_status_code == RecognitionStatus::TIMEOUT) {
+      //   std::cout << "[Warmup] 收到退出信号" << std::endl;
+      //   break;
+      // }
 
       int key = cv::waitKey(1) & 0xFF;
       if (key == 'q') {
@@ -187,10 +182,6 @@ int warmupFace(int camera_index, bool debug) {
     std::cout << "[Warmup] 超时（60秒），未检测到人脸，退出" << std::endl;
   }
 
-  // 清理资源
-  cv::destroyAllWindows();
-  cam.~camera();
-
   std::cout << "[Warmup] 模式已结束" << std::endl;
   return 0;
 }
@@ -202,9 +193,12 @@ int recognizeFace(int camera_index,
                   bool debug) {
   std::cout << "[Recognize] 启动人脸识别模式..." << std::endl;
 
+  // 识别结果标志（替代全局变量）
+  bool recognition_success = false;
+
   // 初始化UDP发送器（优先初始化，用于状态通知）
   if (!g_udp_sender) {
-    g_udp_sender = std::make_unique<udp_sender>();
+    g_udp_sender = std::make_unique<UdpSender>();
   }
 
   // 发送 RECOGNIZING 状态
@@ -289,8 +283,8 @@ int recognizeFace(int camera_index,
       if (key == 'q') {
         break;  // 退出循环
       }
-      if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
-        break;
+      if (recognition_success) {
+        break;  // 识别成功，退出循环
       }
       if (used_time >= 10000) {
         break;
@@ -341,8 +335,10 @@ int recognizeFace(int camera_index,
                           << ", 相似度: " << similarity << std::endl;
                 std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
 
+                // 标记识别成功
+                recognition_success = true;
+                
                 // 发送解锁信号
-                udp_status_code = static_cast<int>(RecognitionStatus::SUCCESS);
                 if (g_udp_sender) {
                   g_udp_sender->send_status(RecognitionStatus::SUCCESS,
                                             username);
@@ -368,24 +364,16 @@ int recognizeFace(int camera_index,
         }
       }
     } else {
-      // 如果队列为空，短暂休眠避免CPU占用过高
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       used_time += 10;
     }
   }
 
-  // 清理资源
-  cv::destroyAllWindows();
-  cam.~camera();
-
-  // 如果识别成功，保持UDP发送器运行一段时间以确保凭证程序接收
-  if (udp_status_code == static_cast<int>(RecognitionStatus::SUCCESS)) {
-    std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收"
-              << std::endl;
+  if (recognition_success) {
+    std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收" << std::endl;
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
   }
 
-  // 不要手动销毁g_udp_sender，让它的析构函数自动处理
   std::cout << "人脸识别结束。" << std::endl;
   return 0;
 }
@@ -505,12 +493,9 @@ int main(int argc, char* argv[]) {
 
     // 初始化UDP发送器
     if (!g_udp_sender) {
-        g_udp_sender = std::make_unique<udp_sender>();
+        g_udp_sender = std::make_unique<UdpSender>();
         std::cout << "[Main] 全局UDP发送器已初始化" << std::endl;
     }
-
-    // 重置状态码
-    udp_status_code = static_cast<int>(RecognitionStatus::IDLE);
 
     // 如果是 register 模式，自动将当前路径写入注册表
     if (mode == "register") {

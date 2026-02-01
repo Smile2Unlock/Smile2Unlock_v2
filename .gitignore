@@ -1,5 +1,9 @@
 *.bin
 
+# vscode
+.history/
+
+
 # Folder
 build
 vsxmake2022

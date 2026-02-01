@@ -6,20 +6,23 @@ add_requires("SeetaFace6Open")
 add_requires("localopencv")
 add_requires("cryptopp")
 add_requires("cxxopts")
+add_requires("boost", {configs = {asio = true}})
 
 target("FaceRecognizer")
     set_languages("c++26")
     set_policy("build.c++.modules", true)
     set_kind("binary")
     add_files("FaceRecognizer/src/*.cpp")
-    add_headerfiles("FaceRecognizer/src/*.h")
-    add_headerfiles("FaceRecognizer/src/*.hpp")
+    add_headerfiles("FaceRecognizer/src/**.h")
+    add_headerfiles("FaceRecognizer/src/**.hpp")
+    add_includedirs("FaceRecognizer/src", {public = false})
+    add_defines("_WIN32_WINNT=0x0602")  -- Windows 8 
     add_packages("SeetaFace6Open")
     add_packages("localopencv")
     add_packages("cryptopp")
     add_packages("cxxopts")
+    add_packages("boost")
     add_links("Advapi32")
-    add_links("ws2_32")  -- 添加 Winsock 库支持 UDP
 
     after_build(function (target)
         if is_plat("windows") then
@@ -34,19 +37,20 @@ target("FaceRecognizer")
 target("SampleV2CredentialProvider")
     set_languages("c++26")
     set_kind("shared")
-    set_arch("x64")  -- 设置架构
+    set_arch("x64")
     add_files("CredentialProvider/*.cpp")
-    add_headerfiles("CredentialProvider/*.h")
-    add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
+    add_headerfiles("CredentialProvider/**.h")
+    add_includedirs("CredentialProvider", {public = false})
+    add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS", "_WIN32_WINNT=0x0602")  -- Windows 8
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
     add_links("Credui", "Shlwapi", "Secur32")
-    add_links("ws2_32")  -- 添加 Winsock 库支持 UDP
     add_files("CredentialProvider/samplev2credentialprovider.def")
 
     -- 资源文件处理
     add_files("CredentialProvider/resources.rc")
 
     add_packages("cryptopp")
+    add_packages("boost")
 
 
 

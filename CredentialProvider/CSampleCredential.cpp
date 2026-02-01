@@ -22,7 +22,7 @@
 
 // 新增包含
 #include "Crypto.h"
-#include "udp_receiver.h"
+#include "managers/ipc/udp/udp_receiver.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
 #include <chrono>
@@ -325,7 +325,7 @@ HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpc
     if (!_pUdpReceiver)
     {
         LogDebugMessage(L"[INFO] 正在创建UDP接收器...");
-        _pUdpReceiver = std::make_unique<udp_receiver>();
+        _pUdpReceiver = std::make_unique<UdpReceiver>();
         LogDebugMessage(L"[INFO] UDP接收器创建成功，接收线程应已启动");
         // 给接收器线程一点时间来连接
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -348,10 +348,7 @@ HRESULT CSampleCredential::UnAdvise()
     }
     _pCredProvCredentialEvents = nullptr;
 
-    // 清理UDP接收器
-    if (_pUdpReceiver) {
-        _pUdpReceiver->stop();
-    }
+    // UDP接收器会在 unique_ptr 析构时自动清理
     _pUdpReceiver.reset();
 
     return S_OK;
@@ -733,11 +730,11 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     _fFaceRecognitionRunning = true;
   }
 
-  // 外部全局变量，由UDP接收器更新
-  extern std::atomic<int> face_recognition_status;
+  // 外部全局变量,由UDP接收器更新
+  extern std::atomic<RecognitionStatus> face_recognition_status;
 
   LogDebugMessage(L"[INFO] 开始等待人脸识别结果，超时时间: %dms", RECOGNITION_TIMEOUT_MS);
-  LogDebugMessage(L"[DEBUG] 初始状态码: %d", face_recognition_status.load());
+  LogDebugMessage(L"[DEBUG] 初始状态码: %d", static_cast<int>(face_recognition_status.load()));
 
   while (elapsed < RECOGNITION_TIMEOUT_MS) {
     {
@@ -749,16 +746,16 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     }
 
     // 检查识别结果（RecognitionStatus::SUCCESS = 2）
-    int currentStatus = face_recognition_status.load();
-    if (currentStatus == 2) {
-      LogDebugMessage(L"[INFO] 识别成功！耗时: %dms，最终状态码: %d", elapsed, currentStatus);
+    RecognitionStatus currentStatus = face_recognition_status.load();
+    if (currentStatus == RecognitionStatus::SUCCESS) {
+      LogDebugMessage(L"[INFO] 识别成功！耗时: %dms，最终状态码: %d", elapsed, static_cast<int>(currentStatus));
       return S_OK; // 识别成功
     }
 
     // 每秒输出一次状态日志
     if (elapsed % 1000 == 0) {
       LogDebugMessage(L"[DEBUG] 等待中... 已耗时: %dms，当前状态码: %d",
-                      elapsed, currentStatus);
+                      elapsed, static_cast<int>(currentStatus));
     }
 
     Sleep(CHECK_INTERVAL_MS);
@@ -771,7 +768,7 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
   }
 
   LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d，请检查FaceRecognizer是否正常运行",
-                  elapsed, face_recognition_status.load());
+                  elapsed, static_cast<int>(face_recognition_status.load()));
   return E_FAIL; // 超时或失败
 }
 
@@ -920,8 +917,8 @@ HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
             }
 
             // 重置识别状态
-            extern std::atomic<int> face_recognition_status;
-            face_recognition_status = static_cast<int>(RecognitionStatus::IDLE);
+            extern std::atomic<RecognitionStatus> face_recognition_status;
+            face_recognition_status = RecognitionStatus::IDLE;
 
             // 显示等待提示
             if (_pCredProvCredentialEvents) {
@@ -1204,8 +1201,8 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
         }
 
         // 重置识别状态
-        extern std::atomic<int> face_recognition_status;
-        face_recognition_status = static_cast<int>(RecognitionStatus::IDLE);
+        extern std::atomic<RecognitionStatus> face_recognition_status;
+        face_recognition_status = RecognitionStatus::IDLE;
 
         // 设置运行标志
         {
@@ -1227,12 +1224,12 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                     const int CHECK_INTERVAL_MS = 100;
                     int elapsed = 0;
 
-                    extern std::atomic<int> face_recognition_status;
+                    extern std::atomic<RecognitionStatus> face_recognition_status;
                     while (elapsed < WARMUP_TIMEOUT_MS) {
-                        int status = face_recognition_status.load();
-                        if (status == static_cast<int>(RecognitionStatus::FACE_DETECTED)) {
+                        RecognitionStatus status = face_recognition_status.load();
+                        if (status == RecognitionStatus::FACE_DETECTED) {
                             LogDebugMessage(L"[INFO] 预热模式检测到人脸，切换到完整识别");
-                            face_recognition_status = static_cast<int>(RecognitionStatus::IDLE);
+                            face_recognition_status = RecognitionStatus::IDLE;
                             break;
                         }
                         std::this_thread::sleep_for(std::chrono::milliseconds(CHECK_INTERVAL_MS));
