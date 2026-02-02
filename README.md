@@ -19,7 +19,8 @@ Windows Credential Provider DLL that integrates facial recognition into Windows 
   - OpenCV
   - SeetaFace6
   - Crypto++
-  - cxxopts
+  - Cxxopts
+  - Boost
 
 ## Building
 
@@ -40,7 +41,7 @@ This project uses several third-party libraries. See [NOTICE/THIRD-PARTY-NOTICES
 - **OpenCV** - Apache 2.0
 - **SeetaFace6** - BSD-2-Clause
 - **Crypto++** - Boost Software License 1.0
-- **cxxopts** - MIT
+- **Cxxopts** - MIT
 - **INIcpp** - MIT
 - **Windows-classic-samples** - MIT
 - **Boost** - BSL-1.0
