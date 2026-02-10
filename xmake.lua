@@ -26,7 +26,28 @@ target("FaceRecognizer")
 
     after_build(function (target)
         if is_plat("windows") then
-            os.cp("$(projectdir)/local-repo/packages/s/SeetaFace6Open/windows/lib/*.dll", target:targetdir())
+            -- 确保关键DLL被复制（显式列出以确保不遗漏）
+            local seetaface_dlls = {
+                "SeetaAuthorize.dll",
+                "SeetaEyeStateDetector200.dll",
+                "SeetaFaceAntiSpoofingX600.dll",
+                "SeetaFaceDetector600.dll",
+                "SeetaFaceLandmarker600.dll",
+                "SeetaFaceRecognizer610.dll",
+                "tennis.dll"
+            }
+
+            local source_dir = "$(projectdir)/local-repo/packages/s/SeetaFace6Open/windows/lib"
+            local target_dir = target:targetdir()
+
+            for _, dll in ipairs(seetaface_dlls) do
+                local source_file = path.join(source_dir, dll)
+                if os.isfile(source_file) then
+                    os.cp(source_file, target_dir)
+                else
+                    print("警告: 找不到DLL文件: " .. dll)
+                end
+            end
         end
         os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
     end)
