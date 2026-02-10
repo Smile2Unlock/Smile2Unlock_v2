@@ -27,7 +27,6 @@ target("FaceRecognizer")
 
     after_build(function (target)
         if is_plat("windows") then
-            os.cp("$(projectdir)/local-repo/packages/l/localopencv/windows/opencv/build/x64/vc16/bin/*.dll", target:targetdir())
             os.cp("$(projectdir)/local-repo/packages/s/SeetaFace6Open/windows/lib/*.dll", target:targetdir())
         end
         os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())

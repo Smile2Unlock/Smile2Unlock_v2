@@ -16,7 +16,6 @@ Windows Credential Provider DLL that integrates facial recognition into Windows 
 - Visual Studio 2022 or later
 - xmake build system
 - Dependencies (automatically managed via xmake):
-  - OpenCV
   - SeetaFace6
   - Crypto++
   - cxxopts
@@ -37,7 +36,6 @@ This project uses several third-party libraries. See [NOTICE/THIRD-PARTY-NOTICES
 
 ### Dependencies
 
-- **OpenCV** - Apache 2.0
 - **SeetaFace6** - BSD-2-Clause
 - **Crypto++** - Boost Software License 1.0
 - **cxxopts** - MIT
