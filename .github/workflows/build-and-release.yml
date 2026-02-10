@@ -16,6 +16,11 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          lfs: true
+
+      - name: Download Git LFS files
+        run: git lfs pull
+        shell: pwsh
 
       - name: Install xmake
         uses: xmake-io/github-action-setup-xmake@v1
