@@ -6,7 +6,7 @@
 #define MyAppExeName "SampleV2CredentialProvider.dll"
 
 [Setup]
-AppId={{5FD3D285-0DD9-4362-8855-E0ABAACD4AF6}
+AppId={{5FD3D285-0DD9-4362-8855-E0ABAACD4AF6}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
