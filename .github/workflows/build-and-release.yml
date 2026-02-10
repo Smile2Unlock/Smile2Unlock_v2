@@ -24,8 +24,10 @@ jobs:
 
       - name: Build with xmake
         run: |
-          xmake f -m release -a x64 -p windows
+          xmake f -y -m release -a x64 -p windows
           xmake build -v
+        env:
+          XMAKE_ROOT: y
 
       - name: Prepare installer files
         run: |
