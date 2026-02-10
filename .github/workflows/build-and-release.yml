@@ -1,0 +1,113 @@
+name: Build and Release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          lfs: true
+
+      - name: Download Git LFS files
+        run: git lfs pull
+        shell: pwsh
+
+      - name: Install xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+
+      - name: Build with xmake
+        run: |
+          xmake f -y -m release -a x64 -p windows
+          xmake build -v
+        env:
+          XMAKE_ROOT: y
+
+      - name: Prepare installer files
+        run: |
+          New-Item -Path "installer-files" -ItemType Directory -Force
+          Copy-Item -Path "build\windows\x64\release\*" -Destination "installer-files\" -Exclude "*.lib","*.exp" -Recurse -Force
+        shell: pwsh
+
+      - name: List installer files
+        run: |
+          Write-Host "Files to be included in installer:"
+          Get-ChildItem -Path "installer-files\" -Recurse
+        shell: pwsh
+
+      - name: Build installer with Inno Setup
+        run: |
+          choco install innosetup -y
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
+        shell: pwsh
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smile2Unlock-Installer
+          path: Output\*.exe
+          retention-days: 30
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Smile2Unlock-Installer
+          path: installer
+
+      - name: Get version
+        id: get_version
+        run: |
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          $version = "v$date-$shortSha"
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "Version: $version"
+        shell: pwsh
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: Release ${{ steps.get_version.outputs.version }}
+          body: |
+            Automated release of Smile2Unlock
+
+            **Changes in this release:**
+            - Built from commit: ${{ github.sha }}
+            - Build date: ${{ github.event.head_commit.timestamp }}
+
+            **Installation:**
+            1. Download the installer below
+            2. Run as administrator
+            3. Follow the installation wizard
+
+            **Note:** This software requires administrator privileges to install the credential provider.
+          files: installer/*.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
