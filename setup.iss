@@ -30,7 +30,6 @@ UninstallDisplayIcon={sys}\SampleV2CredentialProvider.dll
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Files]
 ; Copy all files from installer-files directory
