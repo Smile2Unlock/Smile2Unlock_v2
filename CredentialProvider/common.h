@@ -65,7 +65,7 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
     { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_CHECKBOX - 隐藏
     { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_EDIT_TEXT - 隐藏
     { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_COMBOBOX - 隐藏
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    },    // SFI_FACE_RECOGNITION_LINK
+    { CPFS_HIDDEN,                     CPFIS_NONE    },    // SFI_FACE_RECOGNITION_LINK - 隐藏（已改为自动识别）
 };
 
 // Field descriptors for unlock and logon.

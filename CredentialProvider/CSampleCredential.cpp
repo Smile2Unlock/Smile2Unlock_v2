@@ -113,7 +113,6 @@ CSampleCredential::CSampleCredential():
     _hFaceRecognizerProcess(nullptr),
     _dwFaceRecognizerPID(0),
     _fFaceRecognitionRunning(false),
-    _fAutoStartEnabled(false),
     _fWarmupModeEnabled(false),
     _pwzUsername(nullptr),
     _pwzPassword(nullptr),
@@ -299,14 +298,12 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
         hr = SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]);
     }
 
-    // 从注册表读取人脸识别配置
+    // 从注册表读取预热模式配置（自动启动已移除，始终自动启动）
     if (SUCCEEDED(hr)) {
-        _fAutoStartEnabled = RegistryHelper::ReadDwordFromRegistry(
-            "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\auto_start", 0) != 0;
         _fWarmupModeEnabled = RegistryHelper::ReadDwordFromRegistry(
             "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\warmup_mode", 0) != 0;
-        LogDebugMessage(L"[INFO] 从注册表读取配置: auto_start=%d, warmup_mode=%d",
-            _fAutoStartEnabled, _fWarmupModeEnabled);
+        LogDebugMessage(L"[INFO] 从注册表读取配置: warmup_mode=%d (自动启动已启用)",
+            _fWarmupModeEnabled);
     }
 
     return hr;
@@ -365,21 +362,19 @@ HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 {
     *pbAutoLogon = FALSE;
 
-    // 如果启用了自动启动，立即启动人脸识别
-    if (_fAutoStartEnabled) {
-        // 检查是否已在运行
-        bool alreadyRunning = false;
-        {
-            std::lock_guard<std::mutex> lock(_faceMutex);
-            alreadyRunning = _fFaceRecognitionRunning;
-        }
+    // 始终启动人脸识别（已移除 _fAutoStartEnabled 检查）
+    // 检查是否已在运行
+    bool alreadyRunning = false;
+    {
+        std::lock_guard<std::mutex> lock(_faceMutex);
+        alreadyRunning = _fFaceRecognitionRunning;
+    }
 
-        if (!alreadyRunning) {
-            LogDebugMessage(L"[INFO] 自动启动人脸识别已启用，开始异步识别");
-            StartFaceRecognitionAsync();
-        } else {
-            LogDebugMessage(L"[INFO] 自动启动跳过：识别已在运行");
-        }
+    if (!alreadyRunning) {
+        LogDebugMessage(L"[INFO] 开始自动人脸识别");
+        StartFaceRecognitionAsync();
+    } else {
+        LogDebugMessage(L"[INFO] 人脸识别已在运行");
     }
 
     return S_OK;
