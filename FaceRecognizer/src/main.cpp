@@ -17,12 +17,11 @@
 // 全局UDP发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;
 // camera* cam = new camera();         // TODO: Initialize when needed
-std::queue<cv::Mat> frames;
 
 // 人脸注册函数 - 简化版
 int registerFace(int camera_index, float face_threshold, bool debug) {
     // 初始化摄像头
-    camera cam(camera_index);
+    CameraCapture cam(camera_index);
     
     // 获取用户名
     std::string username;
@@ -42,7 +41,7 @@ int registerFace(int camera_index, float face_threshold, bool debug) {
     std::cout << "请按 'c' 键拍照，按 'q' 键退出" << std::endl;
     
     // 检查摄像头是否打开
-    if (!cam.isOpened()) {
+    if (!cam.IsInitialized()) {
         std::cerr << "错误：无法打开摄像头" << std::endl;
         return -1;
     }
@@ -52,52 +51,45 @@ int registerFace(int camera_index, float face_threshold, bool debug) {
     const int maxCaptures = 5;  // 每人最多采集5张照片
     
     while (captureCount < maxCaptures) {
-        // 等待队列中有帧可用
-        if (!frames.empty()) {
-            // 获取队列中的最新帧（移除旧帧）
-            cv::Mat latest_frame;
-            while (!frames.empty()) {
-                latest_frame = frames.front();
-                frames.pop();
-            }
+        // 从摄像头直接捕获帧
+        SeetaImageData img_data = {};
+        if (cam.CaptureFrame(img_data)) {
+            // 显示实时画面（可选，取决于平台支持）
+            // cv::Mat display_frame(img_data.height, img_data.width, CV_8UC3, img_data.data);
+            // cv::imshow("Face Registration - Press 'c' to capture, 'q' to quit", display_frame);
             
-            // 显示实时画面
-            cv::imshow("Face Registration - Press 'c' to capture, 'q' to quit", latest_frame);
-            
-            int key = cv::waitKey(1) & 0xFF; // 使用waitKey(1)而不是waitKey(30)，以便快速响应键盘输入
-            if (key == 'q') {
-                break; // 退出循环
-            } else if (key == 'c') {
-                // 转换为SeetaFace所需的格式
-                seeta::cv::ImageData img_data(latest_frame);
+            // Auto-capture mode: process frame immediately without keyboard input
+            // (keyboard input requires OpenCV window which is not displayed)
 
-                
-                // 检测人脸
-                SeetaRect face_rect = recognizer.detect(img_data);
-                
-                if (face_rect.width > 0 && face_rect.height > 0) {
-                    // 检测到人脸，提取特征
-                    auto features = recognizer.img2features(img_data);
-                    
-                    if (features) {
-                        // 保存特征到指定文件
-                        std::string feature_file = username + "_" + std::to_string(captureCount) + ".dat";
-                        recognizer.savefeat(features, feature_file);
-                        
-                        std::cout << "已保存第 " << captureCount + 1 << " 张人脸特征: " << feature_file << std::endl;
-                        captureCount++;
-                        
-                        // 短暂延迟，避免连续捕获
-                        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                    } else {
-                        std::cout << "警告：未能提取到人脸特征，请调整位置和角度" << std::endl;
-                    }
+            // 使用SeetaImageData进行处理
+
+            // 检测人脸
+            SeetaRect face_rect = recognizer.detect(img_data);
+
+            if (face_rect.width > 0 && face_rect.height > 0) {
+                // 检测到人脸，提取特征
+                auto features = recognizer.img2features(img_data);
+
+                if (features) {
+                    // 保存特征到指定文件
+                    std::string feature_file = username + "_" + std::to_string(captureCount) + ".dat";
+                    recognizer.savefeat(features, feature_file);
+
+                    std::cout << "已保存第 " << captureCount + 1 << " 张人脸特征: " << feature_file << std::endl;
+                    captureCount++;
+
+                    // 短暂延迟，避免连续捕获
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
                 } else {
-                    std::cout << "警告：未检测到人脸，请确保脸部清晰可见" << std::endl;
+                    std::cout << "警告：未能提取到人脸特征，请调整位置和角度" << std::endl;
                 }
+            } else {
+                std::cout << "警告：未检测到人脸，请确保脸部清晰可见" << std::endl;
             }
+            // 释放当前帧的内存
+            delete[] img_data.data;
         } else {
-            // 如果队列为空，短暂休眠避免CPU占用过高
+            // 如果捕获失败，短暂休眠避免CPU占用过高
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
@@ -120,12 +112,12 @@ int warmupFace(int camera_index, bool debug) {
   FastDetector detector;
 
   // 初始化摄像头
-  camera cam(camera_index);
+  CameraCapture cam(camera_index);
 
   std::cout << "[Warmup] 初始化完成，等待检测到人脸..." << std::endl;
 
   // 检查摄像头是否打开
-  if (!cam.isOpened()) {
+  if (!cam.IsInitialized()) {
     std::cerr << "[Warmup] 错误：无法打开摄像头" << std::endl;
     return -1;
   }
@@ -138,16 +130,10 @@ int warmupFace(int camera_index, bool debug) {
 
   // 预热循环 - 快速人脸检测
   while (elapsed < WARMUP_TIMEOUT_MS) {
-    if (!frames.empty()) {
-      // 获取最新帧
-      cv::Mat latest_frame;
-      while (!frames.empty()) {
-        latest_frame = frames.front();
-        frames.pop();
-      }
-
+    // 从摄像头捕获帧
+    SeetaImageData img_data = {};
+    if (cam.CaptureFrame(img_data)) {
       // 进行人脸检测
-      seeta::cv::ImageData img_data(latest_frame);
       SeetaRect face_rect = detector.detect(img_data);
 
       if (face_rect.width > 0 && face_rect.height > 0) {
@@ -158,20 +144,25 @@ int warmupFace(int camera_index, bool debug) {
         }
         // 等待凭证程序接收信号
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        delete[] img_data.data;
         break; // 退出预热循环
       }
 
       // TODO: 接收来自 CredentialProvider 的退出信号
       // if (udp_status_code == RecognitionStatus::TIMEOUT) {
       //   std::cout << "[Warmup] 收到退出信号" << std::endl;
+      //   delete[] img_data.data;
       //   break;
       // }
 
-      int key = cv::waitKey(1) & 0xFF;
-      if (key == 'q') {
-        std::cout << "[Warmup] 用户按 q 退出" << std::endl;
-        break;
-      }
+      // Keyboard input disabled in headless mode
+      // if (false) {  // Check removed - no window to capture input from
+      //   std::cout << "[Warmup] 用户按 q 退出" << std::endl;
+      //   delete[] img_data.data;
+      //   break;
+      // }
+      // 释放当前帧的内存
+      delete[] img_data.data;
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(CHECK_INTERVAL_MS));
       elapsed += CHECK_INTERVAL_MS;
@@ -207,10 +198,10 @@ int recognizeFace(int camera_index,
   }
 
   std::cout << "[Recognize] [1/3] 初始化摄像头..." << std::endl;
-  camera cam(camera_index);
+  CameraCapture cam(camera_index);
 
   // 检查摄像头是否打开
-  if (!cam.isOpened()) {
+  if (!cam.IsInitialized()) {
     std::cerr << "[Recognize] 错误：无法打开摄像头" << std::endl;
     return -1;
   }
@@ -267,31 +258,26 @@ int recognizeFace(int camera_index,
   int used_time = 0;
   // 主识别循环
   while (true) {
-    // 等待队列中有帧可用
-    if (!frames.empty()) {
-      // 获取队列中的最新帧（移除旧帧）
-      cv::Mat latest_frame;
-      while (!frames.empty()) {
-        latest_frame = frames.front();
-        frames.pop();
-      }
+    // 从摄像头捕获帧
+    SeetaImageData img_data = {};
+    if (cam.CaptureFrame(img_data)) {
+      // 显示实时画面（可选，取决于平台支持）
+      // cv::Mat display_frame(img_data.height, img_data.width, CV_8UC3, img_data.data);
+      // cv::imshow("Face Recognition - Press 'q' to quit", display_frame);
 
-      // 显示实时画面
-      // cv::imshow("Face Recognition - Press 'q' to quit", latest_frame);
-
-      int key = cv::waitKey(1) & 0xFF;  // 使用waitKey(1)以便快速响应键盘输入
-      if (key == 'q') {
-        break;  // 退出循环
-      }
+      // Keyboard input disabled in headless mode
+      // if (false) {  // Check removed - no window to capture input from
+      //   delete[] img_data.data;
+      //   break;  // 退出循环
+      // }
       if (recognition_success) {
+        delete[] img_data.data;
         break;  // 识别成功，退出循环
       }
       if (used_time >= 10000) {
+        delete[] img_data.data;
         break;
       }
-
-      // 转换为SeetaFace所需的格式
-      seeta::cv::ImageData img_data(latest_frame);
 
       // 检测人脸
       SeetaRect face_rect = recognizer.detect(img_data);
@@ -363,6 +349,8 @@ int recognizeFace(int camera_index,
           }
         }
       }
+      // 释放当前帧的内存
+      delete[] img_data.data;
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       used_time += 10;

@@ -15,57 +15,6 @@ seeta::FaceAntiSpoofing *new_fas_v2() {
     return new seeta::FaceAntiSpoofing(setting);
 }
 
-bool isLowLight(const cv::Mat& frame) {
-    cv::Mat gray;
-    cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-    
-    cv::Scalar mean, stddev;
-    cv::meanStdDev(gray, mean, stddev);
-    
-    // 如果平均亮度低于阈值，则判定为弱光环境
-    return mean[0] < 70;
-}
-
-cv::Mat enhanceLowLight(const cv::Mat& input) {
-    cv::Mat src;
-    input.convertTo(src, CV_32F);
-    
-    // 高斯模糊参数
-    int gaussianSize = 15;
-    double sigma = 30.0;
-    
-    // 分离通道
-    std::vector<cv::Mat> channels;
-    cv::split(src, channels);
-    
-    // 对每个通道应用Retinex
-    for (int i = 0; i < 3; i++) {
-        cv::Mat gaussian;
-        cv::GaussianBlur(channels[i], gaussian, cv::Size(gaussianSize, gaussianSize), sigma);
-        
-        // 避免除零
-        cv::Mat minVals;
-        cv::min(gaussian, 0.01, minVals);
-        cv::max(gaussian, minVals, gaussian);
-        
-        // Retinex公式: log(I) - log(G*I)
-        cv::Mat logInput, logGaussian;
-        cv::log(channels[i] + 1, logInput);
-        cv::log(gaussian + 1, logGaussian);
-        channels[i] = logInput - logGaussian;
-    }
-    
-    // 合并通道
-    cv::Mat result;
-    cv::merge(channels, result);
-    
-    // 归一化到0-255
-    cv::normalize(result, result, 0, 255, cv::NORM_MINMAX);
-    result.convertTo(result, CV_8UC3);
-    
-    return result;
-}
-
 seetaface::seetaface() {
     std::cout << "[Recognizer] 初始化中..." << std::endl;
 

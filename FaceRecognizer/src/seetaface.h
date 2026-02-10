@@ -11,41 +11,17 @@
 #include <memory>
 #include <stdexcept>
 #include <print>
-#include <opencv2/opencv.hpp>
+// #include <opencv2/opencv.hpp>
 #include <seeta/FaceDetector.h>
 #include <seeta/FaceRecognizer.h>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceAntiSpoofing.h>
 #include "Utils.h"
 
-// 弱光增强：单尺度Retinex算法
-cv::Mat enhanceLowLight(const cv::Mat& input);
-
-// 自适应亮度评估
-bool isLowLight(const cv::Mat& frame);
 
 // 活体检测模型
 seeta::FaceAntiSpoofing *new_fas_v2();
 
-namespace seeta
-{
-    namespace cv
-    {
-        // using namespace ::cv;
-        class ImageData : public SeetaImageData {
-        public:
-            ImageData( const ::cv::Mat &mat )
-                : cv_mat( mat.clone() ) {
-                this->width = cv_mat.cols;
-                this->height = cv_mat.rows;
-                this->channels = cv_mat.channels();
-                this->data = cv_mat.data;
-            }
-        private:
-            ::cv::Mat cv_mat;
-        };
-    }
-}
 
 class seetaface {
 public:
