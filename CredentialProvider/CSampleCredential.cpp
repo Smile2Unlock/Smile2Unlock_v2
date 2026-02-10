@@ -36,9 +36,7 @@
 #include <string>
 #include <vector>
 
-// 调试开关：启用自动识别成功模式（用于测试整个流程）
-// 注释掉这行以使用真实人脸识别
-// #define AUTO_RECOGNIZE_SUCCESS 1
+#define AUTO_RECOGNIZE_SUCCESS 0
 
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
@@ -56,17 +54,18 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
   va_start(args, format);
   vswprintf_s(buffer, sizeof(buffer) / sizeof(wchar_t), format, args);
   va_end(args);
-  
+
   // 输出到调试器
   OutputDebugStringW(buffer);
   OutputDebugStringW(L"\n");
-  
+
   // 输出到事件日志
   LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
-  
-  // 输出到文件
-  HANDLE hFile = CreateFileW(L"D:\\Smile2Unlock_v2.log", 
-                             FILE_APPEND_DATA, 
+
+  // 只在 AUTO_RECOGNIZE_SUCCESS 为 1 时输出到文件
+#if AUTO_RECOGNIZE_SUCCESS
+  HANDLE hFile = CreateFileW(L"D:\\Smile2Unlock_v2.log",
+                             FILE_APPEND_DATA,
                              FILE_SHARE_READ,
                              nullptr,
                              OPEN_ALWAYS,
@@ -81,24 +80,25 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
                L"[%04d-%02d-%02d %02d:%02d:%02d.%03d] ",
                st.wYear, st.wMonth, st.wDay,
                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    
+
     // 转换为UTF-8并写入文件
     int utf8Size = WideCharToMultiByte(CP_UTF8, 0, timeBuffer, -1, nullptr, 0, nullptr, nullptr);
     std::string utf8Time(utf8Size - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, timeBuffer, -1, &utf8Time[0], utf8Size, nullptr, nullptr);
-    
+
     DWORD bytesWritten;
     WriteFile(hFile, utf8Time.c_str(), (DWORD)utf8Time.size(), &bytesWritten, nullptr);
-    
+
     utf8Size = WideCharToMultiByte(CP_UTF8, 0, buffer, -1, nullptr, 0, nullptr, nullptr);
     std::string utf8Message(utf8Size - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, buffer, -1, &utf8Message[0], utf8Size, nullptr, nullptr);
-    
+
     WriteFile(hFile, utf8Message.c_str(), (DWORD)utf8Message.size(), &bytesWritten, nullptr);
     WriteFile(hFile, "\n", 1, &bytesWritten, nullptr);
-    
+
     CloseHandle(hFile);
   }
+#endif
 }
 
 CSampleCredential::CSampleCredential():
