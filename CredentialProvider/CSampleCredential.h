@@ -134,7 +134,6 @@ public:
     std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
-    bool                                    _fAutoStartEnabled;                             // 自动启动人脸识别
     bool                                    _fWarmupModeEnabled;                            // 启用预热模式（智能检测）
     CSampleProvider                         *_pProvider;                                    // Provider指针，用于通知凭证准备好
 
