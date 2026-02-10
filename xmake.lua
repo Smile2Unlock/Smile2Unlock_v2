@@ -3,7 +3,6 @@ add_rules("plugin.compile_commands.autoupdate", {outputdir = ".vscode"})
 
 add_repositories("myrepo local-repo")
 add_requires("SeetaFace6Open")
-add_requires("localopencv")
 add_requires("cryptopp")
 add_requires("cxxopts")
 add_requires("boost", {configs = {asio = true}})
