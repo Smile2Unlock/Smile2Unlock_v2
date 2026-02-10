@@ -1,6 +1,5 @@
 #pragma once
 
-#include <opencv2/opencv.hpp>
 #include <seeta/FaceDetector.h>
 #include <filesystem>
 #include <memory>

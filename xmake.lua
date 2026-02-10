@@ -18,15 +18,15 @@ target("FaceRecognizer")
     add_includedirs("FaceRecognizer/src", {public = false})
     add_defines("_WIN32_WINNT=0x0602")  -- Windows 8 
     add_packages("SeetaFace6Open")
-    add_packages("localopencv")
     add_packages("cryptopp")
     add_packages("cxxopts")
     add_packages("boost")
     add_links("Advapi32")
+    add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
+    add_cxflags("/DWIN32_LEAN_AND_MEAN")
 
     after_build(function (target)
         if is_plat("windows") then
-            os.cp("$(projectdir)/local-repo/packages/l/localopencv/windows/opencv/build/x64/vc16/bin/*.dll", target:targetdir())
             os.cp("$(projectdir)/local-repo/packages/s/SeetaFace6Open/windows/lib/*.dll", target:targetdir())
         end
         os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
