@@ -8,6 +8,7 @@ add_requires("cxxopts")
 add_requires("boost", {configs = {asio = true}})
 
 target("FaceRecognizer")
+    set_encodings("utf-8")
     set_languages("c++26")
     set_policy("build.c++.modules", true)
     set_kind("binary")
@@ -55,6 +56,7 @@ target("FaceRecognizer")
 
 
 target("SampleV2CredentialProvider")
+    set_encodings("utf-8")
     set_languages("c++26")
     set_kind("shared")
     set_arch("x64")
@@ -65,7 +67,7 @@ target("SampleV2CredentialProvider")
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
     add_links("Credui", "Shlwapi", "Secur32")
     add_files("CredentialProvider/samplev2credentialprovider.def")
-
+    
     -- 资源文件处理
     add_files("CredentialProvider/resources.rc")
 
