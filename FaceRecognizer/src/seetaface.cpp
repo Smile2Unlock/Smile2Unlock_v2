@@ -217,22 +217,38 @@ bool seetaface::predict(const SeetaImageData& image,
                         const SeetaRect& face,
                         const SeetaPointF* points,
                         float liveness_threshold) {
-  //设置活体检测阈值
-  pFAS->SetThreshold(0.3f,0.8f);
+  // 设置活体检测阈值
+  // 默认值: clarity=0.3, reality=0.8
+  // clarity越低要求图像质量越低，reality越高对识别要求越严格
+  pFAS->SetThreshold(0.3f, liveness_threshold);
 
   // 使用SeetaFace反欺骗模块预测
   auto status = pFAS->Predict(image, face, points);
 
+  // 获取活体检测分数
+  float clarity = 0.0f;
+  float reality = 0.0f;
+  pFAS->GetPreFrameScore(&clarity, &reality);
+
+  // 输出活体检测分数和阈值
+  float clarity_threshold = 0.0f;
+  float reality_threshold = 0.0f;
+  pFAS->GetThreshold(&clarity_threshold, &reality_threshold);
+
+  std::println("[活体检测] 清晰度: {:.3f} (阈值: {:.2f}), 真实度: {:.3f} (阈值: {:.2f})",
+               clarity, clarity_threshold, reality, reality_threshold);
+
   // 根据预测状态返回结果
   switch (status) {
     case seeta::FaceAntiSpoofing::REAL:
-      std::println("真实人脸");
+      std::println("[活体检测] ✓ 真实人脸");
       return true;
     case seeta::FaceAntiSpoofing::SPOOF:
-      std::println("攻击人脸");
+      std::println("[活体检测] ✗ 攻击检测 (clarity < {:.2f} 或 reality < {:.2f})",
+                   clarity_threshold, reality_threshold);
       return false;
     default:  // 包括FUZZY和DETECTING状态
-      std::println("无法判断或正在检测");
+      std::println("[活体检测] ? 无法判断或正在检测");
       return false;
   }
 }
