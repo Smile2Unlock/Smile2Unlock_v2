@@ -25,9 +25,16 @@ public:
 
     // 用户管理服务
     std::vector<User> GetAllUsers();
-    bool AddUser(const std::string& username, const std::string& password, std::string& error_message);
+    bool AddUser(const std::string& username, const std::string& password, const std::string& remark, std::string& error_message);
+    bool UpdateUser(int user_id, const std::string& username, const std::string& password, const std::string& remark, std::string& error_message);
     bool DeleteUser(int userId, std::string& error_message);
 
+    // 人脸管理服务
+    bool AddFace(int user_id, const std::string& image_path, const std::string& remark, std::string& error_message);
+    bool DeleteFace(int user_id, int face_id, std::string& error_message);
+    bool UpdateFaceRemark(int user_id, int face_id, const std::string& remark, std::string& error_message);
+    std::vector<FaceData> GetUserFaces(int user_id);
+    
     // 人脸识别服务
     bool StartRecognition(std::string& error_message);
     void StopRecognition();

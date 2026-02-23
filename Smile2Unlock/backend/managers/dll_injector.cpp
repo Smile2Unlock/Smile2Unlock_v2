@@ -250,6 +250,9 @@ DllStatus DllInjector::GetStatus() {
     status.hash_match = VerifyDllHash();
     status.source_version = GetDllVersion(status.source_path);
     status.target_version = GetDllVersion(status.target_path);
+    status.version_match = (!status.source_version.empty() && 
+                           !status.target_version.empty() &&
+                           status.source_version == status.target_version);
     return status;
 }
 

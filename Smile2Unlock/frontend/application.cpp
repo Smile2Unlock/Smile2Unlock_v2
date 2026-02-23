@@ -1,4 +1,5 @@
 #include "Smile2Unlock/frontend/application.h"
+#include <algorithm>
 #include <iostream>
 #include <windows.h>
 #include <GL/gl.h>
@@ -125,22 +126,26 @@ void Application::Shutdown() {
 }
 
 void Application::RenderUI() {
-    // 主窗口
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(1600, 900), ImGuiCond_FirstUseEver);
-
-    ImGui::Begin("Smile2Unlock Control Panel", nullptr, ImGuiWindowFlags_MenuBar);
+    // 使用全窗口模式，不创建额外窗口
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    
+    ImGui::Begin("Smile2Unlock 控制面板", nullptr, 
+                 ImGuiWindowFlags_NoResize | 
+                 ImGuiWindowFlags_NoMove | 
+                 ImGuiWindowFlags_NoCollapse |
+                 ImGuiWindowFlags_MenuBar);
 
     // 菜单栏
     if (ImGui::BeginMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Exit", "Alt+F4")) {
+        if (ImGui::BeginMenu("文件")) {
+            if (ImGui::MenuItem("退出", "Alt+F4")) {
                 glfwSetWindowShouldClose(window_, true);
             }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("About")) {
+        if (ImGui::BeginMenu("帮助")) {
+            if (ImGui::MenuItem("关于")) {
                 ui_state_.show_demo_window = !ui_state_.show_demo_window;
             }
             ImGui::EndMenu();
@@ -150,17 +155,17 @@ void Application::RenderUI() {
 
     // 标签页
     if (ImGui::BeginTabBar("MainTabBar")) {
-        if (ImGui::BeginTabItem("DLL Injector")) {
+        if (ImGui::BeginTabItem("DLL 注入器")) {
             RenderInjectorPanel();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("User Management")) {
+        if (ImGui::BeginTabItem("用户管理")) {
             RenderUsersPanel();
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("Face Recognition")) {
+        if (ImGui::BeginTabItem("人脸识别")) {
             RenderRecognizerPanel();
             ImGui::EndTabItem();
         }
@@ -271,20 +276,22 @@ void Application::RenderInjectorPanel() {
 }
 
 void Application::RenderUsersPanel() {
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "User Management");
+    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "用户管理");
     ImGui::Separator();
     ImGui::Spacing();
 
     auto users = backend_->GetAllUsers();
-    ImGui::Text("Registered Users: %d", (int)users.size());
+    ImGui::Text("已注册用户: %d", (int)users.size());
     ImGui::Spacing();
 
     // 用户表格
-    if (ImGui::BeginTable("UsersTable", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+    if (ImGui::BeginTable("UsersTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("ID");
-        ImGui::TableSetupColumn("Username");
-        ImGui::TableSetupColumn("Face Feature");
-        ImGui::TableSetupColumn("Actions");
+        ImGui::TableSetupColumn("用户名");
+        ImGui::TableSetupColumn("人脸数量");
+        ImGui::TableSetupColumn("备注");
+        ImGui::TableSetupColumn("操作");
+        ImGui::TableSetupColumn("人脸管理");
         ImGui::TableHeadersRow();
 
         for (auto& user : users) {
@@ -297,13 +304,23 @@ void Application::RenderUsersPanel() {
             ImGui::Text("%s", user.username.c_str());
 
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextWrapped("%s", user.face_feature.c_str());
+            ImGui::Text("%d 张", (int)user.faces.size());
 
             ImGui::TableSetColumnIndex(3);
-            std::string btn_id = "Delete##" + std::to_string(user.id);
-            if (ImGui::Button(btn_id.c_str())) {
+            ImGui::TextWrapped("%s", user.remark.c_str());
+
+            ImGui::TableSetColumnIndex(4);
+            std::string btn_delete = "删除##user_" + std::to_string(user.id);
+            if (ImGui::Button(btn_delete.c_str())) {
                 std::string error;
                 backend_->DeleteUser(user.id, error);
+            }
+            
+            ImGui::TableSetColumnIndex(5);
+            std::string btn_face = "管理人脸##face_" + std::to_string(user.id);
+            if (ImGui::Button(btn_face.c_str())) {
+                ui_state_.selected_user_id = user.id;
+                ui_state_.show_face_capture = true;
             }
         }
 
@@ -315,20 +332,100 @@ void Application::RenderUsersPanel() {
     ImGui::Spacing();
 
     // 添加用户
-    ImGui::Text("Add New User:");
-    ImGui::InputText("Username", ui_state_.new_username, sizeof(ui_state_.new_username));
-    ImGui::InputText("Password", ui_state_.new_password, sizeof(ui_state_.new_password), ImGuiInputTextFlags_Password);
+    ImGui::Text("添加新用户:");
+    ImGui::InputText("用户名", ui_state_.new_username, sizeof(ui_state_.new_username));
+    ImGui::InputText("密码", ui_state_.new_password, sizeof(ui_state_.new_password), ImGuiInputTextFlags_Password);
+    ImGui::InputText("备注", ui_state_.new_remark, sizeof(ui_state_.new_remark));
 
-    if (ImGui::Button("Add User", ImVec2(150, 30))) {
+    if (ImGui::Button("添加用户", ImVec2(150, 30))) {
         std::string error;
-        if (backend_->AddUser(ui_state_.new_username, ui_state_.new_password, error)) {
-            ui_state_.status_message = "✓ User added successfully!";
+        if (backend_->AddUser(ui_state_.new_username, ui_state_.new_password, ui_state_.new_remark, error)) {
+            ui_state_.status_message = "✓ " + error;
             memset(ui_state_.new_username, 0, sizeof(ui_state_.new_username));
             memset(ui_state_.new_password, 0, sizeof(ui_state_.new_password));
+            memset(ui_state_.new_remark, 0, sizeof(ui_state_.new_remark));
         } else {
-            ui_state_.status_message = "✗ Failed: " + error;
+            ui_state_.status_message = "✗ " + error;
         }
         ui_state_.status_message_timer = 3.0f;
+    }
+
+    // 人脸管理弹窗
+    if (ui_state_.show_face_capture) {
+        ImGui::OpenPopup("人脸管理");
+        ui_state_.show_face_capture = false;
+    }
+    
+    if (ImGui::BeginPopupModal("人脸管理", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        auto user_opt = backend_->GetAllUsers();
+        auto user_it = std::find_if(user_opt.begin(), user_opt.end(), 
+                                     [this](const User& u) { return u.id == ui_state_.selected_user_id; });
+        
+        if (user_it != user_opt.end()) {
+            ImGui::Text("用户: %s", user_it->username.c_str());
+            ImGui::Separator();
+            ImGui::Spacing();
+            
+            // 显示已有人脸
+            auto faces = backend_->GetUserFaces(user_it->id);
+            ImGui::Text("已录入人脸: %d 张", (int)faces.size());
+            ImGui::Spacing();
+            
+            if (ImGui::BeginTable("FacesTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("ID");
+                ImGui::TableSetupColumn("备注");
+                ImGui::TableSetupColumn("操作");
+                ImGui::TableHeadersRow();
+                
+                for (const auto& face : faces) {
+                    ImGui::TableNextRow();
+                    
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%d", face.id);
+                    
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextWrapped("%s", face.remark.c_str());
+                    
+                    ImGui::TableSetColumnIndex(2);
+                    std::string btn_del_face = "删除##face_" + std::to_string(face.id);
+                    if (ImGui::Button(btn_del_face.c_str())) {
+                        std::string error;
+                        backend_->DeleteFace(user_it->id, face.id, error);
+                    }
+                }
+                
+                ImGui::EndTable();
+            }
+            
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            
+            // 添加新人脸
+            ImGui::Text("录入新人脸:");
+            ImGui::InputText("备注##face", ui_state_.face_remark, sizeof(ui_state_.face_remark));
+            
+            if (ImGui::Button("打开摄像头", ImVec2(150, 30))) {
+                // TODO: 打开摄像头预览
+                ui_state_.status_message = "摄像头功能开发中...";
+                ui_state_.status_message_timer = 3.0f;
+            }
+            
+            ImGui::SameLine();
+            
+            if (ImGui::Button("从文件导入", ImVec2(150, 30))) {
+                // TODO: 文件选择对话框
+                ui_state_.status_message = "文件导入功能开发中...";
+                ui_state_.status_message_timer = 3.0f;
+            }
+        }
+        
+        ImGui::Spacing();
+        if (ImGui::Button("关闭", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        
+        ImGui::EndPopup();
     }
 
     if (ui_state_.status_message_timer > 0.0f) {

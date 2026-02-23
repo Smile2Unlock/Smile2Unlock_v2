@@ -85,12 +85,10 @@ target("Smile2UnlockBackend")
         "Smile2Unlock/backend/service.cpp",
         "Smile2Unlock/backend/managers/*.cpp"
     )
-    add_headerfiles(
-        "Smile2Unlock/backend/**.h"
-    )
-    add_includedirs(".", {public = true})  -- 使所有 Smile2Unlock/* 路径可用
+    add_headerfiles("Smile2Unlock/backend/**.h")
+    add_includedirs(".", {public = true})
     add_defines("_WIN32_WINNT=0x0602")
-    add_packages("cryptopp")
+    add_packages("cryptopp")  -- 只保留密码学库
     add_syslinks("advapi32", "version", "crypt32")
 
 -- Smile2Unlock GUI
@@ -100,15 +98,9 @@ target("Smile2Unlock")
     set_languages("c++26")
     set_default(true)
     add_deps("Smile2UnlockBackend")
-    add_files("Smile2Unlock/gui/Smile2unlock.cpp", "Smile2Unlock/frontend/*.cpp")
-    add_headerfiles("Smile2Unlock/frontend/**.h")
-    add_includedirs(".")  -- 使所有 Smile2Unlock/* 路径可用
+    add_files("Smile2Unlock/Smile2unlock.cpp", "Smile2Unlock/frontend/*.cpp")
+    add_headerfiles("Smile2Unlock/frontend/**.h", "Smile2Unlock/backend/utils/**.h")
+    add_includedirs(".")
     add_defines("_WIN32_WINNT=0x0602")
     add_packages("glfw", "imgui")
     add_syslinks("opengl32", "gdi32", "user32", "shell32")
-    after_build(function (target)
-        local cp_dll = path.join(target:targetdir(), "..", "SampleV2CredentialProvider.dll")
-        if os.isfile(cp_dll) then
-            os.cp(cp_dll, target:targetdir())
-        end
-    end)
