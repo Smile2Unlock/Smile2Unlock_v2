@@ -1,6 +1,9 @@
 add_rules("mode.debug", "mode.release")
 add_rules("plugin.compile_commands.autoupdate", {outputdir = ".vscode"})
 
+-- 全局定义,避免 winsock 冲突
+add_defines("WIN32_LEAN_AND_MEAN", "_WINSOCKAPI_")
+
 add_repositories("myrepo local-repo")
 add_requires("SeetaFace6Open")
 add_requires("cryptopp")
@@ -11,7 +14,7 @@ add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
 target("FaceRecognizer")
     set_encodings("utf-8")
     set_languages("c++26")
-    set_policy("build.c++.modules", true)
+    -- set_policy("build.c++.modules", true)  -- FaceRecognizer 使用传统 cpp 文件,不使用模块
     set_kind("binary")
     add_files("FaceRecognizer/src/*.cpp")
     add_headerfiles("FaceRecognizer/src/**.h")
@@ -87,8 +90,8 @@ target("Smile2UnlockBackend")
     )
     add_headerfiles("Smile2Unlock/backend/**.h")
     add_includedirs(".", {public = true})
-    add_defines("_WIN32_WINNT=0x0602")
-    add_packages("cryptopp")  -- 只保留密码学库
+    add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN")
+    add_packages("cryptopp", "boost")  -- 添加 Boost (UDP 通信)
     add_syslinks("advapi32", "version", "crypt32")
 
 -- Smile2Unlock GUI
@@ -102,5 +105,5 @@ target("Smile2Unlock")
     add_headerfiles("Smile2Unlock/frontend/**.h", "Smile2Unlock/backend/utils/**.h")
     add_includedirs(".")
     add_defines("_WIN32_WINNT=0x0602")
-    add_packages("glfw", "imgui")
+    add_packages("glfw", "imgui", "boost", "cryptopp")
     add_syslinks("opengl32", "gdi32", "user32", "shell32")

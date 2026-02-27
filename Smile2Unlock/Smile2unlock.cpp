@@ -1,3 +1,5 @@
+#define WIN32_LEAN_AND_MEAN  // 必须在 windows.h 之前定义
+
 #include "Smile2Unlock/frontend/application.h"
 #include <windows.h>
 #include <iostream>
