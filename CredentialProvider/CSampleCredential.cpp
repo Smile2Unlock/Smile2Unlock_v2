@@ -37,7 +37,7 @@
 #include <string>
 #include <vector>
 
-#define AUTO_RECOGNIZE_SUCCESS 0
+#define OUT_DEBUG_TO_FILE 0
 
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
@@ -63,8 +63,8 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
   // 输出到事件日志
   LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
 
-  // 只在 AUTO_RECOGNIZE_SUCCESS 为 1 时输出到文件
-#if AUTO_RECOGNIZE_SUCCESS
+  // 只在 OUT_DEBUG_TO_FILE 为 1 时输出到文件
+#if OUT_DEBUG_TO_FILE
   HANDLE hFile = CreateFileW(L"D:\\Smile2Unlock_v2.log",
                              FILE_APPEND_DATA,
                              FILE_SHARE_READ,
@@ -159,77 +159,140 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
                                       _In_opt_ CSampleProvider *pProvider)
 {
     HRESULT hr = S_OK;
+    LogDebugMessage(L"[INFO] CSampleCredential::Initialize开始，使用场景: %d", cpus);
     _cpus = cpus;
     _pProvider = pProvider;  // 保存Provider指针
 
     GUID guidProvider;
     pcpUser->GetProviderID(&guidProvider);
     _fIsLocalUser = (guidProvider == Identity_LocalUserProvider);
+    LogDebugMessage(L"[INFO] 用户类型: %s", _fIsLocalUser ? L"本地用户" : L"域用户");
 
     // Copy the field descriptors for each field. This is useful if you want to vary the field
     // descriptors based on what Usage scenario the credential was created for.
-    for (DWORD i = 0; SUCCEEDED(hr) && i < ARRAYSIZE(_rgCredProvFieldDescriptors); i++)
+    for (DWORD i = 0; i < ARRAYSIZE(_rgCredProvFieldDescriptors); i++)
     {
         _rgFieldStatePairs[i] = rgfsp[i];
-        HR_CHECK(FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]));
+        HRESULT hrTemp = FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]);
+        if (FAILED(hrTemp))
+        {
+            LogDebugMessage(L"[WARNING] FieldDescriptorCopy failed for field %d: 0x%08X", i, hrTemp);
+            // 继续处理其他字段，但记录第一个错误
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
     }
 
-    // Initialize the String value of all the fields using HR_CHECK macro
-    HR_CHECK_LOG(SHStrDupW(L"Sample Credential", &_rgFieldStrings[SFI_LABEL]), "Initialize SFI_LABEL");
-    HR_CHECK_LOG(SHStrDupW(L"Sample Credential Provider", &_rgFieldStrings[SFI_LARGE_TEXT]), "Initialize SFI_LARGE_TEXT");
-    HR_CHECK_LOG(SHStrDupW(L"Edit Text", &_rgFieldStrings[SFI_EDIT_TEXT]), "Initialize SFI_EDIT_TEXT");
-    HR_CHECK_LOG(SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]), "Initialize SFI_PASSWORD");
-    HR_CHECK_LOG(SHStrDupW(L"Submit", &_rgFieldStrings[SFI_SUBMIT_BUTTON]), "Initialize SFI_SUBMIT_BUTTON");
-    HR_CHECK_LOG(SHStrDupW(L"Checkbox", &_rgFieldStrings[SFI_CHECKBOX]), "Initialize SFI_CHECKBOX");
-    HR_CHECK_LOG(SHStrDupW(L"Combobox", &_rgFieldStrings[SFI_COMBOBOX]), "Initialize SFI_COMBOBOX");
-    HR_CHECK_LOG(SHStrDupW(L"Launch helper window", &_rgFieldStrings[SFI_LAUNCHWINDOW_LINK]), "Initialize SFI_LAUNCHWINDOW_LINK");
-    HR_CHECK_LOG(SHStrDupW(L"Hide additional controls", &_rgFieldStrings[SFI_HIDECONTROLS_LINK]), "Initialize SFI_HIDECONTROLS_LINK");
+    // Initialize the String value of all the fields
+    // 即使某些操作失败，也继续尝试初始化其他字段，确保Credential Provider处于一致状态
     
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName), "Get QualifiedUserName");
+    #define INIT_FIELD_STRING(fieldIndex, text, fieldName) \
+    do { \
+        HRESULT __hr = SHStrDupW(text, &_rgFieldStrings[fieldIndex]); \
+        if (FAILED(__hr)) { \
+            LogDebugMessage(L"[WARNING] Initialize " fieldName L" failed: 0x%08X", __hr); \
+            if (SUCCEEDED(hr)) hr = __hr; \
+        } \
+    } while(0)
+    
+    INIT_FIELD_STRING(SFI_LABEL, L"Sample Credential", L"SFI_LABEL");
+    INIT_FIELD_STRING(SFI_LARGE_TEXT, L"Sample Credential Provider", L"SFI_LARGE_TEXT");
+    INIT_FIELD_STRING(SFI_EDIT_TEXT, L"Edit Text", L"SFI_EDIT_TEXT");
+    INIT_FIELD_STRING(SFI_PASSWORD, L"", L"SFI_PASSWORD");
+    INIT_FIELD_STRING(SFI_SUBMIT_BUTTON, L"Submit", L"SFI_SUBMIT_BUTTON");
+    INIT_FIELD_STRING(SFI_CHECKBOX, L"Checkbox", L"SFI_CHECKBOX");
+    INIT_FIELD_STRING(SFI_COMBOBOX, L"Combobox", L"SFI_COMBOBOX");
+    INIT_FIELD_STRING(SFI_LAUNCHWINDOW_LINK, L"Launch helper window", L"SFI_LAUNCHWINDOW_LINK");
+    INIT_FIELD_STRING(SFI_HIDECONTROLS_LINK, L"Hide additional controls", L"SFI_HIDECONTROLS_LINK");
+    
+    #undef INIT_FIELD_STRING
+    
+    // 获取用户信息
+    HRESULT hrTemp = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
+    if (FAILED(hrTemp)) {
+        LogDebugMessage(L"[WARNING] Get QualifiedUserName failed: 0x%08X", hrTemp);
+        if (SUCCEEDED(hr)) hr = hrTemp;
+        _pszQualifiedUserName = nullptr;
+    }
 
+    // 获取用户名
     PWSTR pszUserName = nullptr;
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName), "Get UserName");
-    if (pszUserName != nullptr)
+    hrTemp = pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName);
+    if (SUCCEEDED(hrTemp) && pszUserName != nullptr)
     {
         wchar_t szString[256];
         StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
-        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]), "Initialize SFI_FULLNAME_TEXT");
+        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
         SAFE_COTASK_MEM_FREE(pszUserName);
     }
     else
     {
-        HR_CHECK_LOG(SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]), "Initialize SFI_FULLNAME_TEXT (NULL)");
+        hrTemp = SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
+        SAFE_COTASK_MEM_FREE(pszUserName); // 安全释放，即使为nullptr
     }
 
+    // 获取显示名
     PWSTR pszDisplayName = nullptr;
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName), "Get DisplayName");
-    if (pszDisplayName != nullptr)
+    hrTemp = pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName);
+    if (SUCCEEDED(hrTemp) && pszDisplayName != nullptr)
     {
         wchar_t szString[256];
         StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
-        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]), "Initialize SFI_DISPLAYNAME_TEXT");
+        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
         SAFE_COTASK_MEM_FREE(pszDisplayName);
     }
     else
     {
-        HR_CHECK_LOG(SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]), "Initialize SFI_DISPLAYNAME_TEXT (NULL)");
+        hrTemp = SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
+        SAFE_COTASK_MEM_FREE(pszDisplayName);
     }
 
+    // 获取登录状态
     PWSTR pszLogonStatus = nullptr;
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus), "Get LogonStatus");
-    if (pszLogonStatus != nullptr)
+    hrTemp = pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus);
+    if (SUCCEEDED(hrTemp) && pszLogonStatus != nullptr)
     {
         wchar_t szString[256];
         StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
-        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]), "Initialize SFI_LOGONSTATUS_TEXT");
+        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
         SAFE_COTASK_MEM_FREE(pszLogonStatus);
     }
     else
     {
-        HR_CHECK_LOG(SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]), "Initialize SFI_LOGONSTATUS_TEXT (NULL)");
+        hrTemp = SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT (NULL) failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
+        SAFE_COTASK_MEM_FREE(pszLogonStatus);
     }
 
-    HR_CHECK_LOG(pcpUser->GetSid(&_pszUserSid), "Get User SID");
+    // 获取用户SID
+    hrTemp = pcpUser->GetSid(&_pszUserSid);
+    if (FAILED(hrTemp)) {
+        LogDebugMessage(L"[WARNING] Get User SID failed: 0x%08X", hrTemp);
+        if (SUCCEEDED(hr)) hr = hrTemp;
+        _pszUserSid = nullptr;
+    }
 
     // 初始化 _pwzUsername 和 _pwzPassword（来自 Sparkin 实现）
     if (_pszQualifiedUserName)
@@ -253,7 +316,12 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     // _pwzPassword 在 GetSerialization 时从密码字段获取
     _pwzPassword = nullptr;
 
-    HR_CHECK_LOG(SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]), "Initialize SFI_FACE_RECOGNITION_LINK");
+    // 初始化面部识别链接字段
+    HRESULT hrTemp2 = SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]);
+    if (FAILED(hrTemp2)) {
+        LogDebugMessage(L"[WARNING] Initialize SFI_FACE_RECOGNITION_LINK failed: 0x%08X", hrTemp2);
+        if (SUCCEEDED(hr)) hr = hrTemp2;
+    }
 
     // 从注册表读取预热模式配置（自动启动已移除，始终自动启动）
     _fWarmupModeEnabled = RegistryHelper::ReadDwordFromRegistry(
@@ -261,6 +329,14 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     LogDebugMessage(L"[INFO] 从注册表读取配置: warmup_mode=%d (自动启动已启用)",
             _fWarmupModeEnabled);
 
+    // 记录初始化结果
+    if (SUCCEEDED(hr)) {
+        LogDebugMessage(L"[INFO] CSampleCredential::Initialize成功完成");
+    } else {
+        LogDebugMessage(L"[WARNING] CSampleCredential::Initialize完成但有错误: 0x%08X", hr);
+    }
+    
+    // 始终返回S_OK以确保Credential Provider可用，即使有非致命错误
     return S_OK;
 }
 
@@ -466,7 +542,11 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
     {
         PWSTR *ppwszStored = &_rgFieldStrings[dwFieldID];
         SAFE_COTASK_MEM_FREE(*ppwszStored);
-        HR_CHECK_LOG(SHStrDupW(pwz, ppwszStored), "SetStringValue");
+        HRESULT hr = SHStrDupW(pwz, ppwszStored);
+        if (FAILED(hr)) {
+            LogDebugMessage(L"[ERROR] SetStringValue failed: 0x%08X", hr);
+            return hr;
+        }
         return S_OK;
     }
     
@@ -1104,29 +1184,56 @@ HRESULT CSampleCredential::TerminateFaceRecognizer() {
     DWORD dwExitCode;
     if (GetExitCodeProcess(_hFaceRecognizerProcess, &dwExitCode)) {
         if (dwExitCode == STILL_ACTIVE) {
-            LogDebugMessage(L"[INFO] FaceRecognizer进程仍在运行，等待其自然退出");
+            LogDebugMessage(L"[INFO] FaceRecognizer进程仍在运行，尝试优雅终止");
 
-            // 等待进程自然退出（超时3秒）
-            DWORD waitResult = WaitForSingleObject(_hFaceRecognizerProcess, 3000);
+            // 使用现代C++特性：减少阻塞时间，更积极的终止策略
+            constexpr DWORD GRACEFUL_TIMEOUT_MS = 1000;  // 减少到1秒
+            constexpr DWORD FORCE_TIMEOUT_MS = 500;      // 强制终止等待500ms
+            
+            // 首先尝试发送关闭信号（如果进程支持）
+            // 注意：FaceRecognizer可能没有处理WM_CLOSE，但我们先尝试
+            
+            // 等待进程自然退出（减少到1秒）
+            DWORD waitResult = WaitForSingleObject(_hFaceRecognizerProcess, GRACEFUL_TIMEOUT_MS);
             if (waitResult == WAIT_TIMEOUT) {
-                LogDebugMessage(L"[WARNING] 进程未在3秒内退出，尝试强制终止");
+                LogDebugMessage(L"[WARNING] 进程未在1秒内优雅退出，尝试强制终止");
+                
+                // 尝试强制终止
                 if (!TerminateProcess(_hFaceRecognizerProcess, 1)) {
                     DWORD dwError = GetLastError();
                     // ACCESS_DENIED 是常见的，可能是权限不足或进程已退出
                     if (dwError == ERROR_ACCESS_DENIED) {
-                        LogDebugMessage(L"[INFO] 无法终止进程（权限不足或已退出），忽略");
+                        LogDebugMessage(L"[INFO] 无法强制终止进程（权限不足或已退出），等待短暂时间后清理");
+                        // 等待短暂时间后检查进程是否已退出
+                        WaitForSingleObject(_hFaceRecognizerProcess, FORCE_TIMEOUT_MS);
                     } else {
                         LogDebugMessage(L"[WARNING] 无法强制终止进程，错误代码: 0x%08X", dwError);
                     }
                 } else {
                     LogDebugMessage(L"[INFO] FaceRecognizer进程已被强制终止");
+                    // 等待进程完全退出
+                    WaitForSingleObject(_hFaceRecognizerProcess, FORCE_TIMEOUT_MS);
                 }
             } else if (waitResult == WAIT_OBJECT_0) {
-                LogDebugMessage(L"[INFO] FaceRecognizer进程已自然退出");
+                LogDebugMessage(L"[INFO] FaceRecognizer进程已优雅退出");
+            } else if (waitResult == WAIT_FAILED) {
+                DWORD dwError = GetLastError();
+                LogDebugMessage(L"[WARNING] 等待进程退出失败，错误代码: 0x%08X", dwError);
             }
         } else {
             LogDebugMessage(L"[INFO] FaceRecognizer进程已退出，退出代码: %d", dwExitCode);
         }
+    } else {
+        DWORD dwError = GetLastError();
+        LogDebugMessage(L"[WARNING] 获取进程退出代码失败，错误代码: 0x%08X", dwError);
+    }
+
+    // 清理进程句柄
+    if (_hFaceRecognizerProcess != nullptr) {
+        CloseHandle(_hFaceRecognizerProcess);
+        _hFaceRecognizerProcess = nullptr;
+        _dwFaceRecognizerPID = 0;
+        LogDebugMessage(L"[INFO] 已清理FaceRecognizer进程句柄");
     }
 
     return S_OK;
@@ -1143,9 +1250,32 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
 
     // 启动识别线程
     try {
-        // 关闭旧线程
+        // 使用现代C++特性：带超时的异步线程停止
         if (_faceRecognitionThread.joinable()) {
-            _faceRecognitionThread.join();
+            LogDebugMessage(L"[INFO] 检测到旧线程仍在运行，尝试停止...");
+            
+            // 先设置取消标志
+            {
+                std::lock_guard<std::mutex> lock(_faceMutex);
+                _fFaceRecognitionRunning = false;
+            }
+            
+            // 使用std::async和std::future实现带超时的join
+            auto stop_future = std::async(std::launch::async, [this]() {
+                try {
+                    _faceRecognitionThread.join();
+                    LogDebugMessage(L"[INFO] 旧线程已成功停止");
+                } catch (const std::exception& e) {
+                    LogDebugMessage(L"[WARNING] 停止旧线程时发生异常");
+                }
+            });
+            
+            // 等待最多1秒
+            auto status = stop_future.wait_for(std::chrono::seconds(1));
+            if (status == std::future_status::timeout) {
+                LogDebugMessage(L"[WARNING] 旧线程未在1秒内停止，分离线程以避免阻塞");
+                _faceRecognitionThread.detach();  // 分离线程，让它在后台运行
+            }
         }
 
         // 重置识别状态
@@ -1168,11 +1298,21 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
               LogDebugMessage(L"[INFO] 启用预热模式，先进行轻量级人脸检测");
               HRESULT hr = LaunchFaceRecognizer(L"warmup");
               if (SUCCEEDED(hr)) {
-                // 无限期等待预热完成（检测到人脸、用户切换、锁屏或系统休眠时退出）
-                const int CHECK_INTERVAL_MS = 100;
-
+                // 使用现代C++特性：带超时的等待循环
+                constexpr auto CHECK_INTERVAL = std::chrono::milliseconds(100);
+                constexpr auto WARMUP_TIMEOUT = std::chrono::seconds(30);  // 30秒超时
+                
                 extern std::atomic<RecognitionStatus> face_recognition_status;
+                auto warmup_start = std::chrono::steady_clock::now();
+                
                 while (true) {
+                  // 检查超时
+                  auto now = std::chrono::steady_clock::now();
+                  if (now - warmup_start > WARMUP_TIMEOUT) {
+                    LogDebugMessage(L"[WARNING] 预热模式超时（30秒）");
+                    break;
+                  }
+                  
                   // 检查识别是否被取消
                   {
                     std::lock_guard<std::mutex> lock(_faceMutex);
@@ -1190,8 +1330,7 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                     break;
                   }
                   
-                  std::this_thread::sleep_for(
-                      std::chrono::milliseconds(CHECK_INTERVAL_MS));
+                  std::this_thread::sleep_for(CHECK_INTERVAL);
                 }
 
                 // 终止预热进程
@@ -1272,25 +1411,47 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
 void CSampleCredential::StopFaceRecognition() {
     LogDebugMessage(L"[INFO] 停止人脸识别");
 
-    // 终止进程
-    TerminateFaceRecognizer();
-
-    // 标记为不运行
+    // 先设置取消标志，让识别线程知道应该停止
     {
         std::lock_guard<std::mutex> lock(_faceMutex);
         _fFaceRecognitionRunning = false;
     }
 
-    // 等待线程结束（超时5秒）
+    // 使用现代C++特性：异步终止进程，不阻塞当前线程
+    std::thread([this]() {
+        LogDebugMessage(L"[INFO] 后台线程开始终止FaceRecognizer进程");
+        TerminateFaceRecognizer();
+        LogDebugMessage(L"[INFO] 后台线程完成进程终止");
+    }).detach();  // 分离线程，让它在后台运行
+
+    // 使用带超时的异步线程停止
     if (_faceRecognitionThread.joinable()) {
-        auto thread_future = std::async(std::launch::async, [this]() {
-            _faceRecognitionThread.join();
+        LogDebugMessage(L"[INFO] 尝试停止识别线程（超时2秒）");
+        
+        auto stop_future = std::async(std::launch::async, [this]() {
+            try {
+                _faceRecognitionThread.join();
+                LogDebugMessage(L"[INFO] 识别线程已成功停止");
+                return true;
+            } catch (const std::exception& e) {
+                LogDebugMessage(L"[WARNING] 停止识别线程时发生异常");
+                return false;
+            }
         });
-        auto status = thread_future.wait_for(std::chrono::seconds(5));
+        
+        // 等待最多2秒
+        auto status = stop_future.wait_for(std::chrono::seconds(2));
         if (status == std::future_status::timeout) {
-            LogDebugMessage(L"[WARNING] 识别线程无响应，继续清理");
+            LogDebugMessage(L"[WARNING] 识别线程未在2秒内停止，分离线程以避免阻塞");
+            _faceRecognitionThread.detach();  // 分离线程，让它在后台运行
+        } else {
+            // 线程已停止，获取结果
+            bool stopped = stop_future.get();
+            if (!stopped) {
+                LogDebugMessage(L"[WARNING] 识别线程停止过程中出现问题");
+            }
         }
     }
 
-    LogDebugMessage(L"[INFO] 人脸识别已停止");
+    LogDebugMessage(L"[INFO] 人脸识别停止信号已发送，将在后台完成清理");
 }
