@@ -159,77 +159,140 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
                                       _In_opt_ CSampleProvider *pProvider)
 {
     HRESULT hr = S_OK;
+    LogDebugMessage(L"[INFO] CSampleCredential::Initialize开始，使用场景: %d", cpus);
     _cpus = cpus;
     _pProvider = pProvider;  // 保存Provider指针
 
     GUID guidProvider;
     pcpUser->GetProviderID(&guidProvider);
     _fIsLocalUser = (guidProvider == Identity_LocalUserProvider);
+    LogDebugMessage(L"[INFO] 用户类型: %s", _fIsLocalUser ? L"本地用户" : L"域用户");
 
     // Copy the field descriptors for each field. This is useful if you want to vary the field
     // descriptors based on what Usage scenario the credential was created for.
-    for (DWORD i = 0; SUCCEEDED(hr) && i < ARRAYSIZE(_rgCredProvFieldDescriptors); i++)
+    for (DWORD i = 0; i < ARRAYSIZE(_rgCredProvFieldDescriptors); i++)
     {
         _rgFieldStatePairs[i] = rgfsp[i];
-        HR_CHECK(FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]));
+        HRESULT hrTemp = FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]);
+        if (FAILED(hrTemp))
+        {
+            LogDebugMessage(L"[WARNING] FieldDescriptorCopy failed for field %d: 0x%08X", i, hrTemp);
+            // 继续处理其他字段，但记录第一个错误
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
     }
 
-    // Initialize the String value of all the fields using HR_CHECK macro
-    HR_CHECK_LOG(SHStrDupW(L"Sample Credential", &_rgFieldStrings[SFI_LABEL]), "Initialize SFI_LABEL");
-    HR_CHECK_LOG(SHStrDupW(L"Sample Credential Provider", &_rgFieldStrings[SFI_LARGE_TEXT]), "Initialize SFI_LARGE_TEXT");
-    HR_CHECK_LOG(SHStrDupW(L"Edit Text", &_rgFieldStrings[SFI_EDIT_TEXT]), "Initialize SFI_EDIT_TEXT");
-    HR_CHECK_LOG(SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]), "Initialize SFI_PASSWORD");
-    HR_CHECK_LOG(SHStrDupW(L"Submit", &_rgFieldStrings[SFI_SUBMIT_BUTTON]), "Initialize SFI_SUBMIT_BUTTON");
-    HR_CHECK_LOG(SHStrDupW(L"Checkbox", &_rgFieldStrings[SFI_CHECKBOX]), "Initialize SFI_CHECKBOX");
-    HR_CHECK_LOG(SHStrDupW(L"Combobox", &_rgFieldStrings[SFI_COMBOBOX]), "Initialize SFI_COMBOBOX");
-    HR_CHECK_LOG(SHStrDupW(L"Launch helper window", &_rgFieldStrings[SFI_LAUNCHWINDOW_LINK]), "Initialize SFI_LAUNCHWINDOW_LINK");
-    HR_CHECK_LOG(SHStrDupW(L"Hide additional controls", &_rgFieldStrings[SFI_HIDECONTROLS_LINK]), "Initialize SFI_HIDECONTROLS_LINK");
+    // Initialize the String value of all the fields
+    // 即使某些操作失败，也继续尝试初始化其他字段，确保Credential Provider处于一致状态
     
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName), "Get QualifiedUserName");
+    #define INIT_FIELD_STRING(fieldIndex, text, fieldName) \
+    do { \
+        HRESULT __hr = SHStrDupW(text, &_rgFieldStrings[fieldIndex]); \
+        if (FAILED(__hr)) { \
+            LogDebugMessage(L"[WARNING] Initialize " fieldName L" failed: 0x%08X", __hr); \
+            if (SUCCEEDED(hr)) hr = __hr; \
+        } \
+    } while(0)
+    
+    INIT_FIELD_STRING(SFI_LABEL, L"Sample Credential", L"SFI_LABEL");
+    INIT_FIELD_STRING(SFI_LARGE_TEXT, L"Sample Credential Provider", L"SFI_LARGE_TEXT");
+    INIT_FIELD_STRING(SFI_EDIT_TEXT, L"Edit Text", L"SFI_EDIT_TEXT");
+    INIT_FIELD_STRING(SFI_PASSWORD, L"", L"SFI_PASSWORD");
+    INIT_FIELD_STRING(SFI_SUBMIT_BUTTON, L"Submit", L"SFI_SUBMIT_BUTTON");
+    INIT_FIELD_STRING(SFI_CHECKBOX, L"Checkbox", L"SFI_CHECKBOX");
+    INIT_FIELD_STRING(SFI_COMBOBOX, L"Combobox", L"SFI_COMBOBOX");
+    INIT_FIELD_STRING(SFI_LAUNCHWINDOW_LINK, L"Launch helper window", L"SFI_LAUNCHWINDOW_LINK");
+    INIT_FIELD_STRING(SFI_HIDECONTROLS_LINK, L"Hide additional controls", L"SFI_HIDECONTROLS_LINK");
+    
+    #undef INIT_FIELD_STRING
+    
+    // 获取用户信息
+    HRESULT hrTemp = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
+    if (FAILED(hrTemp)) {
+        LogDebugMessage(L"[WARNING] Get QualifiedUserName failed: 0x%08X", hrTemp);
+        if (SUCCEEDED(hr)) hr = hrTemp;
+        _pszQualifiedUserName = nullptr;
+    }
 
+    // 获取用户名
     PWSTR pszUserName = nullptr;
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName), "Get UserName");
-    if (pszUserName != nullptr)
+    hrTemp = pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName);
+    if (SUCCEEDED(hrTemp) && pszUserName != nullptr)
     {
         wchar_t szString[256];
         StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
-        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]), "Initialize SFI_FULLNAME_TEXT");
+        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
         SAFE_COTASK_MEM_FREE(pszUserName);
     }
     else
     {
-        HR_CHECK_LOG(SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]), "Initialize SFI_FULLNAME_TEXT (NULL)");
+        hrTemp = SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
+        SAFE_COTASK_MEM_FREE(pszUserName); // 安全释放，即使为nullptr
     }
 
+    // 获取显示名
     PWSTR pszDisplayName = nullptr;
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName), "Get DisplayName");
-    if (pszDisplayName != nullptr)
+    hrTemp = pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName);
+    if (SUCCEEDED(hrTemp) && pszDisplayName != nullptr)
     {
         wchar_t szString[256];
         StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
-        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]), "Initialize SFI_DISPLAYNAME_TEXT");
+        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
         SAFE_COTASK_MEM_FREE(pszDisplayName);
     }
     else
     {
-        HR_CHECK_LOG(SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]), "Initialize SFI_DISPLAYNAME_TEXT (NULL)");
+        hrTemp = SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
+        SAFE_COTASK_MEM_FREE(pszDisplayName);
     }
 
+    // 获取登录状态
     PWSTR pszLogonStatus = nullptr;
-    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus), "Get LogonStatus");
-    if (pszLogonStatus != nullptr)
+    hrTemp = pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus);
+    if (SUCCEEDED(hrTemp) && pszLogonStatus != nullptr)
     {
         wchar_t szString[256];
         StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
-        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]), "Initialize SFI_LOGONSTATUS_TEXT");
+        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
         SAFE_COTASK_MEM_FREE(pszLogonStatus);
     }
     else
     {
-        HR_CHECK_LOG(SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]), "Initialize SFI_LOGONSTATUS_TEXT (NULL)");
+        hrTemp = SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT (NULL) failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+        }
+        SAFE_COTASK_MEM_FREE(pszLogonStatus);
     }
 
-    HR_CHECK_LOG(pcpUser->GetSid(&_pszUserSid), "Get User SID");
+    // 获取用户SID
+    hrTemp = pcpUser->GetSid(&_pszUserSid);
+    if (FAILED(hrTemp)) {
+        LogDebugMessage(L"[WARNING] Get User SID failed: 0x%08X", hrTemp);
+        if (SUCCEEDED(hr)) hr = hrTemp;
+        _pszUserSid = nullptr;
+    }
 
     // 初始化 _pwzUsername 和 _pwzPassword（来自 Sparkin 实现）
     if (_pszQualifiedUserName)
@@ -253,7 +316,12 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     // _pwzPassword 在 GetSerialization 时从密码字段获取
     _pwzPassword = nullptr;
 
-    HR_CHECK_LOG(SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]), "Initialize SFI_FACE_RECOGNITION_LINK");
+    // 初始化面部识别链接字段
+    HRESULT hrTemp2 = SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]);
+    if (FAILED(hrTemp2)) {
+        LogDebugMessage(L"[WARNING] Initialize SFI_FACE_RECOGNITION_LINK failed: 0x%08X", hrTemp2);
+        if (SUCCEEDED(hr)) hr = hrTemp2;
+    }
 
     // 从注册表读取预热模式配置（自动启动已移除，始终自动启动）
     _fWarmupModeEnabled = RegistryHelper::ReadDwordFromRegistry(
@@ -261,6 +329,14 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     LogDebugMessage(L"[INFO] 从注册表读取配置: warmup_mode=%d (自动启动已启用)",
             _fWarmupModeEnabled);
 
+    // 记录初始化结果
+    if (SUCCEEDED(hr)) {
+        LogDebugMessage(L"[INFO] CSampleCredential::Initialize成功完成");
+    } else {
+        LogDebugMessage(L"[WARNING] CSampleCredential::Initialize完成但有错误: 0x%08X", hr);
+    }
+    
+    // 始终返回S_OK以确保Credential Provider可用，即使有非致命错误
     return S_OK;
 }
 
@@ -466,7 +542,11 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
     {
         PWSTR *ppwszStored = &_rgFieldStrings[dwFieldID];
         SAFE_COTASK_MEM_FREE(*ppwszStored);
-        HR_CHECK_LOG(SHStrDupW(pwz, ppwszStored), "SetStringValue");
+        HRESULT hr = SHStrDupW(pwz, ppwszStored);
+        if (FAILED(hr)) {
+            LogDebugMessage(L"[ERROR] SetStringValue failed: 0x%08X", hr);
+            return hr;
+        }
         return S_OK;
     }
     
