@@ -26,6 +26,7 @@
 #include "managers/ipc/udp/udp_receiver.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
+#include "hresult_helper.h"
 #include <chrono>
 #include <cwchar>
 #include <mutex>
@@ -131,10 +132,7 @@ CSampleCredential::~CSampleCredential()
     StopFaceRecognition();
 
     // 清理进程句柄
-    if (_hFaceRecognizerProcess) {
-        CloseHandle(_hFaceRecognizerProcess);
-        _hFaceRecognizerProcess = nullptr;
-    }
+    SAFE_CLOSE_HANDLE(_hFaceRecognizerProcess);
 
     if (_rgFieldStrings[SFI_PASSWORD])
     {
@@ -143,11 +141,11 @@ CSampleCredential::~CSampleCredential()
     }
     for (int i = 0; i < ARRAYSIZE(_rgFieldStrings); i++)
     {
-        CoTaskMemFree(_rgFieldStrings[i]);
-        CoTaskMemFree(_rgCredProvFieldDescriptors[i].pszLabel);
+        SAFE_COTASK_MEM_FREE(_rgFieldStrings[i]);
+        SAFE_COTASK_MEM_FREE(_rgCredProvFieldDescriptors[i].pszLabel);
     }
-    CoTaskMemFree(_pszUserSid);
-    CoTaskMemFree(_pszQualifiedUserName);
+    SAFE_COTASK_MEM_FREE(_pszUserSid);
+    SAFE_COTASK_MEM_FREE(_pszQualifiedUserName);
     DllRelease();
 }
 
@@ -173,106 +171,68 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     for (DWORD i = 0; SUCCEEDED(hr) && i < ARRAYSIZE(_rgCredProvFieldDescriptors); i++)
     {
         _rgFieldStatePairs[i] = rgfsp[i];
-        hr = FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]);
+        HR_CHECK(FieldDescriptorCopy(rgcpfd[i], &_rgCredProvFieldDescriptors[i]));
     }
 
-    // Initialize the String value of all the fields.
-    if (SUCCEEDED(hr))
+    // Initialize the String value of all the fields using HR_CHECK macro
+    HR_CHECK_LOG(SHStrDupW(L"Sample Credential", &_rgFieldStrings[SFI_LABEL]), "Initialize SFI_LABEL");
+    HR_CHECK_LOG(SHStrDupW(L"Sample Credential Provider", &_rgFieldStrings[SFI_LARGE_TEXT]), "Initialize SFI_LARGE_TEXT");
+    HR_CHECK_LOG(SHStrDupW(L"Edit Text", &_rgFieldStrings[SFI_EDIT_TEXT]), "Initialize SFI_EDIT_TEXT");
+    HR_CHECK_LOG(SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]), "Initialize SFI_PASSWORD");
+    HR_CHECK_LOG(SHStrDupW(L"Submit", &_rgFieldStrings[SFI_SUBMIT_BUTTON]), "Initialize SFI_SUBMIT_BUTTON");
+    HR_CHECK_LOG(SHStrDupW(L"Checkbox", &_rgFieldStrings[SFI_CHECKBOX]), "Initialize SFI_CHECKBOX");
+    HR_CHECK_LOG(SHStrDupW(L"Combobox", &_rgFieldStrings[SFI_COMBOBOX]), "Initialize SFI_COMBOBOX");
+    HR_CHECK_LOG(SHStrDupW(L"Launch helper window", &_rgFieldStrings[SFI_LAUNCHWINDOW_LINK]), "Initialize SFI_LAUNCHWINDOW_LINK");
+    HR_CHECK_LOG(SHStrDupW(L"Hide additional controls", &_rgFieldStrings[SFI_HIDECONTROLS_LINK]), "Initialize SFI_HIDECONTROLS_LINK");
+    
+    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName), "Get QualifiedUserName");
+
+    PWSTR pszUserName = nullptr;
+    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName), "Get UserName");
+    if (pszUserName != nullptr)
     {
-        hr = SHStrDupW(L"Sample Credential", &_rgFieldStrings[SFI_LABEL]);
+        wchar_t szString[256];
+        StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
+        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]), "Initialize SFI_FULLNAME_TEXT");
+        SAFE_COTASK_MEM_FREE(pszUserName);
     }
-    if (SUCCEEDED(hr))
+    else
     {
-        hr = SHStrDupW(L"Sample Credential Provider", &_rgFieldStrings[SFI_LARGE_TEXT]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Edit Text", &_rgFieldStrings[SFI_EDIT_TEXT]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Submit", &_rgFieldStrings[SFI_SUBMIT_BUTTON]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Checkbox", &_rgFieldStrings[SFI_CHECKBOX]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Combobox", &_rgFieldStrings[SFI_COMBOBOX]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Launch helper window", &_rgFieldStrings[SFI_LAUNCHWINDOW_LINK]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"Hide additional controls", &_rgFieldStrings[SFI_HIDECONTROLS_LINK]);
-    }
-    if (SUCCEEDED(hr))
-    {
-        hr = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
-    }
-    if (SUCCEEDED(hr))
-    {
-        PWSTR pszUserName;
-        pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName);
-        if (pszUserName != nullptr)
-        {
-            wchar_t szString[256];
-            StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
-            hr = SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]);
-            CoTaskMemFree(pszUserName);
-        }
-        else
-        {
-            hr =  SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
-        }
-    }
-    if (SUCCEEDED(hr))
-    {
-        PWSTR pszDisplayName;
-        pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName);
-        if (pszDisplayName != nullptr)
-        {
-            wchar_t szString[256];
-            StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
-            hr = SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
-            CoTaskMemFree(pszDisplayName);
-        }
-        else
-        {
-            hr = SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
-        }
-    }
-    if (SUCCEEDED(hr))
-    {
-        PWSTR pszLogonStatus;
-        pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus);
-        if (pszLogonStatus != nullptr)
-        {
-            wchar_t szString[256];
-            StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
-            hr = SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
-            CoTaskMemFree(pszLogonStatus);
-        }
-        else
-        {
-            hr = SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
-        }
+        HR_CHECK_LOG(SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]), "Initialize SFI_FULLNAME_TEXT (NULL)");
     }
 
-    if (SUCCEEDED(hr))
+    PWSTR pszDisplayName = nullptr;
+    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName), "Get DisplayName");
+    if (pszDisplayName != nullptr)
     {
-        hr = pcpUser->GetSid(&_pszUserSid);
+        wchar_t szString[256];
+        StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
+        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]), "Initialize SFI_DISPLAYNAME_TEXT");
+        SAFE_COTASK_MEM_FREE(pszDisplayName);
     }
+    else
+    {
+        HR_CHECK_LOG(SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]), "Initialize SFI_DISPLAYNAME_TEXT (NULL)");
+    }
+
+    PWSTR pszLogonStatus = nullptr;
+    HR_CHECK_LOG(pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus), "Get LogonStatus");
+    if (pszLogonStatus != nullptr)
+    {
+        wchar_t szString[256];
+        StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
+        HR_CHECK_LOG(SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]), "Initialize SFI_LOGONSTATUS_TEXT");
+        SAFE_COTASK_MEM_FREE(pszLogonStatus);
+    }
+    else
+    {
+        HR_CHECK_LOG(SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]), "Initialize SFI_LOGONSTATUS_TEXT (NULL)");
+    }
+
+    HR_CHECK_LOG(pcpUser->GetSid(&_pszUserSid), "Get User SID");
 
     // 初始化 _pwzUsername 和 _pwzPassword（来自 Sparkin 实现）
-    if (SUCCEEDED(hr) && _pszQualifiedUserName)
+    if (_pszQualifiedUserName)
     {
         // 从 QualifiedUserName 中提取用户名部分（可能是 domain\username 或 MicrosoftAccount\email）
         PWSTR pwzBackslash = wcschr(_pszQualifiedUserName, L'\\');
@@ -293,20 +253,15 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     // _pwzPassword 在 GetSerialization 时从密码字段获取
     _pwzPassword = nullptr;
 
-    if (SUCCEEDED(hr))
-    {
-        hr = SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]);
-    }
+    HR_CHECK_LOG(SHStrDupW(L"使用面部识别登录", &_rgFieldStrings[SFI_FACE_RECOGNITION_LINK]), "Initialize SFI_FACE_RECOGNITION_LINK");
 
     // 从注册表读取预热模式配置（自动启动已移除，始终自动启动）
-    if (SUCCEEDED(hr)) {
-        _fWarmupModeEnabled = RegistryHelper::ReadDwordFromRegistry(
-            "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\warmup_mode", 0) != 0;
-        LogDebugMessage(L"[INFO] 从注册表读取配置: warmup_mode=%d (自动启动已启用)",
+    _fWarmupModeEnabled = RegistryHelper::ReadDwordFromRegistry(
+        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\warmup_mode", 0) != 0;
+    LogDebugMessage(L"[INFO] 从注册表读取配置: warmup_mode=%d (自动启动已启用)",
             _fWarmupModeEnabled);
-    }
 
-    return hr;
+    return S_OK;
 }
 
 // LogonUI calls this in order to give us a callback in case we need to notify it of anything.
@@ -395,6 +350,8 @@ HRESULT CSampleCredential::SetDeselected()
         SecureZeroMemory(_rgFieldStrings[SFI_PASSWORD], lenPassword * sizeof(*_rgFieldStrings[SFI_PASSWORD]));
 
         CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
+        _rgFieldStrings[SFI_PASSWORD] = nullptr;
+        
         hr = SHStrDupW(L"", &_rgFieldStrings[SFI_PASSWORD]);
 
         if (SUCCEEDED(hr) && _pCredProvCredentialEvents)
@@ -502,23 +459,18 @@ HRESULT CSampleCredential::GetSubmitButtonValue(DWORD dwFieldID, _Out_ DWORD *pd
 // This is called on each keystroke when a user types into an edit field
 HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
 {
-    HRESULT hr;
-
     // Validate parameters.
     if (dwFieldID < ARRAYSIZE(_rgCredProvFieldDescriptors) &&
         (CPFT_EDIT_TEXT == _rgCredProvFieldDescriptors[dwFieldID].cpft ||
         CPFT_PASSWORD_TEXT == _rgCredProvFieldDescriptors[dwFieldID].cpft))
     {
         PWSTR *ppwszStored = &_rgFieldStrings[dwFieldID];
-        CoTaskMemFree(*ppwszStored);
-        hr = SHStrDupW(pwz, ppwszStored);
+        SAFE_COTASK_MEM_FREE(*ppwszStored);
+        HR_CHECK_LOG(SHStrDupW(pwz, ppwszStored), "SetStringValue");
+        return S_OK;
     }
-    else
-    {
-        hr = E_INVALIDARG;
-    }
-
-    return hr;
+    
+    return E_INVALIDARG;
 }
 
 // Returns whether a checkbox is checked or not as well as its label.

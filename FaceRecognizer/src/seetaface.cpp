@@ -15,7 +15,7 @@ seeta::FaceAntiSpoofing *new_fas_v2() {
     return new seeta::FaceAntiSpoofing(setting);
 }
 
-seetaface::seetaface() {
+seetaface::seetaface() : pFD(nullptr), pFL(nullptr), pFR(nullptr), pFAS(nullptr) {
     std::cout << "[Recognizer] 初始化中..." << std::endl;
 
     // 初始化模型路径字符串 (避免悬空指针)
@@ -29,13 +29,13 @@ seetaface::seetaface() {
     try {
         // 检查模型文件是否存在
         if (!std::filesystem::exists(model_path_fd)) {
-            throw std::runtime_error("人脸检测模型文件不存在: " + model_path_fd);
+            throw FaceRecognition::ModelLoadException("face_detector", "File not found: " + model_path_fd);
         }
         if (!std::filesystem::exists(model_path_fl)) {
-            throw std::runtime_error("人脸特征点定位模型文件不存在: " + model_path_fl);
+            throw FaceRecognition::ModelLoadException("face_landmarker", "File not found: " + model_path_fl);
         }
         if (!std::filesystem::exists(model_path_fr)) {
-            throw std::runtime_error("人脸识别模型文件不存在: " + model_path_fr);
+            throw FaceRecognition::ModelLoadException("face_recognizer", "File not found: " + model_path_fr);
         }
         if (!std::filesystem::exists(model_path_fas1) || !std::filesystem::exists(model_path_fas2)) {
             std::cout << "[Recognizer] 警告: 活体检测模型文件不存在，将禁用活体检测功能" << std::endl;
@@ -71,10 +71,11 @@ seetaface::seetaface() {
     }
     catch (const std::exception& e) {
         std::cerr << "[Recognizer] 初始化失败: " << e.what() << std::endl;
-        if (pFD) delete pFD;
-        if (pFL) delete pFL;
-        if (pFR) delete pFR;
-        if (pFAS) delete pFAS;
+        // 使用安全的删除宏
+        if (pFD) { delete pFD; pFD = nullptr; }
+        if (pFL) { delete pFL; pFL = nullptr; }
+        if (pFR) { delete pFR; pFR = nullptr; }
+        if (pFAS) { delete pFAS; pFAS = nullptr; }
         throw;
     }
 }
