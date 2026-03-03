@@ -16,6 +16,8 @@
 
 // 全局UDP发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;
+// 全局UDP目标端口
+int g_udp_port = 51234;
 // camera* cam = new camera();         // TODO: Initialize when needed
 
 // 人脸注册函数 - 简化版
@@ -105,7 +107,7 @@ int warmupFace(int camera_index, bool debug) {
 
   // 初始化UDP发送器（如果尚未初始化）
   if (!g_udp_sender) {
-    g_udp_sender = std::make_unique<UdpSender>();
+    g_udp_sender = std::make_unique<UdpSender>("127.0.0.1", g_udp_port);
   }
 
   // 使用轻量级检测器（只加载检测模型，速度快）
@@ -189,7 +191,7 @@ int recognizeFace(int camera_index,
 
   // 初始化UDP发送器（优先初始化，用于状态通知）
   if (!g_udp_sender) {
-    g_udp_sender = std::make_unique<UdpSender>();
+    g_udp_sender = std::make_unique<UdpSender>("127.0.0.1", g_udp_port);
   }
 
   // 发送 RECOGNIZING 状态
@@ -387,6 +389,7 @@ int main(int argc, char* argv[]) {
         ("d,debug", "Enable debug output", cxxopts::value<bool>()->default_value("false"))
         ("l,liveness-detection", "Enable liveness detection", cxxopts::value<bool>()->default_value("true"))
         ("s,set-password", "Set the login password interactively", cxxopts::value<bool>()->default_value("false"))
+        ("udp-port", "UDP target port for sending recognition results", cxxopts::value<int>()->default_value("51234"))
         ;
 
     auto result = options.parse(argc, argv);
@@ -489,9 +492,13 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
+    // 获取UDP端口参数
+    g_udp_port = result["udp-port"].as<int>();
+    std::cout << "[Main] UDP 目标端口设置为: " << g_udp_port << std::endl;
+
     // 初始化UDP发送器
     if (!g_udp_sender) {
-        g_udp_sender = std::make_unique<UdpSender>();
+        g_udp_sender = std::make_unique<UdpSender>("127.0.0.1", g_udp_port);
         std::cout << "[Main] 全局UDP发送器已初始化" << std::endl;
     }
 

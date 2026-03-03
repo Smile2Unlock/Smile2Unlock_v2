@@ -3,7 +3,6 @@
 # vscode
 .history/
 
-
 # Folder
 build
 vsxmake2022
@@ -13,3 +12,4 @@ vsxmake2022
 .vs
 .cache
 .claude
+.local_devops
