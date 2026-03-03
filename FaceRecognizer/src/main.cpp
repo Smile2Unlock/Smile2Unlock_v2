@@ -368,8 +368,8 @@ int recognizeFace(int camera_index,
   }
 
   if (recognition_success) {
-    std::cout << "[INFO] 识别成功，保持UDP连接2秒以确保凭证程序接收" << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+    std::cout << "[INFO] 识别成功，保持UDP连接0.1秒以确保凭证程序接收" << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
   std::cout << "人脸识别结束。" << std::endl;
@@ -400,27 +400,30 @@ int main(int argc, char* argv[]) {
     std::string mode = result["mode"].as<std::string>();
     bool set_password = result["set-password"].as<bool>();
 
-
-    //加载配置
-    ConfigManager config_manager("config.ini");
-    // 1. 尝试加载现有配置
-    if (!config_manager.loadConfig()) {
-        std::cout << "Failed to load existing config. Creating default..." << std::endl;
-        // 2. 如果加载失败（例如文件不存在），创建默认配置
-        if (config_manager.createDefaultConfig()) {
-            std::cout << "Default config created successfully. Loading it now..." << std::endl;
-            // 再次尝试加载刚创建的默认配置
-            if (!config_manager.loadConfig()) {
-                std::cerr << "Failed to load the newly created default config." << std::endl;
-                return -1;
-            }
-        } else {
-            std::cerr << "Failed to create default config." << std::endl;
-            return -1;
-        }
+// 加载配置
+auto config_manager = std::make_unique<ConfigManager>("config.ini");
+// 1. 尝试加载现有配置
+if (!config_manager->loadConfig()) {
+  std::cout << "Failed to load existing config. Creating default..."
+            << std::endl;
+  // 2. 如果加载失败（例如文件不存在），创建默认配置
+  if (config_manager->createDefaultConfig()) {
+    std::cout << "Default config created successfully. Loading it now..."
+              << std::endl;
+    // 重新创建对象
+    config_manager = std::make_unique<ConfigManager>("config.ini");
+    if (!config_manager->loadConfig()) {
+      std::cerr << "Failed to load the newly created default config."
+                << std::endl;
+      return -1;
     }
+  } else {
+    std::cerr << "Failed to create default config." << std::endl;
+    return -1;
+  }
+}
 
-    auto current_config = config_manager.getConfig();
+    auto current_config = config_manager->getConfig();
 
 
     
@@ -433,8 +436,8 @@ int main(int argc, char* argv[]) {
         if (thresh.substr(0, 5) == "face=") {
           face_threshold = std::stof(thresh.substr(5));
           current_config.face_threshold = face_threshold;
-          config_manager.setConfig(current_config);
-          if (config_manager.saveConfig()) {
+          config_manager->setConfig(current_config);
+          if (config_manager->saveConfig()) {
             std::cout << "\nModified config saved successfully!" << std::endl;
           } else {
             std::cerr << "\nFailed to save modified config." << std::endl;
@@ -442,8 +445,8 @@ int main(int argc, char* argv[]) {
         } else if (thresh.substr(0, 8) == "liveness=") {
           liveness_threshold = std::stof(thresh.substr(8));
           current_config.liveness_threshold = liveness_threshold;
-          config_manager.setConfig(current_config);
-          if (config_manager.saveConfig()) {
+          config_manager->setConfig(current_config);
+          if (config_manager->saveConfig()) {
             std::cout << "\nModified config saved successfully!" << std::endl;
           } else {
             std::cerr << "\nFailed to save modified config." << std::endl;
@@ -456,8 +459,8 @@ int main(int argc, char* argv[]) {
 
     if (result.count("camera")) {
         current_config.camera = camera_index;
-        config_manager.setConfig(current_config);
-        if (config_manager.saveConfig()) {
+        config_manager->setConfig(current_config);
+        if (config_manager->saveConfig()) {
         std::cout << "\nModified config saved successfully!" << std::endl;
         } else {
         std::cerr << "\nFailed to save modified config." << std::endl;
@@ -468,8 +471,8 @@ int main(int argc, char* argv[]) {
     if (result.count("debug")) {
         auto debug = result["debug"].as<bool>();
         current_config.debug = debug;
-        config_manager.setConfig(current_config);
-        if (config_manager.saveConfig()) {
+        config_manager->setConfig(current_config);
+        if (config_manager->saveConfig()) {
         std::cout << "\nModified config saved successfully!" << std::endl;
         } else {
         std::cerr << "\nFailed to save modified config." << std::endl;
@@ -480,8 +483,8 @@ int main(int argc, char* argv[]) {
     if (result.count("liveness")) {
         auto liveness_detection = result["liveness-detection"].as<bool>();
         current_config.liveness = liveness_detection;
-        config_manager.setConfig(current_config);
-        if (config_manager.saveConfig()) {
+        config_manager->setConfig(current_config);
+        if (config_manager->saveConfig()) {
         std::cout << "\nModified config saved successfully!" << std::endl;
         } else {
         std::cerr << "\nFailed to save modified config." << std::endl;
