@@ -37,7 +37,7 @@
 #include <string>
 #include <vector>
 
-#define AUTO_RECOGNIZE_SUCCESS 0
+#define OUT_DEBUG_TO_FILE 0
 
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
@@ -63,8 +63,8 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
   // 输出到事件日志
   LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
 
-  // 只在 AUTO_RECOGNIZE_SUCCESS 为 1 时输出到文件
-#if AUTO_RECOGNIZE_SUCCESS
+  // 只在 OUT_DEBUG_TO_FILE 为 1 时输出到文件
+#if OUT_DEBUG_TO_FILE
   HANDLE hFile = CreateFileW(L"D:\\Smile2Unlock_v2.log",
                              FILE_APPEND_DATA,
                              FILE_SHARE_READ,
