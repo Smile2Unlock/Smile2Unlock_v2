@@ -357,7 +357,7 @@ HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpc
         _pUdpReceiver = std::make_unique<UdpReceiver>();
         LogDebugMessage(L"[INFO] UDP接收器创建成功，接收线程应已启动");
         // 给接收器线程一点时间来连接
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
         LogDebugMessage(L"[INFO] Advise已完成");
     }
     else

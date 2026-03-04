@@ -10,6 +10,18 @@ ConfigManager::ConfigManager(const std::string& filename)
     m_config.face_threshold = 0.62f;
     m_config.liveness_threshold = 0.8f;
     m_config.debug = false;
+    
+    // 性能优化配置默认值
+    m_config.target_fps = 30;
+    m_config.enable_fps_limit = true;
+    m_config.skip_frames = 1;
+    m_config.enable_async_processing = false;
+    m_config.cache_features = true;
+    
+    // 时间统计初始化
+    m_config.last_frame_time = std::chrono::steady_clock::now();
+    m_config.frame_count = 0;
+    m_config.average_fps = 0.0;
 }
 
 bool ConfigManager::loadConfig() {
@@ -74,6 +86,58 @@ bool ConfigManager::loadConfig() {
         }
     }
 
+    // 加载性能优化配置项
+    if (!core_section.isKeyExist("target_fps")) {
+        std::cerr << "Warning: Key 'target_fps' not found in [core]. Using default value (" << m_config.target_fps << ")." << std::endl;
+    } else {
+        m_config.target_fps = core_section.toInt("target_fps");
+    }
+
+    if (!core_section.isKeyExist("enable_fps_limit")) {
+        std::cerr << "Warning: Key 'enable_fps_limit' not found in [core]. Using default value (" << m_config.enable_fps_limit << ")." << std::endl;
+    } else {
+        std::string fps_limit_str = core_section.toString("enable_fps_limit");
+        if (fps_limit_str == "true" || fps_limit_str == "True" || fps_limit_str == "TRUE" || fps_limit_str == "1") {
+            m_config.enable_fps_limit = true;
+        } else if (fps_limit_str == "false" || fps_limit_str == "False" || fps_limit_str == "FALSE" || fps_limit_str == "0") {
+            m_config.enable_fps_limit = false;
+        } else {
+             std::cerr << "Warning: Invalid value for 'enable_fps_limit' ('" << fps_limit_str << "'). Using default value (" << m_config.enable_fps_limit << ")." << std::endl;
+        }
+    }
+
+    if (!core_section.isKeyExist("skip_frames")) {
+        std::cerr << "Warning: Key 'skip_frames' not found in [core]. Using default value (" << m_config.skip_frames << ")." << std::endl;
+    } else {
+        m_config.skip_frames = core_section.toInt("skip_frames");
+    }
+
+    if (!core_section.isKeyExist("enable_async_processing")) {
+        std::cerr << "Warning: Key 'enable_async_processing' not found in [core]. Using default value (" << m_config.enable_async_processing << ")." << std::endl;
+    } else {
+        std::string async_str = core_section.toString("enable_async_processing");
+        if (async_str == "true" || async_str == "True" || async_str == "TRUE" || async_str == "1") {
+            m_config.enable_async_processing = true;
+        } else if (async_str == "false" || async_str == "False" || async_str == "FALSE" || async_str == "0") {
+            m_config.enable_async_processing = false;
+        } else {
+             std::cerr << "Warning: Invalid value for 'enable_async_processing' ('" << async_str << "'). Using default value (" << m_config.enable_async_processing << ")." << std::endl;
+        }
+    }
+
+    if (!core_section.isKeyExist("cache_features")) {
+        std::cerr << "Warning: Key 'cache_features' not found in [core]. Using default value (" << m_config.cache_features << ")." << std::endl;
+    } else {
+        std::string cache_str = core_section.toString("cache_features");
+        if (cache_str == "true" || cache_str == "True" || cache_str == "TRUE" || cache_str == "1") {
+            m_config.cache_features = true;
+        } else if (cache_str == "false" || cache_str == "False" || cache_str == "FALSE" || cache_str == "0") {
+            m_config.cache_features = false;
+        } else {
+             std::cerr << "Warning: Invalid value for 'cache_features' ('" << cache_str << "'). Using default value (" << m_config.cache_features << ")." << std::endl;
+        }
+    }
+
     return true;
 }
 
@@ -100,6 +164,11 @@ bool ConfigManager::createDefaultConfig() const {
     file << "face_threshold=" << m_config.face_threshold << "\n";
     file << "liveness_threshold=" << m_config.liveness_threshold << "\n";
     file << "debug=" << (m_config.debug ? "true" : "false") << "\n";
+    file << "target_fps=" << m_config.target_fps << "\n";
+    file << "enable_fps_limit=" << (m_config.enable_fps_limit ? "true" : "false") << "\n";
+    file << "skip_frames=" << m_config.skip_frames << "\n";
+    file << "enable_async_processing=" << (m_config.enable_async_processing ? "true" : "false") << "\n";
+    file << "cache_features=" << (m_config.cache_features ? "true" : "false") << "\n";
 
     file.close();
     std::cout << "Default config created: " << m_filename << std::endl;
@@ -120,6 +189,11 @@ bool ConfigManager::saveConfig() const {
     file << "face_threshold=" << m_config.face_threshold << "\n";
     file << "liveness_threshold=" << m_config.liveness_threshold << "\n";
     file << "debug=" << (m_config.debug ? "true" : "false") << "\n";
+    file << "target_fps=" << m_config.target_fps << "\n";
+    file << "enable_fps_limit=" << (m_config.enable_fps_limit ? "true" : "false") << "\n";
+    file << "skip_frames=" << m_config.skip_frames << "\n";
+    file << "enable_async_processing=" << (m_config.enable_async_processing ? "true" : "false") << "\n";
+    file << "cache_features=" << (m_config.cache_features ? "true" : "false") << "\n";
 
     file.close();
     return true;
