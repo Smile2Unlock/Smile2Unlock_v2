@@ -16,6 +16,7 @@ target("FaceRecognizer")
     add_headerfiles("FaceRecognizer/src/**.h")
     add_headerfiles("FaceRecognizer/src/**.hpp")
     add_includedirs("FaceRecognizer/src", {public = false})
+    add_includedirs("common", {public = false})
     
     -- Windows平台特定配置
     if is_plat("windows") then
