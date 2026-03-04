@@ -16,14 +16,48 @@ target("FaceRecognizer")
     add_headerfiles("FaceRecognizer/src/**.h")
     add_headerfiles("FaceRecognizer/src/**.hpp")
     add_includedirs("FaceRecognizer/src", {public = false})
-    add_defines("_WIN32_WINNT=0x0602")  -- Windows 8 
+    
+    -- Windows平台特定配置
+    if is_plat("windows") then
+        add_defines("_WIN32_WINNT=0x0A00")  -- Windows 10
+        add_defines("NOMINMAX")             -- 避免min/max宏冲突
+        add_defines("_CRT_SECURE_NO_WARNINGS")
+        
+        -- 性能优化编译选项
+        add_cxflags("/O2")                  -- 优化速度
+        add_cxflags("/Oi")                  -- 启用内联函数
+        add_cxflags("/Ot")                  -- 偏好速度而非大小
+        add_cxflags("/fp:fast")             -- 快速浮点运算
+        add_cxflags("/GL")                  -- 全程序优化
+        add_cxflags("/Gy")                  -- 函数级链接
+        add_cxflags("/Zc:inline")           -- 移除未使用的函数
+        add_cxflags("/Zc:__cplusplus")      -- 启用正确的__cplusplus宏
+        
+        -- 链接库
+        add_links("Advapi32")
+        add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
+        add_cxflags("/DWIN32_LEAN_AND_MEAN")
+    end
+    
     add_packages("SeetaFace6Open")
     add_packages("cryptopp")
     add_packages("cxxopts")
     add_packages("boost")
-    add_links("Advapi32")
-    add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
-    add_cxflags("/DWIN32_LEAN_AND_MEAN")
+    
+    -- 发布模式下的额外优化
+    if is_mode("release") then
+        add_ldflags("/LTCG")                -- 链接时代码生成
+        add_ldflags("/OPT:REF")             -- 移除未使用的函数和数据
+        add_ldflags("/OPT:ICF")             -- 相同COMDAT折叠
+    end
+    
+    -- 调试模式下的诊断
+    if is_mode("debug") then
+        add_defines("_DEBUG")
+        add_cxflags("/Zi")                  -- 调试信息
+        add_cxflags("/Od")                  -- 禁用优化
+        add_ldflags("/DEBUG")               -- 生成调试信息
+    end
 
     after_build(function (target)
         if is_plat("windows") then
