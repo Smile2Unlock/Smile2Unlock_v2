@@ -15,7 +15,7 @@ seeta::FaceAntiSpoofing *new_fas_v2() {
     return new seeta::FaceAntiSpoofing(setting);
 }
 
-seetaface::seetaface() {
+seetaface::seetaface() : pFD(nullptr), pFL(nullptr), pFR(nullptr), pFAS(nullptr) {
     std::cout << "[Recognizer] 初始化中..." << std::endl;
 
     // 初始化模型路径字符串 (避免悬空指针)
@@ -29,13 +29,13 @@ seetaface::seetaface() {
     try {
         // 检查模型文件是否存在
         if (!std::filesystem::exists(model_path_fd)) {
-            throw std::runtime_error("人脸检测模型文件不存在: " + model_path_fd);
+            throw FaceRecognition::ModelLoadException("face_detector", "File not found: " + model_path_fd);
         }
         if (!std::filesystem::exists(model_path_fl)) {
-            throw std::runtime_error("人脸特征点定位模型文件不存在: " + model_path_fl);
+            throw FaceRecognition::ModelLoadException("face_landmarker", "File not found: " + model_path_fl);
         }
         if (!std::filesystem::exists(model_path_fr)) {
-            throw std::runtime_error("人脸识别模型文件不存在: " + model_path_fr);
+            throw FaceRecognition::ModelLoadException("face_recognizer", "File not found: " + model_path_fr);
         }
         if (!std::filesystem::exists(model_path_fas1) || !std::filesystem::exists(model_path_fas2)) {
             std::cout << "[Recognizer] 警告: 活体检测模型文件不存在，将禁用活体检测功能" << std::endl;
@@ -71,10 +71,11 @@ seetaface::seetaface() {
     }
     catch (const std::exception& e) {
         std::cerr << "[Recognizer] 初始化失败: " << e.what() << std::endl;
-        if (pFD) delete pFD;
-        if (pFL) delete pFL;
-        if (pFR) delete pFR;
-        if (pFAS) delete pFAS;
+        // 使用安全的删除宏
+        if (pFD) { delete pFD; pFD = nullptr; }
+        if (pFL) { delete pFL; pFL = nullptr; }
+        if (pFR) { delete pFR; pFR = nullptr; }
+        if (pFAS) { delete pFAS; pFAS = nullptr; }
         throw;
     }
 }
@@ -217,22 +218,38 @@ bool seetaface::predict(const SeetaImageData& image,
                         const SeetaRect& face,
                         const SeetaPointF* points,
                         float liveness_threshold) {
-  //设置活体检测阈值
-  pFAS->SetThreshold(0.3f,0.8f);
+  // 设置活体检测阈值
+  // 默认值: clarity=0.3, reality=0.8
+  // clarity越低要求图像质量越低，reality越高对识别要求越严格
+  pFAS->SetThreshold(0.3f, liveness_threshold);
 
   // 使用SeetaFace反欺骗模块预测
   auto status = pFAS->Predict(image, face, points);
 
+  // 获取活体检测分数
+  float clarity = 0.0f;
+  float reality = 0.0f;
+  pFAS->GetPreFrameScore(&clarity, &reality);
+
+  // 输出活体检测分数和阈值
+  float clarity_threshold = 0.0f;
+  float reality_threshold = 0.0f;
+  pFAS->GetThreshold(&clarity_threshold, &reality_threshold);
+
+  std::println("[活体检测] 清晰度: {:.3f} (阈值: {:.2f}), 真实度: {:.3f} (阈值: {:.2f})",
+               clarity, clarity_threshold, reality, reality_threshold);
+
   // 根据预测状态返回结果
   switch (status) {
     case seeta::FaceAntiSpoofing::REAL:
-      std::println("真实人脸");
+      std::println("[活体检测] ✓ 真实人脸");
       return true;
     case seeta::FaceAntiSpoofing::SPOOF:
-      std::println("攻击人脸");
+      std::println("[活体检测] ✗ 攻击检测 (clarity < {:.2f} 或 reality < {:.2f})",
+                   clarity_threshold, reality_threshold);
       return false;
     default:  // 包括FUZZY和DETECTING状态
-      std::println("无法判断或正在检测");
+      std::println("[活体检测] ? 无法判断或正在检测");
       return false;
   }
 }

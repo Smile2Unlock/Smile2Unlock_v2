@@ -96,7 +96,7 @@ target("SampleV2CredentialProvider")
     set_arch("x64")
     add_files("CredentialProvider/*.cpp")
     add_headerfiles("CredentialProvider/**.h")
-    add_includedirs("CredentialProvider", {public = false})
+    add_includedirs("common", {public = false})
     add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS", "_WIN32_WINNT=0x0602")  -- Windows 8
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
     add_links("Credui", "Shlwapi", "Secur32")

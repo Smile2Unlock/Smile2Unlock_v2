@@ -17,6 +17,7 @@
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceAntiSpoofing.h>
 #include "Utils.h"
+#include "exceptions.h"
 
 
 // 活体检测模型
