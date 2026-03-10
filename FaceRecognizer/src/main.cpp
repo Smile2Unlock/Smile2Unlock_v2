@@ -7,6 +7,7 @@
 #include "seetaface.h"
 #include "fast_detector.h"  // 轻量级检测器
 #include "config.h"
+#include "exceptions.h"
 #include <cxxopts.hpp>
 #include <iostream>
 #include <string>
@@ -183,8 +184,7 @@ int registerFaceOptimized(int camera_index, float face_threshold, bool debug, in
     
     // 检查摄像头是否打开
     if (!cam.IsInitialized()) {
-        std::cerr << "错误：无法打开摄像头" << std::endl;
-        return -1;
+        throw FaceRecognition::CameraException("无法打开摄像头");
     }
     
     // FPS控制器
@@ -276,8 +276,7 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
     
     // 检查摄像头是否打开
     if (!cam.IsInitialized()) {
-        std::cerr << "[Recognize] 错误：无法打开摄像头" << std::endl;
-        return -1;
+        throw FaceRecognition::CameraException("无法打开摄像头");
     }
     std::cout << "[Recognize] [1/3] 摄像头初始化完成" << std::endl;
     
@@ -317,12 +316,11 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
             }
         }
     } catch (const std::exception& e) {
-        std::cerr << "警告：无法访问特征数据库，错误：" << e.what() << std::endl;
+        throw FaceRecognition::FileOperationException("特征数据库", e.what());
     }
     
     if (registeredUsers.empty()) {
-        std::cerr << "错误：没有找到已注册的用户数据" << std::endl;
-        return -1;
+        throw FaceRecognition::FileOperationException("特征数据库", "没有找到已注册的用户数据");
     }
     
     std::cout << "检测到已注册的用户：" << std::endl;
@@ -531,19 +529,19 @@ int mainOptimized(int argc, char* argv[]) {
     // 加载配置
     ConfigManager config_manager("config.ini");
     // 1. 尝试加载现有配置
-    if (!config_manager.loadConfig()) {
-        std::cout << "无法加载配置文件，创建默认配置..." << std::endl;
-        // 2. 如果加载失败（例如文件不存在），创建默认配置
-        if (config_manager.createDefaultConfig()) {
-            std::cout << "默认配置文件创建成功，正在加载..." << std::endl;
-            // 再次尝试加载刚创建的默认配置
-            if (!config_manager.loadConfig()) {
-                std::cerr << "错误：无法加载新创建的默认配置文件" << std::endl;
+        if (!config_manager.loadConfig()) {
+            std::cout << "无法加载配置文件，创建默认配置..." << std::endl;
+            // 2. 如果加载失败（例如文件不存在），创建默认配置
+            if (config_manager.createDefaultConfig()) {
+                std::cout << "默认配置文件创建成功，正在加载..." << std::endl;
+                // 再次尝试加载刚创建的默认配置
+                if (!config_manager.loadConfig()) {
+                    throw FaceRecognition::ConfigException("无法加载新创建的默认配置文件");
+                }
+            } else {
+                throw FaceRecognition::ConfigException("无法创建默认配置文件");
             }
-        } else {
-            std::cerr << "错误：无法创建默认配置文件" << std::endl;
         }
-    }
     
     auto config = config_manager.getConfig();
     
@@ -605,8 +603,14 @@ int mainOptimized(int argc, char* argv[]) {
 
 // 包装函数，保持与原始main函数的兼容性
 int main(int argc, char* argv[]) {
+    #ifdef _WIN32
+    SetConsoleOutputCP(65001);
+    #endif
     try {
         return mainOptimized(argc, argv);
+    } catch (const FaceRecognition::FaceRecognitionException& e) {
+        std::cerr << "程序异常: " << e.what() << std::endl;
+        return -1;
     } catch (const std::exception& e) {
         std::cerr << "程序异常: " << e.what() << std::endl;
         return -1;
