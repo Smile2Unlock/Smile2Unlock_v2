@@ -1,6 +1,9 @@
 #include "Smile2Unlock/frontend/application.h"
+#include "Smile2Unlock/frontend/camera_utils.h"
+#include "Smile2Unlock/frontend/bmp_saver.h"
 #include <algorithm>
 #include <iostream>
+#include <chrono>
 #include <windows.h>
 #include <GL/gl.h>
 
@@ -16,9 +19,23 @@ Application::Application()
     backend_ = std::make_unique<BackendService>();
     ui_state_ = {};
     ui_state_.show_demo_window = false;
+    ui_state_.camera_active = false;
+    ui_state_.camera_index = 0;
+    ui_state_.camera_frame_data = nullptr;
+    ui_state_.camera_frame_width = 0;
+    ui_state_.camera_frame_height = 0;
+    ui_state_.camera_texture_id = 0;
+    
+    // 初始化默认用户名
+    char username[256];
+    DWORD username_len = sizeof(username);
+    if (GetUserNameA(username, &username_len)) {
+        strncpy_s(ui_state_.new_username, sizeof(ui_state_.new_username), username, _TRUNCATE);
+    }
 }
 
 Application::~Application() {
+    CloseCamera();
     Shutdown();
 }
 
@@ -88,6 +105,9 @@ void Application::Run() {
 
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
+
+        // 更新摄像头帧
+        UpdateCameraFrame();
 
         // 开始新帧
         ImGui_ImplOpenGL3_NewFrame();
@@ -405,10 +425,14 @@ void Application::RenderUsersPanel() {
             ImGui::Text("录入新人脸:");
             ImGui::InputText("备注##face", ui_state_.face_remark, sizeof(ui_state_.face_remark));
             
-            if (ImGui::Button("打开摄像头", ImVec2(150, 30))) {
-                // TODO: 打开摄像头预览
-                ui_state_.status_message = "摄像头功能开发中...";
-                ui_state_.status_message_timer = 3.0f;
+            if (!ui_state_.camera_active) {
+                if (ImGui::Button("打开摄像头", ImVec2(150, 30))) {
+                    OpenCamera(0);
+                }
+            } else {
+                if (ImGui::Button("关闭摄像头", ImVec2(150, 30))) {
+                    CloseCamera();
+                }
             }
             
             ImGui::SameLine();
@@ -417,6 +441,18 @@ void Application::RenderUsersPanel() {
                 // TODO: 文件选择对话框
                 ui_state_.status_message = "文件导入功能开发中...";
                 ui_state_.status_message_timer = 3.0f;
+            }
+            
+            // 摄像头预览
+            if (ui_state_.camera_active && ui_state_.camera_texture_id > 0) {
+                ImGui::Spacing();
+                ImGui::Text("摄像头预览:");
+                ImGui::Image((void*)(intptr_t)ui_state_.camera_texture_id, 
+                           ImVec2(640, 480));
+                
+                if (ImGui::Button("拍照并录入", ImVec2(150, 30))) {
+                    CaptureAndExtractFeature();
+                }
             }
         }
         
@@ -470,6 +506,145 @@ void Application::RenderRecognizerPanel() {
     ImGui::BulletText("Detect faces using SeetaFace6");
     ImGui::BulletText("Match with database");
     ImGui::BulletText("Send result via UDP");
+}
+
+void Application::OpenCamera(int camera_index) {
+    std::cout << "[Camera] 打开摄像头 " << camera_index << std::endl;
+    
+    ui_state_.camera_index = camera_index;
+    
+    if (camera_capture_) {
+        CloseCamera();
+    }
+    
+    camera_capture_ = std::make_unique<CameraCapture>(camera_index);
+    if (!camera_capture_->IsInitialized()) {
+        ui_state_.status_message = "摄像头初始化失败";
+        ui_state_.status_message_timer = 3.0f;
+        camera_capture_.reset();
+        return;
+    }
+
+    ui_state_.camera_active = true;
+    
+    // 创建 OpenGL 纹理用于显示
+    if (ui_state_.camera_texture_id == 0) {
+        glGenTextures(1, &ui_state_.camera_texture_id);
+    }
+    
+    ui_state_.status_message = "摄像头已打开";
+    ui_state_.status_message_timer = 2.0f;
+}
+
+void Application::CloseCamera() {
+    std::cout << "[Camera] 关闭摄像头" << std::endl;
+    
+    ui_state_.camera_active = false;
+    
+    camera_capture_.reset();
+    
+    // 清理纹理
+    if (ui_state_.camera_texture_id > 0) {
+        glDeleteTextures(1, &ui_state_.camera_texture_id);
+        ui_state_.camera_texture_id = 0;
+    }
+    
+    if (ui_state_.camera_frame_data) {
+        delete[] ui_state_.camera_frame_data;
+        ui_state_.camera_frame_data = nullptr;
+    }
+    
+    ui_state_.status_message = "摄像头已关闭";
+    ui_state_.status_message_timer = 2.0f;
+}
+
+void Application::UpdateCameraFrame() {
+    if (!ui_state_.camera_active || !camera_capture_) {
+        return;
+    }
+    
+    CameraFrame frame;
+    if (camera_capture_->CaptureFrame(frame)) {
+        if (ui_state_.camera_frame_data) {
+            delete[] ui_state_.camera_frame_data;
+        }
+        ui_state_.camera_frame_data = frame.data;
+        ui_state_.camera_frame_width = frame.width;
+        ui_state_.camera_frame_height = frame.height;
+        
+        if (ui_state_.camera_texture_id > 0 && ui_state_.camera_frame_data) {
+            glBindTexture(GL_TEXTURE_2D, ui_state_.camera_texture_id);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 
+                        ui_state_.camera_frame_width, 
+                        ui_state_.camera_frame_height, 
+                        0, GL_RGB, GL_UNSIGNED_BYTE, 
+                        ui_state_.camera_frame_data);
+        }
+    }
+}
+
+void Application::CaptureAndExtractFeature() {
+    std::cout << "[Camera] 拍照并保存..." << std::endl;
+    
+    if (ui_state_.selected_user_id <= 0) {
+        ui_state_.status_message = "错误: 请先选择用户";
+        ui_state_.status_message_timer = 3.0f;
+        return;
+    }
+    
+    // 简化方案: 只保存图片,不提取特征
+    // 特征提取由 FR 在识别时完成
+    
+    std::string remark = ui_state_.face_remark;
+    
+    // 生成图片文件名
+    auto now = std::chrono::system_clock::now();
+    auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+    
+    std::string image_filename = "face_" + std::to_string(ui_state_.selected_user_id) 
+                               + "_" + std::to_string(timestamp) + ".bmp";
+    
+    // 确保目录存在
+    CreateDirectoryA("resources", NULL);
+    CreateDirectoryA("resources\\faces", NULL);
+
+    std::string temp_image_path = "resources/faces/" + image_filename;
+    
+    bool saved = false;
+    if (ui_state_.camera_frame_data && ui_state_.camera_frame_width > 0 && ui_state_.camera_frame_height > 0) {
+        saved = SaveRGB24ToBMP(temp_image_path.c_str(), ui_state_.camera_frame_width, ui_state_.camera_frame_height, ui_state_.camera_frame_data);
+    }
+    
+    if (!saved) {
+        ui_state_.status_message = "错误: 保存图片文件失败";
+        ui_state_.status_message_timer = 3.0f;
+        return;
+    }
+
+    std::string error_msg;
+    bool success = backend_->AddFace(
+        ui_state_.selected_user_id,
+        temp_image_path,
+        remark,
+        error_msg
+    );
+    
+    if (success) {
+        ui_state_.status_message = "人脸图片已保存: " + image_filename;
+        ui_state_.status_message_timer = 3.0f;
+        
+        // 清空备注
+        memset(ui_state_.face_remark, 0, sizeof(ui_state_.face_remark));
+        
+        std::cout << "[Camera] 成功为用户 ID=" << ui_state_.selected_user_id 
+                  << " 保存人脸图片" << std::endl;
+    } else {
+        ui_state_.status_message = "错误: 保存人脸失败";
+        ui_state_.status_message_timer = 3.0f;
+    }
 }
 
 } // namespace smile2unlock

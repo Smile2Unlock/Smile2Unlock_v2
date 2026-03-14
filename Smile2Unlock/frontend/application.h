@@ -5,6 +5,7 @@
 #include <string>
 
 struct GLFWwindow;
+class CameraCapture;
 
 namespace smile2unlock {
 
@@ -22,8 +23,15 @@ private:
     void RenderInjectorPanel();
     void RenderUsersPanel();
     void RenderRecognizerPanel();
+    
+    // 摄像头管理
+    void OpenCamera(int camera_index = 0);
+    void CloseCamera();
+    void UpdateCameraFrame();
+    void CaptureAndExtractFeature();
 
     std::unique_ptr<BackendService> backend_;
+    std::unique_ptr<CameraCapture> camera_capture_;
     GLFWwindow* window_;
 
     struct UIState {
@@ -39,6 +47,14 @@ private:
         int selected_user_id;
         bool show_face_capture;
         char face_remark[256];
+        
+        // 摄像头状态
+        bool camera_active;
+        int camera_index;
+        unsigned char* camera_frame_data;  // OpenGL 纹理数据
+        int camera_frame_width;
+        int camera_frame_height;
+        unsigned int camera_texture_id;
     };
 
     UIState ui_state_;

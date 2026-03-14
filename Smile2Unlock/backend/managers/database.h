@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <optional>
+#include <sqlite3.h>
 
 namespace smile2unlock {
 namespace managers {
@@ -11,7 +12,9 @@ namespace managers {
 class Database {
 public:
     Database();
-    ~Database() = default;
+    ~Database();
+
+    bool Initialize(const std::string& db_path = "smile2unlock.db");
 
     // 用户CRUD
     std::vector<User> GetAllUsers() const;
@@ -32,9 +35,8 @@ public:
     std::optional<User> FindUserByFace(const std::string& feature) const;
 
 private:
-    std::vector<User> users_;
-    int next_user_id_;
-    int next_face_id_;
+    bool CreateTables();
+    sqlite3* db_;
 };
 
 } // namespace managers

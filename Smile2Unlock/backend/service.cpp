@@ -15,6 +15,10 @@ bool BackendService::Initialize() {
         return true;
     }
 
+    if (!database_->Initialize()) {
+        return false;
+    }
+
     initialized_ = true;
     return true;
 }

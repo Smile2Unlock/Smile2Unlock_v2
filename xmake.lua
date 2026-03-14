@@ -10,6 +10,7 @@ add_requires("cryptopp")
 add_requires("cxxopts")
 add_requires("boost", {configs = {asio = true}})
 add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
+add_requires("sqlite3")
 
 target("FaceRecognizer")
     set_encodings("utf-8")
@@ -91,7 +92,7 @@ target("Smile2UnlockBackend")
     add_headerfiles("Smile2Unlock/backend/**.h")
     add_includedirs(".", {public = true})
     add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN")
-    add_packages("cryptopp", "boost")  -- 添加 Boost (UDP 通信)
+    add_packages("cryptopp", "boost", "sqlite3")  -- 添加 Boost (UDP 通信) 和 sqlite3
     add_syslinks("advapi32", "version", "crypt32")
 
 -- Smile2Unlock GUI
@@ -99,11 +100,18 @@ target("Smile2Unlock")
     set_kind("binary")
     set_encodings("utf-8")
     set_languages("c++26")
-    set_default(true)
+    add_files(
+        "Smile2Unlock/*.cpp",
+        "Smile2Unlock/frontend/*.cpp"
+    )
+    add_headerfiles("Smile2Unlock/**.h")
+    add_includedirs(".", {public = true})
+    add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN")
     add_deps("Smile2UnlockBackend")
-    add_files("Smile2Unlock/Smile2unlock.cpp", "Smile2Unlock/frontend/*.cpp")
-    add_headerfiles("Smile2Unlock/frontend/**.h", "Smile2Unlock/backend/utils/**.h")
-    add_includedirs(".")
-    add_defines("_WIN32_WINNT=0x0602")
-    add_packages("glfw", "imgui", "boost", "cryptopp")
-    add_syslinks("opengl32", "gdi32", "user32", "shell32")
+    add_packages("glfw", "imgui", "cryptopp", "boost", "sqlite3")
+    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32")
+    add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
+
+target("Setup")
+    set_kind("phony")
+    add_deps("FaceRecognizer", "SampleV2CredentialProvider", "Smile2Unlock")
