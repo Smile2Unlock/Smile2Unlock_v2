@@ -247,15 +247,10 @@ int recognizeFace(int camera_index,
     std::cerr << "警告：无法访问特征数据库，错误：" << e.what() << std::endl;
   }
 
-  if (registeredUsers.empty()) {
-    std::cerr << "错误：没有找到已注册的用户数据" << std::endl;
-    return -1;
-  }
-
-  std::cout << "检测到已注册的用户：" << std::endl;
-  for (const auto& user : registeredUsers) {
-    std::cout << "  - " << user << std::endl;
-  }
+    // 简化：目前先不向外发送特定的特征比对错误，这里需要交给CP使用UDP传过来的图像比较
+    // 为了支持您所说的 "SU提供多张图片给FR比较" 的情况，由于现存代码还未开放接收外部图像作为模板的功能，
+    // 我们暂时让 FR 退化为只做特征提取并在之后重构成一个纯粹的Server/Worker模式
+    // 现阶段，我们直接放行它进入主循环，不再检查本地 `data/face` 是否存在。
 
   int used_time = 0;
   // 主识别循环
@@ -300,54 +295,62 @@ int recognizeFace(int camera_index,
 
           // 与已注册的特征进行比较
           bool recognized = false;
-          for (const auto& feature_file : featureFiles) {
-            try {
-              // 加载已注册的特征
-              auto registered_features = recognizer.loadfeat(feature_file);
 
-              // 计算相似度
-              float similarity = recognizer.feat_compare(current_features,
-                                                         registered_features);
+          // TODO: 之后这里会替换为读取从 SU/CP 传过来的当前要验证的用户特征进行比对。
+          // 目前如果不传，或者没有历史特征，就认为"未识别到"以继续主循环，暂不报致命错误。
+          if (featureFiles.empty()) {
+            // 目前先静默循环，等待重构为基于网络通信传图提取比对
+            // std::cout << "当前没有提供用于比对的人脸特征。" << std::endl;
+          } else {
+            for (const auto& feature_file : featureFiles) {
+              try {
+                // 加载已注册的特征
+                auto registered_features = recognizer.loadfeat(feature_file);
 
-              // 如果相似度超过阈值，认为匹配成功
-              if (similarity > face_threshold) {
-                // 从文件名中提取用户名
-                std::string filename =
-                    std::filesystem::path(feature_file).stem().string();
-                size_t underscore_pos = filename.find('_');
-                std::string username = (underscore_pos != std::string::npos)
-                                           ? filename.substr(0, underscore_pos)
-                                           : "Unknown";
+                // 计算相似度
+                float similarity = recognizer.feat_compare(current_features,
+                                                          registered_features);
 
-                std::cout << "识别成功！用户: " << username
-                          << ", 相似度: " << similarity << std::endl;
-                std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
+                // 如果相似度超过阈值，认为匹配成功
+                if (similarity > face_threshold) {
+                  // 从文件名中提取用户名
+                  std::string filename =
+                      std::filesystem::path(feature_file).stem().string();
+                  size_t underscore_pos = filename.find('_');
+                  std::string username = (underscore_pos != std::string::npos)
+                                            ? filename.substr(0, underscore_pos)
+                                            : "Unknown";
 
-                // 标记识别成功
-                recognition_success = true;
-                
-                // 发送解锁信号
-                if (g_udp_sender) {
-                  g_udp_sender->send_status(RecognitionStatus::SUCCESS,
-                                            username);
+                  std::cout << "识别成功！用户: " << username
+                            << ", 相似度: " << similarity << std::endl;
+                  std::cout << "[DEBUG] 发送识别成功状态" << std::endl;
+
+                  // 标记识别成功
+                  recognition_success = true;
+                  
+                  // 发送解锁信号
+                  if (g_udp_sender) {
+                    g_udp_sender->send_status(RecognitionStatus::SUCCESS,
+                                              username);
+                  }
+
+                  // 等待足够的时间让凭证程序接收状态
+                  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                  std::cout << "[DEBUG] 已发送识别成功信号" << std::endl;
+
+                  recognized = true;
+                  break;  // 找到匹配项，跳出循环
                 }
-
-                // 等待足够的时间让凭证程序接收状态
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                std::cout << "[DEBUG] 已发送识别成功信号" << std::endl;
-
-                recognized = true;
-                break;  // 找到匹配项，跳出循环
+              } catch (const std::exception& e) {
+                std::cerr << "加载特征文件时出错: " << feature_file
+                          << ", 错误: " << e.what() << std::endl;
+                continue;
               }
-            } catch (const std::exception& e) {
-              std::cerr << "加载特征文件时出错: " << feature_file
-                        << ", 错误: " << e.what() << std::endl;
-              continue;
             }
-          }
 
-          if (!recognized) {
-            std::cout << "未识别到已注册用户" << std::endl;
+            if (!recognized) {
+              std::cout << "未识别到已注册用户" << std::endl;
+            }
           }
         }
       }

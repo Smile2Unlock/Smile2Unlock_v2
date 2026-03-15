@@ -55,6 +55,10 @@ private:
         int camera_frame_width;
         int camera_frame_height;
         unsigned int camera_texture_id;
+
+        // 保存人脸结果
+        bool show_save_face_result = false;
+        bool save_face_success = false;
     };
 
     UIState ui_state_;

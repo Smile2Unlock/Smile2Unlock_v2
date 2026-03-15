@@ -9,8 +9,10 @@ namespace smile2unlock {
 namespace managers {
 
 FaceRecognition::FaceRecognition() 
-    : initialized_(false), is_running_(false), fr_process_(nullptr), current_session_id_(0) {
-    memset(&fr_process_info_, 0, sizeof(fr_process_info_));
+    : initialized_(false), is_running_(false), fr_process_(nullptr), current_session_id_(0)
+    , fr_stdout_read_(nullptr)
+    , fr_stderr_read_(nullptr)
+    , log_thread_running_(false) {
 }
 
 FaceRecognition::~FaceRecognition() {
@@ -30,35 +32,102 @@ bool FaceRecognition::start_fr_process() {
         return false;
     }
 
+    SECURITY_ATTRIBUTES saAttr;
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    saAttr.bInheritHandle = TRUE;
+    saAttr.lpSecurityDescriptor = NULL;
+
+    HANDLE hStdoutWrite = NULL;
+    HANDLE hStderrWrite = NULL;
+
+    if (!CreatePipe(&fr_stdout_read_, &hStdoutWrite, &saAttr, 0)) {
+        std::cerr << "[FR Manager] CreatePipe(Stdout) failed" << std::endl;
+        return false;
+    }
+    SetHandleInformation(fr_stdout_read_, HANDLE_FLAG_INHERIT, 0);
+
+    if (!CreatePipe(&fr_stderr_read_, &hStderrWrite, &saAttr, 0)) {
+        std::cerr << "[FR Manager] CreatePipe(Stderr) failed" << std::endl;
+        return false;
+    }
+    SetHandleInformation(fr_stderr_read_, HANDLE_FLAG_INHERIT, 0);
+
     // 启动 FaceRecognizer 进程
     STARTUPINFOA si;
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
+    si.hStdError = hStderrWrite;
+    si.hStdOutput = hStdoutWrite;
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    
     memset(&fr_process_info_, 0, sizeof(fr_process_info_));
 
     // FR 默认发送到 51234，我们让它发送到 51235（SU 监听）
-    // 需要修改 FR 的目标端口或者让 FR 使用命令行参数
-    std::string cmd_line = "\"" + fr_exe.string() + "\" --udp-port 51235";
+    // 启动识别模式(recognize)，并指定UDP端口（注意：不能传 -d 参数，因为原程序的 CLI 设计是收到设置向参数就会保存并直接 return 0）
+    std::string cmd_line = "\"" + fr_exe.string() + "\" -m recognize --udp-port 51235";
     
     if (!CreateProcessA(
         nullptr,
         const_cast<char*>(cmd_line.c_str()),
-        nullptr, nullptr, FALSE, 
+        nullptr, nullptr, TRUE, 
         CREATE_NO_WINDOW,  // 无窗口模式
         nullptr, nullptr, &si, &fr_process_info_)) {
         std::cerr << "[FR Manager] 启动 FaceRecognizer.exe 失败" << std::endl;
+        CloseHandle(hStdoutWrite);
+        CloseHandle(hStderrWrite);
         return false;
     }
 
     fr_process_ = fr_process_info_.hProcess;
     
+    // Close the write ends of the pipes in the parent process
+    CloseHandle(hStdoutWrite);
+    CloseHandle(hStderrWrite);
+
     std::cout << "[FR Manager] FaceRecognizer.exe 已启动 (PID: " 
               << fr_process_info_.dwProcessId << ")" << std::endl;
+    
+    // 开启日志读取线程
+    log_thread_running_ = true;
+    log_thread_ = std::thread(&FaceRecognition::ReadSubProcessLogs, this);
     
     // 等待 FR 启动
     Sleep(1500);
     
     return true;
+}
+
+void FaceRecognition::ReadSubProcessLogs() {
+    char buffer[4096];
+    DWORD bytesRead;
+    
+    while(log_thread_running_) {
+        // Here we read stdout. Since ReadFile is blocking, 
+        // we'll check if there's data available first to allow graceful exit.
+        DWORD bytesAvail = 0;
+        if (PeekNamedPipe(fr_stdout_read_, NULL, 0, NULL, &bytesAvail, NULL) && bytesAvail > 0) {
+            if (ReadFile(fr_stdout_read_, buffer, sizeof(buffer)-1, &bytesRead, NULL) && bytesRead > 0) {
+                buffer[bytesRead] = '\0';
+                std::cout << "[FR OUT]: " << buffer;
+            }
+        }
+        
+        DWORD errAvail = 0;
+        if (PeekNamedPipe(fr_stderr_read_, NULL, 0, NULL, &errAvail, NULL) && errAvail > 0) {
+            if (ReadFile(fr_stderr_read_, buffer, sizeof(buffer)-1, &bytesRead, NULL) && bytesRead > 0) {
+                buffer[bytesRead] = '\0';
+                std::cerr << "[FR ERR]: " << buffer;
+            }
+        }
+        
+        // checking the process exit status
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(fr_process_, &exitCode) && exitCode != STILL_ACTIVE) {
+            break;  // target process closed
+        }
+        
+        Sleep(50); // prevent CPU spin
+    }
 }
 
 void FaceRecognition::stop_fr_process() {
@@ -78,7 +147,19 @@ void FaceRecognition::stop_fr_process() {
         CloseHandle(fr_process_info_.hThread);
         
         fr_process_ = nullptr;
-        std::cout << "[FR Manager] FaceRecognizer.exe 已停止" << std::endl;
+    }
+    
+    log_thread_running_ = false;
+    if (log_thread_.joinable()) {
+        log_thread_.join();
+    }
+    if (fr_stdout_read_) {
+        CloseHandle(fr_stdout_read_);
+        fr_stdout_read_ = nullptr;
+    }
+    if (fr_stderr_read_) {
+        CloseHandle(fr_stderr_read_);
+        fr_stderr_read_ = nullptr;
     }
 }
 
@@ -151,7 +232,15 @@ bool FaceRecognition::StartRecognition() {
         std::cerr << "[FR Manager] 未初始化" << std::endl;
         return false;
     }
-    
+
+    if (!fr_process_) {
+        std::cout << "[FR Manager] 准备启动 FaceRecognizer 进程进行测试..." << std::endl;
+        if (!start_fr_process()) {
+            std::cerr << "[FR Manager] 启动 FR 失败" << std::endl;
+            return false;
+        }
+    }
+
     // FR 启动后会自动开始识别，这里只是标记状态
     is_running_ = true;
     std::cout << "[FR Manager] 识别已开始（等待 FR 结果）" << std::endl;
@@ -162,12 +251,11 @@ void FaceRecognition::StopRecognition() {
     if (!is_running_) {
         return;
     }
-    
-    is_running_ = false;
-    std::cout << "[FR Manager] 识别已停止" << std::endl;
-}
 
-RecognitionResult FaceRecognition::GetLastResult() const {
+    is_running_ = false;
+    stop_fr_process();
+    std::cout << "[FR Manager] 识别已停止" << std::endl;
+}RecognitionResult FaceRecognition::GetLastResult() const {
     return last_result_;
 }
 

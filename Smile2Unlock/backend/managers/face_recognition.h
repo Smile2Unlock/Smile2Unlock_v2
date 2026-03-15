@@ -5,6 +5,8 @@
 #include <string>
 #include <memory>
 #include <windows.h>
+#include <thread>
+#include <vector>
 
 namespace smile2unlock {
 namespace managers {
@@ -51,6 +53,12 @@ private:
     // FaceRecognizer 进程句柄
     HANDLE fr_process_;
     PROCESS_INFORMATION fr_process_info_;
+    HANDLE fr_stdout_read_;
+    HANDLE fr_stderr_read_;
+    std::thread log_thread_;
+    bool log_thread_running_;
+    
+    void ReadSubProcessLogs();
     
     // UDP 通信模块
     std::unique_ptr<UdpReceiverFromCP> udp_receiver_cp_;   // 监听 CP 请求 (端口 51236)

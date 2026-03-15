@@ -502,12 +502,10 @@ class CameraCapture {
       // 根据格式处理数据
       if (subtype == MFVideoFormat_YUY2) {
         // YUY2 格式: 2字节/像素
-        std::cout << "[Camera] 转换YUY2格式为RGB..." << std::endl;
         ConvertYUY2ToRGB24(pData, image.data, width, height);
       } else if (subtype == MFVideoFormat_RGB24) {
         // RGB24 格式: 3字节/像素
         // Media Foundation 中的 RGB24 通常是 BGR 顺序的 bottom-up 格式
-        std::cout << "[Camera] 处理RGB24格式..." << std::endl;
         if (stride != 0) {
           bool isBottomUp = (stride < 0);
           int absStride = (stride < 0) ? -stride : stride;
@@ -535,7 +533,6 @@ class CameraCapture {
       } else if (subtype == MFVideoFormat_RGB32) {
         // RGB32 格式: 4字节/像素，去掉alpha通道
         // 同样需要处理 BGR 到 RGB 的转换
-        std::cout << "[Camera] 转换RGB32格式为RGB24..." << std::endl;
         for (UINT32 i = 0; i < width * height; ++i) {
           image.data[i * 3] = pData[i * 4 + 2];      // BGR32→RGB24
           image.data[i * 3 + 1] = pData[i * 4 + 1];
@@ -552,7 +549,6 @@ class CameraCapture {
         continue;
       } else if (subtype == MFVideoFormat_NV12) {
         // NV12 格式 - 常见的YUV 4:2:0格式
-        std::cout << "[Camera] 转换NV12格式为RGB..." << std::endl;
         ConvertNV12ToRGB24(pData, image.data, width, height);
       } else {
         // 不支持的格式 - 打印GUID以便调试
@@ -575,8 +571,6 @@ class CameraCapture {
       pSample->Release();
 
       if (image.width > 0 && image.height > 0) {
-        std::cout << "[Camera] 成功捕获并转换帧为RGB24 (" << std::dec << image.width << "x" << image.height << ")" << std::endl;
-
         // 首次捕获时，执行色彩验证
         static bool firstCapture = true;
         if (firstCapture) {

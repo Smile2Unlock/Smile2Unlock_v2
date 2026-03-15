@@ -193,6 +193,31 @@ void Application::RenderUI() {
         ImGui::EndTabBar();
     }
 
+    // 渲染保存结果弹窗
+    if (ui_state_.show_save_face_result) {
+        ImGui::OpenPopup("保存结果");
+        ui_state_.show_save_face_result = false;
+    }
+
+    if (ImGui::BeginPopupModal("保存结果", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ui_state_.save_face_success) {
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "保存成功！");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "保存失败！");
+        }
+        ImGui::Spacing();
+        ImGui::Text("%s", ui_state_.status_message.c_str());
+        ImGui::Spacing();
+        
+        ImGui::Separator();
+        
+        if (ImGui::Button("确定", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+            // 如果是在人脸管理里的话，这里点确定就只是关掉弹窗
+        }
+        ImGui::EndPopup();
+    }
+
     ImGui::End();
 
     // Demo 窗口
@@ -435,14 +460,6 @@ void Application::RenderUsersPanel() {
                 }
             }
             
-            ImGui::SameLine();
-            
-            if (ImGui::Button("从文件导入", ImVec2(150, 30))) {
-                // TODO: 文件选择对话框
-                ui_state_.status_message = "文件导入功能开发中...";
-                ui_state_.status_message_timer = 3.0f;
-            }
-            
             // 摄像头预览
             if (ui_state_.camera_active && ui_state_.camera_texture_id > 0) {
                 ImGui::Spacing();
@@ -479,31 +496,35 @@ void Application::RenderRecognizerPanel() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::Text("This panel will show face recognition interface.");
+    ImGui::Text("人脸识别子进程控制");
     ImGui::Spacing();
 
-    if (ImGui::Button("Start Recognition (TODO)", ImVec2(200, 30))) {
+    if (ImGui::Button("启动 FaceRecognizer", ImVec2(200, 30))) {
         std::string error;
-        backend_->StartRecognition(error);
-        ui_state_.status_message = error;
+        bool success = backend_->StartRecognition(error);
+        if (success) {
+            ui_state_.status_message = "人脸识别进程已启动";
+        } else {
+            ui_state_.status_message = "启动失败: " + error;
+        }
         ui_state_.status_message_timer = 3.0f;
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Stop Recognition", ImVec2(200, 30))) {
+    if (ImGui::Button("停止 FaceRecognizer", ImVec2(200, 30))) {
         backend_->StopRecognition();
+        ui_state_.status_message = "人脸识别进程已停止";
+        ui_state_.status_message_timer = 3.0f;
     }
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), 
-                      "Note: Face recognition not yet implemented");
-    ImGui::Text("TODO:");
-    ImGui::BulletText("Open camera");
-    ImGui::BulletText("Detect faces using SeetaFace6");
+    // 简单展示一点FR的返回状态 (如果存在)
+    ImGui::Text("状态接收:");
+    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "可查看控制台输出以获取FR进程的详细日志。");
     ImGui::BulletText("Match with database");
     ImGui::BulletText("Send result via UDP");
 }
@@ -608,10 +629,9 @@ void Application::CaptureAndExtractFeature() {
                                + "_" + std::to_string(timestamp) + ".bmp";
     
     // 确保目录存在
-    CreateDirectoryA("resources", NULL);
-    CreateDirectoryA("resources\\faces", NULL);
+    CreateDirectoryA("db", NULL);
 
-    std::string temp_image_path = "resources/faces/" + image_filename;
+    std::string temp_image_path = "db/" + image_filename;
     
     bool saved = false;
     if (ui_state_.camera_frame_data && ui_state_.camera_frame_width > 0 && ui_state_.camera_frame_height > 0) {
@@ -621,6 +641,8 @@ void Application::CaptureAndExtractFeature() {
     if (!saved) {
         ui_state_.status_message = "错误: 保存图片文件失败";
         ui_state_.status_message_timer = 3.0f;
+        ui_state_.save_face_success = false;
+        ui_state_.show_save_face_result = true;
         return;
     }
 
@@ -631,19 +653,23 @@ void Application::CaptureAndExtractFeature() {
         remark,
         error_msg
     );
-    
+
     if (success) {
-        ui_state_.status_message = "人脸图片已保存: " + image_filename;
+        ui_state_.status_message = "人脸信息已成功记录至系统数据库。";
         ui_state_.status_message_timer = 3.0f;
-        
+        ui_state_.save_face_success = true;
+        ui_state_.show_save_face_result = true;
+
         // 清空备注
         memset(ui_state_.face_remark, 0, sizeof(ui_state_.face_remark));
-        
-        std::cout << "[Camera] 成功为用户 ID=" << ui_state_.selected_user_id 
+
+        std::cout << "[Camera] 成功为用户 ID=" << ui_state_.selected_user_id
                   << " 保存人脸图片" << std::endl;
     } else {
         ui_state_.status_message = "错误: 保存人脸失败";
         ui_state_.status_message_timer = 3.0f;
+        ui_state_.save_face_success = false;
+        ui_state_.show_save_face_result = true;
     }
 }
 

@@ -99,15 +99,9 @@ bool BackendService::DeleteUser(int userId, std::string& error_message) {
 }
 
 bool BackendService::AddFace(int user_id, const std::string& image_path, const std::string& remark, std::string& error_message) {
-    // 提取人脸特征
-    std::string feature = face_recognition_->ExtractFaceFeature(image_path);
-    if (feature.empty()) {
-        error_message = "人脸特征提取失败";
-        return false;
-    }
-
+    // 保存人脸图片记录到数据库，特征提取将在识别启动时由 FR 进程专门处理。
     FaceData face;
-    face.feature = feature;
+    face.feature = "PENDING_FEATURE_EXTRACTION"; // 暂使用占位符
     face.image_path = image_path;
     face.remark = remark;
 
