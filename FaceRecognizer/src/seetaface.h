@@ -16,7 +16,6 @@
 #include <seeta/FaceRecognizer.h>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceAntiSpoofing.h>
-#include "Utils.h"
 #include "exceptions.h"
 
 

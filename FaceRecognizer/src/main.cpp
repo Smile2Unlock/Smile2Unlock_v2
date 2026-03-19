@@ -22,6 +22,7 @@
 #include "registryhelper.h"
 
 import camera;
+import utils;
 
 // 全局UDP发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;

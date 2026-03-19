@@ -1,11 +1,11 @@
-#pragma once
+//
+// Created by ation_ciger on 2026/3/19.
+//
+export module utils;
 
-#include <string>
-#include <vector>
-#include <memory>
-#include <filesystem>
+import std;
 
-class Utils {
+export class Utils {
 public:
     static void SaveFeaturesBinary(std::shared_ptr<float> features, int size, const std::string& data_file);
     static std::shared_ptr<float> LoadFeaturesBinary(const std::string& data_file, int size);
