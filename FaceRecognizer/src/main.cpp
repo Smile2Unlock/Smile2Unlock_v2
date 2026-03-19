@@ -247,9 +247,7 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
                           float liveness_threshold, bool debug, int target_fps = 30, 
                           int skip_frames = 2, bool enable_cache = true) {
     
-    std::cout << "[Recognize] 启动人脸识别模式（优化版）..." << std::endl;
-    std::cout << "[配置] 目标FPS: " << target_fps << ", 跳帧: " << skip_frames 
-              << ", 特征缓存: " << (enable_cache ? "启用" : "禁用") << std::endl;
+    std::cout << "[Recognize] 启动人脸识别模式" << std::endl;
     
     // 识别结果标志
     bool recognition_success = false;
@@ -563,8 +561,80 @@ int mainOptimized(int argc, char* argv[]) {
         target_fps = 0; // 0表示禁用FPS限制
     }
     
+    // Handle set-password functionality separately
+    if (set_password) {
+      std::string password1, password2;
+
+      password1 = HiddenInputReader{}.readHiddenLine("Enter new password: ");
+
+      password2 = HiddenInputReader{}.readHiddenLine("Confirm new password: ");
+
+      if (password1 != password2) {
+        std::cerr << "Error: Passwords do not match!" << std::endl;
+        return -1;
+      }
+
+      // TODO: Implement set password functionality
+      // - Encrypt and securely store the password
+      // - Potentially integrate with Windows credential manager
+      std::cout << "Set password: Setting login password..." << std::endl;
+
+      Crypto crypto;
+
+      // 自动生成密钥和IV（构造函数已实现）
+      std::string ciphertext = crypto.encrypt(password1);
+
+      std::string ciphertext_hex =
+          Crypto::bytesToHex(std::span<const CryptoPP::byte>(
+              reinterpret_cast<const CryptoPP::byte*>(ciphertext.data()),
+              ciphertext.size()));
+
+      // 保存密文到文件
+      // std::ofstream ofs("password.enc", std::ios::binary);
+      // ofs.write(ciphertext.data(), ciphertext.size());
+      // ofs.close();
+
+      // 保存密文密钥IV至注册表中
+
+      RegistryHelper registryHelper;
+
+      registryHelper.WriteStringToRegistry(
+          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\password",
+          ciphertext_hex);
+
+      registryHelper.WriteStringToRegistry(
+          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\iv",
+          crypto.getIvHex());
+
+      registryHelper.WriteStringToRegistry(
+          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\key",
+          crypto.getKeyHex());
+
+      // 输出密钥和IV（十六进制）
+      std::cout << "Encryption Key (hex): " << crypto.getKeyHex() << std::endl;
+      std::cout << "IV (hex): " << crypto.getIvHex() << std::endl;
+      std::cout << "Ciphertext (hex): " << ciphertext_hex << std::endl;
+
+      return 0;  // Exit after setting password
+    }
+
     // 根据模式执行相应操作
     if (mode == "register") {
+
+        try {
+            std::string exePath;
+            exePath = Utils::getCurrentDirectory();
+            RegistryHelper registryHelper;
+            if (registryHelper.WriteStringToRegistry(
+            "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", exePath)) {
+                std::cout << "[INFO] FaceRecognizer 路径已写入注册表: " << exePath << std::endl;
+            } else {
+                throw FaceRecognition::RegistryException("Write", "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", "Access denied");
+            }
+        } catch (const std::exception& e) {
+            throw FaceRecognition::PathOperationException("Failed to get current directory");
+        }
+
         std::cout << "=== 人脸注册模式 (优化版) ===" << std::endl;
         return registerFaceOptimized(config.camera, face_threshold,
                                      config.debug, target_fps);
