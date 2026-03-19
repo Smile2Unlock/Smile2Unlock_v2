@@ -51,3 +51,10 @@
     Copyright © 2022-2023 Peter Dimov
     Copyright © 2024 Braden Ganetsky
    - 许可证原文见: licenses/Boost-BSL-1.0.txt
+
+   **libyuv** (https://github.com/lemenkov/libyuv.git)
+   - 许可证: BSD-3-Clause (SPDX: BSD-3-Clause)
+   - 版权:
+
+   Copyright 2011 The LibYuv Project Authors. All rights reserved.
+   - 许可证原文见: licenses/libyuv-BSD-3-Clause.txt
