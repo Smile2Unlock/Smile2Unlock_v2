@@ -1,5 +1,5 @@
-// main_optimized.cpp
-// 性能优化版本：添加 FPS 控制、特征缓存和跳帧处理
+// main.cpp
+// 人脸识别主程序
 
 #include "managers/ipc/udp/udp_sender.h"
 #include "seetaface.h"
@@ -15,146 +15,11 @@ import crypto;
 import input_hide;
 
 
-// 全局UDP发送器 - 使用 Boost.Asio 实现
+// 全局 UDP 发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;
 
-// 简单的FPS控制器
-class SimpleFPSController {
-private:
-    int target_fps_;
-    std::chrono::steady_clock::time_point last_frame_time_;
-    std::chrono::steady_clock::time_point next_frame_time_;
-    std::atomic<int> actual_fps_{0};
-    std::atomic<int> frame_count_{0};
-    std::chrono::steady_clock::time_point fps_start_time_;
-    
-public:
-    SimpleFPSController(int target_fps = 30) 
-        : target_fps_(target_fps)
-        , last_frame_time_(std::chrono::steady_clock::now())
-        , next_frame_time_(last_frame_time_)
-        , fps_start_time_(last_frame_time_) {
-        
-        if (target_fps_ <= 0) target_fps_ = 30;
-    }
-    
-    void set_target_fps(int fps) {
-        if (fps > 0 && fps <= 120) {
-            target_fps_ = fps;
-        }
-    }
-    
-    // 等待下一帧（FPS限制）
-    void wait_for_next_frame() {
-        if (target_fps_ <= 0) return;
-        
-        auto now = std::chrono::steady_clock::now();
-        int frame_interval_ms = 1000 / target_fps_;
-        
-        // 计算下一帧时间
-        next_frame_time_ += std::chrono::milliseconds(frame_interval_ms);
-        
-        // 如果当前时间已经超过下一帧时间，立即返回
-        if (now >= next_frame_time_) {
-            next_frame_time_ = now;
-            return;
-        }
-        
-        // 等待到下一帧时间
-        std::this_thread::sleep_until(next_frame_time_);
-    }
-    
-    // 更新FPS统计
-    void update_frame() {
-        frame_count_++;
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - fps_start_time_).count();
-        
-        // 每秒更新一次实际FPS
-        if (elapsed >= 1000) {
-            actual_fps_ = static_cast<int>(frame_count_ * 1000.0 / elapsed);
-            frame_count_ = 0;
-            fps_start_time_ = now;
-            
-            // 输出FPS信息（调试用）
-            // std::cout << "[FPS] 实际FPS: " << actual_fps_ << ", 目标FPS: " << target_fps_ << std::endl;
-        }
-    }
-    
-    int get_actual_fps() const {
-        return actual_fps_;
-    }
-};
-
-// 特征缓存管理器
-class FeatureCache {
-private:
-    struct CachedFeature {
-        std::string filename;
-        std::shared_ptr<float> features;
-        std::chrono::steady_clock::time_point load_time;
-    };
-    
-    std::vector<CachedFeature> cache_;
-    mutable std::mutex mutex_;
-    size_t max_cache_size_{100};
-    
-public:
-    FeatureCache(size_t max_size = 100) : max_cache_size_(max_size) {}
-    
-    std::shared_ptr<float> get_or_load(const std::string& filename, seetaface& recognizer) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        
-        // 查找缓存
-        auto it = std::find_if(cache_.begin(), cache_.end(),
-            [&filename](const CachedFeature& cf) { return cf.filename == filename; });
-        
-        if (it != cache_.end()) {
-            // 更新访问时间
-            it->load_time = std::chrono::steady_clock::now();
-            return it->features;
-        }
-        
-        // 加载特征
-        try {
-            auto features = recognizer.loadfeat(filename);
-            if (features) {
-                // 添加到缓存
-                if (cache_.size() >= max_cache_size_) {
-                    // 移除最旧的缓存项
-                    auto oldest = std::min_element(cache_.begin(), cache_.end(),
-                        [](const CachedFeature& a, const CachedFeature& b) {
-                            return a.load_time < b.load_time;
-                        });
-                    if (oldest != cache_.end()) {
-                        cache_.erase(oldest);
-                    }
-                }
-                
-                cache_.push_back({filename, features, std::chrono::steady_clock::now()});
-                return features;
-            }
-        } catch (const std::exception& e) {
-            std::cerr << "加载特征文件失败: " << filename << " - " << e.what() << std::endl;
-        }
-        
-        return nullptr;
-    }
-    
-    void clear() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        cache_.clear();
-    }
-    
-    size_t size() const {
-        std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mutex_));
-        return cache_.size();
-    }
-};
-
-// 人脸注册函数 - 优化版
-int registerFaceOptimized(int camera_index, float face_threshold, bool debug, int target_fps = 30) {
+// 人脸注册函数
+int registerFace(int camera_index, float face_threshold, bool debug) {
     // 初始化摄像头
     CameraCapture cam(camera_index);
     
@@ -173,35 +38,21 @@ int registerFaceOptimized(int camera_index, float face_threshold, bool debug, in
     seetaface recognizer;
     
     std::cout << "开始录入 " << username << " 的人脸数据，请面对摄像头..." << std::endl;
-    std::cout << "目标FPS: " << target_fps << std::endl;
     
     // 检查摄像头是否打开
     if (!cam.IsInitialized()) {
         throw FaceRecognition::CameraException("无法打开摄像头");
     }
     
-    // FPS控制器
-    SimpleFPSController fps_controller(target_fps);
-    
     // 循环捕获图像并提取特征
     int captureCount = 0;
-    const int maxCaptures = 5;  // 每人最多采集5张照片
-    int frame_counter = 0;
-    
+    const int maxCaptures = 5;  // 每人最多采集 5 张照片
+        
     while (captureCount < maxCaptures) {
-        fps_controller.wait_for_next_frame();
         
         // 从摄像头直接捕获帧
         SeetaImageData img_data = {};
         if (cam.CaptureFrame(img_data)) {
-            frame_counter++;
-            
-            // 每2帧处理一次（减少处理负载）
-            if (frame_counter % 2 != 0) {
-                delete[] img_data.data;
-                continue;
-            }
-            
             // 检测人脸
             SeetaRect face_rect = recognizer.detect(img_data);
             
@@ -225,12 +76,9 @@ int registerFaceOptimized(int camera_index, float face_threshold, bool debug, in
             } else {
                 std::cout << "警告：未检测到人脸，请确保脸部清晰可见" << std::endl;
             }
-            
+                        
             // 释放当前帧的内存
             delete[] img_data.data;
-            
-            // 更新FPS统计
-            fps_controller.update_frame();
         } else {
             // 如果捕获失败，短暂休眠避免CPU占用过高
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -238,14 +86,12 @@ int registerFaceOptimized(int camera_index, float face_threshold, bool debug, in
     }
     
     std::cout << "人脸录入完成！用户 " << username << " 的 " << captureCount << " 个人脸数据已保存。" << std::endl;
-    std::cout << "平均FPS: " << fps_controller.get_actual_fps() << std::endl;
     return 0;
 }
 
-// 人脸识别函数 - 优化版
-int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness_detection, 
-                          float liveness_threshold, bool debug, int target_fps = 30, 
-                          int skip_frames = 2, bool enable_cache = true) {
+// 人脸识别函数
+int recognizeFace(int camera_index, float face_threshold, bool liveness_detection, 
+                  float liveness_threshold, bool debug) {
     
     std::cout << "[Recognize] 启动人脸识别模式" << std::endl;
     
@@ -274,9 +120,6 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
     std::cout << "[Recognize] [2/3] 加载人脸识别模型（耗时较长，请稍候）..." << std::endl;
     seetaface recognizer;
     std::cout << "[Recognize] [2/3] 模型加载完成" << std::endl;
-    
-    // 特征缓存
-    FeatureCache feature_cache(50);
     
     // 查找已注册的用户特征文件
     std::vector<std::string> registeredUsers;
@@ -318,34 +161,15 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
     for (const auto& user : registeredUsers) {
         std::cout << "  - " << user << std::endl;
     }
-    std::cout << "特征文件数量: " << featureFiles.size() << std::endl;
-    
-    // 性能优化组件
-    SimpleFPSController fps_controller(target_fps);
-    int used_time = 0;
-    int frame_counter = 0;
-    int processed_frames = 0;
-    
-    std::cout << "[Recognize] [3/3] 准备就绪，开始识别..." << std::endl;
-    
-    // 主识别循环 - 优化版
-    while (true) {
-        // FPS控制
-        fps_controller.wait_for_next_frame();
+    std::cout << "特征文件数量：" << featureFiles.size() << std::endl;
         
+    int used_time = 0;
+        
+    // 主识别循环
+    while (true) {
         // 从摄像头捕获帧
         SeetaImageData img_data = {};
         if (cam.CaptureFrame(img_data)) {
-            frame_counter++;
-            
-            // 跳帧处理：每skip_frames帧处理一次
-            if (skip_frames > 1 && frame_counter % skip_frames != 0) {
-                delete[] img_data.data;
-                fps_controller.update_frame();
-                continue;
-            }
-            
-            processed_frames++;
             
             // 检查识别成功或超时
             if (recognition_success) {
@@ -381,14 +205,8 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
                     bool recognized = false;
                     for (const auto& feature_file : featureFiles) {
                         try {
-                            // 加载已注册的特征（使用缓存）
-                            std::shared_ptr<float> registered_features;
-                            
-                            if (enable_cache) {
-                                registered_features = feature_cache.get_or_load(feature_file, recognizer);
-                            } else {
-                                registered_features = recognizer.loadfeat(feature_file);
-                            }
+                            // 加载已注册的特征
+                            auto registered_features = recognizer.loadfeat(feature_file);
                             
                             if (!registered_features) {
                                 continue;
@@ -444,42 +262,22 @@ int recognizeFaceOptimized(int camera_index, float face_threshold, bool liveness
             // 释放当前帧的内存
             delete[] img_data.data;
             
-            // 更新FPS统计
-            fps_controller.update_frame();
-            
-            // 每100帧输出一次性能信息
-            if (debug && processed_frames % 100 == 0) {
-                std::cout << "[性能] 处理帧数: " << processed_frames 
-                          << ", 实际FPS: " << fps_controller.get_actual_fps()
-                          << ", 缓存大小: " << feature_cache.size() << std::endl;
-            }
-            
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             used_time += 10;
         }
     }
     
-    if (recognition_success) {
-        std::cout << "[INFO] 识别成功，保持UDP连接0.1秒以确保凭证程序接收" << std::endl;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    
-    // 输出性能统计
-    std::cout << "\n=== 性能统计 ===" << std::endl;
-    std::cout << "总处理帧数: " << processed_frames << std::endl;
-    std::cout << "平均FPS: " << fps_controller.get_actual_fps() << std::endl;
-    std::cout << "特征缓存命中率: " << feature_cache.size() << " 个特征已缓存" << std::endl;
-    std::cout << "识别结果: " << (recognition_success ? "成功" : "超时/失败") << std::endl;
+    // 输出识别结果
+    std::cout << "识别结果：" << (recognition_success ? "成功" : "超时/失败") << std::endl;
     
     std::cout << "人脸识别结束。" << std::endl;
     return 0;
 }
 
-// 主函数 - 添加性能优化选项
 int mainOptimized(int argc, char* argv[]) {
-    cxxopts::Options options("FaceRecognizerOptimized",
-        "优化版人脸识别工具 - 支持FPS限制和性能优化");
+    cxxopts::Options options("FaceRecognizer",
+        "人脸识别工具");
     
     options.add_options()
         ("h,help", "显示帮助信息")
@@ -494,15 +292,6 @@ int mainOptimized(int argc, char* argv[]) {
         ("l,liveness-detection", "启用活体检测",
          cxxopts::value<bool>()->default_value("true"))
         ("s,set-password", "交互式设置登录密码",
-         cxxopts::value<bool>()->default_value("false"))
-        // 性能优化选项
-        ("f,fps", "目标FPS (默认: 30)",
-         cxxopts::value<int>()->default_value("30"))
-        ("skip-frames", "跳帧处理 (每N帧处理一次, 默认: 2)",
-         cxxopts::value<int>()->default_value("2"))
-        ("enable-cache", "启用特征缓存",
-         cxxopts::value<bool>()->default_value("true"))
-        ("disable-fps-limit", "禁用FPS限制",
          cxxopts::value<bool>()->default_value("false"))
         ;
     
@@ -551,15 +340,6 @@ int mainOptimized(int argc, char* argv[]) {
         }
     }
     
-    // 获取性能优化参数
-    int target_fps = result["fps"].as<int>();
-    int skip_frames = result["skip-frames"].as<int>();
-    bool enable_cache = result["enable-cache"].as<bool>();
-    bool disable_fps_limit = result["disable-fps-limit"].as<bool>();
-    
-    if (disable_fps_limit) {
-        target_fps = 0; // 0表示禁用FPS限制
-    }
     
     // Handle set-password functionality separately
     if (set_password) {
@@ -635,21 +415,16 @@ int mainOptimized(int argc, char* argv[]) {
             throw FaceRecognition::PathOperationException("Failed to get current directory");
         }
 
-        std::cout << "=== 人脸注册模式 (优化版) ===" << std::endl;
-        return registerFaceOptimized(config.camera, face_threshold,
-                                     config.debug, target_fps);
+        std::cout << "=== 人脸注册模式 ===" << std::endl;
+        return registerFace(config.camera, face_threshold,
+                                     config.debug);
     }
     else if (mode == "recognize") {
-        std::cout << "=== 人脸识别模式 (优化版) ===" << std::endl;
-        std::cout << "性能优化配置:" << std::endl;
-        std::cout << "  - 目标FPS: " << (target_fps > 0 ? std::to_string(target_fps) : "无限制") << std::endl;
-        std::cout << "  - 跳帧: " << skip_frames << std::endl;
-        std::cout << "  - 特征缓存: " << (enable_cache ? "启用" : "禁用") << std::endl;
-        
-        return recognizeFaceOptimized(config.camera, face_threshold,
+        std::cout << "=== 人脸识别模式 ===" << std::endl;
+                
+        return recognizeFace(config.camera, face_threshold,
                                      config.liveness, liveness_threshold,
-                                     config.debug, target_fps, skip_frames,
-                                     enable_cache);
+                                     config.debug);
     }
     else if (mode == "test") {
         std::cout << "测试模式暂未实现" << std::endl;
