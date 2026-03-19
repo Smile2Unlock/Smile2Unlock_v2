@@ -1,5 +1,8 @@
 #include "seetaface.h"
 
+import utils;
+import std;
+
 // 通用模型创建函数
 template <typename T>
 T* create_seeta_model(const std::string& model_path) {

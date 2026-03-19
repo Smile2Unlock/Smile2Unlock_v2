@@ -13,3 +13,5 @@ vsxmake2022
 .vs
 .cache
 .claude
+
+CMakeLists.txt

@@ -6,18 +6,22 @@ add_requires("SeetaFace6Open")
 add_requires("cryptopp")
 add_requires("cxxopts")
 add_requires("boost", {configs = {asio = true}})
+add_requires("libyuv")
 
 target("FaceRecognizer")
     set_encodings("utf-8")
     set_languages("c++26")
     set_policy("build.c++.modules", true)
     set_kind("binary")
+    add_files("FaceRecognizer/src/modules/*.cppm")
+    add_files("common/modules/*.cppm")
     add_files("FaceRecognizer/src/*.cpp")
     add_headerfiles("FaceRecognizer/src/**.h")
     add_headerfiles("FaceRecognizer/src/**.hpp")
     add_includedirs("FaceRecognizer/src", {public = false})
     add_includedirs("common", {public = false})
-    
+
+
     -- Windows平台特定配置
     if is_plat("windows") then
         add_defines("_WIN32_WINNT=0x0A00")  -- Windows 10
@@ -44,6 +48,7 @@ target("FaceRecognizer")
     add_packages("cryptopp")
     add_packages("cxxopts")
     add_packages("boost")
+    add_packages("libyuv")
     
     -- 发布模式下的额外优化
     if is_mode("release") then

@@ -1,22 +1,11 @@
 #pragma once
 
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <string>
-#include <windows.h>
-#include <direct.h>
-#include <stdio.h>
-#include <type_traits>
-#include <memory>
-#include <stdexcept>
-#include <print>
-// #include <opencv2/opencv.hpp>
+
+
 #include <seeta/FaceDetector.h>
 #include <seeta/FaceRecognizer.h>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceAntiSpoofing.h>
-#include "Utils.h"
 #include "exceptions.h"
 
 

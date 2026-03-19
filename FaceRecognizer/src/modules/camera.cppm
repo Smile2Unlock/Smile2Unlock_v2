@@ -1,17 +1,23 @@
-// camera_win.h
-#pragma once
+module;
 
+#include <seeta/CStruct.h>
+#include <libyuv.h>
+
+#ifdef _WIN32
 #include <combaseapi.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <windows.h>
-#include <algorithm>
-#include <vector>
-#include <iostream>
-#include <thread>
-#include <chrono>
-#include <seeta/CStruct.h>
+#endif
+
+export module camera;
+
+import std;
+import std.compat;
+
+#ifdef _WIN32
+export inline bool EnsureMFInitialized();
 
 // 注意：此头文件设计为单翻译单元包含（推荐仅在FaceRecognizer.cpp中包含）
 // 若需多文件使用，请将实现移至.cpp并移除函数体定义
@@ -29,124 +35,13 @@ inline bool EnsureMFInitialized() {
   return SUCCEEDED(instance.hr);
 }
 
-// YUV到RGB转换查找表 - 高精度预计算，避免运行时整数精度损失
-class YUVtoRGBLookupTable {
- private:
-  // 查找表：Y[256], U/V[256] -> RGB分量调整值
-  int m_RV[256];  // R = Y + RV[V]
-  int m_GU[256];  // G = Y + GU[U] + GV[V]
-  int m_GV[256];
-  int m_BU[256];  // B = Y + BU[U]
-  int m_Y[256];   // 调整后的Y值
-
- public:
-  YUVtoRGBLookupTable() {
-    // 使用 BT.601 标准（适用于SD视频，摄像头常用）
-    // RGB = [1.164*(Y-16) + coeffs*(U/V-128)]
-    for (int i = 0; i < 256; ++i) {
-      // Y 分量调整（乘以1.164并左移8位以保持精度）
-      m_Y[i] = (int)((1.164 * (i - 16)) * 256 + 0.5);
-
-      // U/V 调整值（左移8位保持精度）
-      int uv_offset = i - 128;
-      m_RV[i] = (int)(1.596 * uv_offset * 256 + 0.5);
-      m_GU[i] = (int)(-0.391 * uv_offset * 256 + 0.5);
-      m_GV[i] = (int)(-0.813 * uv_offset * 256 + 0.5);
-      m_BU[i] = (int)(2.018 * uv_offset * 256 + 0.5);
-    }
-  }
-
-  // 内联函数：快速转换单个像素（输出RGB顺序）
-  inline void YUVtoRGB(int Y, int U, int V, BYTE& R, BYTE& G, BYTE& B) const {
-    int y_val = m_Y[Y];
-    int r = (y_val + m_RV[V]) >> 8;
-    int g = (y_val + m_GU[U] + m_GV[V]) >> 8;
-    int b = (y_val + m_BU[U]) >> 8;
-
-    // 快速裁剪到 [0, 255]
-    R = (r < 0) ? 0 : (r > 255) ? 255 : (BYTE)r;
-    G = (g < 0) ? 0 : (g > 255) ? 255 : (BYTE)g;
-    B = (b < 0) ? 0 : (b > 255) ? 255 : (BYTE)b;
-  }
-};
-
 // 摄像头捕获类 - 支持通过索引选择摄像头设备
-class CameraCapture {
+export class CameraCapture {
  private:
   IMFMediaSource* m_mediaSource = nullptr;
   IMFSourceReader* m_reader = nullptr;
   int m_cameraIndex = 0;
   bool m_initialized = false;
-
-  // YUV转换查找表（单例，所有实例共享）
-  static const YUVtoRGBLookupTable& GetYUVLUT() {
-    static YUVtoRGBLookupTable lut;
-    return lut;
-  }
-
-  // 改进的 YUY2 to RGB24 转换函数（直接输出RGB，不再是BGR）
-  static void ConvertYUY2ToRGB24(const BYTE* pYUY2Data, BYTE* pRGB24Data,
-                                  UINT32 width, UINT32 height) {
-    const YUVtoRGBLookupTable& lut = GetYUVLUT();
-
-    for (UINT32 y = 0; y < height; ++y) {
-      const BYTE* pYUY2Row = pYUY2Data + y * width * 2;
-      BYTE* pRGBRow = pRGB24Data + y * width * 3;
-
-      for (UINT32 x = 0; x < width; x += 2) {
-        // YUY2 格式: Y0 U Y1 V（每两个像素共享 U/V）
-        int Y0 = pYUY2Row[x * 2];
-        int U = pYUY2Row[x * 2 + 1];
-        int Y1 = pYUY2Row[x * 2 + 2];
-        int V = pYUY2Row[x * 2 + 3];
-
-        BYTE R0, G0, B0, R1, G1, B1;
-        lut.YUVtoRGB(Y0, U, V, R0, G0, B0);
-        lut.YUVtoRGB(Y1, U, V, R1, G1, B1);
-
-        // 直接写入 RGB 顺序（不再是BGR）
-        pRGBRow[x * 3] = R0;
-        pRGBRow[x * 3 + 1] = G0;
-        pRGBRow[x * 3 + 2] = B0;
-
-        pRGBRow[x * 3 + 3] = R1;
-        pRGBRow[x * 3 + 4] = G1;
-        pRGBRow[x * 3 + 5] = B1;
-      }
-    }
-  }
-
-  // 改进的 NV12 to RGB24 转换函数（直接输出RGB，不再是BGR）
-  // NV12 is a YUV 4:2:0 format with Y plane followed by interleaved UV plane
-  static void ConvertNV12ToRGB24(const BYTE* pNV12Data, BYTE* pRGB24Data,
-                                  UINT32 width, UINT32 height) {
-    const YUVtoRGBLookupTable& lut = GetYUVLUT();
-    const BYTE* pY = pNV12Data;  // Y plane
-    const BYTE* pUV = pNV12Data + (width * height);  // UV plane starts after Y
-
-    for (UINT32 y = 0; y < height; ++y) {
-      BYTE* pRGBRow = pRGB24Data + y * width * 3;
-      const BYTE* pYRow = pY + y * width;
-
-      for (UINT32 x = 0; x < width; ++x) {
-        // 获取 Y 值
-        int Y = pYRow[x];
-
-        // UV平面是4:2:0，即每2x2像素块共享一对UV值
-        int uvIndex = (y / 2) * width + (x & ~1);  // x & ~1 向下取偶数
-        int U = pUV[uvIndex];
-        int V = pUV[uvIndex + 1];
-
-        BYTE R, G, B;
-        lut.YUVtoRGB(Y, U, V, R, G, B);
-
-        // 直接写入 RGB 顺序（不再是BGR）
-        pRGBRow[x * 3] = R;
-        pRGBRow[x * 3 + 1] = G;
-        pRGBRow[x * 3 + 2] = B;
-      }
-    }
-  }
 
   // 枚举所有摄像头激活器
   HRESULT EnumerateCameras(std::vector<IMFActivate*>& activates) {
@@ -291,7 +186,7 @@ class CameraCapture {
   // 构造函数：指定摄像头索引（0=默认摄像头）
   explicit CameraCapture(int cameraIndex = 0) : m_cameraIndex(cameraIndex) {
     std::cout << "[Camera] 初始化摄像头 (索引: " << cameraIndex << ")" << std::endl;
-    
+
     if (!EnsureMFInitialized()) {
       std::cerr << "[Camera] Media Foundation 初始化失败" << std::endl;
       m_initialized = false;
@@ -314,7 +209,7 @@ class CameraCapture {
     }
 
     if (cameraIndex < 0 || static_cast<size_t>(cameraIndex) >= activates.size()) {
-      std::cerr << "[Camera] 错误：摄像头索引 " << cameraIndex << " 超出范围 (0-" 
+      std::cerr << "[Camera] 错误：摄像头索引 " << cameraIndex << " 超出范围 (0-"
                 << (activates.size() - 1) << ")" << std::endl;
       // 清理激活器引用
       for (auto* act : activates)
@@ -496,59 +391,151 @@ class CameraCapture {
 
       // 根据格式处理数据
       if (subtype == MFVideoFormat_YUY2) {
-        // YUY2 格式: 2字节/像素
-        std::cout << "[Camera] 转换YUY2格式为RGB..." << std::endl;
-        ConvertYUY2ToRGB24(pData, image.data, width, height);
-      } else if (subtype == MFVideoFormat_RGB24) {
-        // RGB24 格式: 3字节/像素
-        // Media Foundation 中的 RGB24 通常是 BGR 顺序的 bottom-up 格式
-        std::cout << "[Camera] 处理RGB24格式..." << std::endl;
-        if (stride != 0) {
-          bool isBottomUp = (stride < 0);
-          int absStride = (stride < 0) ? -stride : stride;
+          // YUY2 格式: 先转 ARGB，再转 RGB24
+          std::cout << "[Camera] 转换YUY2格式为RGB24..." << std::endl;
 
-          for (UINT32 y = 0; y < height; ++y) {
-            const BYTE* srcRow =
-                pData + (isBottomUp ? (height - 1 - y) : y) * absStride;
-            BYTE* dstRow = image.data + y * width * 3;
+          // 分配临时 ARGB 缓冲区（4字节/像素）
+          std::vector<uint8_t> argb_buffer(width * height * 4);
 
-            // 复制并交换 BGR→RGB（因为 Media Foundation RGB24 是 BGR 顺序）
-            for (UINT32 x = 0; x < width; ++x) {
-              dstRow[x * 3] = srcRow[x * 3 + 2];      // R (from B position)
-              dstRow[x * 3 + 1] = srcRow[x * 3 + 1];  // G
-              dstRow[x * 3 + 2] = srcRow[x * 3];      // B (from R position)
-            }
+          // YUY2 stride: 4字节表示2像素，所以 stride = width * 2
+          int yuy2_stride = hasStride ? abs(stride) : (width * 2);
+          int argb_stride = width * 4;
+
+          // 第一步：YUY2 -> ARGB
+          int ret = libyuv::YUY2ToARGB(
+              pData,              // 源 YUY2 数据
+              yuy2_stride,        // 源 stride
+              argb_buffer.data(), // 目标 ARGB 缓冲区
+              argb_stride,        // 目标 stride
+              width,              // 宽度
+              height              // 高度
+          );
+
+          if (ret != 0) {
+              std::cerr << "[Camera] YUY2ToARGB 转换失败，错误码: " << ret << std::endl;
+              delete[] image.data;
+              image.data = nullptr;
+              pBuffer->Unlock();
+              pBuffer->Release();
+              pSample->Release();
+              continue;
           }
-        } else {
-          // stride 为 0 时，假设是连续存储
-          for (UINT32 i = 0; i < width * height; ++i) {
-            image.data[i * 3] = pData[i * 3 + 2];      // BGR→RGB
-            image.data[i * 3 + 1] = pData[i * 3 + 1];
-            image.data[i * 3 + 2] = pData[i * 3];
+
+          // 第二步：ARGB -> RGB24
+          ret = libyuv::ARGBToRGB24(
+              argb_buffer.data(), // 源 ARGB
+              argb_stride,        // 源 stride
+              image.data,         // 目标 RGB24
+              width * 3,          // 目标 stride
+              width,              // 宽度
+              height              // 高度
+          );
+
+          if (ret != 0) {
+              std::cerr << "[Camera] ARGBToRGB24 转换失败，错误码: " << ret << std::endl;
+              delete[] image.data;
+              image.data = nullptr;
+              pBuffer->Unlock();
+              pBuffer->Release();
+              pSample->Release();
+              continue;
           }
-        }
-      } else if (subtype == MFVideoFormat_RGB32) {
-        // RGB32 格式: 4字节/像素，去掉alpha通道
-        // 同样需要处理 BGR 到 RGB 的转换
-        std::cout << "[Camera] 转换RGB32格式为RGB24..." << std::endl;
-        for (UINT32 i = 0; i < width * height; ++i) {
-          image.data[i * 3] = pData[i * 4 + 2];      // BGR32→RGB24
-          image.data[i * 3 + 1] = pData[i * 4 + 1];
-          image.data[i * 3 + 2] = pData[i * 4];
-        }
-      } else if (subtype == MFVideoFormat_MJPG) {
-        // MJPEG 格式需要解码 - 目前不支持
-        std::cerr << "[Camera] 检测到MJPEG格式，当前不支持，请更换摄像头设置" << std::endl;
-        delete[] image.data;
-        image.data = nullptr;
-        pBuffer->Unlock();
-        pBuffer->Release();
-        pSample->Release();
-        continue;
+
       } else if (subtype == MFVideoFormat_NV12) {
-        // NV12 格式 - 常见的YUV 4:2:0格式
-        std::cout << "[Camera] 转换NV12格式为RGB..." << std::endl;
-        ConvertNV12ToRGB24(pData, image.data, width, height);
+          // NV12 格式: YUV 4:2:0 planar
+          std::cout << "[Camera] 转换NV12格式为RGB24..." << std::endl;
+
+          // 注意：NV12ToRGB24 也不存在！需要先转 ARGB，再转 RGB24
+          std::vector<uint8_t> argb_buffer(width * height * 4);
+
+          // NV12 布局：Y 平面 + UV 交错平面
+          const uint8_t* y_plane = pData;
+          const uint8_t* uv_plane = pData + (width * height);
+
+          // 计算 strides（考虑对齐）
+          int y_stride = hasStride ? abs(stride) : ((width + 1) & ~1);
+          int uv_stride = y_stride;
+          int argb_stride = width * 4;
+
+          // 第一步：NV12 -> ARGB
+          int ret = libyuv::NV12ToARGB(
+              y_plane,            // Y 平面
+              y_stride,           // Y stride
+              uv_plane,           // UV 平面
+              uv_stride,          // UV stride
+              argb_buffer.data(), // 目标 ARGB
+              argb_stride,        // 目标 stride
+              width,              // 宽度
+              height              // 高度
+          );
+
+          if (ret != 0) {
+              std::cerr << "[Camera] NV12ToARGB 转换失败，错误码: " << ret << std::endl;
+              delete[] image.data;
+              image.data = nullptr;
+              pBuffer->Unlock();
+              pBuffer->Release();
+              pSample->Release();
+              continue;
+          }
+
+          // 第二步：ARGB -> RGB24
+          ret = libyuv::ARGBToRGB24(
+              argb_buffer.data(),
+              argb_stride,
+              image.data,
+              width * 3,
+              width,
+              height
+          );
+
+          if (ret != 0) {
+              std::cerr << "[Camera] ARGBToRGB24 转换失败，错误码: " << ret << std::endl;
+              delete[] image.data;
+              image.data = nullptr;
+              pBuffer->Unlock();
+              pBuffer->Release();
+              pSample->Release();
+              continue;
+          }
+
+      } else if (subtype == MFVideoFormat_RGB24) {
+          // RGB24 格式: Media Foundation 的 RGB24 通常是 BGR 顺序的 bottom-up 格式
+          std::cout << "[Camera] 处理RGB24格式..." << std::endl;
+          if (stride != 0) {
+              bool isBottomUp = (stride < 0);
+              int absStride = (stride < 0) ? -stride : stride;
+
+              for (UINT32 y = 0; y < height; ++y) {
+                  const BYTE* srcRow =
+                      pData + (isBottomUp ? (height - 1 - y) : y) * absStride;
+                  BYTE* dstRow = image.data + y * width * 3;
+
+                  // 复制并交换 BGR→RGB（因为 Media Foundation RGB24 是 BGR 顺序）
+                  for (UINT32 x = 0; x < width; ++x) {
+                      dstRow[x * 3] = srcRow[x * 3 + 2];      // R (from B position)
+                      dstRow[x * 3 + 1] = srcRow[x * 3 + 1];  // G
+                      dstRow[x * 3 + 2] = srcRow[x * 3];      // B (from R position)
+                  }
+              }
+          } else {
+              // stride 为 0 时，假设是连续存储
+              for (UINT32 i = 0; i < width * height; ++i) {
+                  image.data[i * 3] = pData[i * 3 + 2];      // BGR→RGB
+                  image.data[i * 3 + 1] = pData[i * 3 + 1];
+                  image.data[i * 3 + 2] = pData[i * 3];
+              }
+          }
+
+      } else if (subtype == MFVideoFormat_RGB32) {
+        // RGB32 (BGRA) 转 RGB24 - 手动转换
+        std::cout << "[Camera] 转换RGB32格式为RGB24..." << std::endl;
+
+        for (UINT32 i = 0; i < width * height; ++i) {
+          image.data[i * 3] = pData[i * 4 + 2];      // R (from B)
+          image.data[i * 3 + 1] = pData[i * 4 + 1];  // G
+          image.data[i * 3 + 2] = pData[i * 4];      // B (from R)
+        }
       } else {
         // 不支持的格式 - 打印GUID以便调试
         wchar_t guidStr[40];
@@ -666,3 +653,7 @@ class CameraCapture {
     return static_cast<int>(count);
   }
 };
+
+#elif defined(__linux__) || defined(__unix__)
+
+#endif
