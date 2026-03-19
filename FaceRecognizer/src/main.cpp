@@ -5,7 +5,6 @@
 #include "crypto.h"
 #include "seetaface.h"
 #include "fast_detector.h"  // 轻量级检测器
-#include "config.h"
 #include "exceptions.h"
 #include <cxxopts.hpp>
 #include <iostream>
@@ -23,6 +22,7 @@
 
 import camera;
 import utils;
+import config;
 
 // 全局UDP发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;

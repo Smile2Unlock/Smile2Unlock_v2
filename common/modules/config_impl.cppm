@@ -1,6 +1,10 @@
-#include "Config.h"
-#include <iostream>
-#include <fstream> // Required for std::ofstream
+//
+// Created by ation_ciger on 2026/3/19.
+//
+
+module;
+
+module config;
 
 ConfigManager::ConfigManager(const std::string& filename)
     : m_filename(filename), m_ini(m_filename) {
@@ -10,14 +14,14 @@ ConfigManager::ConfigManager(const std::string& filename)
     m_config.face_threshold = 0.62f;
     m_config.liveness_threshold = 0.8f;
     m_config.debug = false;
-    
+
     // 性能优化配置默认值
     m_config.target_fps = 30;
     m_config.enable_fps_limit = true;
     m_config.skip_frames = 1;
     m_config.enable_async_processing = false;
     m_config.cache_features = true;
-    
+
     // 时间统计初始化
     m_config.last_frame_time = std::chrono::steady_clock::now();
     m_config.frame_count = 0;
