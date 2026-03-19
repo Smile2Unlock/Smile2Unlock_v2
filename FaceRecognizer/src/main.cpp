@@ -1,7 +1,6 @@
 // main_optimized.cpp
-// 性能优化版本：添加FPS控制、特征缓存和跳帧处理
+// 性能优化版本：添加 FPS 控制、特征缓存和跳帧处理
 
-#include "camera.h"
 #include "managers/ipc/udp/udp_sender.h"
 #include "crypto.h"
 #include "seetaface.h"
@@ -21,6 +20,8 @@
 #include <mutex>
 #include "input_hide.h"
 #include "registryhelper.h"
+
+import camera;
 
 // 全局UDP发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;
