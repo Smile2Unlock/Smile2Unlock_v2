@@ -1,6 +1,11 @@
-#include <iostream>
-#include <stdexcept>  // 引入异常处理
-#include <string>
+//
+// Created by ation_ciger on 2026/3/19.
+//
+module;
+
+export module input_hide;
+
+import std;
 
 // --- 平台检测 ---
 #ifdef _WIN32
@@ -14,18 +19,18 @@
 
 // --- 平台特定的头文件 ---
 #ifdef PLATFORM_WINDOWS
-#include <io.h>  // _isatty
-#include <windows.h>
+import <io.h>;
+import <windows.h>;
 #define STDIN_FILENO 0
 #elif defined(PLATFORM_UNIX_LIKE)
-#include <sys/ioctl.h>  // ioctl
-#include <termios.h>
-#include <unistd.h>
+import <sys/ioctl.h>  // ioctl
+import <termios.h>
+import <unistd.h>
 #else
 // 不支持的平台
 #endif
 
-class HiddenInputReader {
+export class HiddenInputReader {
  private:
 #ifdef PLATFORM_WINDOWS
   HANDLE hStdIn;
