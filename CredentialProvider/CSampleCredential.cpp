@@ -749,8 +749,7 @@ HRESULT CSampleCredential::LaunchFaceRecognizer(const wchar_t* pszMode /* = L"re
 }
 
 HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
-  const int RECOGNITION_TIMEOUT_MS = 30000; // 30秒超时
-  const int CHECK_INTERVAL_MS = 100;        // 每100ms检查一次
+  const int CHECK_INTERVAL_MS = 100;        // 每 100ms 检查一次
   int elapsed = 0;
 
   {
@@ -761,10 +760,10 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
   // 外部全局变量,由UDP接收器更新
   extern std::atomic<RecognitionStatus> face_recognition_status;
 
-  LogDebugMessage(L"[INFO] 开始等待人脸识别结果，超时时间: %dms", RECOGNITION_TIMEOUT_MS);
-  LogDebugMessage(L"[DEBUG] 初始状态码: %d", static_cast<int>(face_recognition_status.load()));
-
-  while (elapsed < RECOGNITION_TIMEOUT_MS) {
+  LogDebugMessage(L"[INFO] 开始等待人脸识别结果，无超时限制");
+  LogDebugMessage(L"[DEBUG] 初始状态码：%d", static_cast<int>(face_recognition_status.load()));
+  
+  while (true) {
     {
       std::lock_guard<std::mutex> lock(_faceMutex);
       if (!_fFaceRecognitionRunning) {
@@ -781,8 +780,8 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     }
 
     // 每秒输出一次状态日志
-    if (elapsed % 1000 == 0) {
-      LogDebugMessage(L"[DEBUG] 等待中... 已耗时: %dms，当前状态码: %d",
+    if (elapsed % 1000 == 0 && elapsed > 0) {
+      LogDebugMessage(L"[DEBUG] 等待中... 已耗时：%dms，当前状态码：%d",
                       elapsed, static_cast<int>(currentStatus));
     }
 
@@ -790,14 +789,9 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     elapsed += CHECK_INTERVAL_MS;
   }
 
-  {
-    std::lock_guard<std::mutex> lock(_faceMutex);
-    _fFaceRecognitionRunning = false;
-  }
-
-  LogDebugMessage(L"[ERROR] 人脸识别超时或失败，耗时: %dms，最后状态码: %d，请检查FaceRecognizer是否正常运行",
-                  elapsed, static_cast<int>(face_recognition_status.load()));
-  return E_FAIL; // 超时或失败
+  LogDebugMessage(L"[ERROR] 人脸识别被取消或进程异常退出，最后状态码：%d", 
+                  static_cast<int>(face_recognition_status.load()));
+  return E_FAIL;
 }
 
 HRESULT CSampleCredential::DecryptPasswordFromRegistry(PWSTR *ppwszPassword) {
@@ -1191,28 +1185,28 @@ HRESULT CSampleCredential::TerminateFaceRecognizer() {
             constexpr DWORD FORCE_TIMEOUT_MS = 500;      // 强制终止等待500ms
             
             // 首先尝试发送关闭信号（如果进程支持）
-            // 注意：FaceRecognizer可能没有处理WM_CLOSE，但我们先尝试
-            
-            // 等待进程自然退出（减少到1秒）
-            DWORD waitResult = WaitForSingleObject(_hFaceRecognizerProcess, GRACEFUL_TIMEOUT_MS);
+            // 注意：FaceRecognizer 可能没有处理 WM_CLOSE，但我们先尝试
+                        
+            // 等待进程自然退出（无限等待）
+            DWORD waitResult = WaitForSingleObject(_hFaceRecognizerProcess, INFINITE);
             if (waitResult == WAIT_TIMEOUT) {
-                LogDebugMessage(L"[WARNING] 进程未在1秒内优雅退出，尝试强制终止");
+                LogDebugMessage(L"[WARNING] 进程未立即退出，尝试强制终止");
                 
                 // 尝试强制终止
                 if (!TerminateProcess(_hFaceRecognizerProcess, 1)) {
                     DWORD dwError = GetLastError();
                     // ACCESS_DENIED 是常见的，可能是权限不足或进程已退出
                     if (dwError == ERROR_ACCESS_DENIED) {
-                        LogDebugMessage(L"[INFO] 无法强制终止进程（权限不足或已退出），等待短暂时间后清理");
+                        LogDebugMessage(L"[INFO] 无法强制终止进程（权限不足或已退出），等待后清理");
                         // 等待短暂时间后检查进程是否已退出
-                        WaitForSingleObject(_hFaceRecognizerProcess, FORCE_TIMEOUT_MS);
+                        WaitForSingleObject(_hFaceRecognizerProcess, 100);
                     } else {
                         LogDebugMessage(L"[WARNING] 无法强制终止进程，错误代码: 0x%08X", dwError);
                     }
                 } else {
-                    LogDebugMessage(L"[INFO] FaceRecognizer进程已被强制终止");
+                    LogDebugMessage(L"[INFO] FaceRecognizer 进程已被强制终止");
                     // 等待进程完全退出
-                    WaitForSingleObject(_hFaceRecognizerProcess, FORCE_TIMEOUT_MS);
+                    WaitForSingleObject(_hFaceRecognizerProcess, 100);
                 }
             } else if (waitResult == WAIT_OBJECT_0) {
                 LogDebugMessage(L"[INFO] FaceRecognizer进程已优雅退出");
@@ -1260,7 +1254,7 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                 _fFaceRecognitionRunning = false;
             }
             
-            // 使用std::async和std::future实现带超时的join
+            // 使用 std::async 和 std::future 实现异步 join
             auto stop_future = std::async(std::launch::async, [this]() {
                 try {
                     _faceRecognitionThread.join();
@@ -1270,10 +1264,10 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                 }
             });
             
-            // 等待最多1秒
-            auto status = stop_future.wait_for(std::chrono::seconds(1));
+            // 等待线程完成（无限等待）
+            auto status = stop_future.wait_for(std::chrono::minutes(5));
             if (status == std::future_status::timeout) {
-                LogDebugMessage(L"[WARNING] 旧线程未在1秒内停止，分离线程以避免阻塞");
+                LogDebugMessage(L"[WARNING] 旧线程未在 5 分钟内停止，分离线程以避免阻塞");
                 _faceRecognitionThread.detach();  // 分离线程，让它在后台运行
             }
         }
@@ -1298,9 +1292,9 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
               LogDebugMessage(L"[INFO] 启用预热模式，先进行轻量级人脸检测");
               HRESULT hr = LaunchFaceRecognizer(L"warmup");
               if (SUCCEEDED(hr)) {
-                // 使用现代C++特性：带超时的等待循环
+                // 使用带超时的等待循环
                 constexpr auto CHECK_INTERVAL = std::chrono::milliseconds(100);
-                constexpr auto WARMUP_TIMEOUT = std::chrono::seconds(30);  // 30秒超时
+                constexpr auto WARMUP_TIMEOUT = std::chrono::minutes(5);  // 5 分钟超时
                 
                 extern std::atomic<RecognitionStatus> face_recognition_status;
                 auto warmup_start = std::chrono::steady_clock::now();
@@ -1309,7 +1303,7 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                   // 检查超时
                   auto now = std::chrono::steady_clock::now();
                   if (now - warmup_start > WARMUP_TIMEOUT) {
-                    LogDebugMessage(L"[WARNING] 预热模式超时（30秒）");
+                    LogDebugMessage(L"[WARNING] 预热模式超时（5 分钟）");
                     break;
                   }
                   
@@ -1439,10 +1433,10 @@ void CSampleCredential::StopFaceRecognition() {
             }
         });
         
-        // 等待最多2秒
-        auto status = stop_future.wait_for(std::chrono::seconds(2));
+        // 等待线程完成（无限等待）
+        auto status = stop_future.wait_for(std::chrono::minutes(5));
         if (status == std::future_status::timeout) {
-            LogDebugMessage(L"[WARNING] 识别线程未在2秒内停止，分离线程以避免阻塞");
+            LogDebugMessage(L"[WARNING] 识别线程未在 5 分钟内停止，分离线程以避免阻塞");
             _faceRecognitionThread.detach();  // 分离线程，让它在后台运行
         } else {
             // 线程已停止，获取结果

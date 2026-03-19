@@ -71,4 +71,28 @@ public:
         : FaceRecognitionException("Network communication error: " + reason) {}
 };
 
+/**
+ * @brief 注册表操作异常
+ */
+class RegistryException : public FaceRecognitionException {
+public:
+    explicit RegistryException(const std::string& operation, const std::string& keyPath, const std::string& reason)
+        : FaceRecognitionException("Registry operation failed for '" + operation + "' on key '" + keyPath + "': " + reason) {}
+
+    explicit RegistryException(const std::string& reason)
+        : FaceRecognitionException("Registry error: " + reason) {}
+};
+
+/**
+ * @brief 路径操作异常
+ */
+class PathOperationException : public FaceRecognitionException {
+public:
+    explicit PathOperationException(const std::string& path, const std::string& reason)
+        : FaceRecognitionException("Path operation failed for '" + path + "': " + reason) {}
+
+    explicit PathOperationException(const std::string& reason)
+        : FaceRecognitionException("Path operation error: " + reason) {}
+};
+
 } // namespace FaceRecognition
