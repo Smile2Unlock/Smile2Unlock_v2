@@ -18,3 +18,5 @@ vsxmake2022
 .cache
 .claude
 .local_devops
+
+CMakeLists.txt
