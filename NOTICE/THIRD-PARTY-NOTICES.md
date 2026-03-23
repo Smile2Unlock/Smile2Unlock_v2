@@ -56,7 +56,7 @@
    - 许可证: BSD-3-Clause (SPDX: BSD-3-Clause)
    - 版权:
 
-   Copyright 2011 The LibYuv Project Authors. All rights reserved.
+    Copyright 2011 The LibYuv Project Authors. All rights reserved.
    - 许可证原文见: licenses/libyuv-BSD-3-Clause.txt
 
    **GLFW** (https://www.glfw.org)
