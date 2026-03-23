@@ -17,6 +17,7 @@ import input_hide;
 
 // 全局 UDP 发送器 - 使用 Boost.Asio 实现
 std::unique_ptr<UdpSender> g_udp_sender;
+int g_udp_port = 51234;
 
 // 人脸注册函数
 int registerFace(int camera_index, float face_threshold, bool debug) {
@@ -100,7 +101,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
     
     // 初始化UDP发送器
     if (!g_udp_sender) {
-        g_udp_sender = std::make_unique<UdpSender>();
+        g_udp_sender = std::make_unique<UdpSender>("127.0.0.1", g_udp_port);
     }
     
     // 发送 RECOGNIZING 状态
@@ -154,7 +155,7 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
     }
     
     if (registeredUsers.empty()) {
-        throw FaceRecognition::FileOperationException("特征数据库", "没有找到已注册的用户数据");
+        std::cout << "[Recognize] 未找到本地已注册特征，将继续运行并等待外部流程接管比对。" << std::endl;
     }
     
     std::cout << "检测到已注册的用户：" << std::endl;
@@ -203,58 +204,64 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
                     
                     // 与已注册的特征进行比较
                     bool recognized = false;
-                    for (const auto& feature_file : featureFiles) {
-                        try {
-                            // 加载已注册的特征
-                            auto registered_features = recognizer.loadfeat(feature_file);
-                            
-                            if (!registered_features) {
-                                continue;
-                            }
-                            
-                            // 计算相似度
-                            float similarity = recognizer.feat_compare(current_features,
-                                                                      registered_features);
-                            
-                            // 如果相似度超过阈值，认为匹配成功
-                            if (similarity > face_threshold) {
-                                // 从文件名中提取用户名
-                                std::string filename =
-                                    std::filesystem::path(feature_file).stem().string();
-                                size_t underscore_pos = filename.find('_');
-                                std::string username = (underscore_pos != std::string::npos)
-                                                           ? filename.substr(0, underscore_pos)
-                                                           : "Unknown";
+                    if (featureFiles.empty()) {
+                        if (debug) {
+                            std::cout << "[Recognize] 当前没有可用于比对的本地特征文件。" << std::endl;
+                        }
+                    } else {
+                        for (const auto& feature_file : featureFiles) {
+                            try {
+                                // 加载已注册的特征
+                                auto registered_features = recognizer.loadfeat(feature_file);
                                 
-                                std::cout << "识别成功！用户: " << username
-                                          << ", 相似度: " << similarity << std::endl;
-                                
-                                // 标记识别成功
-                                recognition_success = true;
-                                
-                                // 发送解锁信号
-                                if (g_udp_sender) {
-                                    g_udp_sender->send_status(RecognitionStatus::SUCCESS,
-                                                              username);
+                                if (!registered_features) {
+                                    continue;
                                 }
                                 
-                                // 等待足够的时间让凭证程序接收状态
-                                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                                // 计算相似度
+                                float similarity = recognizer.feat_compare(current_features,
+                                                                          registered_features);
                                 
-                                recognized = true;
-                                break;  // 找到匹配项，跳出循环
+                                // 如果相似度超过阈值，认为匹配成功
+                                if (similarity > face_threshold) {
+                                    // 从文件名中提取用户名
+                                    std::string filename =
+                                        std::filesystem::path(feature_file).stem().string();
+                                    size_t underscore_pos = filename.find('_');
+                                    std::string username = (underscore_pos != std::string::npos)
+                                                               ? filename.substr(0, underscore_pos)
+                                                               : "Unknown";
+                                    
+                                    std::cout << "识别成功！用户: " << username
+                                              << ", 相似度: " << similarity << std::endl;
+                                    
+                                    // 标记识别成功
+                                    recognition_success = true;
+                                    
+                                    // 发送解锁信号
+                                    if (g_udp_sender) {
+                                        g_udp_sender->send_status(RecognitionStatus::SUCCESS,
+                                                                  username);
+                                    }
+                                    
+                                    // 等待足够的时间让凭证程序接收状态
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                                    
+                                    recognized = true;
+                                    break;  // 找到匹配项，跳出循环
+                                }
+                            } catch (const std::exception& e) {
+                                if (debug) {
+                                    std::cerr << "加载特征文件时出错: " << feature_file
+                                              << ", 错误: " << e.what() << std::endl;
+                                }
+                                continue;
                             }
-                        } catch (const std::exception& e) {
-                            if (debug) {
-                                std::cerr << "加载特征文件时出错: " << feature_file
-                                          << ", 错误: " << e.what() << std::endl;
-                            }
-                            continue;
                         }
-                    }
-                    
-                    if (!recognized && debug) {
-                        std::cout << "未识别到已注册用户" << std::endl;
+                        
+                        if (!recognized && debug) {
+                            std::cout << "未识别到已注册用户" << std::endl;
+                        }
                     }
                 }
             }
@@ -291,6 +298,8 @@ int mainOptimized(int argc, char* argv[]) {
          cxxopts::value<bool>()->default_value("false"))
         ("l,liveness-detection", "启用活体检测",
          cxxopts::value<bool>()->default_value("true"))
+        ("udp-port", "UDP target port for sending recognition results",
+         cxxopts::value<int>()->default_value("51234"))
         ("s,set-password", "交互式设置登录密码",
          cxxopts::value<bool>()->default_value("false"))
         ;
@@ -305,6 +314,7 @@ int mainOptimized(int argc, char* argv[]) {
     
     std::string mode = result["mode"].as<std::string>();
     bool set_password = result["set-password"].as<bool>();
+    g_udp_port = result["udp-port"].as<int>();
     
     // 加载配置
     ConfigManager config_manager("config.ini");
@@ -396,6 +406,10 @@ int mainOptimized(int argc, char* argv[]) {
       std::cout << "Ciphertext (hex): " << ciphertext_hex << std::endl;
 
       return 0;  // Exit after setting password
+    }
+
+    if (!g_udp_sender) {
+        g_udp_sender = std::make_unique<UdpSender>("127.0.0.1", g_udp_port);
     }
 
     // 根据模式执行相应操作
