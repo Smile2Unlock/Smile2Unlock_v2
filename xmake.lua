@@ -7,6 +7,8 @@ add_requires("cryptopp")
 add_requires("cxxopts")
 add_requires("boost", {configs = {asio = true}})
 add_requires("libyuv")
+add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
+add_requires("sqlite3")
 
 target("FaceRecognizer")
     set_encodings("utf-8")
@@ -113,6 +115,36 @@ target("SampleV2CredentialProvider")
 
     add_packages("cryptopp")
     add_packages("boost")
+
+target("Smile2UnlockBackend")
+    set_kind("static")
+    set_encodings("utf-8")
+    set_languages("c++26")
+    add_files(
+        "Smile2Unlock/backend/service.cpp",
+        "Smile2Unlock/backend/managers/*.cpp"
+    )
+    add_headerfiles("Smile2Unlock/backend/**.h")
+    add_includedirs(".", {public = true})
+    add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN", "NOMINMAX")
+    add_packages("boost", "sqlite3")
+    add_syslinks("advapi32", "version", "crypt32")
+
+target("Smile2Unlock")
+    set_kind("binary")
+    set_encodings("utf-8")
+    set_languages("c++26")
+    add_files(
+        "Smile2Unlock/*.cpp",
+        "Smile2Unlock/frontend/*.cpp"
+    )
+    add_headerfiles("Smile2Unlock/**.h")
+    add_includedirs(".", {public = true})
+    add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN", "NOMINMAX")
+    add_deps("Smile2UnlockBackend")
+    add_packages("glfw", "imgui", "boost", "sqlite3")
+    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32")
+    add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
 
 
 

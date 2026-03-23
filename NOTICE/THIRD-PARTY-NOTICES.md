@@ -56,5 +56,27 @@
    - 许可证: BSD-3-Clause (SPDX: BSD-3-Clause)
    - 版权:
 
-   Copyright 2011 The LibYuv Project Authors. All rights reserved.
+    Copyright 2011 The LibYuv Project Authors. All rights reserved.
    - 许可证原文见: licenses/libyuv-BSD-3-Clause.txt
+
+   **GLFW** (https://www.glfw.org)
+   - 许可证: zlib/libpng License
+   - 版权:
+
+    Copyright (c) 2002-2006 Marcus Geelnard
+    Copyright (c) 2006-2019 Camilla Löwy
+   - 许可证原文见: licenses/GLFW-zlib-libpng.txt
+
+   **Dear ImGui** (https://github.com/ocornut/imgui)
+   - 许可证: MIT (SPDX: MIT)
+   - 版权:
+
+    Copyright (c) 2014-2026 Omar Cornut
+   - 许可证原文见: licenses/DearImGui-MIT.txt
+
+   **SQLite** (https://www.sqlite.org)
+   - 许可证: Public Domain
+   - 版权:
+
+    SQLite deliverable code and documentation have been dedicated to the public domain by the authors.
+   - 许可证原文见: licenses/SQLite-Public-Domain.txt
