@@ -3,7 +3,7 @@
 #define MyAppVersion "2.0"
 #define MyAppPublisher "Smile2Unlock Team"
 #define MyAppURL "https://github.com/Smile2Unlock/Smile2Unlock_v2"
-#define MyAppExeName "SampleV2CredentialProvider.dll"
+#define MyAppExeName "Smile2Unlock.exe"
 
 [Setup]
 AppId={{5FD3D285-0DD9-4362-8855-E0ABAACD4AF6}}
@@ -29,11 +29,18 @@ UninstallDisplayIcon={sys}\SampleV2CredentialProvider.dll
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Tasks]
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: checkedonce
+
 [Files]
 ; Copy all files from installer-files directory
 Source: "installer-files\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Copy the main DLL to System32
 Source: "installer-files\SampleV2CredentialProvider.dll"; DestDir: "{sys}"; Flags: ignoreversion 64bit
+
+[Icons]
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Check: ShouldCreateStartMenuShortcut
 
 [Registry]
 ; Register the Credential Provider
@@ -41,8 +48,15 @@ Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Cr
 Root: HKCR; Subkey: "CLSID\{{5fd3d285-0dd9-4362-8855-e0abaacd4af6}}"; ValueType: string; ValueName: ""; ValueData: "SampleV2CredentialProvider"; Flags: uninsdeletekey
 Root: HKCR; Subkey: "CLSID\{{5fd3d285-0dd9-4362-8855-e0abaacd4af6}}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "SampleV2CredentialProvider.dll"; Flags: uninsdeletevalue
 Root: HKCR; Subkey: "CLSID\{{5fd3d285-0dd9-4362-8855-e0abaacd4af6}}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Apartment"; Flags: uninsdeletevalue
+; Remove application configuration on uninstall
+Root: HKLM; Subkey: "SOFTWARE\Smile2Unlock_v2"; ValueType: string; ValueName: "__installer_cleanup__"; ValueData: ""; Flags: uninsdeletekey
 
 [Code]
+function ShouldCreateStartMenuShortcut(): Boolean;
+begin
+  Result := ExpandConstant('{param:CreateStartMenuShortcut|1}') = '1';
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;

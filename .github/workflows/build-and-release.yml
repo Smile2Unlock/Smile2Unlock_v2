@@ -91,14 +91,42 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
         shell: pwsh
 
-      - name: Get commit info for release notes
-        id: get_commit_info
+      - name: Collect release metadata
+        id: release_meta
         run: |
           $commitMessage = git log -1 --pretty=format:"%s"
           $commitBody = git log -1 --pretty=format:"%b"
-          echo "commit_message=$commitMessage" >> $env:GITHUB_OUTPUT
-          echo "commit_body=$commitBody" >> $env:GITHUB_OUTPUT
-          echo "Commit message: $commitMessage"
+          $shortSha = git rev-parse --short HEAD
+          $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
+          $sourceArchive = "Smile2Unlock-source-$shortSha.zip"
+
+          if ([string]::IsNullOrWhiteSpace($commitBody)) {
+            $commitBody = "本次提交未提供额外说明。"
+          }
+
+          "commit_message<<EOF" >> $env:GITHUB_OUTPUT
+          $commitMessage >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
+          "commit_body<<EOF" >> $env:GITHUB_OUTPUT
+          $commitBody >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
+          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+          "build_time=$buildTime" >> $env:GITHUB_OUTPUT
+          "source_archive=$sourceArchive" >> $env:GITHUB_OUTPUT
+          Write-Host "Commit message: $commitMessage"
+          Write-Host "Source archive: $sourceArchive"
+        shell: pwsh
+
+      - name: Package source code and release assets
+        run: |
+          New-Item -Path "release-assets" -ItemType Directory -Force | Out-Null
+          Copy-Item -Path "Output\*" -Destination "release-assets\" -Recurse -Force
+          git archive --format=zip --output="release-assets\${{ steps.release_meta.outputs.source_archive }}" HEAD
+
+          Write-Host "Release assets:"
+          Get-ChildItem -Path "release-assets\" -Recurse
         shell: pwsh
 
       - name: Create or Update Release with fixed tag
@@ -107,26 +135,35 @@ jobs:
           tag_name: action-release
           name: Smile2Unlock Latest Release
           body: |
-            # Smile2Unlock Latest Release
-            
-            **Build Information:**
-            - Commit: ${{ github.sha }}
-            - Build Date: ${{ github.event.head_commit.timestamp }}
-            
-            **Latest Changes:**
-            ${{ steps.get_commit_info.outputs.commit_message }}
-            
-            ${{ steps.get_commit_info.outputs.commit_body }}
-            
-            **Installation Instructions:**
-            1. Download the installer below
-            2. Run as administrator
-            3. Follow the installation wizard
-            
-            **Note:** This software requires administrator privileges to install the credential provider.
-            
-            **Auto-generated release:** This release is automatically created when code is merged to the main branch.
-          files: Output/*.exe
+            # Smile2Unlock 最新发布
+
+            ## 发布内容
+            - `Smile2Unlock-Setup.exe`：Windows 安装程序，包含本次构建所需的运行文件。
+            - `${{ steps.release_meta.outputs.source_archive }}`：与本次发布对应的完整源码快照，可用于审查、归档或二次构建。
+
+            ## 构建信息
+            - 提交版本：`${{ github.sha }}`
+            - 短提交号：`${{ steps.release_meta.outputs.short_sha }}`
+            - 构建时间：`${{ steps.release_meta.outputs.build_time }}`
+            - 工作流：`${{ github.workflow }}`
+
+            ## 本次更新
+            **提交摘要**
+            ${{ steps.release_meta.outputs.commit_message }}
+
+            **提交说明**
+            ${{ steps.release_meta.outputs.commit_body }}
+
+            ## 安装方式
+            1. 下载 `Smile2Unlock-Setup.exe`。
+            2. 以管理员权限运行安装程序。
+            3. 按安装向导完成部署，安装程序会注册 Credential Provider。
+
+            ## 注意事项
+            - 安装和卸载都需要管理员权限。
+            - 该发布面向 Windows x64 环境。
+            - 如果你需要核对实现细节或自行构建，请下载源码压缩包。
+          files: release-assets/*
           draft: false
           prerelease: false
           replace_assets: true
