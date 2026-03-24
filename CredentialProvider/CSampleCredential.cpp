@@ -749,6 +749,46 @@ HRESULT CSampleCredential::LaunchSmile2UnlockService() {
   return S_OK;
 }
 
+HRESULT CSampleCredential::WaitForSmile2UnlockReady() {
+  if (!_pUdpReceiver) {
+    LogDebugMessage(L"[ERROR] UDP接收器尚未初始化，无法等待 Smile2Unlock 就绪");
+    return E_UNEXPECTED;
+  }
+
+  extern std::atomic<RecognitionStatus> face_recognition_status;
+  extern std::atomic<ULONGLONG> face_recognition_status_tick;
+
+  AuthRequestSender sender("127.0.0.1", 51236);
+  const ULONGLONG initialTick = face_recognition_status_tick.load(std::memory_order_relaxed);
+  constexpr int kProbeAttempts = 15;
+  constexpr DWORD kProbeIntervalMs = 200;
+
+  for (int attempt = 0; attempt < kProbeAttempts; ++attempt) {
+    if (!IsProcessStillRunning()) {
+      LogDebugMessage(L"[ERROR] 等待 Smile2Unlock 就绪时检测到进程已退出");
+      return E_FAIL;
+    }
+
+    if (sender.send_request(AuthRequestType::QUERY_STATUS, "", GetTickCount())) {
+      const ULONGLONG probeStart = GetTickCount64();
+      while (GetTickCount64() - probeStart < kProbeIntervalMs) {
+        const ULONGLONG currentTick = face_recognition_status_tick.load(std::memory_order_relaxed);
+        if (currentTick > initialTick) {
+          LogDebugMessage(L"[INFO] Smile2Unlock UDP 已就绪，当前状态=%d",
+                          static_cast<int>(face_recognition_status.load()));
+          return S_OK;
+        }
+        Sleep(20);
+      }
+    }
+
+    Sleep(kProbeIntervalMs);
+  }
+
+  LogDebugMessage(L"[ERROR] 等待 Smile2Unlock UDP 就绪超时，未收到 QUERY_STATUS 响应");
+  return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+}
+
 HRESULT CSampleCredential::SendAuthRequestToSmile2Unlock(AuthRequestType request_type) {
   AuthRequestSender sender("127.0.0.1", 51236);
 
@@ -788,6 +828,9 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
 
   // 外部全局变量,由UDP接收器更新
   extern std::atomic<RecognitionStatus> face_recognition_status;
+  extern std::atomic<ULONGLONG> face_recognition_status_tick;
+  const ULONGLONG initialStatusTick = face_recognition_status_tick.load(std::memory_order_relaxed);
+  constexpr int kInitialResponseTimeoutMs = 5000;
 
   LogDebugMessage(L"[INFO] 开始等待人脸识别结果，无超时限制");
   LogDebugMessage(L"[DEBUG] 初始状态码：%d", static_cast<int>(face_recognition_status.load()));
@@ -806,6 +849,28 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     if (currentStatus == RecognitionStatus::SUCCESS) {
       LogDebugMessage(L"[INFO] 识别成功！耗时: %dms，最终状态码: %d", elapsed, static_cast<int>(currentStatus));
       return S_OK; // 识别成功
+    }
+
+    if (!IsProcessStillRunning()) {
+      LogDebugMessage(L"[ERROR] 等待识别结果时检测到 Smile2Unlock 服务已退出");
+      return E_FAIL;
+    }
+
+    if (currentStatus == RecognitionStatus::IDLE &&
+        face_recognition_status_tick.load(std::memory_order_relaxed) <= initialStatusTick &&
+        elapsed >= kInitialResponseTimeoutMs) {
+      LogDebugMessage(L"[ERROR] 发送 START_RECOGNITION 后 %dms 内未收到任何状态回包，判定服务未建立连接",
+                      elapsed);
+      return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
+
+    if (currentStatus == RecognitionStatus::RECOGNITION_ERROR ||
+        currentStatus == RecognitionStatus::FAILED ||
+        currentStatus == RecognitionStatus::TIMEOUT ||
+        currentStatus == RecognitionStatus::PROCESS_ENDED) {
+      LogDebugMessage(L"[ERROR] 人脸识别失败，状态码：%d，耗时: %dms",
+                      static_cast<int>(currentStatus), elapsed);
+      return E_FAIL;
     }
 
     // 每秒输出一次状态日志
@@ -1309,6 +1374,9 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
 
             LogDebugMessage(L"[INFO] 启动 Smile2Unlock 服务并请求识别");
             HRESULT hr = LaunchSmile2UnlockService();
+            if (SUCCEEDED(hr)) {
+                hr = WaitForSmile2UnlockReady();
+            }
             if (SUCCEEDED(hr)) {
                 hr = SendAuthRequestToSmile2Unlock(AuthRequestType::START_RECOGNITION);
             }
