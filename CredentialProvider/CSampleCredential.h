@@ -140,7 +140,6 @@ public:
 
     // 辅助函数
     HRESULT LaunchSmile2UnlockService();    // 启动 Smile2Unlock.exe --service
-    HRESULT WaitForSmile2UnlockReady();     // 等待 SU 服务 UDP 就绪
     HRESULT TerminateSmile2UnlockService(); // 终止 Smile2Unlock 进程
     HRESULT SendAuthRequestToSmile2Unlock(AuthRequestType request_type); // 发送认证请求到SU
     HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
