@@ -115,6 +115,10 @@ std::shared_ptr<float> seetaface::img2features(SeetaImageData cap_img) {
     return extract(cap_img, points);
 }
 
+int seetaface::feature_size() const {
+    return pFR ? pFR->GetExtractFeatureSize() : 0;
+}
+
 /**
  * @brief 保存人脸特征到文件
  * 

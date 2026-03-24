@@ -1,9 +1,14 @@
-#include "database.h"
-#include <iostream>
+module;
+
+#include <sqlite3.h>
 #include <ctime>
 
-namespace smile2unlock {
-namespace managers {
+export module smile2unlock.database;
+
+import std;
+import smile2unlock.models;
+
+namespace smile2unlock::managers {
 
 std::string GetCurrentTimeStr() {
     time_t now = time(nullptr);
@@ -12,10 +17,50 @@ std::string GetCurrentTimeStr() {
     return std::string(buf);
 }
 
+}
+
+export namespace smile2unlock::managers {
+
+class Database {
+public:
+    Database();
+    ~Database();
+
+    bool Initialize(const std::string& db_path = "smile2unlock.db");
+
+    std::vector<User> GetAllUsers() const;
+    std::optional<User> GetUserById(int id) const;
+    std::optional<User> GetUserByUsername(const std::string& username) const;
+    bool AddUser(const User& user);
+    bool UpdateUser(const User& user);
+    bool DeleteUser(int id);
+    bool UserExists(const std::string& username) const;
+
+    bool AddFace(int user_id, const FaceData& face);
+    bool DeleteFace(int user_id, int face_id);
+    bool UpdateFace(int user_id, const FaceData& face);
+    std::vector<FaceData> GetUserFaces(int user_id) const;
+
+    std::optional<User> FindUserByFace(const std::string& feature) const;
+
+private:
+    bool CreateTables();
+    void ResetSequenceIfTableEmpty(const char* table_name);
+    sqlite3* db_;
+};
+
+} // namespace smile2unlock::managers
+
+module :private;
+
+namespace smile2unlock::managers {
+
 Database::Database() : db_(nullptr) {}
 
 Database::~Database() {
-    if (db_) sqlite3_close(db_);
+    if (db_) {
+        sqlite3_close(db_);
+    }
 }
 
 bool Database::Initialize(const std::string& db_path) {
@@ -28,18 +73,18 @@ bool Database::Initialize(const std::string& db_path) {
 
 bool Database::CreateTables() {
     char* err_msg = nullptr;
-    const char* user_table_sql = 
+    const char* user_table_sql =
         "CREATE TABLE IF NOT EXISTS users ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "id INTEGER PRIMARY KEY,"
         "username TEXT UNIQUE NOT NULL,"
         "encrypted_password TEXT,"
         "remark TEXT,"
         "created_at TEXT"
         ");";
 
-    const char* face_table_sql = 
+    const char* face_table_sql =
         "CREATE TABLE IF NOT EXISTS faces ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "id INTEGER PRIMARY KEY,"
         "user_id INTEGER NOT NULL,"
         "feature TEXT,"
         "image_path TEXT,"
@@ -50,13 +95,13 @@ bool Database::CreateTables() {
 
     if (sqlite3_exec(db_, user_table_sql, 0, 0, &err_msg) != SQLITE_OK) {
         std::cerr << "Failed to create users table: " << (err_msg ? err_msg : "") << std::endl;
-        if(err_msg) sqlite3_free(err_msg);
+        if (err_msg) sqlite3_free(err_msg);
         return false;
     }
 
     if (sqlite3_exec(db_, face_table_sql, 0, 0, &err_msg) != SQLITE_OK) {
         std::cerr << "Failed to create faces table: " << (err_msg ? err_msg : "") << std::endl;
-        if(err_msg) sqlite3_free(err_msg);
+        if (err_msg) sqlite3_free(err_msg);
         return false;
     }
 
@@ -190,11 +235,14 @@ bool Database::DeleteUser(int id) {
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_int(stmt, 1, id);
         if (sqlite3_step(stmt) == SQLITE_DONE) {
-            int changes = sqlite3_changes(db_);
-            success = (changes > 0);
+            success = sqlite3_changes(db_) > 0;
         }
     }
     sqlite3_finalize(stmt);
+    if (success) {
+        ResetSequenceIfTableEmpty("faces");
+        ResetSequenceIfTableEmpty("users");
+    }
     return success;
 }
 
@@ -232,11 +280,13 @@ bool Database::DeleteFace(int user_id, int face_id) {
         sqlite3_bind_int(stmt, 1, face_id);
         sqlite3_bind_int(stmt, 2, user_id);
         if (sqlite3_step(stmt) == SQLITE_DONE) {
-            int changes = sqlite3_changes(db_);
-            success = (changes > 0);
+            success = sqlite3_changes(db_) > 0;
         }
     }
     sqlite3_finalize(stmt);
+    if (success) {
+        ResetSequenceIfTableEmpty("faces");
+    }
     return success;
 }
 
@@ -289,5 +339,33 @@ std::optional<User> Database::FindUserByFace(const std::string& feature) const {
     return std::nullopt;
 }
 
-} // namespace managers
-} // namespace smile2unlock
+void Database::ResetSequenceIfTableEmpty(const char* table_name) {
+    if (table_name == nullptr || db_ == nullptr) {
+        return;
+    }
+
+    const std::string count_sql = "SELECT COUNT(*) FROM " + std::string(table_name) + ";";
+    sqlite3_stmt* stmt = nullptr;
+    bool is_empty = false;
+
+    if (sqlite3_prepare_v2(db_, count_sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            is_empty = sqlite3_column_int(stmt, 0) == 0;
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (!is_empty) {
+        return;
+    }
+
+    sqlite3_stmt* reset_stmt = nullptr;
+    const char* reset_sql = "DELETE FROM sqlite_sequence WHERE name = ?;";
+    if (sqlite3_prepare_v2(db_, reset_sql, -1, &reset_stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(reset_stmt, 1, table_name, -1, SQLITE_TRANSIENT);
+        sqlite3_step(reset_stmt);
+    }
+    sqlite3_finalize(reset_stmt);
+}
+
+} // namespace smile2unlock::managers

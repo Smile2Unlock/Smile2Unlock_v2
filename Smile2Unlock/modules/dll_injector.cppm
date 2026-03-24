@@ -1,64 +1,86 @@
-#include "Smile2Unlock/backend/managers/dll_injector.h"
-#include <filesystem>
-#include <fstream>
-#include <sstream>
-#include <iomanip>
-#include <vector>
+module;
+
 #include <windows.h>
 #include <wincrypt.h>
 
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "version.lib")
 
+export module smile2unlock.dll_injector;
+
+import std;
+import smile2unlock.models;
+
 namespace fs = std::filesystem;
 
-namespace smile2unlock {
-namespace managers {
+export namespace smile2unlock::managers {
+
+class DllInjector {
+public:
+    DllInjector() = default;
+    ~DllInjector() = default;
+
+    bool IsInjected() const;
+    bool IsRegistryConfigured() const;
+    std::string GetSourceDllPath() const;
+    std::string GetTargetDllPath() const;
+    std::string CalculateFileHash(const std::string& filePath) const;
+    bool VerifyDllHash() const;
+    bool InjectDll(std::string& error_message);
+    std::string GetDllVersion(const std::string& dllPath) const;
+    DllStatus GetStatus();
+
+private:
+    bool ImportRegistry();
+
+    static constexpr const char* DLL_NAME = "SampleV2CredentialProvider.dll";
+    static constexpr const char* REGISTRY_KEY_CP =
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers\\{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
+    static constexpr const char* REGISTRY_KEY_CLSID =
+        "CLSID\\{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
+};
+
+} // namespace smile2unlock::managers
+
+module :private;
+
+namespace smile2unlock::managers {
 
 std::string DllInjector::GetSourceDllPath() const {
     char buffer[MAX_PATH];
     GetModuleFileNameA(nullptr, buffer, MAX_PATH);
     fs::path exePath(buffer);
-    fs::path dllPath = exePath.parent_path() / DLL_NAME;
-    return dllPath.string();
+    return (exePath.parent_path() / DLL_NAME).string();
 }
 
 std::string DllInjector::GetTargetDllPath() const {
     char sysPath[MAX_PATH];
     GetSystemDirectoryA(sysPath, MAX_PATH);
-    fs::path targetPath = fs::path(sysPath) / DLL_NAME;
-    return targetPath.string();
+    return (fs::path(sysPath) / DLL_NAME).string();
 }
 
 bool DllInjector::IsInjected() const {
-    std::string targetPath = GetTargetDllPath();
-    return fs::exists(targetPath);
+    return fs::exists(GetTargetDllPath());
 }
 
 std::string DllInjector::CalculateFileHash(const std::string& filePath) const {
-    if (!fs::exists(filePath)) {
-        return "FILE_NOT_FOUND";
-    }
+    if (!fs::exists(filePath)) return "FILE_NOT_FOUND";
 
     std::ifstream file(filePath, std::ios::binary);
-    if (!file) {
-        return "CANNOT_OPEN";
-    }
+    if (!file) return "CANNOT_OPEN";
 
     std::vector<unsigned char> buffer(std::istreambuf_iterator<char>(file), {});
-    
+
     HCRYPTPROV hProv = 0;
     HCRYPTHASH hHash = 0;
-    
+
     if (!CryptAcquireContextW(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
         return "CRYPTO_ERROR";
     }
-
     if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
         CryptReleaseContext(hProv, 0);
         return "CRYPTO_ERROR";
     }
-
     if (!CryptHashData(hHash, buffer.data(), static_cast<DWORD>(buffer.size()), 0)) {
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
@@ -67,7 +89,6 @@ std::string DllInjector::CalculateFileHash(const std::string& filePath) const {
 
     BYTE hash[32];
     DWORD hashLen = 32;
-    
     if (!CryptGetHashParam(hHash, HP_HASHVAL, hash, &hashLen, 0)) {
         CryptDestroyHash(hHash);
         CryptReleaseContext(hProv, 0);
@@ -75,24 +96,19 @@ std::string DllInjector::CalculateFileHash(const std::string& filePath) const {
     }
 
     std::stringstream ss;
-    for (DWORD i = 0; i < hashLen; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
+    for (DWORD i = 0; i < hashLen; ++i) {
+        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
     }
 
     CryptDestroyHash(hHash);
     CryptReleaseContext(hProv, 0);
-
     return ss.str();
 }
 
 bool DllInjector::VerifyDllHash() const {
     std::string sourceHash = CalculateFileHash(GetSourceDllPath());
     std::string targetHash = CalculateFileHash(GetTargetDllPath());
-    
-    if (sourceHash == "FILE_NOT_FOUND" || targetHash == "FILE_NOT_FOUND") {
-        return false;
-    }
-
+    if (sourceHash == "FILE_NOT_FOUND" || targetHash == "FILE_NOT_FOUND") return false;
     return sourceHash == targetHash;
 }
 
@@ -114,9 +130,7 @@ bool DllInjector::InjectDll(std::string& error_message) {
             return false;
         }
 
-        std::string targetPath = GetTargetDllPath();
-        fs::copy_file(sourcePath, targetPath, fs::copy_options::overwrite_existing);
-
+        fs::copy_file(sourcePath, GetTargetDllPath(), fs::copy_options::overwrite_existing);
         if (!ImportRegistry()) {
             error_message = "Failed to configure registry";
             return false;
@@ -133,101 +147,49 @@ bool DllInjector::InjectDll(std::string& error_message) {
 bool DllInjector::ImportRegistry() {
     HKEY hKey;
     DWORD disposition;
-    
-    LONG result = RegCreateKeyExA(
-        HKEY_LOCAL_MACHINE,
-        REGISTRY_KEY_CP,
-        0,
-        nullptr,
-        REG_OPTION_NON_VOLATILE,
-        KEY_WRITE,
-        nullptr,
-        &hKey,
-        &disposition
-    );
 
-    if (result == ERROR_SUCCESS) {
-        const char* value = "SampleV2CredentialProvider";
-        RegSetValueExA(hKey, nullptr, 0, REG_SZ, 
-                      reinterpret_cast<const BYTE*>(value), 
-                      static_cast<DWORD>(strlen(value) + 1));
-        RegCloseKey(hKey);
-    } else {
-        return false;
-    }
+    LONG result = RegCreateKeyExA(HKEY_LOCAL_MACHINE, REGISTRY_KEY_CP, 0, nullptr, REG_OPTION_NON_VOLATILE,
+                                  KEY_WRITE, nullptr, &hKey, &disposition);
+    if (result != ERROR_SUCCESS) return false;
 
-    result = RegCreateKeyExA(
-        HKEY_CLASSES_ROOT,
-        REGISTRY_KEY_CLSID,
-        0,
-        nullptr,
-        REG_OPTION_NON_VOLATILE,
-        KEY_WRITE,
-        nullptr,
-        &hKey,
-        &disposition
-    );
+    const char* value = "SampleV2CredentialProvider";
+    RegSetValueExA(hKey, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(value), static_cast<DWORD>(strlen(value) + 1));
+    RegCloseKey(hKey);
 
-    if (result == ERROR_SUCCESS) {
-        const char* value = "SampleV2CredentialProvider";
-        RegSetValueExA(hKey, nullptr, 0, REG_SZ,
-                      reinterpret_cast<const BYTE*>(value),
-                      static_cast<DWORD>(strlen(value) + 1));
-        RegCloseKey(hKey);
-    } else {
-        return false;
-    }
+    result = RegCreateKeyExA(HKEY_CLASSES_ROOT, REGISTRY_KEY_CLSID, 0, nullptr, REG_OPTION_NON_VOLATILE,
+                             KEY_WRITE, nullptr, &hKey, &disposition);
+    if (result != ERROR_SUCCESS) return false;
+    RegSetValueExA(hKey, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(value), static_cast<DWORD>(strlen(value) + 1));
+    RegCloseKey(hKey);
 
     std::string inprocKey = std::string(REGISTRY_KEY_CLSID) + "\\InprocServer32";
-    result = RegCreateKeyExA(
-        HKEY_CLASSES_ROOT,
-        inprocKey.c_str(),
-        0,
-        nullptr,
-        REG_OPTION_NON_VOLATILE,
-        KEY_WRITE,
-        nullptr,
-        &hKey,
-        &disposition
-    );
+    result = RegCreateKeyExA(HKEY_CLASSES_ROOT, inprocKey.c_str(), 0, nullptr, REG_OPTION_NON_VOLATILE,
+                             KEY_WRITE, nullptr, &hKey, &disposition);
+    if (result != ERROR_SUCCESS) return false;
 
-    if (result == ERROR_SUCCESS) {
-        const char* dllName = "SampleV2CredentialProvider.dll";
-        RegSetValueExA(hKey, nullptr, 0, REG_SZ,
-                      reinterpret_cast<const BYTE*>(dllName),
-                      static_cast<DWORD>(strlen(dllName) + 1));
-
-        const char* threadingModel = "Apartment";
-        RegSetValueExA(hKey, "ThreadingModel", 0, REG_SZ,
-                      reinterpret_cast<const BYTE*>(threadingModel),
-                      static_cast<DWORD>(strlen(threadingModel) + 1));
-        RegCloseKey(hKey);
-    } else {
-        return false;
-    }
+    const char* dllName = "SampleV2CredentialProvider.dll";
+    RegSetValueExA(hKey, nullptr, 0, REG_SZ, reinterpret_cast<const BYTE*>(dllName), static_cast<DWORD>(strlen(dllName) + 1));
+    const char* threadingModel = "Apartment";
+    RegSetValueExA(hKey, "ThreadingModel", 0, REG_SZ,
+                   reinterpret_cast<const BYTE*>(threadingModel), static_cast<DWORD>(strlen(threadingModel) + 1));
+    RegCloseKey(hKey);
 
     return true;
 }
 
 std::string DllInjector::GetDllVersion(const std::string& dllPath) const {
-    if (!fs::exists(dllPath)) {
-        return "N/A";
-    }
+    if (!fs::exists(dllPath)) return "N/A";
 
     DWORD dummy;
     DWORD size = GetFileVersionInfoSizeA(dllPath.c_str(), &dummy);
-    if (size == 0) {
-        return "Unknown";
-    }
+    if (size == 0) return "Unknown";
 
     std::vector<BYTE> data(size);
-    if (!GetFileVersionInfoA(dllPath.c_str(), 0, size, data.data())) {
-        return "Unknown";
-    }
+    if (!GetFileVersionInfoA(dllPath.c_str(), 0, size, data.data())) return "Unknown";
 
     VS_FIXEDFILEINFO* fileInfo = nullptr;
     UINT len = 0;
-    if (VerQueryValueA(data.data(), "\\", (LPVOID*)&fileInfo, &len)) {
+    if (VerQueryValueA(data.data(), "\\", reinterpret_cast<LPVOID*>(&fileInfo), &len)) {
         std::stringstream ss;
         ss << HIWORD(fileInfo->dwFileVersionMS) << "."
            << LOWORD(fileInfo->dwFileVersionMS) << "."
@@ -250,11 +212,10 @@ DllStatus DllInjector::GetStatus() {
     status.hash_match = VerifyDllHash();
     status.source_version = GetDllVersion(status.source_path);
     status.target_version = GetDllVersion(status.target_path);
-    status.version_match = (!status.source_version.empty() && 
-                           !status.target_version.empty() &&
-                           status.source_version == status.target_version);
+    status.version_match = (!status.source_version.empty() &&
+                            !status.target_version.empty() &&
+                            status.source_version == status.target_version);
     return status;
 }
 
-} // namespace managers
-} // namespace smile2unlock
+} // namespace smile2unlock::managers

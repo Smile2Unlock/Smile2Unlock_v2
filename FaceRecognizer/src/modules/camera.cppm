@@ -14,10 +14,9 @@ module;
 export module camera;
 
 import std;
-import std.compat;
 
 #ifdef _WIN32
-export inline bool EnsureMFInitialized();
+inline bool EnsureMFInitialized();
 
 // 注意：此头文件设计为单翻译单元包含（推荐仅在FaceRecognizer.cpp中包含）
 // 若需多文件使用，请将实现移至.cpp并移除函数体定义
@@ -421,8 +420,10 @@ export class CameraCapture {
               continue;
           }
 
-          // 第二步：ARGB -> RGB24
-          ret = libyuv::ARGBToRGB24(
+          // 第二步：ARGB -> RAW(RGB24)
+          // libyuv::ARGBToRGB24 输出的 24-bit 排列更接近 BGR，
+          // 这里使用 ARGBToRAW 明确得到 RGB 顺序，和 SU/OpenGL 保持一致。
+          ret = libyuv::ARGBToRAW(
               argb_buffer.data(), // 源 ARGB
               argb_stride,        // 源 stride
               image.data,         // 目标 RGB24
@@ -432,7 +433,7 @@ export class CameraCapture {
           );
 
           if (ret != 0) {
-              std::cerr << "[Camera] ARGBToRGB24 转换失败，错误码: " << ret << std::endl;
+              std::cerr << "[Camera] ARGBToRAW 转换失败，错误码: " << ret << std::endl;
               delete[] image.data;
               image.data = nullptr;
               pBuffer->Unlock();
@@ -479,8 +480,8 @@ export class CameraCapture {
               continue;
           }
 
-          // 第二步：ARGB -> RGB24
-          ret = libyuv::ARGBToRGB24(
+          // 第二步：ARGB -> RAW(RGB24)
+          ret = libyuv::ARGBToRAW(
               argb_buffer.data(),
               argb_stride,
               image.data,
@@ -490,7 +491,7 @@ export class CameraCapture {
           );
 
           if (ret != 0) {
-              std::cerr << "[Camera] ARGBToRGB24 转换失败，错误码: " << ret << std::endl;
+              std::cerr << "[Camera] ARGBToRAW 转换失败，错误码: " << ret << std::endl;
               delete[] image.data;
               image.data = nullptr;
               pBuffer->Unlock();
