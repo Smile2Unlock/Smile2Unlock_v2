@@ -31,6 +31,10 @@ private:
     void RenderInjectorPanel();
     void RenderUsersPanel();
     void RenderRecognizerPanel();
+    void PollPreviewStream();
+    void RefreshFacePreview();
+    void UpdatePreviewTexture(const std::vector<unsigned char>& image_data, int width, int height);
+    void ClearPreviewTexture();
 
     std::unique_ptr<BackendService> backend_;
     GLFWwindow* window_;
@@ -48,6 +52,13 @@ private:
         char face_remark[256]{};
         bool show_save_face_result{};
         bool save_face_success{};
+        GLuint preview_texture{};
+        int preview_width{};
+        int preview_height{};
+        bool has_preview{};
+        bool request_preview_refresh{};
+        bool camera_enabled{};
+        std::string preview_message;
     };
 
     UIState ui_state_;
@@ -59,6 +70,8 @@ private:
 module :private;
 
 namespace smile2unlock {
+
+constexpr GLint kGlClampToEdge = 0x812F;
 
 Application::Application() : window_(nullptr), initialized_(false) {
     backend_ = std::make_unique<BackendService>();
@@ -122,12 +135,77 @@ void Application::Run() {
 
 void Application::Shutdown() {
     if (!initialized_) return;
+    ClearPreviewTexture();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     if (window_) glfwDestroyWindow(window_);
     glfwTerminate();
     initialized_ = false;
+}
+
+void Application::ClearPreviewTexture() {
+    if (ui_state_.preview_texture != 0) {
+        glDeleteTextures(1, &ui_state_.preview_texture);
+        ui_state_.preview_texture = 0;
+    }
+    ui_state_.preview_width = 0;
+    ui_state_.preview_height = 0;
+    ui_state_.has_preview = false;
+}
+
+void Application::UpdatePreviewTexture(const std::vector<unsigned char>& image_data, int width, int height) {
+    if (image_data.empty() || width <= 0 || height <= 0) {
+        ClearPreviewTexture();
+        return;
+    }
+
+    if (ui_state_.preview_texture == 0) {
+        glGenTextures(1, &ui_state_.preview_texture);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, ui_state_.preview_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, kGlClampToEdge);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, kGlClampToEdge);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image_data.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    ui_state_.preview_width = width;
+    ui_state_.preview_height = height;
+    ui_state_.has_preview = true;
+}
+
+void Application::RefreshFacePreview() {
+    std::vector<unsigned char> image_data;
+    int width = 0;
+    int height = 0;
+    std::string error_message;
+    if (backend_->CapturePreviewFrame(image_data, width, height, error_message)) {
+        UpdatePreviewTexture(image_data, width, height);
+        ui_state_.preview_message = "预览已更新";
+    } else {
+        ui_state_.preview_message = error_message.empty() ? "无法获取预览" : error_message;
+    }
+}
+
+void Application::PollPreviewStream() {
+    if (!ui_state_.camera_enabled) {
+        return;
+    }
+
+    std::vector<unsigned char> image_data;
+    int width = 0;
+    int height = 0;
+    std::string error_message;
+    if (backend_->GetLatestCameraPreview(image_data, width, height, error_message)) {
+        UpdatePreviewTexture(image_data, width, height);
+        ui_state_.preview_message = "摄像头实时预览中";
+    } else if (!error_message.empty()) {
+        ui_state_.preview_message = error_message;
+    }
 }
 
 void Application::RenderUI() {
@@ -238,6 +316,7 @@ void Application::RenderUsersPanel() {
             if (ImGui::Button(("管理人脸##face_" + std::to_string(user.id)).c_str())) {
                 ui_state_.selected_user_id = user.id;
                 ui_state_.show_face_capture = true;
+                ui_state_.request_preview_refresh = false;
             }
         }
         ImGui::EndTable();
@@ -291,14 +370,60 @@ void Application::RenderUsersPanel() {
             ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
             ImGui::Text("录入新人脸:");
             ImGui::InputText("备注##face", ui_state_.face_remark, sizeof(ui_state_.face_remark));
-            ImGui::TextWrapped("摄像头由 FaceRecognizer 负责，Smile2Unlock 通过 IPC 接收抓拍图片。");
+            PollPreviewStream();
+            ImGui::TextWrapped("摄像头由 FaceRecognizer 负责，Smile2Unlock 通过 IPC 接收预览图像与人脸特征。");
+            if (!ui_state_.camera_enabled) {
+                if (ImGui::Button("打开摄像头", ImVec2(160, 30))) {
+                    std::string error;
+                    if (backend_->StartCameraPreview(error)) {
+                        ui_state_.camera_enabled = true;
+                        ui_state_.preview_message = error.empty() ? "摄像头已打开" : error;
+                    } else {
+                        ui_state_.preview_message = error.empty() ? "打开摄像头失败" : error;
+                    }
+                }
+            } else {
+                if (ImGui::Button("关闭摄像头", ImVec2(160, 30))) {
+                    backend_->StopCameraPreview();
+                    ui_state_.camera_enabled = false;
+                    ui_state_.preview_message = "摄像头已关闭";
+                    ClearPreviewTexture();
+                }
+            }
+            ImGui::SameLine();
+            if (!ui_state_.camera_enabled) {
+                if (ImGui::Button("单次抓拍", ImVec2(160, 30))) {
+                    RefreshFacePreview();
+                }
+            } else {
+                ImGui::BeginDisabled();
+                ImGui::Button("单次抓拍", ImVec2(160, 30));
+                ImGui::EndDisabled();
+            }
+            if (!ui_state_.preview_message.empty()) {
+                ImGui::TextWrapped("%s", ui_state_.preview_message.c_str());
+            }
+            ImGui::Spacing();
+            if (ui_state_.has_preview && ui_state_.preview_texture != 0) {
+                const float max_width = 520.0f;
+                const float scale = std::min(max_width / static_cast<float>(ui_state_.preview_width), 1.0f);
+                const ImVec2 preview_size(
+                    static_cast<float>(ui_state_.preview_width) * scale,
+                    static_cast<float>(ui_state_.preview_height) * scale);
+                ImGui::Image((ImTextureID)(intptr_t)ui_state_.preview_texture, preview_size);
+            } else {
+                ImGui::TextDisabled("当前还没有可显示的预览画面");
+            }
             if (ImGui::Button("抓拍并录入", ImVec2(180, 30))) {
                 std::string error_msg;
                 bool success = backend_->CaptureAndAddFace(user_it->id, ui_state_.face_remark, error_msg);
                 if (success) {
-                    ui_state_.status_message = "人脸信息已成功记录至系统数据库。";
+                    ui_state_.status_message = "人脸特征已成功记录至系统数据库。";
                     ui_state_.save_face_success = true;
                     memset(ui_state_.face_remark, 0, sizeof(ui_state_.face_remark));
+                    if (!ui_state_.camera_enabled) {
+                        ui_state_.request_preview_refresh = true;
+                    }
                 } else {
                     ui_state_.status_message = "错误: " + error_msg;
                     ui_state_.save_face_success = false;
@@ -308,7 +433,13 @@ void Application::RenderUsersPanel() {
             }
         }
         ImGui::Spacing();
-        if (ImGui::Button("关闭", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("关闭", ImVec2(120, 0))) {
+            backend_->StopCameraPreview();
+            ui_state_.camera_enabled = false;
+            ui_state_.preview_message.clear();
+            ClearPreviewTexture();
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::EndPopup();
     }
 

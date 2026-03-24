@@ -1,7 +1,5 @@
 module;
 
-#include "utils/bmp_writer.h"
-
 export module smile2unlock.service;
 
 import std;
@@ -29,7 +27,12 @@ public:
     bool UpdateUser(int user_id, const std::string& username, const std::string& password, const std::string& remark, std::string& error_message);
     bool DeleteUser(int userId, std::string& error_message);
 
-    bool AddFace(int user_id, const std::string& image_path, const std::string& remark, std::string& error_message);
+    bool AddFace(int user_id, const std::string& feature, const std::string& remark, std::string& error_message);
+    bool StartCameraPreview(std::string& error_message);
+    void StopCameraPreview();
+    bool IsCameraPreviewRunning() const;
+    bool GetLatestCameraPreview(std::vector<unsigned char>& image_data, int& width, int& height, std::string& error_message);
+    bool CapturePreviewFrame(std::vector<unsigned char>& image_data, int& width, int& height, std::string& error_message);
     bool CaptureAndAddFace(int user_id, const std::string& remark, std::string& error_message);
     bool DeleteFace(int user_id, int face_id, std::string& error_message);
     bool UpdateFaceRemark(int user_id, int face_id, const std::string& remark, std::string& error_message);
@@ -121,10 +124,15 @@ bool BackendService::DeleteUser(int userId, std::string& error_message) {
     return false;
 }
 
-bool BackendService::AddFace(int user_id, const std::string& image_path, const std::string& remark, std::string& error_message) {
+bool BackendService::AddFace(int user_id, const std::string& feature, const std::string& remark, std::string& error_message) {
+    if (feature.empty()) {
+        error_message = "人脸特征不能为空";
+        return false;
+    }
+
     FaceData face;
-    face.feature = "PENDING_FEATURE_EXTRACTION";
-    face.image_path = image_path;
+    face.feature = feature;
+    face.image_path.clear();
     face.remark = remark;
     if (database_->AddFace(user_id, face)) {
         error_message = "人脸添加成功";
@@ -134,6 +142,26 @@ bool BackendService::AddFace(int user_id, const std::string& image_path, const s
     return false;
 }
 
+bool BackendService::StartCameraPreview(std::string& error_message) {
+    return face_recognition_->StartPreviewStream(error_message);
+}
+
+void BackendService::StopCameraPreview() {
+    face_recognition_->StopPreviewStream();
+}
+
+bool BackendService::IsCameraPreviewRunning() const {
+    return face_recognition_->IsPreviewStreamRunning();
+}
+
+bool BackendService::GetLatestCameraPreview(std::vector<unsigned char>& image_data, int& width, int& height, std::string& error_message) {
+    return face_recognition_->GetLatestPreviewFrame(image_data, width, height, error_message);
+}
+
+bool BackendService::CapturePreviewFrame(std::vector<unsigned char>& image_data, int& width, int& height, std::string& error_message) {
+    return face_recognition_->CaptureFrameImage(image_data, width, height, error_message);
+}
+
 bool BackendService::CaptureAndAddFace(int user_id, const std::string& remark, std::string& error_message) {
     auto user = database_->GetUserById(user_id);
     if (!user.has_value()) {
@@ -141,22 +169,27 @@ bool BackendService::CaptureAndAddFace(int user_id, const std::string& remark, s
         return false;
     }
 
+    const bool restart_preview = face_recognition_->IsPreviewStreamRunning();
+    if (restart_preview) {
+        face_recognition_->StopPreviewStream();
+    }
+
     std::vector<unsigned char> image_data;
     int width = 0;
     int height = 0;
-    if (!face_recognition_->CaptureFrameImage(image_data, width, height, error_message)) {
+    std::string feature;
+    const bool captured = face_recognition_->CaptureFrameAndFeature(image_data, width, height, feature, error_message);
+
+    if (restart_preview) {
+        std::string restart_error;
+        face_recognition_->StartPreviewStream(restart_error);
+    }
+
+    if (!captured) {
         return false;
     }
 
-    std::filesystem::create_directories("db");
-    const auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    const std::string image_path = "db/face_" + std::to_string(user_id) + "_" + std::to_string(timestamp) + ".bmp";
-    if (!SaveRGB24ToBMPFile(image_path.c_str(), width, height, image_data.data())) {
-        error_message = "保存抓拍图片失败";
-        return false;
-    }
-    return AddFace(user_id, image_path, remark, error_message);
+    return AddFace(user_id, feature, remark, error_message);
 }
 
 bool BackendService::DeleteFace(int user_id, int face_id, std::string& error_message) {

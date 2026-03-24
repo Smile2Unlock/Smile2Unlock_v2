@@ -19,6 +19,7 @@ public:
     ~seetaface();
 
     std::shared_ptr<float> img2features(SeetaImageData cap_img);
+    int feature_size() const;
     void savefeat(std::shared_ptr<float> feat, const std::string data_file);
     std::shared_ptr<float> loadfeat(const std::string data_file);
     float feat_compare(std::shared_ptr<float> feat1, std::shared_ptr<float> feat2);

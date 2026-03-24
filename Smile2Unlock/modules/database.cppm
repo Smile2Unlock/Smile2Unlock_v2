@@ -45,6 +45,7 @@ public:
 
 private:
     bool CreateTables();
+    void ResetSequenceIfTableEmpty(const char* table_name);
     sqlite3* db_;
 };
 
@@ -74,7 +75,7 @@ bool Database::CreateTables() {
     char* err_msg = nullptr;
     const char* user_table_sql =
         "CREATE TABLE IF NOT EXISTS users ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "id INTEGER PRIMARY KEY,"
         "username TEXT UNIQUE NOT NULL,"
         "encrypted_password TEXT,"
         "remark TEXT,"
@@ -83,7 +84,7 @@ bool Database::CreateTables() {
 
     const char* face_table_sql =
         "CREATE TABLE IF NOT EXISTS faces ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "id INTEGER PRIMARY KEY,"
         "user_id INTEGER NOT NULL,"
         "feature TEXT,"
         "image_path TEXT,"
@@ -238,6 +239,10 @@ bool Database::DeleteUser(int id) {
         }
     }
     sqlite3_finalize(stmt);
+    if (success) {
+        ResetSequenceIfTableEmpty("faces");
+        ResetSequenceIfTableEmpty("users");
+    }
     return success;
 }
 
@@ -279,6 +284,9 @@ bool Database::DeleteFace(int user_id, int face_id) {
         }
     }
     sqlite3_finalize(stmt);
+    if (success) {
+        ResetSequenceIfTableEmpty("faces");
+    }
     return success;
 }
 
@@ -329,6 +337,35 @@ std::vector<FaceData> Database::GetUserFaces(int user_id) const {
 
 std::optional<User> Database::FindUserByFace(const std::string& feature) const {
     return std::nullopt;
+}
+
+void Database::ResetSequenceIfTableEmpty(const char* table_name) {
+    if (table_name == nullptr || db_ == nullptr) {
+        return;
+    }
+
+    const std::string count_sql = "SELECT COUNT(*) FROM " + std::string(table_name) + ";";
+    sqlite3_stmt* stmt = nullptr;
+    bool is_empty = false;
+
+    if (sqlite3_prepare_v2(db_, count_sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            is_empty = sqlite3_column_int(stmt, 0) == 0;
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    if (!is_empty) {
+        return;
+    }
+
+    sqlite3_stmt* reset_stmt = nullptr;
+    const char* reset_sql = "DELETE FROM sqlite_sequence WHERE name = ?;";
+    if (sqlite3_prepare_v2(db_, reset_sql, -1, &reset_stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(reset_stmt, 1, table_name, -1, SQLITE_TRANSIENT);
+        sqlite3_step(reset_stmt);
+    }
+    sqlite3_finalize(reset_stmt);
 }
 
 } // namespace smile2unlock::managers
