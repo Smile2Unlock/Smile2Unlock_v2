@@ -14,10 +14,9 @@ module;
 export module camera;
 
 import std;
-import std.compat;
 
 #ifdef _WIN32
-export inline bool EnsureMFInitialized();
+inline bool EnsureMFInitialized();
 
 // 注意：此头文件设计为单翻译单元包含（推荐仅在FaceRecognizer.cpp中包含）
 // 若需多文件使用，请将实现移至.cpp并移除函数体定义

@@ -1,0 +1,193 @@
+module;
+
+#include "utils/bmp_writer.h"
+
+export module smile2unlock.service;
+
+import std;
+import smile2unlock.models;
+import smile2unlock.database;
+import smile2unlock.dll_injector;
+import smile2unlock.face_recognition;
+
+export namespace smile2unlock {
+
+class BackendService {
+public:
+    BackendService();
+    ~BackendService() = default;
+
+    bool Initialize();
+    bool IsInitialized() const { return initialized_; }
+
+    DllStatus GetDllStatus();
+    bool CalculateDllHashes();
+    bool InjectDll(std::string& error_message);
+
+    std::vector<User> GetAllUsers();
+    bool AddUser(const std::string& username, const std::string& password, const std::string& remark, std::string& error_message);
+    bool UpdateUser(int user_id, const std::string& username, const std::string& password, const std::string& remark, std::string& error_message);
+    bool DeleteUser(int userId, std::string& error_message);
+
+    bool AddFace(int user_id, const std::string& image_path, const std::string& remark, std::string& error_message);
+    bool CaptureAndAddFace(int user_id, const std::string& remark, std::string& error_message);
+    bool DeleteFace(int user_id, int face_id, std::string& error_message);
+    bool UpdateFaceRemark(int user_id, int face_id, const std::string& remark, std::string& error_message);
+    std::vector<FaceData> GetUserFaces(int user_id);
+
+    bool StartRecognition(std::string& error_message);
+    void StopRecognition();
+    bool IsRecognitionRunning() const;
+    RecognitionResult GetRecognitionResult();
+
+private:
+    bool initialized_;
+    std::unique_ptr<managers::DllInjector> dll_injector_;
+    std::unique_ptr<managers::Database> database_;
+    std::unique_ptr<managers::FaceRecognition> face_recognition_;
+};
+
+} // namespace smile2unlock
+
+module :private;
+
+namespace smile2unlock {
+
+BackendService::BackendService() : initialized_(false) {
+    dll_injector_ = std::make_unique<managers::DllInjector>();
+    database_ = std::make_unique<managers::Database>();
+    face_recognition_ = std::make_unique<managers::FaceRecognition>();
+}
+
+bool BackendService::Initialize() {
+    if (initialized_) return true;
+    if (!database_->Initialize()) return false;
+    std::string error_message;
+    if (!face_recognition_->Initialize(error_message)) return false;
+    initialized_ = true;
+    return true;
+}
+
+DllStatus BackendService::GetDllStatus() { return dll_injector_->GetStatus(); }
+bool BackendService::CalculateDllHashes() { return true; }
+bool BackendService::InjectDll(std::string& error_message) { return dll_injector_->InjectDll(error_message); }
+std::vector<User> BackendService::GetAllUsers() { return database_->GetAllUsers(); }
+
+bool BackendService::AddUser(const std::string& username, const std::string& password, const std::string& remark, std::string& error_message) {
+    if (username.empty()) {
+        error_message = "用户名不能为空";
+        return false;
+    }
+    if (database_->UserExists(username)) {
+        error_message = "用户名已存在";
+        return false;
+    }
+    User new_user;
+    new_user.username = username;
+    new_user.encrypted_password = password;
+    new_user.remark = remark;
+    if (database_->AddUser(new_user)) {
+        error_message = "用户添加成功";
+        return true;
+    }
+    error_message = "添加用户失败";
+    return false;
+}
+
+bool BackendService::UpdateUser(int user_id, const std::string& username, const std::string& password, const std::string& remark, std::string& error_message) {
+    auto user = database_->GetUserById(user_id);
+    if (!user.has_value()) {
+        error_message = "用户不存在";
+        return false;
+    }
+    User updated_user = user.value();
+    updated_user.username = username;
+    if (!password.empty()) updated_user.encrypted_password = password;
+    updated_user.remark = remark;
+    if (database_->UpdateUser(updated_user)) {
+        error_message = "用户更新成功";
+        return true;
+    }
+    error_message = "更新用户失败";
+    return false;
+}
+
+bool BackendService::DeleteUser(int userId, std::string& error_message) {
+    if (database_->DeleteUser(userId)) {
+        error_message = "用户删除成功";
+        return true;
+    }
+    error_message = "删除用户失败";
+    return false;
+}
+
+bool BackendService::AddFace(int user_id, const std::string& image_path, const std::string& remark, std::string& error_message) {
+    FaceData face;
+    face.feature = "PENDING_FEATURE_EXTRACTION";
+    face.image_path = image_path;
+    face.remark = remark;
+    if (database_->AddFace(user_id, face)) {
+        error_message = "人脸添加成功";
+        return true;
+    }
+    error_message = "添加人脸失败";
+    return false;
+}
+
+bool BackendService::CaptureAndAddFace(int user_id, const std::string& remark, std::string& error_message) {
+    auto user = database_->GetUserById(user_id);
+    if (!user.has_value()) {
+        error_message = "用户不存在";
+        return false;
+    }
+
+    std::vector<unsigned char> image_data;
+    int width = 0;
+    int height = 0;
+    if (!face_recognition_->CaptureFrameImage(image_data, width, height, error_message)) {
+        return false;
+    }
+
+    std::filesystem::create_directories("db");
+    const auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::string image_path = "db/face_" + std::to_string(user_id) + "_" + std::to_string(timestamp) + ".bmp";
+    if (!SaveRGB24ToBMPFile(image_path.c_str(), width, height, image_data.data())) {
+        error_message = "保存抓拍图片失败";
+        return false;
+    }
+    return AddFace(user_id, image_path, remark, error_message);
+}
+
+bool BackendService::DeleteFace(int user_id, int face_id, std::string& error_message) {
+    if (database_->DeleteFace(user_id, face_id)) {
+        error_message = "人脸删除成功";
+        return true;
+    }
+    error_message = "删除人脸失败";
+    return false;
+}
+
+bool BackendService::UpdateFaceRemark(int user_id, int face_id, const std::string& remark, std::string& error_message) {
+    FaceData face;
+    face.id = face_id;
+    face.remark = remark;
+    if (database_->UpdateFace(user_id, face)) {
+        error_message = "备注更新成功";
+        return true;
+    }
+    error_message = "更新备注失败";
+    return false;
+}
+
+std::vector<FaceData> BackendService::GetUserFaces(int user_id) { return database_->GetUserFaces(user_id); }
+
+bool BackendService::StartRecognition(std::string& error_message) {
+    if (!face_recognition_->IsInitialized() && !face_recognition_->Initialize(error_message)) return false;
+    return face_recognition_->StartRecognition();
+}
+void BackendService::StopRecognition() { face_recognition_->StopRecognition(); }
+bool BackendService::IsRecognitionRunning() const { return face_recognition_->IsRunning(); }
+RecognitionResult BackendService::GetRecognitionResult() { return face_recognition_->GetLastResult(); }
+
+} // namespace smile2unlock

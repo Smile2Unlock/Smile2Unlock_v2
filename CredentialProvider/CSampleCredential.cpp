@@ -23,6 +23,7 @@
 
 // 新增包含
 #include "Crypto.h"
+#include "managers/ipc/udp/auth_request_sender.h"
 #include "managers/ipc/udp/udp_receiver.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
@@ -111,8 +112,8 @@ CSampleCredential::CSampleCredential():
     _fChecked(false),
     _fShowControls(false),
     _dwComboIndex(0),
-    _hFaceRecognizerProcess(nullptr),
-    _dwFaceRecognizerPID(0),
+    _hSmile2UnlockProcess(nullptr),
+    _dwSmile2UnlockPID(0),
     _fFaceRecognitionRunning(false),
     _fWarmupModeEnabled(false),
     _pwzUsername(nullptr),
@@ -132,7 +133,7 @@ CSampleCredential::~CSampleCredential()
     StopFaceRecognition();
 
     // 清理进程句柄
-    SAFE_CLOSE_HANDLE(_hFaceRecognizerProcess);
+    SAFE_CLOSE_HANDLE(_hSmile2UnlockProcess);
 
     if (_rgFieldStrings[SFI_PASSWORD])
     {
@@ -660,24 +661,24 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
 
 // ============ 人脸识别辅助函数实现 ============
 
-HRESULT CSampleCredential::LaunchFaceRecognizer(const wchar_t* pszMode /* = L"recognize" */) {
+HRESULT CSampleCredential::LaunchSmile2UnlockService() {
   // 1. 检查现有进程是否仍在运行
-  if (_hFaceRecognizerProcess != nullptr) {
+  if (_hSmile2UnlockProcess != nullptr) {
     DWORD dwExitCode;
-    if (GetExitCodeProcess(_hFaceRecognizerProcess, &dwExitCode)) {
+    if (GetExitCodeProcess(_hSmile2UnlockProcess, &dwExitCode)) {
       if (dwExitCode == STILL_ACTIVE) {
-        LogDebugMessage(L"[INFO] FaceRecognizer进程仍在运行 (PID: %u)，复用现有进程", _dwFaceRecognizerPID);
+        LogDebugMessage(L"[INFO] Smile2Unlock服务进程仍在运行 (PID: %u)，复用现有进程", _dwSmile2UnlockPID);
         return S_OK; // 复用现有进程
       }
     }
     // 进程已结束，清理旧句柄
     LogDebugMessage(L"[INFO] 检测到旧进程已结束，清理句柄");
-    CloseHandle(_hFaceRecognizerProcess);
-    _hFaceRecognizerProcess = nullptr;
-    _dwFaceRecognizerPID = 0;
+    CloseHandle(_hSmile2UnlockProcess);
+    _hSmile2UnlockProcess = nullptr;
+    _dwSmile2UnlockPID = 0;
   }
 
-  // 2. 获取 FaceRecognizer.exe 的路径
+  // 2. 获取 Smile2Unlock.exe 的路径
   wchar_t szModuleDir[MAX_PATH] = {0};
   wchar_t szExePath[MAX_PATH] = {0};
 
@@ -694,18 +695,18 @@ HRESULT CSampleCredential::LaunchFaceRecognizer(const wchar_t* pszMode /* = L"re
         wcscat_s(szModuleDir, MAX_PATH, L"\\");
       }
       useRegistryPath = true;
-      LogDebugMessage(L"[INFO] 从注册表读取 FaceRecognizer 路径: %s", szModuleDir);
+      LogDebugMessage(L"[INFO] 从注册表读取 Smile2Unlock 安装路径: %s", szModuleDir);
     }
   }
 
   if (!useRegistryPath) {
     LogDebugMessage(L"[WARNING] 未能从注册表读取路径，使用DLL所在目录");
-    wchar_t szFaceRecognizerPath[MAX_PATH];
-    if (!GetModuleFileNameW(nullptr, szFaceRecognizerPath, MAX_PATH)) {
+    wchar_t szSmile2UnlockPath[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, szSmile2UnlockPath, MAX_PATH)) {
       LogDebugMessage(L"[ERROR] 获取模块路径失败");
       return HRESULT_FROM_WIN32(GetLastError());
     }
-    wcscpy_s(szModuleDir, MAX_PATH, szFaceRecognizerPath);
+    wcscpy_s(szModuleDir, MAX_PATH, szSmile2UnlockPath);
     wchar_t *pLastSlash = wcsrchr(szModuleDir, L'\\');
     if (pLastSlash) {
       *(pLastSlash + 1) = L'\0';
@@ -714,17 +715,17 @@ HRESULT CSampleCredential::LaunchFaceRecognizer(const wchar_t* pszMode /* = L"re
 
   // 3. 拼接exe路径并检查
   wcscpy_s(szExePath, MAX_PATH, szModuleDir);
-  wcscat_s(szExePath, MAX_PATH, L"FaceRecognizer.exe");
+  wcscat_s(szExePath, MAX_PATH, L"Smile2Unlock.exe");
 
   DWORD attrib = GetFileAttributesW(szExePath);
   if (attrib == INVALID_FILE_ATTRIBUTES) {
-    LogDebugMessage(L"[ERROR] FaceRecognizer.exe不存在: %s", szExePath);
+    LogDebugMessage(L"[ERROR] Smile2Unlock.exe不存在: %s", szExePath);
     return E_FAIL;
   }
 
   // 4. 准备启动参数
   wchar_t szCmdLine[MAX_PATH * 2];
-  swprintf_s(szCmdLine, MAX_PATH * 2, L"\"%s\" --mode %s", szExePath, pszMode);
+  swprintf_s(szCmdLine, MAX_PATH * 2, L"\"%s\" --service", szExePath);
   LogDebugMessage(L"[INFO] 启动命令行: %s", szCmdLine);
 
   // 5. 创建进程
@@ -740,12 +741,40 @@ HRESULT CSampleCredential::LaunchFaceRecognizer(const wchar_t* pszMode /* = L"re
   }
 
   // 6. 保存进程信息
-  _hFaceRecognizerProcess = pi.hProcess;
-  _dwFaceRecognizerPID = pi.dwProcessId;
-  LogDebugMessage(L"[INFO] FaceRecognizer进程已启动，PID: %u, 模式: %s", pi.dwProcessId, pszMode);
+  _hSmile2UnlockProcess = pi.hProcess;
+  _dwSmile2UnlockPID = pi.dwProcessId;
+  LogDebugMessage(L"[INFO] Smile2Unlock服务进程已启动，PID: %u", pi.dwProcessId);
 
   CloseHandle(pi.hThread);
   return S_OK;
+}
+
+HRESULT CSampleCredential::SendAuthRequestToSmile2Unlock(AuthRequestType request_type) {
+  AuthRequestSender sender("127.0.0.1", 51236);
+
+  std::string username_hint;
+  if (_pwzUsername != nullptr) {
+    int required = WideCharToMultiByte(CP_UTF8, 0, _pwzUsername, -1, nullptr, 0, nullptr, nullptr);
+    if (required > 1) {
+      username_hint.resize(static_cast<size_t>(required));
+      WideCharToMultiByte(CP_UTF8, 0, _pwzUsername, -1, username_hint.data(), required, nullptr, nullptr);
+      username_hint.resize(static_cast<size_t>(required - 1));
+    }
+  }
+
+  constexpr int kMaxAttempts = 10;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (sender.send_request(request_type, username_hint, GetTickCount())) {
+      LogDebugMessage(L"[INFO] 已向 Smile2Unlock 发送认证请求，type=%d, attempt=%d",
+                      static_cast<int>(request_type), attempt + 1);
+      return S_OK;
+    }
+
+    Sleep(200);
+  }
+
+  LogDebugMessage(L"[ERROR] 向 Smile2Unlock 发送认证请求失败，type=%d", static_cast<int>(request_type));
+  return E_FAIL;
 }
 
 HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
@@ -1157,65 +1186,57 @@ HRESULT CSampleCredential::GetFieldOptions(DWORD dwFieldID,
 // ============ 新增：改进的生命周期管理函数 ============
 
 bool CSampleCredential::IsProcessStillRunning() {
-    if (_hFaceRecognizerProcess == nullptr) {
+    if (_hSmile2UnlockProcess == nullptr) {
         return false;
     }
 
     DWORD dwExitCode;
-    if (GetExitCodeProcess(_hFaceRecognizerProcess, &dwExitCode)) {
+    if (GetExitCodeProcess(_hSmile2UnlockProcess, &dwExitCode)) {
         return dwExitCode == STILL_ACTIVE;
     }
 
     return false;
 }
 
-HRESULT CSampleCredential::TerminateFaceRecognizer() {
-    if (_hFaceRecognizerProcess == nullptr) {
+HRESULT CSampleCredential::TerminateSmile2UnlockService() {
+    if (_hSmile2UnlockProcess == nullptr) {
         return S_OK;
     }
 
     // 检查进程是否仍在运行
     DWORD dwExitCode;
-    if (GetExitCodeProcess(_hFaceRecognizerProcess, &dwExitCode)) {
+    if (GetExitCodeProcess(_hSmile2UnlockProcess, &dwExitCode)) {
         if (dwExitCode == STILL_ACTIVE) {
-            LogDebugMessage(L"[INFO] FaceRecognizer进程仍在运行，尝试优雅终止");
+            LogDebugMessage(L"[INFO] Smile2Unlock服务进程仍在运行，尝试终止");
 
-            // 使用现代C++特性：减少阻塞时间，更积极的终止策略
-            constexpr DWORD GRACEFUL_TIMEOUT_MS = 1000;  // 减少到1秒
-            constexpr DWORD FORCE_TIMEOUT_MS = 500;      // 强制终止等待500ms
-            
-            // 首先尝试发送关闭信号（如果进程支持）
-            // 注意：FaceRecognizer 可能没有处理 WM_CLOSE，但我们先尝试
-                        
-            // 等待进程自然退出（无限等待）
-            DWORD waitResult = WaitForSingleObject(_hFaceRecognizerProcess, INFINITE);
+            DWORD waitResult = WaitForSingleObject(_hSmile2UnlockProcess, 1000);
             if (waitResult == WAIT_TIMEOUT) {
-                LogDebugMessage(L"[WARNING] 进程未立即退出，尝试强制终止");
+                LogDebugMessage(L"[WARNING] 服务进程未及时退出，尝试强制终止");
                 
                 // 尝试强制终止
-                if (!TerminateProcess(_hFaceRecognizerProcess, 1)) {
+                if (!TerminateProcess(_hSmile2UnlockProcess, 1)) {
                     DWORD dwError = GetLastError();
                     // ACCESS_DENIED 是常见的，可能是权限不足或进程已退出
                     if (dwError == ERROR_ACCESS_DENIED) {
                         LogDebugMessage(L"[INFO] 无法强制终止进程（权限不足或已退出），等待后清理");
                         // 等待短暂时间后检查进程是否已退出
-                        WaitForSingleObject(_hFaceRecognizerProcess, 100);
+                        WaitForSingleObject(_hSmile2UnlockProcess, 100);
                     } else {
                         LogDebugMessage(L"[WARNING] 无法强制终止进程，错误代码: 0x%08X", dwError);
                     }
                 } else {
-                    LogDebugMessage(L"[INFO] FaceRecognizer 进程已被强制终止");
+                    LogDebugMessage(L"[INFO] Smile2Unlock 服务进程已被强制终止");
                     // 等待进程完全退出
-                    WaitForSingleObject(_hFaceRecognizerProcess, 100);
+                    WaitForSingleObject(_hSmile2UnlockProcess, 100);
                 }
             } else if (waitResult == WAIT_OBJECT_0) {
-                LogDebugMessage(L"[INFO] FaceRecognizer进程已优雅退出");
+                LogDebugMessage(L"[INFO] Smile2Unlock服务进程已退出");
             } else if (waitResult == WAIT_FAILED) {
                 DWORD dwError = GetLastError();
                 LogDebugMessage(L"[WARNING] 等待进程退出失败，错误代码: 0x%08X", dwError);
             }
         } else {
-            LogDebugMessage(L"[INFO] FaceRecognizer进程已退出，退出代码: %d", dwExitCode);
+            LogDebugMessage(L"[INFO] Smile2Unlock服务进程已退出，退出代码: %d", dwExitCode);
         }
     } else {
         DWORD dwError = GetLastError();
@@ -1223,11 +1244,11 @@ HRESULT CSampleCredential::TerminateFaceRecognizer() {
     }
 
     // 清理进程句柄
-    if (_hFaceRecognizerProcess != nullptr) {
-        CloseHandle(_hFaceRecognizerProcess);
-        _hFaceRecognizerProcess = nullptr;
-        _dwFaceRecognizerPID = 0;
-        LogDebugMessage(L"[INFO] 已清理FaceRecognizer进程句柄");
+    if (_hSmile2UnlockProcess != nullptr) {
+        CloseHandle(_hSmile2UnlockProcess);
+        _hSmile2UnlockProcess = nullptr;
+        _dwSmile2UnlockPID = 0;
+        LogDebugMessage(L"[INFO] 已清理Smile2Unlock进程句柄");
     }
 
     return S_OK;
@@ -1286,56 +1307,12 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
         _faceRecognitionThread = std::thread([this]() {
             LogDebugMessage(L"[INFO] 启动人脸识别线程");
 
-            // 第一步：如果启用了预热模式，先启动预热
-            if (_fWarmupModeEnabled) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(500));
-              LogDebugMessage(L"[INFO] 启用预热模式，先进行轻量级人脸检测");
-              HRESULT hr = LaunchFaceRecognizer(L"warmup");
-              if (SUCCEEDED(hr)) {
-                // 使用带超时的等待循环
-                constexpr auto CHECK_INTERVAL = std::chrono::milliseconds(100);
-                constexpr auto WARMUP_TIMEOUT = std::chrono::minutes(5);  // 5 分钟超时
-                
-                extern std::atomic<RecognitionStatus> face_recognition_status;
-                auto warmup_start = std::chrono::steady_clock::now();
-                
-                while (true) {
-                  // 检查超时
-                  auto now = std::chrono::steady_clock::now();
-                  if (now - warmup_start > WARMUP_TIMEOUT) {
-                    LogDebugMessage(L"[WARNING] 预热模式超时（5 分钟）");
-                    break;
-                  }
-                  
-                  // 检查识别是否被取消
-                  {
-                    std::lock_guard<std::mutex> lock(_faceMutex);
-                    if (!_fFaceRecognitionRunning) {
-                      LogDebugMessage(L"[INFO] 预热模式被取消");
-                      break;
-                    }
-                  }
-
-                  RecognitionStatus status = face_recognition_status.load();
-                  if (status == RecognitionStatus::FACE_DETECTED) {
-                    LogDebugMessage(
-                        L"[INFO] 预热模式检测到人脸，切换到完整识别");
-                    face_recognition_status = RecognitionStatus::IDLE;
-                    break;
-                  }
-                  
-                  std::this_thread::sleep_for(CHECK_INTERVAL);
-                }
-
-                // 终止预热进程
-                TerminateFaceRecognizer();
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-              }
+            LogDebugMessage(L"[INFO] 启动 Smile2Unlock 服务并请求识别");
+            HRESULT hr = LaunchSmile2UnlockService();
+            if (SUCCEEDED(hr)) {
+                hr = SendAuthRequestToSmile2Unlock(AuthRequestType::START_RECOGNITION);
             }
 
-            // 第二步：启动完整识别
-            LogDebugMessage(L"[INFO] 启动完整人脸识别");
-            HRESULT hr = LaunchFaceRecognizer(L"recognize");
             if (SUCCEEDED(hr)) {
                 HRESULT waitResult = WaitForFaceRecognitionResult();
 
@@ -1384,7 +1361,7 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                     }
                 }
             } else {
-                LogDebugMessage(L"[ERROR] 启动FaceRecognizer失败: 0x%08X", hr);
+                LogDebugMessage(L"[ERROR] 启动Smile2Unlock服务或发送识别请求失败: 0x%08X", hr);
             }
 
             // 清理
@@ -1413,9 +1390,10 @@ void CSampleCredential::StopFaceRecognition() {
 
     // 使用现代C++特性：异步终止进程，不阻塞当前线程
     std::thread([this]() {
-        LogDebugMessage(L"[INFO] 后台线程开始终止FaceRecognizer进程");
-        TerminateFaceRecognizer();
-        LogDebugMessage(L"[INFO] 后台线程完成进程终止");
+        LogDebugMessage(L"[INFO] 后台线程开始停止 Smile2Unlock 服务");
+        SendAuthRequestToSmile2Unlock(AuthRequestType::CANCEL_RECOGNITION);
+        TerminateSmile2UnlockService();
+        LogDebugMessage(L"[INFO] 后台线程完成服务停止");
     }).detach();  // 分离线程，让它在后台运行
 
     // 使用带超时的异步线程停止

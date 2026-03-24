@@ -22,6 +22,7 @@
 #include <memory>
 #include <thread>
 #include <mutex>
+#include "models/udp_auth_request_packet.h"
 #include "common.h"
 #include "dll.h"
 #include "resource.h"
@@ -129,8 +130,8 @@ public:
     
     // 新增：人脸识别相关成员
     std::unique_ptr<UdpReceiver>             _pUdpReceiver;                                   // UDP接收器
-    HANDLE                                  _hFaceRecognizerProcess;                        // FaceRecognizer进程句柄
-    DWORD                                   _dwFaceRecognizerPID;                           // FaceRecognizer进程ID
+    HANDLE                                  _hSmile2UnlockProcess;                         // Smile2Unlock进程句柄
+    DWORD                                   _dwSmile2UnlockPID;                            // Smile2Unlock进程ID
     std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
@@ -138,8 +139,9 @@ public:
     CSampleProvider                         *_pProvider;                                    // Provider指针，用于通知凭证准备好
 
     // 辅助函数
-    HRESULT LaunchFaceRecognizer(const wchar_t* pszMode = L"recognize");  // 启动FaceRecognizer.exe
-    HRESULT TerminateFaceRecognizer();      // 终止FaceRecognizer进程
+    HRESULT LaunchSmile2UnlockService();    // 启动 Smile2Unlock.exe --service
+    HRESULT TerminateSmile2UnlockService(); // 终止 Smile2Unlock 进程
+    HRESULT SendAuthRequestToSmile2Unlock(AuthRequestType request_type); // 发送认证请求到SU
     HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
     HRESULT DecryptPasswordFromRegistry(PWSTR* ppwszPassword); // 从注册表解密密码
     HRESULT StartFaceRecognitionAsync();    // 异步启动人脸识别

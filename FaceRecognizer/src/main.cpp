@@ -2,6 +2,7 @@
 // 人脸识别主程序
 
 #include "managers/ipc/udp/udp_sender.h"
+#include "models/shared_frame_ipc.h"
 #include "seetaface.h"
 #include "exceptions.h"
 #include <cxxopts.hpp>
@@ -19,79 +20,72 @@ import input_hide;
 std::unique_ptr<UdpSender> g_udp_sender;
 int g_udp_port = 51234;
 
-// 人脸注册函数
-int registerFace(int camera_index, float face_threshold, bool debug) {
-    // 初始化摄像头
-    CameraCapture cam(camera_index);
-    
-    // 获取用户名
-    std::string username;
-    std::cout << "请输入用户名: ";
-    std::cin >> username;
-    
-    // 验证用户名的有效性
-    if (username.empty()) {
-        std::cerr << "错误：用户名不能为空" << std::endl;
+int captureImageToSharedMemory(int camera_index, const std::string& map_name) {
+    if (map_name.empty()) {
+        std::cerr << "[Capture] 共享内存名称不能为空" << std::endl;
         return -1;
     }
-    
-    // 初始化人脸检测器
-    seetaface recognizer;
-    
-    std::cout << "开始录入 " << username << " 的人脸数据，请面对摄像头..." << std::endl;
-    
-    // 检查摄像头是否打开
+
+    const size_t mapping_size =
+        sizeof(smile2unlock::SharedFrameHeader) + smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES;
+    HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
+    if (mapping == nullptr) {
+        std::cerr << "[Capture] 打开共享内存失败" << std::endl;
+        return -1;
+    }
+
+    void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, mapping_size);
+    if (view == nullptr) {
+        CloseHandle(mapping);
+        std::cerr << "[Capture] 映射共享内存失败" << std::endl;
+        return -1;
+    }
+
+    auto* header = static_cast<smile2unlock::SharedFrameHeader*>(view);
+    *header = smile2unlock::SharedFrameHeader{};
+
+    CameraCapture cam(camera_index);
     if (!cam.IsInitialized()) {
+        header->status_code = static_cast<int32_t>(smile2unlock::SharedFrameStatus::CAPTURE_FAILED);
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
         throw FaceRecognition::CameraException("无法打开摄像头");
     }
-    
-    // 循环捕获图像并提取特征
-    int captureCount = 0;
-    const int maxCaptures = 5;  // 每人最多采集 5 张照片
-        
-    while (captureCount < maxCaptures) {
-        
-        // 从摄像头直接捕获帧
-        SeetaImageData img_data = {};
-        if (cam.CaptureFrame(img_data)) {
-            // 检测人脸
-            SeetaRect face_rect = recognizer.detect(img_data);
-            
-            if (face_rect.width > 0 && face_rect.height > 0) {
-                // 检测到人脸，提取特征
-                auto features = recognizer.img2features(img_data);
-                
-                if (features) {
-                    // 保存特征到指定文件
-                    std::string feature_file = username + "_" + std::to_string(captureCount) + ".dat";
-                    recognizer.savefeat(features, feature_file);
-                    
-                    std::cout << "已保存第 " << captureCount + 1 << " 张人脸特征: " << feature_file << std::endl;
-                    captureCount++;
-                    
-                    // 短暂延迟，避免连续捕获
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                } else {
-                    std::cout << "警告：未能提取到人脸特征，请调整位置和角度" << std::endl;
-                }
-            } else {
-                std::cout << "警告：未检测到人脸，请确保脸部清晰可见" << std::endl;
-            }
-                        
-            // 释放当前帧的内存
-            delete[] img_data.data;
-        } else {
-            // 如果捕获失败，短暂休眠避免CPU占用过高
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+
+    SeetaImageData image{};
+    if (!cam.CaptureFrame(image) || image.data == nullptr || image.width <= 0 || image.height <= 0) {
+        header->status_code = static_cast<int32_t>(smile2unlock::SharedFrameStatus::CAPTURE_FAILED);
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        return -1;
     }
-    
-    std::cout << "人脸录入完成！用户 " << username << " 的 " << captureCount << " 个人脸数据已保存。" << std::endl;
+
+    const uint32_t image_bytes = static_cast<uint32_t>(image.width * image.height * image.channels);
+    if (image_bytes == 0 || image_bytes > smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES) {
+        delete[] image.data;
+        header->status_code = static_cast<int32_t>(smile2unlock::SharedFrameStatus::INVALID_FRAME);
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        return -1;
+    }
+
+    header->width = image.width;
+    header->height = image.height;
+    header->channels = image.channels;
+    header->image_bytes = image_bytes;
+    header->status_code = static_cast<int32_t>(smile2unlock::SharedFrameStatus::READY);
+
+    auto* bytes = reinterpret_cast<unsigned char*>(header + 1);
+    memcpy(bytes, image.data, image_bytes);
+
+    delete[] image.data;
+    UnmapViewOfFile(view);
+    CloseHandle(mapping);
     return 0;
 }
 
 // 人脸识别函数
-int recognizeFace(int camera_index, float face_threshold, bool liveness_detection, 
+int recognizeFace(int camera_index, bool liveness_detection, 
                   float liveness_threshold, bool debug) {
     
     std::cout << "[Recognize] 启动人脸识别模式" << std::endl;
@@ -121,48 +115,6 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
     std::cout << "[Recognize] [2/3] 加载人脸识别模型（耗时较长，请稍候）..." << std::endl;
     seetaface recognizer;
     std::cout << "[Recognize] [2/3] 模型加载完成" << std::endl;
-    
-    // 查找已注册的用户特征文件
-    std::vector<std::string> registeredUsers;
-    std::vector<std::string> featureFiles;
-    
-    try {
-        std::string currentDir = Utils::getCurrentDirectory();
-        std::filesystem::path faceDir =
-            std::filesystem::path(currentDir) / "data" / "face";
-        
-        if (std::filesystem::exists(faceDir) &&
-            std::filesystem::is_directory(faceDir)) {
-            for (const auto& entry : std::filesystem::directory_iterator(faceDir)) {
-                if (entry.is_regular_file() && entry.path().extension() == ".dat") {
-                    featureFiles.push_back(entry.path().filename().string());
-                    
-                    // 从文件名中提取用户名
-                    std::string filename = entry.path().stem().string();
-                    size_t underscore_pos = filename.find('_');
-                    if (underscore_pos != std::string::npos) {
-                        std::string username = filename.substr(0, underscore_pos);
-                        if (std::find(registeredUsers.begin(), registeredUsers.end(),
-                                      username) == registeredUsers.end()) {
-                            registeredUsers.push_back(username);
-                        }
-                    }
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        throw FaceRecognition::FileOperationException("特征数据库", e.what());
-    }
-    
-    if (registeredUsers.empty()) {
-        std::cout << "[Recognize] 未找到本地已注册特征，将继续运行并等待外部流程接管比对。" << std::endl;
-    }
-    
-    std::cout << "检测到已注册的用户：" << std::endl;
-    for (const auto& user : registeredUsers) {
-        std::cout << "  - " << user << std::endl;
-    }
-    std::cout << "特征文件数量：" << featureFiles.size() << std::endl;
         
     int used_time = 0;
         
@@ -201,68 +153,18 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
                             continue;
                         }
                     }
-                    
-                    // 与已注册的特征进行比较
-                    bool recognized = false;
-                    if (featureFiles.empty()) {
-                        if (debug) {
-                            std::cout << "[Recognize] 当前没有可用于比对的本地特征文件。" << std::endl;
-                        }
-                    } else {
-                        for (const auto& feature_file : featureFiles) {
-                            try {
-                                // 加载已注册的特征
-                                auto registered_features = recognizer.loadfeat(feature_file);
-                                
-                                if (!registered_features) {
-                                    continue;
-                                }
-                                
-                                // 计算相似度
-                                float similarity = recognizer.feat_compare(current_features,
-                                                                          registered_features);
-                                
-                                // 如果相似度超过阈值，认为匹配成功
-                                if (similarity > face_threshold) {
-                                    // 从文件名中提取用户名
-                                    std::string filename =
-                                        std::filesystem::path(feature_file).stem().string();
-                                    size_t underscore_pos = filename.find('_');
-                                    std::string username = (underscore_pos != std::string::npos)
-                                                               ? filename.substr(0, underscore_pos)
-                                                               : "Unknown";
-                                    
-                                    std::cout << "识别成功！用户: " << username
-                                              << ", 相似度: " << similarity << std::endl;
-                                    
-                                    // 标记识别成功
-                                    recognition_success = true;
-                                    
-                                    // 发送解锁信号
-                                    if (g_udp_sender) {
-                                        g_udp_sender->send_status(RecognitionStatus::SUCCESS,
-                                                                  username);
-                                    }
-                                    
-                                    // 等待足够的时间让凭证程序接收状态
-                                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                                    
-                                    recognized = true;
-                                    break;  // 找到匹配项，跳出循环
-                                }
-                            } catch (const std::exception& e) {
-                                if (debug) {
-                                    std::cerr << "加载特征文件时出错: " << feature_file
-                                              << ", 错误: " << e.what() << std::endl;
-                                }
-                                continue;
-                            }
-                        }
-                        
-                        if (!recognized && debug) {
-                            std::cout << "未识别到已注册用户" << std::endl;
-                        }
+
+                    if (debug) {
+                        std::cout << "[Recognize] 检测到真人脸，识别结果交由 Smile2Unlock 编排层处理" << std::endl;
                     }
+
+                    recognition_success = true;
+
+                    if (g_udp_sender) {
+                        g_udp_sender->send_status(RecognitionStatus::SUCCESS, "");
+                    }
+
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
             }
             
@@ -277,6 +179,10 @@ int recognizeFace(int camera_index, float face_threshold, bool liveness_detectio
     
     // 输出识别结果
     std::cout << "识别结果：" << (recognition_success ? "成功" : "超时/失败") << std::endl;
+
+    if (!recognition_success && g_udp_sender) {
+        g_udp_sender->send_status(RecognitionStatus::TIMEOUT, "");
+    }
     
     std::cout << "人脸识别结束。" << std::endl;
     return 0;
@@ -288,7 +194,7 @@ int mainOptimized(int argc, char* argv[]) {
     
     options.add_options()
         ("h,help", "显示帮助信息")
-        ("m,mode", "操作模式: register, recognize, test",
+        ("m,mode", "操作模式: recognize, capture-image, test",
          cxxopts::value<std::string>()->default_value("help"))
         ("c,camera", "摄像头索引",
          cxxopts::value<int>()->default_value("0"))
@@ -300,6 +206,8 @@ int mainOptimized(int argc, char* argv[]) {
          cxxopts::value<bool>()->default_value("true"))
         ("udp-port", "UDP target port for sending recognition results",
          cxxopts::value<int>()->default_value("51234"))
+        ("frame-map", "Shared memory mapping name for one-shot frame capture",
+         cxxopts::value<std::string>()->default_value(""))
         ("s,set-password", "交互式设置登录密码",
          cxxopts::value<bool>()->default_value("false"))
         ;
@@ -313,6 +221,7 @@ int mainOptimized(int argc, char* argv[]) {
     }
     
     std::string mode = result["mode"].as<std::string>();
+    std::string frame_map = result["frame-map"].as<std::string>();
     bool set_password = result["set-password"].as<bool>();
     g_udp_port = result["udp-port"].as<int>();
     
@@ -413,32 +322,16 @@ int mainOptimized(int argc, char* argv[]) {
     }
 
     // 根据模式执行相应操作
-    if (mode == "register") {
-
-        try {
-            std::string exePath;
-            exePath = Utils::getCurrentDirectory();
-            RegistryHelper registryHelper;
-            if (registryHelper.WriteStringToRegistry(
-            "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", exePath)) {
-                std::cout << "[INFO] FaceRecognizer 路径已写入注册表: " << exePath << std::endl;
-            } else {
-                throw FaceRecognition::RegistryException("Write", "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", "Access denied");
-            }
-        } catch (const std::exception& e) {
-            throw FaceRecognition::PathOperationException("Failed to get current directory");
-        }
-
-        std::cout << "=== 人脸注册模式 ===" << std::endl;
-        return registerFace(config.camera, face_threshold,
-                                     config.debug);
-    }
-    else if (mode == "recognize") {
+    if (mode == "recognize") {
         std::cout << "=== 人脸识别模式 ===" << std::endl;
                 
-        return recognizeFace(config.camera, face_threshold,
+        return recognizeFace(config.camera,
                                      config.liveness, liveness_threshold,
                                      config.debug);
+    }
+    else if (mode == "capture-image") {
+        std::cout << "=== 单帧抓拍模式 ===" << std::endl;
+        return captureImageToSharedMemory(config.camera, frame_map);
     }
     else if (mode == "test") {
         std::cout << "测试模式暂未实现" << std::endl;
