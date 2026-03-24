@@ -19,7 +19,6 @@ namespace asio = boost::asio;
 using udp = asio::ip::udp;
 
 inline std::atomic<RecognitionStatus> face_recognition_status{RecognitionStatus::IDLE};
-inline std::atomic<ULONGLONG> face_recognition_status_tick{0};
 inline std::string recognized_username;
 
 class UdpReceiver {
@@ -122,7 +121,6 @@ private:
                 RecognitionStatus old_status = face_recognition_status.exchange(
                     static_cast<RecognitionStatus>(packet.status_code)
                 );
-                face_recognition_status_tick.store(GetTickCount64(), std::memory_order_relaxed);
 
                 if (packet.username[0] != '\0') {
                     recognized_username = std::string(packet.username);
