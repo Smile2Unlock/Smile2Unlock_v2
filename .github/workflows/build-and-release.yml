@@ -98,7 +98,6 @@ jobs:
           $commitBody = git log -1 --pretty=format:"%b"
           $shortSha = git rev-parse --short HEAD
           $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
-          $sourceArchive = "Smile2Unlock-source-$shortSha.zip"
 
           if ([string]::IsNullOrWhiteSpace($commitBody)) {
             $commitBody = "本次提交未提供额外说明。"
@@ -114,22 +113,61 @@ jobs:
 
           "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
           "build_time=$buildTime" >> $env:GITHUB_OUTPUT
-          "source_archive=$sourceArchive" >> $env:GITHUB_OUTPUT
           Write-Host "Commit message: $commitMessage"
-          Write-Host "Source archive: $sourceArchive"
         shell: pwsh
 
-      - name: Package source code and release assets
+      - name: Package release assets
         run: |
           New-Item -Path "release-assets" -ItemType Directory -Force | Out-Null
           Copy-Item -Path "Output\*" -Destination "release-assets\" -Recurse -Force
-          git archive --format=zip --output="release-assets\${{ steps.release_meta.outputs.source_archive }}" HEAD
 
           Write-Host "Release assets:"
           Get-ChildItem -Path "release-assets\" -Recurse
         shell: pwsh
 
-      - name: Create or Update Release with fixed tag
+      - name: Delete existing release and tag
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = 'action-release';
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag,
+              });
+
+              core.info(`Deleting existing release ${release.data.id} for tag ${tag}`);
+              await github.rest.repos.deleteRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: release.data.id,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`No existing release found for tag ${tag}`);
+              } else {
+                throw error;
+              }
+            }
+
+            try {
+              core.info(`Deleting existing tag ref refs/tags/${tag}`);
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`No existing tag ref found for ${tag}`);
+              } else {
+                throw error;
+              }
+            }
+
+      - name: Create fresh release with fixed tag
         uses: softprops/action-gh-release@v1
         with:
           tag_name: action-release
@@ -139,7 +177,7 @@ jobs:
 
             ## 发布内容
             - `Smile2Unlock-Setup.exe`：Windows 安装程序，包含本次构建所需的运行文件。
-            - `${{ steps.release_meta.outputs.source_archive }}`：与本次发布对应的完整源码快照，可用于审查、归档或二次构建。
+            - GitHub 会基于当前 `action-release` 标签自动提供 Source code（zip/tar.gz），删除旧 release 并重新发布后，源码快照会同步到本次提交。
 
             ## 构建信息
             - 提交版本：`${{ github.sha }}`
@@ -162,7 +200,7 @@ jobs:
             ## 注意事项
             - 安装和卸载都需要管理员权限。
             - 该发布面向 Windows x64 环境。
-            - 如果你需要核对实现细节或自行构建，请下载源码压缩包。
+            - 如果你需要核对实现细节或自行构建，请直接使用发布页自动生成的 Source code（zip/tar.gz）。
           files: release-assets/*
           draft: false
           prerelease: false
