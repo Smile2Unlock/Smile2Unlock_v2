@@ -40,6 +40,29 @@
 
 #define OUT_DEBUG_TO_FILE 0
 
+namespace {
+
+bool IsAckStatusForRequest(AuthRequestType request_type, RecognitionStatus status) {
+  switch (request_type) {
+    case AuthRequestType::START_RECOGNITION:
+      return status == RecognitionStatus::RECOGNIZING ||
+             status == RecognitionStatus::SUCCESS ||
+             status == RecognitionStatus::FAILED ||
+             status == RecognitionStatus::TIMEOUT ||
+             status == RecognitionStatus::RECOGNITION_ERROR ||
+             status == RecognitionStatus::PROCESS_ENDED;
+    case AuthRequestType::CANCEL_RECOGNITION:
+      return status == RecognitionStatus::IDLE ||
+             status == RecognitionStatus::PROCESS_ENDED;
+    case AuthRequestType::QUERY_STATUS:
+      return true;
+    default:
+      return false;
+  }
+}
+
+}
+
 // 日志辅助函数
 inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFORMATION_TYPE) {
   HANDLE hEventLog = RegisterEventSourceW(nullptr, L"Smile2Unlock_v2");
@@ -791,6 +814,8 @@ HRESULT CSampleCredential::WaitForSmile2UnlockReady() {
 
 HRESULT CSampleCredential::SendAuthRequestToSmile2Unlock(AuthRequestType request_type) {
   AuthRequestSender sender("127.0.0.1", 51236);
+  extern std::atomic<RecognitionStatus> face_recognition_status;
+  extern std::atomic<ULONGLONG> face_recognition_status_tick;
 
   std::string username_hint;
   if (_pwzUsername != nullptr) {
@@ -803,11 +828,40 @@ HRESULT CSampleCredential::SendAuthRequestToSmile2Unlock(AuthRequestType request
   }
 
   constexpr int kMaxAttempts = 10;
+  constexpr ULONGLONG kAckWaitMs = 500;
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    const ULONGLONG tick_before_send = face_recognition_status_tick.load(std::memory_order_relaxed);
+
     if (sender.send_request(request_type, username_hint, GetTickCount())) {
       LogDebugMessage(L"[INFO] 已向 Smile2Unlock 发送认证请求，type=%d, attempt=%d",
                       static_cast<int>(request_type), attempt + 1);
-      return S_OK;
+
+      if (request_type == AuthRequestType::QUERY_STATUS) {
+        return S_OK;
+      }
+
+      const ULONGLONG wait_start = GetTickCount64();
+      while (GetTickCount64() - wait_start < kAckWaitMs) {
+        const ULONGLONG current_tick = face_recognition_status_tick.load(std::memory_order_relaxed);
+        const RecognitionStatus current_status = face_recognition_status.load();
+
+        if (current_tick > tick_before_send && IsAckStatusForRequest(request_type, current_status)) {
+          LogDebugMessage(L"[INFO] Smile2Unlock 已确认请求，type=%d, status=%d, attempt=%d",
+                          static_cast<int>(request_type), static_cast<int>(current_status), attempt + 1);
+          return S_OK;
+        }
+
+        if (_hSmile2UnlockProcess != nullptr && !IsProcessStillRunning()) {
+          LogDebugMessage(L"[ERROR] 等待请求确认时检测到 Smile2Unlock 已退出，type=%d",
+                          static_cast<int>(request_type));
+          return E_FAIL;
+        }
+
+        Sleep(20);
+      }
+
+      LogDebugMessage(L"[WARNING] 请求已发送但未收到确认状态，准备重试，type=%d, attempt=%d",
+                      static_cast<int>(request_type), attempt + 1);
     }
 
     Sleep(200);

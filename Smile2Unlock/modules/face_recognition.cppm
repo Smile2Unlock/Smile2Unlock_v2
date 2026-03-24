@@ -12,6 +12,7 @@ module;
 export module smile2unlock.face_recognition;
 
 import std;
+import service_runtime;
 import smile2unlock.models;
 import smile2unlock.database;
 
@@ -409,6 +410,8 @@ void FaceRecognition::cleanup_fr_process_handles() {
 }
 
 void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std::string& username) {
+    NotifyServiceActivity();
+
     RecognitionStatus final_status = status;
     last_result_.success = (status == RecognitionStatus::SUCCESS);
     last_result_.username = username.empty() ? pending_username_hint_ : username;
@@ -442,6 +445,8 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std:
 bool FaceRecognition::Initialize(std::string& error_message) {
     if (initialized_) return true;
     try {
+        NotifyServiceActivity();
+
         database_ = std::make_unique<smile2unlock::managers::Database>();
         if (!database_->Initialize()) {
             error_message = "初始化识别数据库失败";
@@ -829,6 +834,8 @@ std::string FaceRecognition::read_recognition_feature(std::string& error_message
 }
 
 void FaceRecognition::on_cp_request_received(AuthRequestType type, const std::string& username_hint, uint32_t session_id) {
+    NotifyServiceActivity();
+
     current_session_id_ = session_id;
     pending_username_hint_ = username_hint;
     switch (type) {

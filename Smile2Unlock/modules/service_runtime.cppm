@@ -10,6 +10,8 @@ import std;
 
 export namespace smile2unlock {
 
+void NotifyServiceActivity();
+
 class ServiceRuntime {
 public:
     ServiceRuntime();
@@ -54,8 +56,21 @@ private:
 
 namespace smile2unlock {
 
+namespace {
+
+std::atomic<ULONGLONG> g_last_activity_tick{0};
+//TODO: make this configurable from the config file
+constexpr ULONGLONG kServiceInactivityTimeoutMs = 60000;
+
+}
+
+void NotifyServiceActivity() {
+    g_last_activity_tick.store(::GetTickCount64(), std::memory_order_relaxed);
+}
+
 ServiceRuntime::ServiceRuntime()
     : shutdown_event_(::CreateEventW(nullptr, TRUE, FALSE, nullptr)) {
+    NotifyServiceActivity();
 }
 
 ServiceRuntime::~ServiceRuntime() {
@@ -67,6 +82,13 @@ ServiceRuntime::~ServiceRuntime() {
 
 ServiceRuntime::DetachedTask ServiceRuntime::idle_loop() {
     while (running_.load()) {
+        const ULONGLONG last_activity = g_last_activity_tick.load(std::memory_order_relaxed);
+        const ULONGLONG now = ::GetTickCount64();
+        if (last_activity != 0 && now >= last_activity &&
+            now - last_activity >= kServiceInactivityTimeoutMs) {
+            Stop();
+            co_return;
+        }
         co_await SleepAwaiter{1000};
     }
 }
