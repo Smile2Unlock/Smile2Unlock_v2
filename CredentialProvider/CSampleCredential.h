@@ -143,7 +143,7 @@ public:
     HRESULT TerminateSmile2UnlockService(); // 终止 Smile2Unlock 进程
     HRESULT SendAuthRequestToSmile2Unlock(AuthRequestType request_type); // 发送认证请求到SU
     HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
-    HRESULT DecryptPasswordFromRegistry(PWSTR* ppwszPassword); // 从注册表解密密码
+    HRESULT RequestAndDecryptPasswordFromSU(PWSTR* ppwszPassword); // 请求 SU 密码并在本地解密
     HRESULT StartFaceRecognitionAsync();    // 异步启动人脸识别
     void StopFaceRecognition();             // 停止人脸识别
     bool IsProcessStillRunning();           // 检查进程是否仍在运行

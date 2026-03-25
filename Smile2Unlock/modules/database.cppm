@@ -6,6 +6,7 @@ module;
 export module smile2unlock.database;
 
 import std;
+import crypto;
 import smile2unlock.models;
 
 namespace smile2unlock::managers {
@@ -17,9 +18,137 @@ std::string GetCurrentTimeStr() {
     return std::string(buf);
 }
 
+constexpr std::string_view kPasswordPrefix = "aes256cbc:";
+constexpr std::string_view kKeyFileHeader = "SMILE2UNLOCK_KEY_V1";
+
+std::filesystem::path ResolveAbsolutePath(const std::string& path) {
+    std::filesystem::path fs_path(path);
+    if (fs_path.is_absolute()) {
+        return fs_path;
+    }
+    return std::filesystem::current_path() / fs_path;
+}
+
+std::filesystem::path GetKeyFilePath(const std::filesystem::path& db_path) {
+    auto key_path = db_path;
+    key_path.replace_extension(".key");
+    return key_path;
+}
+
+std::string TrimWhitespace(std::string value) {
+    auto is_space = [](unsigned char ch) { return std::isspace(ch) != 0; };
+    while (!value.empty() && is_space(static_cast<unsigned char>(value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && is_space(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string LoadOrCreateStorageKeyHex(const std::filesystem::path& key_path) {
+    std::error_code ec;
+    if (std::filesystem::exists(key_path, ec)) {
+        std::ifstream input(key_path, std::ios::binary);
+        if (!input.is_open()) {
+            return {};
+        }
+
+        std::string header;
+        std::getline(input, header);
+        std::string key_hex;
+        std::getline(input, key_hex);
+        header = TrimWhitespace(header);
+        key_hex = TrimWhitespace(key_hex);
+        if (header != kKeyFileHeader || key_hex.empty()) {
+            return {};
+        }
+        return key_hex;
+    }
+
+    if (key_path.has_parent_path()) {
+        std::filesystem::create_directories(key_path.parent_path(), ec);
+    }
+
+    Crypto crypto;
+    const std::string key_hex = crypto.getKeyHex();
+
+    std::ofstream output(key_path, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+        return {};
+    }
+
+    output << kKeyFileHeader << '\n' << key_hex << '\n';
+    output.close();
+    return key_hex;
+}
+
+std::optional<Crypto> CreateStorageCrypto(const std::filesystem::path& db_path, std::string* iv_hex = nullptr) {
+    Crypto crypto;
+    const std::string key_hex = LoadOrCreateStorageKeyHex(GetKeyFilePath(db_path));
+    if (key_hex.empty() || !crypto.setKeyHex(key_hex)) {
+        return std::nullopt;
+    }
+    if (iv_hex != nullptr) {
+        *iv_hex = crypto.getIvHex();
+    }
+    return crypto;
+}
+
+std::string EncryptPasswordForStorage(std::string_view plain_password, const std::string& db_path) {
+    std::string iv_hex;
+    auto crypto = CreateStorageCrypto(ResolveAbsolutePath(db_path), &iv_hex);
+    if (!crypto.has_value() || iv_hex.empty()) {
+        return {};
+    }
+
+    const std::string cipher_bytes = crypto->encrypt(plain_password);
+    if (cipher_bytes.empty()) {
+        return {};
+    }
+
+    const std::string cipher_hex = Crypto::bytesToHex(std::span<const CryptoPP::byte>(
+        reinterpret_cast<const CryptoPP::byte*>(cipher_bytes.data()), cipher_bytes.size()));
+    return std::string(kPasswordPrefix) + iv_hex + ":" + cipher_hex;
+}
+
+std::string DecryptPasswordFromStorage(std::string_view stored_password, const std::string& db_path) {
+    if (!stored_password.starts_with(kPasswordPrefix)) {
+        return std::string(stored_password);
+    }
+
+    const std::string_view payload = stored_password.substr(kPasswordPrefix.size());
+    const size_t separator = payload.find(':');
+    if (separator == std::string_view::npos) {
+        return {};
+    }
+
+    const std::string iv_hex(payload.substr(0, separator));
+    const std::string cipher_hex(payload.substr(separator + 1));
+    if (iv_hex.empty() || cipher_hex.empty()) {
+        return {};
+    }
+
+    auto crypto = CreateStorageCrypto(ResolveAbsolutePath(db_path));
+    if (!crypto.has_value() || !crypto->setIvHex(iv_hex)) {
+        return {};
+    }
+
+    const std::vector<CryptoPP::byte> cipher_bytes = Crypto::hexToBytes(cipher_hex);
+    if (cipher_bytes.empty()) {
+        return {};
+    }
+
+    const std::string cipher(reinterpret_cast<const char*>(cipher_bytes.data()), cipher_bytes.size());
+    return crypto->decrypt(cipher);
+}
+
 }
 
 export namespace smile2unlock::managers {
+
+std::string EncryptPasswordForStorage(std::string_view plain_password, const std::string& db_path);
+std::string DecryptPasswordFromStorage(std::string_view stored_password, const std::string& db_path);
 
 class Database {
 public:
@@ -35,6 +164,7 @@ public:
     bool UpdateUser(const User& user);
     bool DeleteUser(int id);
     bool UserExists(const std::string& username) const;
+    std::string DecryptPassword(const std::string& stored_password) const;
 
     bool AddFace(int user_id, const FaceData& face);
     bool DeleteFace(int user_id, int face_id);
@@ -46,6 +176,7 @@ public:
 private:
     bool CreateTables();
     void ResetSequenceIfTableEmpty(const char* table_name);
+    std::string db_path_;
     sqlite3* db_;
 };
 
@@ -64,7 +195,8 @@ Database::~Database() {
 }
 
 bool Database::Initialize(const std::string& db_path) {
-    if (sqlite3_open(db_path.c_str(), &db_) != SQLITE_OK) {
+    db_path_ = ResolveAbsolutePath(db_path).string();
+    if (sqlite3_open(db_path_.c_str(), &db_) != SQLITE_OK) {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(db_) << std::endl;
         return false;
     }
@@ -248,6 +380,10 @@ bool Database::DeleteUser(int id) {
 
 bool Database::UserExists(const std::string& username) const {
     return GetUserByUsername(username).has_value();
+}
+
+std::string Database::DecryptPassword(const std::string& stored_password) const {
+    return DecryptPasswordFromStorage(stored_password, db_path_);
 }
 
 bool Database::AddFace(int user_id, const FaceData& face) {

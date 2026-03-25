@@ -90,5 +90,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 }
 
 int main(int argc, char** argv) {
-    return WinMain(GetModuleHandle(nullptr), nullptr, GetCommandLineA(), SW_SHOW);
+#ifdef _WIN32
+  SetConsoleOutputCP(65001);
+#endif
+  return WinMain(GetModuleHandle(nullptr), nullptr, GetCommandLineA(), SW_SHOW);
 }
