@@ -30,6 +30,30 @@ constexpr DWORD kSharedFrameMappingSize =
     smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES +
     smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
 
+const char* ToString(RecognitionStatus status) {
+    switch (status) {
+        case RecognitionStatus::IDLE: return "IDLE";
+        case RecognitionStatus::RECOGNIZING: return "RECOGNIZING";
+        case RecognitionStatus::SUCCESS: return "SUCCESS";
+        case RecognitionStatus::FAILED: return "FAILED";
+        case RecognitionStatus::TIMEOUT: return "TIMEOUT";
+        case RecognitionStatus::RECOGNITION_ERROR: return "RECOGNITION_ERROR";
+        case RecognitionStatus::FACE_DETECTED: return "FACE_DETECTED";
+        case RecognitionStatus::PROCESS_ENDED: return "PROCESS_ENDED";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* ToString(AuthRequestType type) {
+    switch (type) {
+        case AuthRequestType::START_RECOGNITION: return "START_RECOGNITION";
+        case AuthRequestType::CANCEL_RECOGNITION: return "CANCEL_RECOGNITION";
+        case AuthRequestType::QUERY_STATUS: return "QUERY_STATUS";
+        case AuthRequestType::GET_PASSWORD: return "GET_PASSWORD";
+        default: return "UNKNOWN";
+    }
+}
+
 bool IsProcessHandleActive(HANDLE process_handle) {
     if (!process_handle) {
         return false;
@@ -79,7 +103,7 @@ public:
     UdpSenderToCP(const std::string& host = "127.0.0.1", uint16_t port = 51234)
         : socket_(io_context_, udp::v4()), endpoint_(asio::ip::make_address(host), port) {}
     ~UdpSenderToCP() { boost::system::error_code ec; socket_.close(ec); }
-    bool send_status(RecognitionStatus status, const std::string& username = "") {
+    bool send_status(RecognitionStatus status, const std::string& username = "", uint32_t session_id = 0) {
         try {
             UdpStatusPacket packet;
             packet.magic_number = MAGIC_NUMBER;
@@ -89,8 +113,12 @@ public:
             if (!username.empty()) strncpy_s(packet.username, sizeof(packet.username), username.c_str(), _TRUNCATE);
             packet.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
             socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
-            std::cout << "[SU UDP Sender] 已发送状态: " << static_cast<int>(status)
-                      << ", 用户: " << (username.empty() ? "(无)" : username) << std::endl;
+            std::cout << "[SU->CP] 发送状态"
+                      << " session=" << session_id
+                      << " status=" << ToString(status)
+                      << "(" << static_cast<int>(status) << ")"
+                      << " username=" << (username.empty() ? "(empty)" : username)
+                      << std::endl;
             return true;
         } catch (const std::exception&) { return false; }
     }
@@ -141,6 +169,12 @@ public:
             }
 
             socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
+            std::cout << "[SU->CP] 发送密码响应"
+                      << " session=" << session_id
+                      << " success=" << (success ? 1 : 0)
+                      << " username=" << (username.empty() ? "(empty)" : username)
+                      << " protected_size=" << packet.protected_password_size
+                      << std::endl;
             return true;
         } catch (const std::exception&) {
             return false;
@@ -432,7 +466,9 @@ void FaceRecognition::ReadSubProcessLogs() {
 
 void FaceRecognition::stop_fr_process() {
     if (fr_process_) {
-        if (udp_sender_) udp_sender_->send_status(RecognitionStatus::PROCESS_ENDED, "");
+        std::cout << "[SU] stop_fr_process session=" << current_session_id_
+                  << " notifying PROCESS_ENDED" << std::endl;
+        if (udp_sender_) udp_sender_->send_status(RecognitionStatus::PROCESS_ENDED, "", current_session_id_);
         if (IsProcessHandleActive(fr_process_) && WaitForSingleObject(fr_process_, 3000) == WAIT_TIMEOUT) {
             TerminateProcess(fr_process_, 0);
         }
@@ -468,6 +504,14 @@ void FaceRecognition::cleanup_fr_process_handles() {
 void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std::string& username) {
     NotifyServiceActivity();
 
+    std::cout << "[SU] FR状态回调"
+              << " session=" << current_session_id_
+              << " status=" << ToString(status)
+              << "(" << static_cast<int>(status) << ")"
+              << " username=" << (username.empty() ? "(empty)" : username)
+              << " pending_hint=" << (pending_username_hint_.empty() ? "(empty)" : pending_username_hint_)
+              << std::endl;
+
     RecognitionStatus final_status = status;
     last_result_.success = (status == RecognitionStatus::SUCCESS);
     last_result_.username = username.empty() ? pending_username_hint_ : username;
@@ -479,13 +523,19 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std:
         const std::string matched_username = resolve_recognized_username(match_error);
         if (!matched_username.empty()) {
             last_result_.username = matched_username;
-            std::cout << "[SU] 人脸匹配成功，用户名: " << last_result_.username
-                      << ", 相似度: " << last_result_.confidence << std::endl;
+            std::cout << "[SU] 人脸匹配成功"
+                      << " session=" << current_session_id_
+                      << " username=" << last_result_.username
+                      << " similarity=" << last_result_.confidence
+                      << std::endl;
         } else if (!match_error.empty()) {
             final_status = RecognitionStatus::RECOGNITION_ERROR;
             last_result_.success = false;
             last_result_.error_message = match_error;
-            std::cout << "[SU] 人脸匹配失败: " << match_error << std::endl;
+            std::cout << "[SU] 人脸匹配失败"
+                      << " session=" << current_session_id_
+                      << " error=" << match_error
+                      << std::endl;
         }
     }
 
@@ -495,7 +545,15 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std:
         final_status == RecognitionStatus::PROCESS_ENDED) {
         is_running_ = false;
     }
-    if (udp_sender_) udp_sender_->send_status(final_status, last_result_.username);
+    std::cout << "[SU] 状态归并完成"
+              << " session=" << current_session_id_
+              << " final_status=" << ToString(final_status)
+              << "(" << static_cast<int>(final_status) << ")"
+              << " success=" << (last_result_.success ? 1 : 0)
+              << " username=" << (last_result_.username.empty() ? "(empty)" : last_result_.username)
+              << " is_running=" << (is_running_ ? 1 : 0)
+              << std::endl;
+    if (udp_sender_) udp_sender_->send_status(final_status, last_result_.username, current_session_id_);
 }
 
 bool FaceRecognition::Initialize(std::string& error_message) {
@@ -895,40 +953,74 @@ void FaceRecognition::on_cp_request_received(AuthRequestType type, const std::st
 
     current_session_id_ = session_id;
     pending_username_hint_ = username_hint;
+    std::cout << "[CP->SU] 收到请求"
+              << " session=" << session_id
+              << " type=" << ToString(type)
+              << " username_hint=" << (username_hint.empty() ? "(empty)" : username_hint)
+              << " is_running=" << (is_running_ ? 1 : 0)
+              << " fr_process_alive=" << ((fr_process_ && IsProcessHandleActive(fr_process_)) ? 1 : 0)
+              << std::endl;
     switch (type) {
         case AuthRequestType::START_RECOGNITION:
             if (fr_process_ && !IsProcessHandleActive(fr_process_)) {
+                std::cout << "[SU] START_RECOGNITION 检测到旧 FR 进程已退出，执行清理"
+                          << " session=" << session_id << std::endl;
                 cleanup_fr_process_handles();
             }
             if (!fr_process_ && !start_fr_process()) {
-                if (udp_sender_) udp_sender_->send_status(RecognitionStatus::RECOGNITION_ERROR, "");
+                std::cout << "[SU] START_RECOGNITION 启动 FR 进程失败"
+                          << " session=" << session_id << std::endl;
+                if (udp_sender_) udp_sender_->send_status(RecognitionStatus::RECOGNITION_ERROR, "", session_id);
                 return;
             }
             is_running_ = true;
-            if (udp_sender_) udp_sender_->send_status(RecognitionStatus::RECOGNIZING, "");
+            std::cout << "[SU] START_RECOGNITION 已进入识别中"
+                      << " session=" << session_id << std::endl;
+            if (udp_sender_) udp_sender_->send_status(RecognitionStatus::RECOGNIZING, "", session_id);
             break;
         case AuthRequestType::CANCEL_RECOGNITION:
+            std::cout << "[SU] CANCEL_RECOGNITION 开始停止识别"
+                      << " session=" << session_id << std::endl;
             StopRecognition();
-            if (udp_sender_) udp_sender_->send_status(RecognitionStatus::IDLE, "");
+            if (udp_sender_) udp_sender_->send_status(RecognitionStatus::IDLE, "", session_id);
             break;
         case AuthRequestType::QUERY_STATUS:
             if (udp_sender_) {
                 if (fr_process_ && !IsProcessHandleActive(fr_process_)) {
+                    std::cout << "[SU] QUERY_STATUS 检测到 FR 进程已退出，更新为未运行"
+                              << " session=" << session_id << std::endl;
                     cleanup_fr_process_handles();
                     is_running_ = false;
                 }
                 RecognitionStatus current_status = is_running_ ? RecognitionStatus::RECOGNIZING : RecognitionStatus::IDLE;
-                udp_sender_->send_status(current_status, last_result_.username);
+                std::cout << "[SU] QUERY_STATUS 返回当前状态"
+                          << " session=" << session_id
+                          << " current_status=" << ToString(current_status)
+                          << " last_username=" << (last_result_.username.empty() ? "(empty)" : last_result_.username)
+                          << std::endl;
+                udp_sender_->send_status(current_status, last_result_.username, session_id);
             }
             break;
         case AuthRequestType::GET_PASSWORD:
             if (!udp_password_sender_ || !database_) {
+                std::cout << "[SU] GET_PASSWORD 依赖未初始化"
+                          << " session=" << session_id << std::endl;
                 break;
             }
             if (const auto user = database_->GetUserByUsername(username_hint); user.has_value()) {
                 const std::string decrypted_password = database_->DecryptPassword(user->encrypted_password);
+                std::cout << "[SU] GET_PASSWORD 查库完成"
+                          << " session=" << session_id
+                          << " lookup_username=" << username_hint
+                          << " resolved_username=" << user->username
+                          << " password_found=" << (!decrypted_password.empty() ? 1 : 0)
+                          << std::endl;
                 udp_password_sender_->send_password(session_id, user->username, decrypted_password, !decrypted_password.empty());
             } else {
+                std::cout << "[SU] GET_PASSWORD 未找到用户"
+                          << " session=" << session_id
+                          << " lookup_username=" << (username_hint.empty() ? "(empty)" : username_hint)
+                          << std::endl;
                 udp_password_sender_->send_password(session_id, username_hint, "", false);
             }
             break;

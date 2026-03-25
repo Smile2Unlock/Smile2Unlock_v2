@@ -55,6 +55,7 @@ HRESULT CSampleProvider::SetUsageScenario(
     DWORD /*dwFlags*/)
 {
     HRESULT hr;
+    ResetCredentialReady();
 
     // Decide which scenarios to support here. Returning E_NOTIMPL simply tells the caller
     // that we're not designed for that scenario.
@@ -112,6 +113,7 @@ HRESULT CSampleProvider::Advise(
     _In_ ICredentialProviderEvents *pcpe,
     _In_ UINT_PTR upAdviseContext)
 {
+    OutputDebugStringW(L"[INFO] CSampleProvider::Advise called\n");
     if (_pcpe != nullptr)
     {
         _pcpe->Release();
@@ -128,6 +130,8 @@ HRESULT CSampleProvider::Advise(
 // Called by LogonUI when the ICredentialProviderEvents callback is no longer valid.
 HRESULT CSampleProvider::UnAdvise()
 {
+    OutputDebugStringW(L"[INFO] CSampleProvider::UnAdvise called\n");
+    ResetCredentialReady();
     if (_pcpe != nullptr)
     {
         _pcpe->Release();
@@ -139,12 +143,19 @@ HRESULT CSampleProvider::UnAdvise()
 // 新增：当后台线程准备好凭证时调用此方法通知LogonUI
 void CSampleProvider::OnCredentialReady()
 {
-    _fCredentialReady = true;
+    OutputDebugStringW(L"[INFO] CSampleProvider::OnCredentialReady signaled\n");
+    _fCredentialReady.store(true, std::memory_order_release);
     if (_pcpe != nullptr)
     {
         // 通知LogonUI凭证已改变，让它重新枚举
         _pcpe->CredentialsChanged(_upAdviseContext);
     }
+}
+
+void CSampleProvider::ResetCredentialReady()
+{
+    OutputDebugStringW(L"[DEBUG] CSampleProvider::ResetCredentialReady\n");
+    _fCredentialReady.store(false, std::memory_order_release);
 }
 
 // Called by LogonUI to determine the number of fields in your tiles.  This
@@ -204,7 +215,8 @@ HRESULT CSampleProvider::GetCredentialCount(
     }
 
     // 如果凭证已准备好，返回1并设置自动登录
-    if (_fCredentialReady)
+    const bool credentialReady = _fCredentialReady.exchange(false, std::memory_order_acq_rel);
+    if (credentialReady)
     {
         *pdwCount = 1;
         *pdwDefault = 0;
@@ -214,6 +226,15 @@ HRESULT CSampleProvider::GetCredentialCount(
     {
         *pdwCount = 1;
     }
+
+    wchar_t buffer[256];
+    swprintf_s(buffer,
+               L"[INFO] CSampleProvider::GetCredentialCount ready=%d count=%u default=%u auto=%d\n",
+               credentialReady ? 1 : 0,
+               *pdwCount,
+               *pdwDefault,
+               *pbAutoLogonWithDefault ? 1 : 0);
+    OutputDebugStringW(buffer);
 
     return S_OK;
 }
