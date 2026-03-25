@@ -420,6 +420,7 @@ HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpc
 // LogonUI calls this to tell us to release the callback.
 HRESULT CSampleCredential::UnAdvise()
 {
+    LogDebugMessage(L"[INFO] CSampleCredential::UnAdvise - 释放事件回调与UDP接收器");
     if (_pCredProvCredentialEvents)
     {
         _pCredProvCredentialEvents->Release();
@@ -441,6 +442,19 @@ HRESULT CSampleCredential::UnAdvise()
 HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 {
     *pbAutoLogon = FALSE;
+
+    extern std::atomic<RecognitionStatus> face_recognition_status;
+    extern std::atomic<ULONGLONG> face_recognition_status_tick;
+
+    LogDebugMessage(L"[INFO] CSampleCredential::SetSelected - status=%d tick=%llu thread_joinable=%d process_alive=%d",
+                    static_cast<int>(face_recognition_status.load()),
+                    face_recognition_status_tick.load(std::memory_order_relaxed),
+                    _faceRecognitionThread.joinable() ? 1 : 0,
+                    (_hSmile2UnlockProcess != nullptr && IsProcessStillRunning()) ? 1 : 0);
+
+    if (_pProvider) {
+        _pProvider->ResetCredentialReady();
+    }
 
     // 始终启动人脸识别（已移除 _fAutoStartEnabled 检查）
     // 检查是否已在运行
@@ -465,6 +479,11 @@ HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 // is to clear out the password field.
 HRESULT CSampleCredential::SetDeselected()
 {
+    LogDebugMessage(L"[INFO] CSampleCredential::SetDeselected - 开始清理当前识别会话");
+    if (_pProvider) {
+        _pProvider->ResetCredentialReady();
+    }
+
     // 停止人脸识别
     StopFaceRecognition();
 
@@ -814,6 +833,11 @@ HRESULT CSampleCredential::SendAuthRequestToSmile2Unlock(AuthRequestType request
 
   constexpr int kMaxAttempts = 10;
   constexpr ULONGLONG kAckWaitMs = 500;
+  LogDebugMessage(L"[INFO] SendAuthRequestToSmile2Unlock - type=%d username_hint=%hs status_before=%d tick_before=%llu",
+                  static_cast<int>(request_type),
+                  username_hint.empty() ? "" : username_hint.c_str(),
+                  static_cast<int>(face_recognition_status.load()),
+                  face_recognition_status_tick.load(std::memory_order_relaxed));
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
     const ULONGLONG tick_before_send = face_recognition_status_tick.load(std::memory_order_relaxed);
 
@@ -1019,6 +1043,7 @@ HRESULT CSampleCredential::RequestAndDecryptPasswordFromSU(PWSTR *ppwszPassword)
     LocalFree(output_blob.pbData);
 
     LogDebugMessage(L"[INFO] 已从 SU 获取并解密密码");
+    LogDebugMessage(L"[INFO] 密码解密结果长度=%u", static_cast<unsigned>(wcslen(*ppwszPassword)));
     hr = S_OK;
   } while (false);
 
@@ -1129,6 +1154,7 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     LogDebugMessage(L"[INFO] GetSerialization被调用");
     LogDebugMessage(L"[DEBUG] _pwzUsername: %s", _pwzUsername ? _pwzUsername : L"NULL");
     LogDebugMessage(L"[DEBUG] 密码字段内容: %s", _rgFieldStrings[SFI_PASSWORD] ? L"已填写" : L"为空");
+    LogDebugMessage(L"[DEBUG] 密码字段长度: %u", _rgFieldStrings[SFI_PASSWORD] ? static_cast<unsigned>(wcslen(_rgFieldStrings[SFI_PASSWORD])) : 0);
     LogDebugMessage(L"[DEBUG] QualifiedUserName: %s", _pszQualifiedUserName ? _pszQualifiedUserName : L"NULL");
 
     // 获取计算机名称作为域
@@ -1369,11 +1395,26 @@ HRESULT CSampleCredential::TerminateSmile2UnlockService() {
 }
 
 HRESULT CSampleCredential::StartFaceRecognitionAsync() {
+    if (_pProvider) {
+        _pProvider->ResetCredentialReady();
+    }
+
+    LogDebugMessage(L"[INFO] StartFaceRecognitionAsync - thread_joinable=%d process_alive=%d",
+                    _faceRecognitionThread.joinable() ? 1 : 0,
+                    (_hSmile2UnlockProcess != nullptr && IsProcessStillRunning()) ? 1 : 0);
+
     {
         std::lock_guard<std::mutex> lock(_faceMutex);
         if (_fFaceRecognitionRunning) {
-            LogDebugMessage(L"[INFO] 人脸识别已在运行，忽略重复请求");
-            return S_OK;
+            const bool has_running_thread = _faceRecognitionThread.joinable();
+            const bool has_running_process = (_hSmile2UnlockProcess != nullptr) && IsProcessStillRunning();
+            if (has_running_thread || has_running_process) {
+                LogDebugMessage(L"[INFO] 人脸识别已在运行，忽略重复请求");
+                return S_OK;
+            }
+
+            LogDebugMessage(L"[WARNING] 检测到人脸识别运行标记残留，正在清理陈旧状态");
+            _fFaceRecognitionRunning = false;
         }
     }
 
@@ -1451,6 +1492,8 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
 
                         // 更新UI
                         if (_pCredProvCredentialEvents) {
+                            LogDebugMessage(L"[INFO] 更新CP字段并准备触发自动登录，events=%p provider=%p",
+                                            _pCredProvCredentialEvents, _pProvider);
                             _pCredProvCredentialEvents->BeginFieldUpdates();
                             _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, pwszPassword);
                             _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"人脸识别成功，正在登录...");
@@ -1461,6 +1504,8 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                                 LogDebugMessage(L"[INFO] 通知Provider凭证已准备好");
                                 _pProvider->OnCredentialReady();
                             }
+                        } else {
+                            LogDebugMessage(L"[ERROR] 识别成功但 _pCredProvCredentialEvents 为空，无法通知LogonUI更新字段");
                         }
                     } else {
                         LogDebugMessage(L"[ERROR] 密码解密失败: 0x%08X", decryptResult);

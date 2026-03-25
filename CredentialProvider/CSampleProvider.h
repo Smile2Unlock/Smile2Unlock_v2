@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <strsafe.h>
 #include <new>
+#include <atomic>
 
 #include "CSampleCredential.h"
 
@@ -54,6 +55,7 @@ class CSampleProvider : public ICredentialProvider,
     
     // 新增：当凭证已准备好时通知LogonUI
     void OnCredentialReady();
+    void ResetCredentialReady();
 
     IFACEMETHODIMP GetFieldDescriptorCount(_Out_ DWORD *pdwCount);
     IFACEMETHODIMP GetFieldDescriptorAt(DWORD dwIndex,  _Outptr_result_nullonfailure_ CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR **ppcpfd);
@@ -86,6 +88,6 @@ private:
     ICredentialProviderUserArray            *_pCredProviderUserArray;
     ICredentialProviderEvents               *_pcpe;           // 凭证事件回调
     UINT_PTR                                _upAdviseContext; // 回调上下文
-    bool                                    _fCredentialReady; // 凭证是否已准备好
+    std::atomic<bool>                       _fCredentialReady; // 凭证是否已准备好
 
 };
