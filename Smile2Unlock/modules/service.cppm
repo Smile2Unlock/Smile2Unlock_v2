@@ -56,6 +56,26 @@ module :private;
 
 namespace smile2unlock {
 
+namespace {
+
+std::string EncryptPasswordForPersistence(const std::string& password, std::string& error_message) {
+    if (password.empty()) {
+        error_message = "密码不能为空";
+        return {};
+    }
+
+    const std::string encrypted_password = managers::EncryptPasswordForStorage(password, "smile2unlock.db");
+    if (encrypted_password.empty()) {
+        error_message = "密码加密失败";
+        return {};
+    }
+
+    error_message.clear();
+    return encrypted_password;
+}
+
+}
+
 BackendService::BackendService() : initialized_(false) {
     dll_injector_ = std::make_unique<managers::DllInjector>();
     database_ = std::make_unique<managers::Database>();
@@ -81,13 +101,20 @@ bool BackendService::AddUser(const std::string& username, const std::string& pas
         error_message = "用户名不能为空";
         return false;
     }
+    if (password.empty()) {
+        error_message = "密码不能为空";
+        return false;
+    }
     if (database_->UserExists(username)) {
         error_message = "用户名已存在";
         return false;
     }
     User new_user;
     new_user.username = username;
-    new_user.encrypted_password = password;
+    new_user.encrypted_password = EncryptPasswordForPersistence(password, error_message);
+    if (new_user.encrypted_password.empty()) {
+        return false;
+    }
     new_user.remark = remark;
     if (database_->AddUser(new_user)) {
         error_message = "用户添加成功";
@@ -103,9 +130,23 @@ bool BackendService::UpdateUser(int user_id, const std::string& username, const 
         error_message = "用户不存在";
         return false;
     }
+    if (username.empty()) {
+        error_message = "用户名不能为空";
+        return false;
+    }
+    auto same_name_user = database_->GetUserByUsername(username);
+    if (same_name_user.has_value() && same_name_user->id != user_id) {
+        error_message = "用户名已存在";
+        return false;
+    }
     User updated_user = user.value();
     updated_user.username = username;
-    if (!password.empty()) updated_user.encrypted_password = password;
+    if (!password.empty()) {
+        updated_user.encrypted_password = EncryptPasswordForPersistence(password, error_message);
+        if (updated_user.encrypted_password.empty()) {
+            return false;
+        }
+    }
     updated_user.remark = remark;
     if (database_->UpdateUser(updated_user)) {
         error_message = "用户更新成功";

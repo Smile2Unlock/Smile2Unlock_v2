@@ -106,7 +106,7 @@ target("SampleV2CredentialProvider")
     add_headerfiles("CredentialProvider/**.h")
     add_includedirs("common", {public = false})
     add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS", "_WIN32_WINNT=0x0602")  -- Windows 8
-    add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32")
+    add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32", "crypt32")
     add_links("Credui", "Shlwapi", "Secur32")
     add_files("CredentialProvider/samplev2credentialprovider.def")
     
@@ -123,12 +123,13 @@ target("Smile2Unlock")
     set_policy("build.c++.modules", true)
     add_files(
         "Smile2Unlock/*.cpp",
-        "Smile2Unlock/modules/*.cppm"
+        "Smile2Unlock/modules/*.cppm",
+        "common/modules/*.cppm"
     )
     add_includedirs("common", {public = true})
     add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN", "NOMINMAX")
-    add_packages("glfw", "imgui", "boost", "sqlite3")
-    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32")
+    add_packages("glfw", "imgui", "boost", "sqlite3", "cryptopp")
+    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32")
     add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
 
 

@@ -45,6 +45,11 @@ private:
         char new_username[64]{};
         char new_password[64]{};
         char new_remark[256]{};
+        bool show_edit_user{};
+        int editing_user_id{};
+        char edit_username[64]{};
+        char edit_password[64]{};
+        char edit_remark[256]{};
         std::string status_message;
         float status_message_timer{};
         int selected_user_id{};
@@ -309,6 +314,14 @@ void Application::RenderUsersPanel() {
             ImGui::TableSetColumnIndex(2); ImGui::Text("%d 张", static_cast<int>(user.faces.size()));
             ImGui::TableSetColumnIndex(3); ImGui::TextWrapped("%s", user.remark.c_str());
             ImGui::TableSetColumnIndex(4);
+            if (ImGui::Button(("编辑##user_" + std::to_string(user.id)).c_str())) {
+                ui_state_.editing_user_id = user.id;
+                strncpy_s(ui_state_.edit_username, sizeof(ui_state_.edit_username), user.username.c_str(), _TRUNCATE);
+                memset(ui_state_.edit_password, 0, sizeof(ui_state_.edit_password));
+                strncpy_s(ui_state_.edit_remark, sizeof(ui_state_.edit_remark), user.remark.c_str(), _TRUNCATE);
+                ui_state_.show_edit_user = true;
+            }
+            ImGui::SameLine();
             if (ImGui::Button(("删除##user_" + std::to_string(user.id)).c_str())) {
                 std::string error; backend_->DeleteUser(user.id, error);
             }
@@ -338,6 +351,38 @@ void Application::RenderUsersPanel() {
             ui_state_.status_message = "✗ " + error;
         }
         ui_state_.status_message_timer = 3.0f;
+    }
+
+    if (ui_state_.show_edit_user) {
+        ImGui::OpenPopup("编辑用户");
+        ui_state_.show_edit_user = false;
+    }
+
+    if (ImGui::BeginPopupModal("编辑用户", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("修改用户信息");
+        ImGui::Separator();
+        ImGui::InputText("CP登录用户名##edit", ui_state_.edit_username, sizeof(ui_state_.edit_username));
+        ImGui::InputText("新密码##edit", ui_state_.edit_password, sizeof(ui_state_.edit_password), ImGuiInputTextFlags_Password);
+        ImGui::InputText("备注##edit", ui_state_.edit_remark, sizeof(ui_state_.edit_remark));
+        ImGui::TextDisabled("密码留空表示保持原密码不变");
+        ImGui::Spacing();
+        if (ImGui::Button("保存", ImVec2(120, 0))) {
+            std::string error;
+            if (backend_->UpdateUser(ui_state_.editing_user_id, ui_state_.edit_username, ui_state_.edit_password, ui_state_.edit_remark, error)) {
+                ui_state_.status_message = "✓ " + error;
+                memset(ui_state_.edit_password, 0, sizeof(ui_state_.edit_password));
+                ImGui::CloseCurrentPopup();
+            } else {
+                ui_state_.status_message = "✗ " + error;
+            }
+            ui_state_.status_message_timer = 3.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("取消", ImVec2(120, 0))) {
+            memset(ui_state_.edit_password, 0, sizeof(ui_state_.edit_password));
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     if (ui_state_.show_face_capture) {

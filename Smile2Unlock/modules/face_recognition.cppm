@@ -3,8 +3,10 @@ module;
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <wincrypt.h>
 #include <boost/asio.hpp>
 #include "models/udp_auth_request_packet.h"
+#include "models/udp_password_packet.h"
 #include "models/recognition_status.h"
 #include "models/udp_status_packet.h"
 #include "models/shared_frame_ipc.h"
@@ -92,6 +94,59 @@ public:
             return true;
         } catch (const std::exception&) { return false; }
     }
+private:
+    asio::io_context io_context_;
+    udp::socket socket_;
+    udp::endpoint endpoint_;
+};
+
+class UdpPasswordSenderToCP {
+public:
+    UdpPasswordSenderToCP(const std::string& host = "127.0.0.1", uint16_t port = 51237)
+        : socket_(io_context_, udp::v4()), endpoint_(asio::ip::make_address(host), port) {}
+    ~UdpPasswordSenderToCP() { boost::system::error_code ec; socket_.close(ec); }
+
+    bool send_password(uint32_t session_id, const std::string& username, const std::string& password, bool success) {
+        try {
+            UdpPasswordResponsePacket packet{};
+            packet.magic_number = PASSWORD_RESPONSE_MAGIC;
+            packet.version = PASSWORD_RESPONSE_VERSION;
+            packet.session_id = session_id;
+            packet.result_code = success ? 0 : 1;
+            packet.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            strncpy_s(packet.username, sizeof(packet.username), username.c_str(), _TRUNCATE);
+
+            if (success) {
+                DATA_BLOB input_blob{};
+                input_blob.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(password.data()));
+                input_blob.cbData = static_cast<DWORD>(password.size());
+
+                DATA_BLOB output_blob{};
+                if (!CryptProtectData(&input_blob, nullptr, nullptr, nullptr, nullptr, 0, &output_blob)) {
+                    return false;
+                }
+
+                const DWORD copy_size = std::min<DWORD>(output_blob.cbData, sizeof(packet.protected_password));
+                if (copy_size != output_blob.cbData) {
+                    SecureZeroMemory(output_blob.pbData, output_blob.cbData);
+                    LocalFree(output_blob.pbData);
+                    return false;
+                }
+
+                packet.protected_password_size = copy_size;
+                memcpy(packet.protected_password, output_blob.pbData, copy_size);
+                SecureZeroMemory(output_blob.pbData, output_blob.cbData);
+                LocalFree(output_blob.pbData);
+            }
+
+            socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    }
+
 private:
     asio::io_context io_context_;
     udp::socket socket_;
@@ -190,6 +245,7 @@ private:
     std::unique_ptr<UdpReceiverFromCP> udp_receiver_cp_;
     std::unique_ptr<UdpReceiverFromFR> udp_receiver_fr_;
     std::unique_ptr<UdpSenderToCP> udp_sender_;
+    std::unique_ptr<UdpPasswordSenderToCP> udp_password_sender_;
     std::unique_ptr<smile2unlock::managers::Database> database_;
 
     uint32_t current_session_id_;
@@ -467,6 +523,7 @@ bool FaceRecognition::Initialize(std::string& error_message) {
         udp_receiver_fr_->start();
 
         udp_sender_ = std::make_unique<UdpSenderToCP>("127.0.0.1", 51234);
+        udp_password_sender_ = std::make_unique<UdpPasswordSenderToCP>("127.0.0.1", 51237);
         initialized_ = true;
         error_message = "人脸识别模块已初始化";
         return true;
@@ -862,6 +919,17 @@ void FaceRecognition::on_cp_request_received(AuthRequestType type, const std::st
                 }
                 RecognitionStatus current_status = is_running_ ? RecognitionStatus::RECOGNIZING : RecognitionStatus::IDLE;
                 udp_sender_->send_status(current_status, last_result_.username);
+            }
+            break;
+        case AuthRequestType::GET_PASSWORD:
+            if (!udp_password_sender_ || !database_) {
+                break;
+            }
+            if (const auto user = database_->GetUserByUsername(username_hint); user.has_value()) {
+                const std::string decrypted_password = database_->DecryptPassword(user->encrypted_password);
+                udp_password_sender_->send_password(session_id, user->username, decrypted_password, !decrypted_password.empty());
+            } else {
+                udp_password_sender_->send_password(session_id, username_hint, "", false);
             }
             break;
         default:

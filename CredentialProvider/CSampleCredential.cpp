@@ -11,6 +11,7 @@
 // 必须在其他 Windows 头文件之前包含 Winsock（用于 UDP 通讯）
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <wincrypt.h>
 
 #ifndef WIN32_NO_STATUS
 #define WIN32_NO_STATUS
@@ -22,9 +23,9 @@
 #include "guid.h"
 
 // 新增包含
-#include "Crypto.h"
 #include "managers/ipc/udp/auth_request_sender.h"
 #include "managers/ipc/udp/udp_receiver.h"
+#include "models/udp_password_packet.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
 #include "hresult_helper.h"
@@ -56,9 +57,33 @@ bool IsAckStatusForRequest(AuthRequestType request_type, RecognitionStatus statu
              status == RecognitionStatus::PROCESS_ENDED;
     case AuthRequestType::QUERY_STATUS:
       return true;
+    case AuthRequestType::GET_PASSWORD:
+      return false;
     default:
       return false;
   }
+}
+
+bool Utf8ToWidePassword(const std::string& utf8_password, PWSTR* ppwszPassword) {
+  *ppwszPassword = nullptr;
+
+  const int bufferSize = MultiByteToWideChar(CP_UTF8, 0, utf8_password.c_str(), -1, nullptr, 0);
+  if (bufferSize <= 0) {
+    return false;
+  }
+
+  PWSTR password = static_cast<PWSTR>(CoTaskMemAlloc(bufferSize * sizeof(wchar_t)));
+  if (!password) {
+    return false;
+  }
+
+  if (!MultiByteToWideChar(CP_UTF8, 0, utf8_password.c_str(), -1, password, bufferSize)) {
+    CoTaskMemFree(password);
+    return false;
+  }
+
+  *ppwszPassword = password;
+  return true;
 }
 
 }
@@ -877,96 +902,131 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
   return E_FAIL;
 }
 
-HRESULT CSampleCredential::DecryptPasswordFromRegistry(PWSTR *ppwszPassword) {
+HRESULT CSampleCredential::RequestAndDecryptPasswordFromSU(PWSTR *ppwszPassword) {
   *ppwszPassword = nullptr;
 
-  try {
-    LogDebugMessage(L"[INFO] 开始从注册表读取加密数据...");
-    
-    // 从注册表读取加密的密码、密钥和IV
-    std::string passwordHex = RegistryHelper::ReadStringFromRegistry(
-        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\password");
-    std::string keyHex = RegistryHelper::ReadStringFromRegistry(
-        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\key");
-    std::string ivHex = RegistryHelper::ReadStringFromRegistry(
-        "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\iv");
-
-    // 检查是否成功读取
-    if (passwordHex.empty() || keyHex.empty() || ivHex.empty()) {
-      LogDebugMessage(L"[ERROR] 从注册表读取数据失败: password=%s, key=%s, iv=%s",
-                     passwordHex.empty() ? L"空" : L"有", 
-                     keyHex.empty() ? L"空" : L"有",
-                     ivHex.empty() ? L"空" : L"有");
-      return E_FAIL;
-    }
-    
-    LogDebugMessage(L"[INFO] 注册表数据读取成功，长度: pwd=%zu, key=%zu, iv=%zu",
-                   passwordHex.length(), keyHex.length(), ivHex.length());
-
-    // 将十六进制密文转换为二进制
-    std::vector<CryptoPP::byte> passwordCipherBytes =
-        Crypto::hexToBytes(passwordHex);
-    std::string passwordCipher(
-        reinterpret_cast<const char *>(passwordCipherBytes.data()),
-        passwordCipherBytes.size());
-
-    LogDebugMessage(L"[INFO] 十六进制转换完成，密文长度: %zu", passwordCipher.length());
-
-    // 创建Crypto对象并设置密钥和IV
-    Crypto crypto;
-    if (!crypto.setKeyHex(keyHex)) {
-      LogDebugMessage(L"[ERROR] 密钥设置失败");
-      return E_FAIL;
-    }
-    if (!crypto.setIvHex(ivHex)) {
-      LogDebugMessage(L"[ERROR] IV设置失败");
-      return E_FAIL;
-    }
-    
-    LogDebugMessage(L"[INFO] 密钥和IV设置成功，开始解密...");
-
-    // 解密
-    std::string decryptedPassword = crypto.decrypt(passwordCipher);
-    if (decryptedPassword.empty()) {
-      LogDebugMessage(L"[ERROR] 解密失败或密码为空");
-      return E_FAIL;
-    }
-    
-    LogDebugMessage(L"[INFO] 解密成功，密码长度: %zu", decryptedPassword.length());
-
-    // 转换为宽字符
-    int bufferSize = MultiByteToWideChar(CP_UTF8, 0, decryptedPassword.c_str(),
-                                         -1, nullptr, 0);
-    if (bufferSize == 0) {
-      LogDebugMessage(L"[ERROR] 计算宽字符缓冲区大小失败");
-      return HRESULT_FROM_WIN32(GetLastError());
-    }
-
-    PWSTR pwszPassword = (PWSTR)CoTaskMemAlloc(bufferSize * sizeof(wchar_t));
-    if (!pwszPassword) {
-      LogDebugMessage(L"[ERROR] 内存分配失败");
-      return E_OUTOFMEMORY;
-    }
-
-    if (!MultiByteToWideChar(CP_UTF8, 0, decryptedPassword.c_str(), -1,
-                             pwszPassword, bufferSize)) {
-      CoTaskMemFree(pwszPassword);
-      LogDebugMessage(L"[ERROR] 多字节字符转宽字符失败");
-      return HRESULT_FROM_WIN32(GetLastError());
-    }
-
-    *ppwszPassword = pwszPassword;
-    LogDebugMessage(L"[INFO] 密码转换为宽字符成功");
-
-    // 立即清零密码缓冲区
-    SecureZeroMemory((PVOID)decryptedPassword.data(), decryptedPassword.size());
-    LogDebugMessage(L"[INFO] 密码缓冲区已清零");
-
-    return S_OK;
-  } catch (const std::exception &e) {
-    LogDebugMessage(L"[ERROR] 异常捕获: %hs", e.what());
+  WSADATA wsaData{};
+  const int wsaStartupResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
+  if (wsaStartupResult != 0) {
+    LogDebugMessage(L"[ERROR] WSAStartup 失败: %d", wsaStartupResult);
     return E_FAIL;
   }
+
+  HRESULT hr = E_FAIL;
+  SOCKET sock = INVALID_SOCKET;
+
+  do {
+    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+      LogDebugMessage(L"[ERROR] 创建 UDP socket 失败: %d", WSAGetLastError());
+      break;
+    }
+
+    DWORD timeout_ms = 5000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+
+    sockaddr_in local_addr{};
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    local_addr.sin_port = htons(51237);
+
+    if (bind(sock, reinterpret_cast<sockaddr*>(&local_addr), sizeof(local_addr)) == SOCKET_ERROR) {
+      LogDebugMessage(L"[ERROR] 绑定密码响应端口失败: %d", WSAGetLastError());
+      break;
+    }
+
+    extern std::string recognized_username;
+    std::string username_hint = recognized_username;
+    if (username_hint.empty() && _pwzUsername != nullptr) {
+      int required = WideCharToMultiByte(CP_UTF8, 0, _pwzUsername, -1, nullptr, 0, nullptr, nullptr);
+      if (required > 1) {
+        username_hint.resize(static_cast<size_t>(required));
+        WideCharToMultiByte(CP_UTF8, 0, _pwzUsername, -1, username_hint.data(), required, nullptr, nullptr);
+        username_hint.resize(static_cast<size_t>(required - 1));
+      }
+    }
+
+    if (username_hint.empty()) {
+      LogDebugMessage(L"[ERROR] 无法确定请求密码的用户名");
+      break;
+    }
+
+    const uint32_t session_id = GetTickCount();
+    AuthRequestSender sender("127.0.0.1", 51236);
+    if (!sender.send_request(AuthRequestType::GET_PASSWORD, username_hint, session_id)) {
+      LogDebugMessage(L"[ERROR] 发送 GET_PASSWORD 请求失败");
+      break;
+    }
+
+    LogDebugMessage(L"[INFO] 已向 SU 请求密码，用户名: %hs, session=%u", username_hint.c_str(), session_id);
+
+    UdpPasswordResponsePacket response{};
+    sockaddr_in remote_addr{};
+    int remote_addr_len = sizeof(remote_addr);
+    const int received = recvfrom(sock,
+                                  reinterpret_cast<char*>(&response),
+                                  sizeof(response),
+                                  0,
+                                  reinterpret_cast<sockaddr*>(&remote_addr),
+                                  &remote_addr_len);
+    if (received == SOCKET_ERROR) {
+      LogDebugMessage(L"[ERROR] 接收密码响应失败: %d", WSAGetLastError());
+      break;
+    }
+
+    if (static_cast<size_t>(received) < sizeof(UdpPasswordResponsePacket)) {
+      LogDebugMessage(L"[ERROR] 密码响应包长度非法: %d", received);
+      break;
+    }
+    if (response.magic_number != PASSWORD_RESPONSE_MAGIC ||
+        response.version != PASSWORD_RESPONSE_VERSION ||
+        response.session_id != session_id) {
+      LogDebugMessage(L"[ERROR] 密码响应包校验失败");
+      break;
+    }
+    if (response.result_code != 0) {
+      LogDebugMessage(L"[ERROR] SU 返回密码失败，result=%d", response.result_code);
+      break;
+    }
+    if (response.protected_password_size == 0 ||
+        response.protected_password_size > sizeof(response.protected_password)) {
+      LogDebugMessage(L"[ERROR] 受保护密码长度非法: %u", response.protected_password_size);
+      break;
+    }
+
+    DATA_BLOB input_blob{};
+    input_blob.pbData = response.protected_password;
+    input_blob.cbData = response.protected_password_size;
+
+    DATA_BLOB output_blob{};
+    if (!CryptUnprotectData(&input_blob, nullptr, nullptr, nullptr, nullptr, 0, &output_blob)) {
+      LogDebugMessage(L"[ERROR] CryptUnprotectData 失败: %u", GetLastError());
+      break;
+    }
+
+    std::string decrypted_password(reinterpret_cast<const char*>(output_blob.pbData), output_blob.cbData);
+    if (!Utf8ToWidePassword(decrypted_password, ppwszPassword)) {
+      SecureZeroMemory(decrypted_password.data(), decrypted_password.size());
+      SecureZeroMemory(output_blob.pbData, output_blob.cbData);
+      LocalFree(output_blob.pbData);
+      LogDebugMessage(L"[ERROR] 密码 UTF-8 转宽字符失败");
+      hr = E_FAIL;
+      break;
+    }
+
+    SecureZeroMemory(decrypted_password.data(), decrypted_password.size());
+    SecureZeroMemory(output_blob.pbData, output_blob.cbData);
+    LocalFree(output_blob.pbData);
+
+    LogDebugMessage(L"[INFO] 已从 SU 获取并解密密码");
+    hr = S_OK;
+  } while (false);
+
+  if (sock != INVALID_SOCKET) {
+    closesocket(sock);
+  }
+  WSACleanup();
+  return hr;
 }
 
 HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
@@ -1371,11 +1431,11 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                 HRESULT waitResult = WaitForFaceRecognitionResult();
 
                 if (SUCCEEDED(waitResult)) {
-                    LogDebugMessage(L"[INFO] 人脸识别成功，开始解密密码");
+                    LogDebugMessage(L"[INFO] 人脸识别成功，开始向 SU 请求密码");
 
-                    // 识别成功，解密密码
+                    // 识别成功，请求 SU 返回受保护密码并在本地解密
                     PWSTR pwszPassword = nullptr;
-                    HRESULT decryptResult = DecryptPasswordFromRegistry(&pwszPassword);
+                    HRESULT decryptResult = RequestAndDecryptPasswordFromSU(&pwszPassword);
 
                     if (SUCCEEDED(decryptResult) && pwszPassword) {
                         LogDebugMessage(L"[INFO] 密码解密成功，设置密码字段");
