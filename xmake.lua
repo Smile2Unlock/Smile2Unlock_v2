@@ -10,6 +10,50 @@ add_requires("libyuv")
 add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
 add_requires("sqlite3")
 
+local function apply_common_windows_settings(winver)
+    if is_plat("windows", "mingw") then
+        add_defines("_WIN32_WINNT=" .. winver, "NOMINMAX", "_CRT_SECURE_NO_WARNINGS", "WIN32_LEAN_AND_MEAN")
+        add_links("Advapi32", "mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
+    end
+end
+
+local function apply_compiler_flags()
+    if is_plat("windows") then
+        add_cxflags("/O2")
+        add_cxflags("/Oi")
+        add_cxflags("/Ot")
+        add_cxflags("/fp:fast")
+        add_cxflags("/Gy")
+        add_cxflags("/Zc:inline")
+        add_cxflags("/Zc:__cplusplus")
+
+        if is_mode("release") then
+            add_cxflags("/GL")
+            add_ldflags("/LTCG")
+            add_ldflags("/OPT:REF")
+            add_ldflags("/OPT:ICF")
+        end
+
+        if is_mode("debug") then
+            add_defines("_DEBUG")
+            add_cxflags("/Zi")
+            add_cxflags("/Od")
+            add_ldflags("/DEBUG")
+        end
+    elseif is_plat("mingw") then
+        if is_mode("release") then
+            add_cxflags("-O2")
+            add_cxflags("-ffast-math")
+        end
+
+        if is_mode("debug") then
+            add_defines("_DEBUG")
+            add_cxflags("-g")
+            add_cxflags("-O0")
+        end
+    end
+end
+
 target("FaceRecognizer")
     set_encodings("utf-8")
     set_languages("c++26")
@@ -22,57 +66,20 @@ target("FaceRecognizer")
     add_headerfiles("FaceRecognizer/src/**.hpp")
     add_includedirs("FaceRecognizer/src", {public = false})
     add_includedirs("common", {public = false})
+    apply_common_windows_settings("0x0A00")
+    apply_compiler_flags()
 
-
-    -- Windows平台特定配置
-    if is_plat("windows") then
-        add_defines("_WIN32_WINNT=0x0A00")  -- Windows 10
-        add_defines("NOMINMAX")             -- 避免min/max宏冲突
-        add_defines("_CRT_SECURE_NO_WARNINGS")
-        
-        -- 性能优化编译选项
-        add_cxflags("/O2")                  -- 优化速度
-        add_cxflags("/Oi")                  -- 启用内联函数
-        add_cxflags("/Ot")                  -- 偏好速度而非大小
-        add_cxflags("/fp:fast")             -- 快速浮点运算
-        add_cxflags("/GL")                  -- 全程序优化
-        add_cxflags("/Gy")                  -- 函数级链接
-        add_cxflags("/Zc:inline")           -- 移除未使用的函数
-        add_cxflags("/Zc:__cplusplus")      -- 启用正确的__cplusplus宏
-        
-        -- 链接库
-        add_links("Advapi32")
-        add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
-        add_cxflags("/DWIN32_LEAN_AND_MEAN")
-    end
-    
     add_packages("SeetaFace6Open")
     add_packages("cryptopp")
     add_packages("cxxopts")
     add_packages("boost")
     add_packages("libyuv")
-    
-    -- 发布模式下的额外优化
-    if is_mode("release") then
-        add_ldflags("/LTCG")                -- 链接时代码生成
-        add_ldflags("/OPT:REF")             -- 移除未使用的函数和数据
-        add_ldflags("/OPT:ICF")             -- 相同COMDAT折叠
-    end
-    
-    -- 调试模式下的诊断
-    if is_mode("debug") then
-        add_defines("_DEBUG")
-        add_cxflags("/Zi")                  -- 调试信息
-        add_cxflags("/Od")                  -- 禁用优化
-        add_ldflags("/DEBUG")               -- 生成调试信息
-    end
 
     after_build(function (target)
-        if is_plat("windows") then
+        if is_plat("windows", "mingw") then
             -- 确保关键DLL被复制（显式列出以确保不遗漏）
             local seetaface_dlls = {
                 "SeetaAuthorize.dll",
-                "SeetaEyeStateDetector200.dll",
                 "SeetaFaceAntiSpoofingX600.dll",
                 "SeetaFaceDetector600.dll",
                 "SeetaFaceLandmarker600.dll",
@@ -80,16 +87,21 @@ target("FaceRecognizer")
                 "tennis.dll"
             }
 
-            local source_dir = "$(projectdir)/local-repo/packages/s/SeetaFace6Open/windows/lib"
+            local seetaface_pkg = target:pkg("SeetaFace6Open")
+            local source_root = seetaface_pkg and seetaface_pkg:installdir() or nil
             local target_dir = target:targetdir()
 
-            for _, dll in ipairs(seetaface_dlls) do
-                local source_file = path.join(source_dir, dll)
-                if os.isfile(source_file) then
-                    os.cp(source_file, target_dir)
-                else
-                    print("警告: 找不到DLL文件: " .. dll)
+            if source_root then
+                for _, dll in ipairs(seetaface_dlls) do
+                    local matches = os.files(path.join(source_root, "**", dll))
+                    if #matches > 0 then
+                        os.cp(matches[1], target_dir)
+                    else
+                        print("警告: 找不到DLL文件: " .. dll)
+                    end
                 end
+            else
+                print("警告: SeetaFace6Open 包未安装，跳过 DLL 复制")
             end
         end
         os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
@@ -105,7 +117,9 @@ target("SampleV2CredentialProvider")
     add_files("CredentialProvider/*.cpp")
     add_headerfiles("CredentialProvider/**.h")
     add_includedirs("common", {public = false})
-    add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS", "_WIN32_WINNT=0x0602")  -- Windows 8
+    add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
+    apply_common_windows_settings("0x0602")
+    apply_compiler_flags()
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32", "crypt32")
     add_links("Credui", "Shlwapi", "Secur32")
     add_files("CredentialProvider/samplev2credentialprovider.def")
@@ -127,10 +141,10 @@ target("Smile2Unlock")
         "common/modules/*.cppm"
     )
     add_includedirs("common", {public = true})
-    add_defines("_WIN32_WINNT=0x0602", "WIN32_LEAN_AND_MEAN", "NOMINMAX")
+    apply_common_windows_settings("0x0602")
+    apply_compiler_flags()
     add_packages("glfw", "imgui", "boost", "sqlite3", "cryptopp")
     add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32")
-    add_links("mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
 
 
 

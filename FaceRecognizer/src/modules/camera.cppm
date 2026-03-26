@@ -1,7 +1,8 @@
 module;
 
-#include <seeta/CStruct.h>
 #include <libyuv.h>
+#include <seeta/Common/CStruct.h>
+
 
 #ifdef _WIN32
 #include <combaseapi.h>
