@@ -2,8 +2,8 @@ add_rules("mode.debug", "mode.release")
 add_rules("plugin.compile_commands.autoupdate", {outputdir = ".vscode"})
 
 add_repositories("myrepo local-repo")
-add_requires("SeetaFace6Open")
-add_requires("cryptopp")
+add_requires("seetaface6open")
+add_requires("tiny-aes-c")
 add_requires("cxxopts")
 add_requires("boost", {configs = {asio = true}})
 add_requires("libyuv")
@@ -17,46 +17,13 @@ local function apply_common_windows_settings(winver)
     end
 end
 
-local function apply_compiler_flags()
-    if is_plat("windows") then
-        add_cxflags("/O2")
-        add_cxflags("/Oi")
-        add_cxflags("/Ot")
-        add_cxflags("/fp:fast")
-        add_cxflags("/Gy")
-        add_cxflags("/Zc:inline")
-        add_cxflags("/Zc:__cplusplus")
 
-        if is_mode("release") then
-            add_cxflags("/GL")
-            add_ldflags("/LTCG")
-            add_ldflags("/OPT:REF")
-            add_ldflags("/OPT:ICF")
-        end
-
-        if is_mode("debug") then
-            add_defines("_DEBUG")
-            add_cxflags("/Zi")
-            add_cxflags("/Od")
-            add_ldflags("/DEBUG")
-        end
-    elseif is_plat("mingw") then
-        if is_mode("release") then
-            add_cxflags("-O2")
-            add_cxflags("-ffast-math")
-        end
-
-        if is_mode("debug") then
-            add_defines("_DEBUG")
-            add_cxflags("-g")
-            add_cxflags("-O0")
-        end
-    end
-end
 
 target("FaceRecognizer")
     set_encodings("utf-8")
     set_languages("c++26")
+    set_plat("mingw")
+    set_toolchains("clang")
     set_policy("build.c++.modules", true)
     set_kind("binary")
     add_files("FaceRecognizer/src/modules/*.cppm")
@@ -67,10 +34,9 @@ target("FaceRecognizer")
     add_includedirs("FaceRecognizer/src", {public = false})
     add_includedirs("common", {public = false})
     apply_common_windows_settings("0x0A00")
-    apply_compiler_flags()
 
-    add_packages("SeetaFace6Open")
-    add_packages("cryptopp")
+    add_packages("seetaface6open")
+    add_packages("tiny-aes-c")
     add_packages("cxxopts")
     add_packages("boost")
     add_packages("libyuv")
@@ -87,7 +53,7 @@ target("FaceRecognizer")
                 "tennis.dll"
             }
 
-            local seetaface_pkg = target:pkg("SeetaFace6Open")
+            local seetaface_pkg = target:pkg("seetaface6open")
             local source_root = seetaface_pkg and seetaface_pkg:installdir() or nil
             local target_dir = target:targetdir()
 
@@ -101,7 +67,7 @@ target("FaceRecognizer")
                     end
                 end
             else
-                print("警告: SeetaFace6Open 包未安装，跳过 DLL 复制")
+                print("警告: seetaface6open 包未安装，跳过 DLL 复制")
             end
         end
         os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
@@ -119,7 +85,6 @@ target("SampleV2CredentialProvider")
     add_includedirs("common", {public = false})
     add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
     apply_common_windows_settings("0x0602")
-    apply_compiler_flags()
     add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32", "crypt32")
     add_links("Credui", "Shlwapi", "Secur32")
     add_files("CredentialProvider/samplev2credentialprovider.def")
@@ -127,11 +92,13 @@ target("SampleV2CredentialProvider")
     -- 资源文件处理
     add_files("CredentialProvider/resources.rc")
 
-    add_packages("cryptopp")
+    add_packages("tiny-aes-c")
     add_packages("boost")
 
 target("Smile2Unlock")
     set_kind("binary")
+    set_plat("mingw")
+    set_toolchains("clang")
     set_encodings("utf-8")
     set_languages("c++26")
     set_policy("build.c++.modules", true)
@@ -142,8 +109,7 @@ target("Smile2Unlock")
     )
     add_includedirs("common", {public = true})
     apply_common_windows_settings("0x0602")
-    apply_compiler_flags()
-    add_packages("glfw", "imgui", "boost", "sqlite3", "cryptopp")
+    add_packages("glfw", "imgui", "boost", "sqlite3", "tiny-aes-c")
     add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32")
 
 
