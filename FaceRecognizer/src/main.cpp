@@ -13,7 +13,6 @@ import utils;
 import config;
 import std;
 import crypto;
-import input_hide;
 
 
 // 全局 UDP 发送器 - 使用 Boost.Asio 实现
@@ -422,8 +421,6 @@ int mainOptimized(int argc, char* argv[]) {
          cxxopts::value<std::string>()->default_value(""))
         ("extract-feature", "Extract feature and append it into shared memory payload",
          cxxopts::value<bool>()->default_value("false"))
-        ("s,set-password", "交互式设置登录密码",
-         cxxopts::value<bool>()->default_value("false"))
         ;
     
     auto result = options.parse(argc, argv);
@@ -440,7 +437,6 @@ int mainOptimized(int argc, char* argv[]) {
     std::string feature_a_hex = result["feature-a"].as<std::string>();
     std::string feature_b_hex = result["feature-b"].as<std::string>();
     const bool extract_feature = result["extract-feature"].as<bool>();
-    bool set_password = result["set-password"].as<bool>();
     g_udp_port = result["udp-port"].as<int>();
     
     // 加载配置
@@ -478,63 +474,6 @@ int mainOptimized(int argc, char* argv[]) {
     }
     
     
-    // Handle set-password functionality separately
-    if (set_password) {
-      std::string password1, password2;
-
-      password1 = HiddenInputReader{}.readHiddenLine("Enter new password: ");
-
-      password2 = HiddenInputReader{}.readHiddenLine("Confirm new password: ");
-
-      if (password1 != password2) {
-        std::cerr << "Error: Passwords do not match!" << std::endl;
-        return -1;
-      }
-
-      // TODO: Implement set password functionality
-      // - Encrypt and securely store the password
-      // - Potentially integrate with Windows credential manager
-      std::cout << "Set password: Setting login password..." << std::endl;
-
-      Crypto crypto;
-
-      // 自动生成密钥和IV（构造函数已实现）
-      std::string ciphertext = crypto.encrypt(password1);
-
-      std::string ciphertext_hex =
-          Crypto::bytesToHex(std::span<const CryptoPP::byte>(
-              reinterpret_cast<const CryptoPP::byte*>(ciphertext.data()),
-              ciphertext.size()));
-
-      // 保存密文到文件
-      // std::ofstream ofs("password.enc", std::ios::binary);
-      // ofs.write(ciphertext.data(), ciphertext.size());
-      // ofs.close();
-
-      // 保存密文密钥IV至注册表中
-
-      RegistryHelper registryHelper;
-
-      registryHelper.WriteStringToRegistry(
-          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\password",
-          ciphertext_hex);
-
-      registryHelper.WriteStringToRegistry(
-          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\iv",
-          crypto.getIvHex());
-
-      registryHelper.WriteStringToRegistry(
-          "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\key",
-          crypto.getKeyHex());
-
-      // 输出密钥和IV（十六进制）
-      std::cout << "Encryption Key (hex): " << crypto.getKeyHex() << std::endl;
-      std::cout << "IV (hex): " << crypto.getIvHex() << std::endl;
-      std::cout << "Ciphertext (hex): " << ciphertext_hex << std::endl;
-
-      return 0;  // Exit after setting password
-    }
-
     if (!g_udp_sender) {
         g_udp_sender = std::make_unique<UdpSender>("127.0.0.1", g_udp_port);
     }
