@@ -12,13 +12,6 @@
     All rights reserved.
    - 许可证原文见: licenses/SeetaFace6-BSD-2-Clause.txt
 
-   **Crypto++** (https://www.cryptopp.com)
-   - 许可证: BSL-1.0 (SPDX: BSL-1.0)
-   - 版权:
-
-    Compilation Copyright (c) 1995-2019 by Wei Dai.  All rights reserved.
-   - 许可证原文见: licenses/Cryptopp-BSL-1.0.txt
-
    **Cxxopts** (https://github.com/jarro2783/cxxopts)
    - 许可证: MIT (SPDX: MIT)
    - 版权:
@@ -80,3 +73,11 @@
 
     SQLite deliverable code and documentation have been dedicated to the public domain by the authors.
    - 许可证原文见: licenses/SQLite-Public-Domain.txt
+
+   **Mbedtls** (https://tls.mbed.org/)
+   - 许可证: Dual License, Apache-2.0 OR GPL-2.0-or-later (SPDX: Apache-2.0 OR GPL-2.0-or-later)
+   - 版权:
+
+    Copyright The Mbed TLS Contributors
+   - 说明: Unless specifically indicated otherwise in a file, Mbed TLS files are provided under a dual Apache-2.0 OR GPL-2.0-or-later license.
+   - 许可证原文见: licenses/Mbedtls-Apache-2.0-OR-GPL-2.0-or-later.txt

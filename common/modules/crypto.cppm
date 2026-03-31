@@ -1,234 +1,277 @@
 //
 // Created by ation_ciger on 2026/3/19.
+// AES-256-CBC implementation backed by mbed TLS
 //
 module;
 
-#include <cryptopp/aes.h>
-#include <cryptopp/modes.h>
-#include <cryptopp/filters.h>
-#include <cryptopp/hex.h>
-#include <cryptopp/osrng.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
 
 export module crypto;
 
 import std;
 
-namespace CryptoPP {
-    using namespace CryptoPP;
+export constexpr size_t kAesKeySize = 32;
+export constexpr size_t kAesBlockSize = 16;
+export constexpr size_t kAesIvSize = 16;
+
+namespace {
+
+bool IsHexDigit(const char ch) {
+    return std::isxdigit(static_cast<unsigned char>(ch)) != 0;
 }
 
-/**
- * @class Crypto
- * @brief AES加密解密类，基于Crypto++库实现AES-CBC模式的加解密功能
- *
- * 该类提供了密钥和IV的自动生成、获取和自定义设置功能，
- * 支持字符串的加密解密操作，并提供了十六进制格式的转换工具。
- */
-export class Crypto {
-private:
+uint8_t HexNibble(const char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return static_cast<uint8_t>(ch - '0');
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return static_cast<uint8_t>(10 + ch - 'a');
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return static_cast<uint8_t>(10 + ch - 'A');
+    }
+    throw std::runtime_error("Invalid hex character");
+}
 
+void ValidateHex(std::string_view hex, const size_t expected_bytes) {
+    if (hex.size() != expected_bytes * 2) {
+        throw std::runtime_error("Invalid hex length");
+    }
+    for (const char ch : hex) {
+        if (!IsHexDigit(ch)) {
+            throw std::runtime_error("Invalid hex character");
+        }
+    }
+}
+
+std::vector<uint8_t> AddPadding(const uint8_t* data, const size_t len) {
+    const size_t pad_len = kAesBlockSize - (len % kAesBlockSize);
+    std::vector<uint8_t> result(len + pad_len);
+    if (len > 0) {
+        std::memcpy(result.data(), data, len);
+    }
+    std::memset(result.data() + len, static_cast<int>(pad_len), pad_len);
+    return result;
+}
+
+std::vector<uint8_t> RemovePadding(const uint8_t* data, const size_t len) {
+    if (len == 0 || len % kAesBlockSize != 0) {
+        throw std::runtime_error("Invalid padded data length");
+    }
+
+    const uint8_t pad_len = data[len - 1];
+    if (pad_len == 0 || pad_len > kAesBlockSize || len < pad_len) {
+        throw std::runtime_error("Invalid padding");
+    }
+
+    for (size_t i = len - pad_len; i < len; ++i) {
+        if (data[i] != pad_len) {
+            throw std::runtime_error("Invalid padding");
+        }
+    }
+
+    std::vector<uint8_t> result(len - pad_len);
+    if (!result.empty()) {
+        std::memcpy(result.data(), data, result.size());
+    }
+    return result;
+}
+
+std::string bytesToHexImpl(const uint8_t* data, const size_t len) {
+    std::string result;
+    result.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        result += std::format("{:02x}", data[i]);
+    }
+    return result;
+}
+
+void HexToBytes(std::string_view hex, uint8_t* out, const size_t expected_bytes) {
+    ValidateHex(hex, expected_bytes);
+    for (size_t i = 0; i < expected_bytes; ++i) {
+        out[i] = static_cast<uint8_t>((HexNibble(hex[i * 2]) << 4) | HexNibble(hex[i * 2 + 1]));
+    }
+}
+
+std::vector<uint8_t> HexToBytesVector(std::string_view hex) {
+    if (hex.size() % 2 != 0) {
+        throw std::runtime_error("Invalid hex length");
+    }
+    std::vector<uint8_t> result(hex.size() / 2);
+    for (size_t i = 0; i < result.size(); ++i) {
+        result[i] = static_cast<uint8_t>((HexNibble(hex[i * 2]) << 4) | HexNibble(hex[i * 2 + 1]));
+    }
+    return result;
+}
+
+void FillRandomBytes(uint8_t* out, const size_t len) {
+    mbedtls_entropy_context entropy;
+    mbedtls_ctr_drbg_context ctr_drbg;
+    mbedtls_entropy_init(&entropy);
+    mbedtls_ctr_drbg_init(&ctr_drbg);
+
+    constexpr char kPersonalization[] = "Smile2Unlock.crypto";
+    const int seed_result = mbedtls_ctr_drbg_seed(
+        &ctr_drbg,
+        mbedtls_entropy_func,
+        &entropy,
+        reinterpret_cast<const unsigned char*>(kPersonalization),
+        sizeof(kPersonalization) - 1);
+    if (seed_result != 0) {
+        mbedtls_ctr_drbg_free(&ctr_drbg);
+        mbedtls_entropy_free(&entropy);
+        throw std::runtime_error(std::format("mbedtls_ctr_drbg_seed failed: {}", seed_result));
+    }
+
+    const int random_result = mbedtls_ctr_drbg_random(&ctr_drbg, out, len);
+    mbedtls_ctr_drbg_free(&ctr_drbg);
+    mbedtls_entropy_free(&entropy);
+    if (random_result != 0) {
+        throw std::runtime_error(std::format("mbedtls_ctr_drbg_random failed: {}", random_result));
+    }
+}
+
+} // namespace
+
+export
+class Crypto {
+private:
+    std::array<uint8_t, kAesKeySize> key_{};
+    std::array<uint8_t, kAesIvSize> iv_{};
+
+    static std::array<uint8_t, kAesKeySize> generateRandomKey() {
+        std::array<uint8_t, kAesKeySize> bytes{};
+        FillRandomBytes(bytes.data(), bytes.size());
+        return bytes;
+    }
+
+    static std::array<uint8_t, kAesIvSize> generateRandomIv() {
+        std::array<uint8_t, kAesIvSize> bytes{};
+        FillRandomBytes(bytes.data(), bytes.size());
+        return bytes;
+    }
 
 public:
-
-    /**
-     * @brief AES密钥数组
-     *
-     * 使用AES默认密钥长度（256位，32字节）
-     */
-    std::array<CryptoPP::byte, CryptoPP::AES::DEFAULT_KEYLENGTH> key;
-
-    /**
-     * @brief 初始化向量（IV）数组
-     *
-     * 使用AES块大小（128位，16字节）
-     */
-    std::array<CryptoPP::byte, CryptoPP::AES::BLOCKSIZE> iv;
-
-    /**
-     * @brief 构造函数
-     *
-     * 自动生成随机密钥和初始化向量
-     */
     Crypto() {
         generateKeyAndIV();
     }
 
-    /**
-     * @brief 生成随机密钥和初始化向量
-     *
-     * 使用Crypto++的AutoSeededRandomPool生成高质量的随机密钥和IV
-     */
     void generateKeyAndIV() {
-        CryptoPP::AutoSeededRandomPool rnd;
-        rnd.GenerateBlock(key.data(), key.size());
-        rnd.GenerateBlock(iv.data(), iv.size());
+        key_ = generateRandomKey();
+        iv_ = generateRandomIv();
     }
 
-    /**
-     * @brief 获取十六进制格式的密钥
-     *
-     * @return 十六进制字符串表示的密钥
-     */
     std::string getKeyHex() const {
-        return bytesToHex(std::span<const CryptoPP::byte>(key.data(), key.size()));
+        return bytesToHexImpl(key_.data(), key_.size());
     }
 
-    /**
-     * @brief 获取十六进制格式的初始化向量
-     *
-     * @return 十六进制字符串表示的IV
-     */
     std::string getIvHex() const {
-        return bytesToHex(std::span<const CryptoPP::byte>(iv.data(), iv.size()));
+        return bytesToHexImpl(iv_.data(), iv_.size());
     }
 
-    /**
-     * @brief 设置自定义密钥（从十六进制字符串）
-     *
-     * @param keyHex 十六进制字符串表示的密钥，长度必须为64个字符（32字节）
-     * @return 成功返回true，失败返回false
-     */
     bool setKeyHex(std::string_view keyHex) {
         try {
-            // 检查密钥长度是否正确
-            if (keyHex.size() != CryptoPP::AES::DEFAULT_KEYLENGTH * 2) {
-                std::cerr << std::format("Key length error: expected {} hex characters, got {}\n",
-                                        CryptoPP::AES::DEFAULT_KEYLENGTH * 2, keyHex.size());
-                return false;
-            }
-
-            // 转换十六进制字符串为字节数组
-            std::vector<CryptoPP::byte> keyBytes = hexToBytes(keyHex);
-
-            // 复制到密钥数组
-            std::copy(keyBytes.begin(), keyBytes.end(), key.begin());
+            HexToBytes(keyHex, key_.data(), key_.size());
             return true;
-        } catch (const CryptoPP::Exception& e) {
-            std::cerr << std::format("Set key error: {}\n", e.what());
-            return false;
         } catch (const std::exception& e) {
-            std::cerr << std::format("Set key error: {}\n", e.what());
+            std::cerr << std::format("Key parse error: {}\n", e.what());
             return false;
         }
     }
 
-    /**
-     * @brief 设置自定义初始化向量（从十六进制字符串）
-     *
-     * @param ivHex 十六进制字符串表示的IV，长度必须为32个字符（16字节）
-     * @return 成功返回true，失败返回false
-     */
     bool setIvHex(std::string_view ivHex) {
         try {
-            // 检查IV长度是否正确
-            if (ivHex.size() != CryptoPP::AES::BLOCKSIZE * 2) {
-                std::cerr << std::format("IV length error: expected {} hex characters, got {}\n",
-                                        CryptoPP::AES::BLOCKSIZE * 2, ivHex.size());
-                return false;
-            }
-
-            // 转换十六进制字符串为字节数组
-            std::vector<CryptoPP::byte> ivBytes = hexToBytes(ivHex);
-
-            // 复制到IV数组
-            std::copy(ivBytes.begin(), ivBytes.end(), iv.begin());
+            HexToBytes(ivHex, iv_.data(), iv_.size());
             return true;
-        } catch (const CryptoPP::Exception& e) {
-            std::cerr << std::format("Set IV error: {}\n", e.what());
-            return false;
         } catch (const std::exception& e) {
-            std::cerr << std::format("Set IV error: {}\n", e.what());
+            std::cerr << std::format("IV parse error: {}\n", e.what());
             return false;
         }
     }
 
-    /**
-     * @brief 将字节数组转换为十六进制字符串
-     *
-     * @param bytes 要转换的字节数组
-     * @return 十六进制字符串表示的字节数组内容
-     */
-    static std::string bytesToHex(std::span<const CryptoPP::byte> bytes) {
-        std::string result;
-        CryptoPP::StringSource(
-            bytes.data(), bytes.size(), true,
-            new CryptoPP::HexEncoder(new CryptoPP::StringSink(result))
-        );
-        return result;
+    static std::string bytesToHex(std::span<const uint8_t> bytes) {
+        return bytesToHexImpl(bytes.data(), bytes.size());
     }
 
-    /**
-     * @brief 将十六进制字符串转换回字节数组
-     *
-     * @param hex 十六进制字符串
-     * @return 转换后的字节数组
-     */
-    static std::vector<CryptoPP::byte> hexToBytes(std::string_view hex) {
-        std::vector<CryptoPP::byte> result(hex.size() / 2);
-        CryptoPP::StringSource(
-            reinterpret_cast<const CryptoPP::byte*>(std::string(hex).data()), hex.size(), true,
-            new CryptoPP::HexDecoder(new CryptoPP::ArraySink(result.data(), result.size()))
-        );
-        return result;
-    }
-
-    /**
-     * @brief 使用AES-CBC模式加密数据
-     *
-     * @param plaintext 要加密的明文字符串
-     * @return 加密后的密文字符串（二进制数据），失败返回空字符串
-     */
-    std::string encrypt(std::string_view plaintext) const {
-        std::string ciphertext;
-
+    static std::vector<uint8_t> hexToBytes(std::string_view hex) {
         try {
-            // 创建AES-CBC加密器
-            CryptoPP::CBC_Mode<CryptoPP::AES>::Encryption encryptor;
-            encryptor.SetKeyWithIV(key.data(), key.size(), iv.data());
+            return HexToBytesVector(hex);
+        } catch (const std::exception& e) {
+            std::cerr << std::format("Hex parse error: {}\n", e.what());
+            return {};
+        }
+    }
 
-            // 执行加密操作
-            CryptoPP::StringSource(
-                reinterpret_cast<const CryptoPP::byte*>(plaintext.data()), plaintext.size(), true,
-                new CryptoPP::StreamTransformationFilter(
-                    encryptor,
-                    new CryptoPP::StringSink(ciphertext)
-                )
-            );
-        } catch (const CryptoPP::Exception& e) {
+    std::string encrypt(std::string_view plaintext) const {
+        try {
+            auto padded = AddPadding(reinterpret_cast<const uint8_t*>(plaintext.data()), plaintext.size());
+            std::vector<uint8_t> ciphertext(padded.size());
+            std::array<uint8_t, kAesIvSize> iv_copy = iv_;
+
+            mbedtls_aes_context aes;
+            mbedtls_aes_init(&aes);
+            const int setkey_result = mbedtls_aes_setkey_enc(&aes, key_.data(), static_cast<unsigned int>(key_.size() * 8));
+            if (setkey_result != 0) {
+                mbedtls_aes_free(&aes);
+                throw std::runtime_error(std::format("mbedtls_aes_setkey_enc failed: {}", setkey_result));
+            }
+
+            const int crypt_result = mbedtls_aes_crypt_cbc(
+                &aes,
+                MBEDTLS_AES_ENCRYPT,
+                padded.size(),
+                iv_copy.data(),
+                padded.data(),
+                ciphertext.data());
+            mbedtls_aes_free(&aes);
+            if (crypt_result != 0) {
+                throw std::runtime_error(std::format("mbedtls_aes_crypt_cbc failed: {}", crypt_result));
+            }
+
+            return std::string(reinterpret_cast<const char*>(ciphertext.data()), ciphertext.size());
+        } catch (const std::exception& e) {
             std::cerr << std::format("Encryption error: {}\n", e.what());
             return {};
         }
-
-        return ciphertext;
     }
 
-    /**
-     * @brief 使用AES-CBC模式解密数据
-     *
-     * @param ciphertext 要解密的密文字符串（二进制数据）
-     * @return 解密后的明文字符串，失败返回空字符串
-     */
     std::string decrypt(std::string_view ciphertext) const {
-        std::string decryptedtext;
-
         try {
-            // 创建AES-CBC解密器
-            CryptoPP::CBC_Mode<CryptoPP::AES>::Decryption decryptor;
-            decryptor.SetKeyWithIV(key.data(), key.size(), iv.data());
+            if (ciphertext.empty() || ciphertext.size() % kAesBlockSize != 0) {
+                std::cerr << "Decryption error: invalid ciphertext length\n";
+                return {};
+            }
 
-            // 执行解密操作
-            CryptoPP::StringSource(
-                reinterpret_cast<const CryptoPP::byte*>(ciphertext.data()), ciphertext.size(), true,
-                new CryptoPP::StreamTransformationFilter(
-                    decryptor,
-                    new CryptoPP::StringSink(decryptedtext)
-                )
-            );
-        } catch (const CryptoPP::Exception& e) {
+            std::vector<uint8_t> decrypted(ciphertext.size());
+            std::array<uint8_t, kAesIvSize> iv_copy = iv_;
+
+            mbedtls_aes_context aes;
+            mbedtls_aes_init(&aes);
+            const int setkey_result = mbedtls_aes_setkey_dec(&aes, key_.data(), static_cast<unsigned int>(key_.size() * 8));
+            if (setkey_result != 0) {
+                mbedtls_aes_free(&aes);
+                throw std::runtime_error(std::format("mbedtls_aes_setkey_dec failed: {}", setkey_result));
+            }
+
+            const int crypt_result = mbedtls_aes_crypt_cbc(
+                &aes,
+                MBEDTLS_AES_DECRYPT,
+                ciphertext.size(),
+                iv_copy.data(),
+                reinterpret_cast<const unsigned char*>(ciphertext.data()),
+                decrypted.data());
+            mbedtls_aes_free(&aes);
+            if (crypt_result != 0) {
+                throw std::runtime_error(std::format("mbedtls_aes_crypt_cbc failed: {}", crypt_result));
+            }
+
+            auto unpadded = RemovePadding(decrypted.data(), decrypted.size());
+            return std::string(reinterpret_cast<const char*>(unpadded.data()), unpadded.size());
+        } catch (const std::exception& e) {
             std::cerr << std::format("Decryption error: {}\n", e.what());
             return {};
         }
-
-        return decryptedtext;
     }
 };
