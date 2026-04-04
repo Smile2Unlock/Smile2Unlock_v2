@@ -1,209 +1,181 @@
-name: Build and Release on Merge
+name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - master
+      - develop
+      - "feature/**"
+      - "fix/**"
+    tags:
+      - "v*"
   pull_request:
-    branches: [main]
-    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  XMAKE_ROOT: y
+  LLVM_MINGW_DIR: ${{ github.workspace }}\tools\llvm-mingw
 
 jobs:
-  # 代码检查工作（在PR合并时运行）
-  code-check:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
-    runs-on: windows-latest
-    
+  build:
+    name: Build Windows Artifacts
+    runs-on: windows-2022
+
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
           lfs: true
 
-      - name: Download Git LFS files
-        run: git lfs pull
+      - name: Pull Git LFS assets
         shell: pwsh
+        run: git lfs pull
 
-      - name: Install xmake
+      - name: Set up xmake
         uses: xmake-io/github-action-setup-xmake@v1
         with:
           xmake-version: latest
 
-      - name: Run code analysis
-        run: |
-          xmake f -y -m debug -a x64 -p windows
-          xmake build -v
-          echo "代码编译检查通过"
-        env:
-          XMAKE_ROOT: y
+      - name: Restore caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\tools
+            ~\AppData\Local\.xmake
+            ~\AppData\Local\xmake
+          key: windows-xmake-${{ runner.os }}-${{ hashFiles('xmake.lua', '.gitmodules', 'local-repo/**') }}
+          restore-keys: |
+            windows-xmake-${{ runner.os }}-
 
-  # 构建和发布工作（在代码推送到main分支时运行）
-  build-and-release:
-    # 如果是通过PR合并到main，需要等待code-check完成
-    # 如果是直接push到main，则不需要等待
-    if: |
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true)
-    runs-on: windows-latest
+      - name: Install llvm-mingw
+        shell: pwsh
+        run: |
+          $targetDir = "${env:LLVM_MINGW_DIR}"
+          if (Test-Path (Join-Path $targetDir "bin\clang++.exe")) {
+            Write-Host "llvm-mingw already restored from cache."
+            exit 0
+          }
+
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          $apiUrl = "https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest"
+          $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "X-GitHub-Api-Version" = "2022-11-28" }
+          $asset = $release.assets | Where-Object { $_.name -match '^llvm-mingw-.*-ucrt-x86_64\.zip$' } | Select-Object -First 1
+
+          if (-not $asset) {
+            throw "Unable to find a llvm-mingw ucrt x86_64 zip asset in the latest release."
+          }
+
+          $zipPath = Join-Path $env:RUNNER_TEMP $asset.name
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath (Split-Path $targetDir -Parent) -Force
+
+          $expandedDir = Get-ChildItem (Split-Path $targetDir -Parent) -Directory |
+            Where-Object { $_.Name -like 'llvm-mingw-*-ucrt-x86_64' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $expandedDir) {
+            throw "llvm-mingw archive extracted, but the destination directory could not be located."
+          }
+
+          if (Test-Path $targetDir) {
+            Remove-Item $targetDir -Recurse -Force
+          }
+          Move-Item $expandedDir.FullName $targetDir
+
+      - name: Add llvm-mingw to PATH
+        shell: pwsh
+        run: |
+          "$env:LLVM_MINGW_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Show toolchain versions
+        shell: pwsh
+        run: |
+          clang++ --version
+          xmake --version
+
+      - name: Configure xmake
+        shell: pwsh
+        run: |
+          xmake f -y `
+            -p mingw `
+            -a x86_64 `
+            -m release `
+            --toolchain=clang `
+            --sdk="${env:LLVM_MINGW_DIR}" `
+            --mingw="${env:LLVM_MINGW_DIR}" `
+            --runtimes="c++_static"
+
+      - name: Build all targets
+        shell: pwsh
+        run: xmake build -v
+
+      - name: Stage build artifacts
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\build"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE "build\mingw\x86_64\release"
+          if (-not (Test-Path $releaseDir)) {
+            throw "Expected build output directory not found: $releaseDir"
+          }
+
+          Copy-Item -Path (Join-Path $releaseDir '*') -Destination $artifactDir -Recurse -Force
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smile2Unlock-build
+          path: artifacts/build/**
+          if-no-files-found: error
+
+  release:
+    name: Package And Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-2022
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repository with submodules
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
           lfs: true
 
-      - name: Download Git LFS files
-        run: git lfs pull
-        shell: pwsh
-
-      - name: Install xmake
-        uses: xmake-io/github-action-setup-xmake@v1
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          xmake-version: latest
+          name: Smile2Unlock-build
+          path: installer-files
 
-      - name: Build with xmake
-        run: |
-          xmake f -y -m release -a x64 -p windows
-          xmake build -v
-        env:
-          XMAKE_ROOT: y
-
-      - name: Prepare installer files
-        run: |
-          New-Item -Path "installer-files" -ItemType Directory -Force
-          Copy-Item -Path "build\windows\x64\release\*" -Destination "installer-files\" -Exclude "*.lib","*.exp" -Recurse -Force
+      - name: Install Inno Setup
         shell: pwsh
+        run: choco install innosetup -y --no-progress
 
-      - name: List installer files
-        run: |
-          Write-Host "Files to be included in installer:"
-          Get-ChildItem -Path "installer-files\" -Recurse
+      - name: Build installer
         shell: pwsh
-
-      - name: Build installer with Inno Setup
         run: |
-          choco install innosetup -y
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" setup.iss
-        shell: pwsh
 
-      - name: Collect release metadata
-        id: release_meta
+      - name: Collect release assets
+        shell: pwsh
         run: |
-          $commitMessage = git log -1 --pretty=format:"%s"
-          $commitBody = git log -1 --pretty=format:"%b"
-          $shortSha = git rev-parse --short HEAD
-          $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE "release-assets"
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+          Copy-Item -Path "Output\*" -Destination $releaseDir -Recurse -Force
 
-          if ([string]::IsNullOrWhiteSpace($commitBody)) {
-            $commitBody = "本次提交未提供额外说明。"
-          }
-
-          "commit_message<<EOF" >> $env:GITHUB_OUTPUT
-          $commitMessage >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
-          "commit_body<<EOF" >> $env:GITHUB_OUTPUT
-          $commitBody >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
-          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
-          "build_time=$buildTime" >> $env:GITHUB_OUTPUT
-          Write-Host "Commit message: $commitMessage"
-        shell: pwsh
-
-      - name: Package release assets
-        run: |
-          New-Item -Path "release-assets" -ItemType Directory -Force | Out-Null
-          Copy-Item -Path "Output\*" -Destination "release-assets\" -Recurse -Force
-
-          Write-Host "Release assets:"
-          Get-ChildItem -Path "release-assets\" -Recurse
-        shell: pwsh
-
-      - name: Delete existing release and tag
-        uses: actions/github-script@v7
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          script: |
-            const tag = 'action-release';
-
-            try {
-              const release = await github.rest.repos.getReleaseByTag({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag,
-              });
-
-              core.info(`Deleting existing release ${release.data.id} for tag ${tag}`);
-              await github.rest.repos.deleteRelease({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                release_id: release.data.id,
-              });
-            } catch (error) {
-              if (error.status === 404) {
-                core.info(`No existing release found for tag ${tag}`);
-              } else {
-                throw error;
-              }
-            }
-
-            try {
-              core.info(`Deleting existing tag ref refs/tags/${tag}`);
-              await github.rest.git.deleteRef({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: `tags/${tag}`,
-              });
-            } catch (error) {
-              if (error.status === 404) {
-                core.info(`No existing tag ref found for ${tag}`);
-              } else {
-                throw error;
-              }
-            }
-
-      - name: Create fresh release with fixed tag
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: action-release
-          name: Smile2Unlock Latest Release
-          body: |
-            # Smile2Unlock 最新发布
-
-            ## 发布内容
-            - `Smile2Unlock-Setup.exe`：Windows 安装程序，包含本次构建所需的运行文件。
-            - GitHub 会基于当前 `action-release` 标签自动提供 Source code（zip/tar.gz），删除旧 release 并重新发布后，源码快照会同步到本次提交。
-
-            ## 构建信息
-            - 提交版本：`${{ github.sha }}`
-            - 短提交号：`${{ steps.release_meta.outputs.short_sha }}`
-            - 构建时间：`${{ steps.release_meta.outputs.build_time }}`
-            - 工作流：`${{ github.workflow }}`
-
-            ## 本次更新
-            **提交摘要**
-            ${{ steps.release_meta.outputs.commit_message }}
-
-            **提交说明**
-            ${{ steps.release_meta.outputs.commit_body }}
-
-            ## 安装方式
-            1. 下载 `Smile2Unlock-Setup.exe`。
-            2. 以管理员权限运行安装程序。
-            3. 按安装向导完成部署，安装程序会注册 Credential Provider。
-
-            ## 注意事项
-            - 安装和卸载都需要管理员权限。
-            - 该发布面向 Windows x64 环境。
-            - 如果你需要核对实现细节或自行构建，请直接使用发布页自动生成的 Source code（zip/tar.gz）。
           files: release-assets/*
-          draft: false
-          prerelease: false
-          replace_assets: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
