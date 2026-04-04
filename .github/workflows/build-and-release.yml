@@ -121,7 +121,6 @@ jobs:
         shell: pwsh
         run: |
           xmake show -l packages
-          xrepo info seetaface6open
 
       - name: Build all targets
         shell: pwsh
