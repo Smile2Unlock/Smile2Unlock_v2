@@ -115,7 +115,7 @@ jobs:
       - name: Build seetaface dependency
         shell: pwsh
         run: |
-          xmake require --build seetaface6open -y
+          xmake require --build -f -y -vD
 
       - name: Verify seetaface package
         shell: pwsh
