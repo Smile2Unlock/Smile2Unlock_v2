@@ -34,6 +34,10 @@
 #include <wincred.h>
 #pragma warning(pop)
 
+#ifndef CRED_PACK_WOW_BUFFER
+#define CRED_PACK_WOW_BUFFER 0x2
+#endif
+
 //makes a copy of a field descriptor using CoTaskMemAlloc
 HRESULT FieldDescriptorCoAllocCopy(
     _In_ const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR &rcpfd,

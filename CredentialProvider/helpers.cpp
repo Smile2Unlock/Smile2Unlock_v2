@@ -148,9 +148,9 @@ HRESULT UnicodeStringInitWithString(
 // http://msdn.microsoft.com/library/default.asp?url=/library/en-us/secauthn/security/unicode_string.asp
 //
 static void _UnicodeStringPackedUnicodeStringCopy(
-    __in const UNICODE_STRING& rus,
-    __in PWSTR pwzBuffer,
-    __out UNICODE_STRING *pus
+    _In_ const UNICODE_STRING& rus,
+    _In_ PWSTR pwzBuffer,
+    _Out_ UNICODE_STRING *pus
     )
 {
     pus->Length = rus.Length;
@@ -325,8 +325,8 @@ HRESULT KerbInteractiveUnlockLogonPack(
 // for use with LSA functions including LsaLookupAuthenticationPackage.
 //
 static HRESULT _LsaInitString(
-    __out PSTRING pszDestinationString,
-    __in PCSTR pszSourceString
+    _Out_ PSTRING pszDestinationString,
+    _In_ PCSTR pszSourceString
     )
 {
     size_t cchLength = strlen(pszSourceString);

@@ -16,7 +16,7 @@
 static long g_cRef = 0;   // global dll reference count
 HINSTANCE g_hinst = NULL; // global dll hinstance
 
-extern HRESULT CSample_CreateInstance(__in REFIID riid, __deref_out void** ppv);
+extern HRESULT CSample_CreateInstance(_In_ REFIID riid, _Outptr_ void** ppv);
 EXTERN_C GUID CLSID_CSample;
 
 class CClassFactory : public IClassFactory
@@ -27,14 +27,22 @@ public:
     }
 
     // IUnknown
-    IFACEMETHODIMP QueryInterface(__in REFIID riid, __deref_out void **ppv)
+    IFACEMETHODIMP QueryInterface(_In_ REFIID riid, _Outptr_ void **ppv)
     {
-        static const QITAB qit[] =
+        if (!ppv)
         {
-            QITABENT(CClassFactory, IClassFactory),
-            { 0 },
-        };
-        return QISearch(this, qit, riid, ppv);
+            return E_INVALIDARG;
+        }
+        *ppv = nullptr;
+
+        if (riid == IID_IUnknown || riid == IID_IClassFactory)
+        {
+            *ppv = static_cast<IClassFactory*>(this);
+            AddRef();
+            return S_OK;
+        }
+
+        return E_NOINTERFACE;
     }
 
     IFACEMETHODIMP_(ULONG) AddRef()
@@ -51,7 +59,7 @@ public:
     }
 
     // IClassFactory
-    IFACEMETHODIMP CreateInstance(__in IUnknown* pUnkOuter, __in REFIID riid, __deref_out void **ppv)
+    IFACEMETHODIMP CreateInstance(_In_ IUnknown* pUnkOuter, _In_ REFIID riid, _Outptr_ void **ppv)
     {
         HRESULT hr;
         if (!pUnkOuter)
@@ -66,7 +74,7 @@ public:
         return hr;
     }
 
-    IFACEMETHODIMP LockServer(__in BOOL bLock)
+    IFACEMETHODIMP LockServer(_In_ BOOL bLock)
     {
         if (bLock)
         {
@@ -86,7 +94,7 @@ private:
     long _cRef;
 };
 
-HRESULT CClassFactory_CreateInstance(__in REFCLSID rclsid, __in REFIID riid, __deref_out void **ppv)
+HRESULT CClassFactory_CreateInstance(_In_ REFCLSID rclsid, _In_ REFIID riid, _Outptr_ void **ppv)
 {
     *ppv = NULL;
 
@@ -127,12 +135,12 @@ STDAPI DllCanUnloadNow()
     return (g_cRef > 0) ? S_FALSE : S_OK;
 }
 
-STDAPI DllGetClassObject(__in REFCLSID rclsid, __in REFIID riid, __deref_out void** ppv)
+STDAPI DllGetClassObject(_In_ REFCLSID rclsid, _In_ REFIID riid, _Outptr_ void** ppv)
 {
     return CClassFactory_CreateInstance(rclsid, riid, ppv);
 }
 
-STDAPI_(BOOL) DllMain(__in HINSTANCE hinstDll, __in DWORD dwReason, __in void *)
+STDAPI_(BOOL) DllMain(_In_ HINSTANCE hinstDll, _In_ DWORD dwReason, _In_ void *)
 {
     switch (dwReason)
     {
