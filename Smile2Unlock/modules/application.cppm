@@ -11,9 +11,8 @@ module;
 export module smile2unlock.application;
 
 import std;
+import smile2unlock.models;
 import smile2unlock.service;
-
-struct GLFWwindow;
 
 export namespace smile2unlock {
 

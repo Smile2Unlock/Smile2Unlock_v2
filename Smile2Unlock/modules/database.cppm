@@ -1,5 +1,6 @@
 module;
 
+#include <cstdint>
 #include <sqlite3.h>
 #include <ctime>
 
@@ -8,6 +9,43 @@ export module smile2unlock.database;
 import std;
 import crypto;
 import smile2unlock.models;
+
+export namespace smile2unlock::managers {
+
+std::string EncryptPasswordForStorage(std::string_view plain_password, const std::string& db_path);
+std::string DecryptPasswordFromStorage(std::string_view stored_password, const std::string& db_path);
+
+class Database {
+public:
+    Database();
+    ~Database();
+
+    bool Initialize(const std::string& db_path = "smile2unlock.db");
+
+    std::vector<User> GetAllUsers() const;
+    std::optional<User> GetUserById(int id) const;
+    std::optional<User> GetUserByUsername(const std::string& username) const;
+    bool AddUser(const User& user);
+    bool UpdateUser(const User& user);
+    bool DeleteUser(int id);
+    bool UserExists(const std::string& username) const;
+    std::string DecryptPassword(const std::string& stored_password) const;
+
+    bool AddFace(int user_id, const FaceData& face);
+    bool DeleteFace(int user_id, int face_id);
+    bool UpdateFace(int user_id, const FaceData& face);
+    std::vector<FaceData> GetUserFaces(int user_id) const;
+
+    std::optional<User> FindUserByFace(const std::string& feature) const;
+
+private:
+    bool CreateTables();
+    void ResetSequenceIfTableEmpty(const char* table_name);
+    std::string db_path_;
+    sqlite3* db_;
+};
+
+} // namespace smile2unlock::managers
 
 namespace smile2unlock::managers {
 
@@ -107,8 +145,8 @@ std::string EncryptPasswordForStorage(std::string_view plain_password, const std
         return {};
     }
 
-    const std::string cipher_hex = Crypto::bytesToHex(std::span<const CryptoPP::byte>(
-        reinterpret_cast<const CryptoPP::byte*>(cipher_bytes.data()), cipher_bytes.size()));
+    const std::string cipher_hex = Crypto::bytesToHex(std::span<const uint8_t>(
+        reinterpret_cast<const uint8_t*>(cipher_bytes.data()), cipher_bytes.size()));
     return std::string(kPasswordPrefix) + iv_hex + ":" + cipher_hex;
 }
 
@@ -134,7 +172,7 @@ std::string DecryptPasswordFromStorage(std::string_view stored_password, const s
         return {};
     }
 
-    const std::vector<CryptoPP::byte> cipher_bytes = Crypto::hexToBytes(cipher_hex);
+    const std::vector<uint8_t> cipher_bytes = Crypto::hexToBytes(cipher_hex);
     if (cipher_bytes.empty()) {
         return {};
     }
@@ -144,43 +182,6 @@ std::string DecryptPasswordFromStorage(std::string_view stored_password, const s
 }
 
 }
-
-export namespace smile2unlock::managers {
-
-std::string EncryptPasswordForStorage(std::string_view plain_password, const std::string& db_path);
-std::string DecryptPasswordFromStorage(std::string_view stored_password, const std::string& db_path);
-
-class Database {
-public:
-    Database();
-    ~Database();
-
-    bool Initialize(const std::string& db_path = "smile2unlock.db");
-
-    std::vector<User> GetAllUsers() const;
-    std::optional<User> GetUserById(int id) const;
-    std::optional<User> GetUserByUsername(const std::string& username) const;
-    bool AddUser(const User& user);
-    bool UpdateUser(const User& user);
-    bool DeleteUser(int id);
-    bool UserExists(const std::string& username) const;
-    std::string DecryptPassword(const std::string& stored_password) const;
-
-    bool AddFace(int user_id, const FaceData& face);
-    bool DeleteFace(int user_id, int face_id);
-    bool UpdateFace(int user_id, const FaceData& face);
-    std::vector<FaceData> GetUserFaces(int user_id) const;
-
-    std::optional<User> FindUserByFace(const std::string& feature) const;
-
-private:
-    bool CreateTables();
-    void ResetSequenceIfTableEmpty(const char* table_name);
-    std::string db_path_;
-    sqlite3* db_;
-};
-
-} // namespace smile2unlock::managers
 
 module :private;
 

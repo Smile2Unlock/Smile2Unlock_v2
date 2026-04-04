@@ -17,9 +17,13 @@ Windows Credential Provider DLL that integrates facial recognition into Windows 
 - xmake build system
 - Dependencies (automatically managed via xmake):
   - SeetaFace6
-  - Crypto++
   - Cxxopts
   - Boost
+  - SQLite3
+  - Libyuv
+  - GLFW
+  - Imgui
+  - Mbedtls
 
 ## Building
 
@@ -38,11 +42,15 @@ This project uses several third-party libraries. See [NOTICE/THIRD-PARTY-NOTICES
 ### Dependencies
 
 - **SeetaFace6** - BSD-2-Clause
-- **Crypto++** - Boost Software License 1.0
 - **Cxxopts** - MIT
 - **INIcpp** - MIT
 - **Windows-classic-samples** - MIT
 - **Boost** - BSL-1.0
+- **SQLite3** - Public Domain
+- **Libyuv** - BSD-2-Clause
+- **GLFW** - BSD-2-Clause
+- **Imgui** - BSD-2-Clause
+- **Mbedtls** - Apache-2.0 OR GPL-2.0-or-later (dual license)
 
 ## Contributing
 

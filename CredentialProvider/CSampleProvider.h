@@ -37,13 +37,27 @@ class CSampleProvider : public ICredentialProvider,
 
     IFACEMETHODIMP QueryInterface(_In_ REFIID riid, _COM_Outptr_ void **ppv)
     {
-        static const QITAB qit[] =
+        if (!ppv)
         {
-            QITABENT(CSampleProvider, ICredentialProvider), // IID_ICredentialProvider
-            QITABENT(CSampleProvider, ICredentialProviderSetUserArray), // IID_ICredentialProviderSetUserArray
-            {0},
-        };
-        return QISearch(this, qit, riid, ppv);
+            return E_INVALIDARG;
+        }
+        *ppv = nullptr;
+
+        if (riid == IID_IUnknown || riid == IID_ICredentialProvider)
+        {
+            *ppv = static_cast<ICredentialProvider*>(this);
+        }
+        else if (riid == IID_ICredentialProviderSetUserArray)
+        {
+            *ppv = static_cast<ICredentialProviderSetUserArray*>(this);
+        }
+        else
+        {
+            return E_NOINTERFACE;
+        }
+
+        AddRef();
+        return S_OK;
     }
 
   public:
@@ -72,7 +86,7 @@ class CSampleProvider : public ICredentialProvider,
 
   protected:
     CSampleProvider();
-    __override ~CSampleProvider();
+    ~CSampleProvider();
 
   private:
     void _ReleaseEnumeratedCredentials();

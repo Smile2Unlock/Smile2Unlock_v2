@@ -24,7 +24,7 @@
 #include <mutex>
 #include "models/udp_auth_request_packet.h"
 #include "common.h"
-#include "dll.h"
+#include "Dll.h"
 #include "resource.h"
 
 class UdpReceiver;
@@ -51,14 +51,31 @@ public:
 
     IFACEMETHODIMP QueryInterface(_In_ REFIID riid, _COM_Outptr_ void **ppv)
     {
-        static const QITAB qit[] =
+        if (!ppv)
         {
-            QITABENT(CSampleCredential, ICredentialProviderCredential), // IID_ICredentialProviderCredential
-            QITABENT(CSampleCredential, ICredentialProviderCredential2), // IID_ICredentialProviderCredential2
-            QITABENT(CSampleCredential, ICredentialProviderCredentialWithFieldOptions), //IID_ICredentialProviderCredentialWithFieldOptions
-            {0},
-        };
-        return QISearch(this, qit, riid, ppv);
+            return E_INVALIDARG;
+        }
+        *ppv = nullptr;
+
+        if (riid == IID_IUnknown || riid == IID_ICredentialProviderCredential)
+        {
+            *ppv = static_cast<ICredentialProviderCredential*>(this);
+        }
+        else if (riid == IID_ICredentialProviderCredential2)
+        {
+            *ppv = static_cast<ICredentialProviderCredential2*>(this);
+        }
+        else if (riid == IID_ICredentialProviderCredentialWithFieldOptions)
+        {
+            *ppv = static_cast<ICredentialProviderCredentialWithFieldOptions*>(this);
+        }
+        else
+        {
+            return E_NOINTERFACE;
+        }
+
+        AddRef();
+        return S_OK;
     }
   public:
     // ICredentialProviderCredential
