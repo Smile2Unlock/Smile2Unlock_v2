@@ -112,6 +112,17 @@ jobs:
             --mingw="${env:LLVM_MINGW_DIR}" `
             --runtimes="c++_static"
 
+      - name: Install xmake package dependencies
+        shell: pwsh
+        run: |
+          xmake require -y -vD
+
+      - name: Verify seetaface package
+        shell: pwsh
+        run: |
+          xmake show -l packages
+          xrepo info seetaface6open
+
       - name: Build all targets
         shell: pwsh
         run: xmake build -v
