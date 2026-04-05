@@ -13,6 +13,7 @@
 #include <functional>
 #include "models/recognition_status.h"
 #include "models/udp_status_packet.h"
+#include "udp_manager.h"  // 使用统一的端口配置
 
 namespace asio = boost::asio;
 using udp = asio::ip::udp;
@@ -26,7 +27,8 @@ using udp = asio::ip::udp;
  */
 class UdpSender {
 public:
-    UdpSender(const std::string& host = "127.0.0.1", uint16_t port = 51234)
+    UdpSender(const std::string& host = "127.0.0.1", 
+              uint16_t port = smile2unlock::udp::UdpPorts::kCpStatusPort)
         : socket_(io_context_, udp::v4()),
           endpoint_(asio::ip::make_address(host), port) {
         std::cout << "[UDP Sender] 已初始化，目标: " << host << ":" << port << std::endl;

@@ -40,6 +40,22 @@ public:
     };
 
     /**
+     * @brief UDP 端口配置
+     */
+    struct UdpPortConfig {
+        uint16_t cp_status_port;       ///< CP 接收状态端口 (FR/SU 发送)
+        uint16_t fr_status_port;       ///< SU 接收 FR 状态端口
+        uint16_t auth_request_port;    ///< SU 接收认证请求端口
+        uint16_t password_port;        ///< CP 接收密码响应端口
+
+        UdpPortConfig()
+            : cp_status_port(51234)
+            , fr_status_port(51235)
+            , auth_request_port(51236)
+            , password_port(51237) {}
+    };
+
+    /**
      * @brief 构造函数
      * @param filename 配置文件的路径
      */
@@ -74,6 +90,15 @@ public:
      * @return 成功返回 true, 否则返回 false
      */
     bool createDefaultConfig() const;
+
+    /**
+     * @brief 获取 UDP 端口配置（静态默认值）
+     * @return UdpPortConfig 结构体的常量引用
+     */
+    static const UdpPortConfig& getUdpPorts() {
+        static UdpPortConfig ports;
+        return ports;
+    }
 
 private:
     std::string m_filename;  ///< 配置文件名

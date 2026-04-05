@@ -1,5 +1,8 @@
 module;
 
+#include "models/gui_ipc_protocol.h"
+#include "backend/ibackend_service.h"
+
 export module smile2unlock.service;
 
 import std;
@@ -8,9 +11,12 @@ import smile2unlock.database;
 import smile2unlock.dll_injector;
 import smile2unlock.face_recognition;
 
+// 重新导出 IBackendService 接口（定义在 backend/ibackend_service.h）
+export using ::smile2unlock::IBackendService;
+
 export namespace smile2unlock {
 
-class BackendService {
+class BackendService : public IBackendService {
 public:
     BackendService();
     ~BackendService() = default;
