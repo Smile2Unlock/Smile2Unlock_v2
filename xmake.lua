@@ -10,6 +10,12 @@ add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
 add_requires("sqlite3")
 add_requires("mbedtls")
 
+set_encodings("utf-8")
+set_languages("c++26")
+set_plat("mingw")
+set_toolchains("clang")
+set_runtimes("c++_static")
+
 local function apply_common_windows_settings(winver)
     if is_plat("windows", "mingw") then
         add_defines("_WIN32_WINNT=" .. winver, "NOMINMAX", "_CRT_SECURE_NO_WARNINGS", "WIN32_LEAN_AND_MEAN")
@@ -17,16 +23,59 @@ local function apply_common_windows_settings(winver)
     end
 end
 
+local function apply_common_module_binary_target()
+    set_kind("binary")
+    set_policy("build.c++.modules", true)
+end
+
+local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
+    if not is_plat("windows", "mingw") then
+        return
+    end
+
+    local search_dirs = {}
+    local seen = {}
+
+    local function add_search_dir(dir)
+        if dir and os.isdir(dir) and not seen[dir] then
+            table.insert(search_dirs, dir)
+            seen[dir] = true
+        end
+    end
+
+    local mingw = get_config("mingw")
+    if mingw then
+        add_search_dir(path.join(mingw, "bin"))
+    end
+
+    local env_path = os.getenv("PATH")
+    if env_path then
+        for dir in env_path:gmatch("([^;]+)") do
+            add_search_dir(dir)
+        end
+    end
+
+    for _, dll_name in ipairs(dll_names) do
+        local copied = false
+        for _, dir in ipairs(search_dirs) do
+            local dll_path = path.join(dir, dll_name)
+            if os.isfile(dll_path) then
+                batchcmds:cp(dll_path, target:targetdir())
+                copied = true
+                break
+            end
+        end
+
+        if not copied then
+            print("警告: 找不到 LLVM 运行时 DLL: " .. dll_name)
+        end
+    end
+end
+
 
 
 target("FaceRecognizer")
-    set_encodings("utf-8")
-    set_languages("c++26")
-    set_plat("mingw")
-    set_toolchains("clang")
-    set_runtimes("c++_static")
-    set_policy("build.c++.modules", true)
-    set_kind("binary")
+    apply_common_module_binary_target()
     add_files("FaceRecognizer/src/modules/*.cppm")
     add_files("common/modules/*.cppm")
     add_files("FaceRecognizer/src/*.cpp")
@@ -42,7 +91,7 @@ target("FaceRecognizer")
     add_packages("libyuv")
     add_packages("mbedtls")
 
-    after_build(function (target)
+    after_buildcmd(function (target, batchcmds)
         if is_plat("windows", "mingw") then
             -- 兼容不同工具链下的 DLL 命名：有些包产物带 lib 前缀，
             -- tennis 还可能带 CPU 后缀变体。
@@ -66,7 +115,7 @@ target("FaceRecognizer")
                         local matches = os.files(path.join(source_root, "**", pattern))
                         if #matches > 0 then
                             for _, match in ipairs(matches) do
-                                os.cp(match, target_dir)
+                                batchcmds:cp(match, target_dir)
                             end
                             copied = true
                             break
@@ -80,20 +129,15 @@ target("FaceRecognizer")
                 print("警告: seetaface6open 包未安装，跳过 DLL 复制")
             end
         end
-        os.cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
+        batchcmds:cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
     end)
 
 
 
 target("SampleV2CredentialProvider")
-    set_encodings("utf-8")
-    set_languages("c++26")
     set_kind("shared")
-    set_plat("mingw")
-    set_toolchains("clang")
     set_filename("SampleV2CredentialProvider.dll")
     set_prefixname("")
-    set_runtimes("c++_static")
     -- add_sysincludedirs("D:/Tools/llvm-mingw-ucrt-x86_64/include/c++/v1")
     add_shflags("-static-libgcc", "-static-libstdc++", {force = true})
     add_files("CredentialProvider/*.cpp")
@@ -110,14 +154,15 @@ target("SampleV2CredentialProvider")
 
     add_packages("boost")
 
+    after_buildcmd(function (target, batchcmds)
+        local implibfile = target:artifactfile("implib")
+        if implibfile then
+            batchcmds:rm(implibfile)
+        end
+    end)
+
 target("Smile2Unlock")
-    set_kind("binary")
-    set_plat("mingw")
-    set_toolchains("clang")
-    set_runtimes("c++_static")
-    set_encodings("utf-8")
-    set_languages("c++26")
-    set_policy("build.c++.modules", true)
+    apply_common_module_binary_target()
     add_files(
         "Smile2Unlock/*.cpp",
         "Smile2Unlock/modules/*.cppm",
@@ -128,4 +173,12 @@ target("Smile2Unlock")
     apply_common_windows_settings("0x0602")
     add_packages("glfw", "imgui", "boost", "sqlite3", "mbedtls")
     add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32", "version")
+
+    after_buildcmd(function (target, batchcmds)
+        copy_llvm_runtime_dlls(batchcmds, target, {
+            "libunwind.dll",
+            "libc++.dll",
+            "libomp.dll"
+        })
+    end)
 
