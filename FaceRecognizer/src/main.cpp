@@ -71,14 +71,14 @@ int captureImageToSharedMemory(int camera_index, const std::string& map_name, bo
         smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
     HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
     if (mapping == nullptr) {
-        std::cerr << "[Capture] 打开共享内存失败" << std::endl;
+        std::cerr << "[Capture] 打开共享内存失败, GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 
     void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, mapping_size);
     if (view == nullptr) {
         CloseHandle(mapping);
-        std::cerr << "[Capture] 映射共享内存失败" << std::endl;
+        std::cerr << "[Capture] 映射共享内存失败, GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 
@@ -160,14 +160,14 @@ int streamPreviewToSharedMemory(int camera_index, const std::string& map_name) {
         smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
     HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
     if (mapping == nullptr) {
-        std::cerr << "[Preview] 打开共享内存失败" << std::endl;
+        std::cerr << "[Preview] 打开共享内存失败, GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 
     void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, mapping_size);
     if (view == nullptr) {
         CloseHandle(mapping);
-        std::cerr << "[Preview] 映射共享内存失败" << std::endl;
+        std::cerr << "[Preview] 映射共享内存失败, GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 

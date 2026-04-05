@@ -58,6 +58,25 @@ bool IsProcessHandleActive(HANDLE process_handle) {
     return GetExitCodeProcess(process_handle, &exit_code) && exit_code == STILL_ACTIVE;
 }
 
+bool BuildSharedMappingSecurity(SECURITY_ATTRIBUTES& sa, SECURITY_DESCRIPTOR& sd) {
+    if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)) {
+        return false;
+    }
+    if (!SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE)) {
+        return false;
+    }
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.lpSecurityDescriptor = &sd;
+    sa.bInheritHandle = FALSE;
+    return true;
+}
+
+std::string LastErrorText(const char* prefix) {
+    std::ostringstream ss;
+    ss << prefix << " (GetLastError=" << GetLastError() << ")";
+    return ss.str();
+}
+
 // 使用统一 UDP 类的别名
 using UdpReceiverFromFR = ::smile2unlock::udp::StatusReceiver;
 using UdpSenderToCP = ::smile2unlock::udp::StatusSender;
@@ -189,8 +208,16 @@ bool FaceRecognition::start_fr_process() {
     si.dwFlags |= STARTF_USESTDHANDLES;
     memset(&fr_process_info_, 0, sizeof(fr_process_info_));
 
+    SECURITY_ATTRIBUTES mapping_sa{};
+    SECURITY_DESCRIPTOR mapping_sd{};
+    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd)) {
+        CloseHandle(hStdoutWrite);
+        CloseHandle(hStderrWrite);
+        return false;
+    }
+
     recognition_result_map_name_ = "Local\\Smile2Unlock_Recognition_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
-    recognition_result_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, kSharedFrameMappingSize, recognition_result_map_name_.c_str());
+    recognition_result_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, recognition_result_map_name_.c_str());
     if (!recognition_result_mapping_) {
         return false;
     }
@@ -461,10 +488,17 @@ bool FaceRecognition::StartPreviewStream(std::string& error_message) {
         StopPreviewStream();
     }
 
+    SECURITY_ATTRIBUTES mapping_sa{};
+    SECURITY_DESCRIPTOR mapping_sd{};
+    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd)) {
+        error_message = LastErrorText("构建预览共享内存安全描述符失败");
+        return false;
+    }
+
     preview_map_name_ = "Local\\Smile2Unlock_Preview_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
-    preview_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, kSharedFrameMappingSize, preview_map_name_.c_str());
+    preview_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, preview_map_name_.c_str());
     if (!preview_mapping_) {
-        error_message = "创建预览共享内存失败";
+        error_message = LastErrorText("创建预览共享内存失败");
         return false;
     }
 
@@ -472,7 +506,7 @@ bool FaceRecognition::StartPreviewStream(std::string& error_message) {
     if (!preview_view_) {
         CloseHandle(preview_mapping_);
         preview_mapping_ = nullptr;
-        error_message = "映射预览共享内存失败";
+        error_message = LastErrorText("映射预览共享内存失败");
         return false;
     }
 
@@ -576,16 +610,22 @@ bool FaceRecognition::capture_shared_payload(std::vector<unsigned char>& image_d
     if (feature != nullptr) {
         feature->clear();
     }
+    SECURITY_ATTRIBUTES mapping_sa{};
+    SECURITY_DESCRIPTOR mapping_sd{};
+    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd)) {
+        error_message = LastErrorText("构建抓拍共享内存安全描述符失败");
+        return false;
+    }
     const std::string map_name = "Local\\Smile2Unlock_Frame_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
-    HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, kSharedFrameMappingSize, map_name.c_str());
+    HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, map_name.c_str());
     if (!mapping) {
-        error_message = "创建共享内存失败";
+        error_message = LastErrorText("创建共享内存失败");
         return false;
     }
     void* view = MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, kSharedFrameMappingSize);
     if (!view) {
         CloseHandle(mapping);
-        error_message = "映射共享内存失败";
+        error_message = LastErrorText("映射共享内存失败");
         return false;
     }
     auto* header = static_cast<SharedFrameHeader*>(view);
