@@ -124,6 +124,7 @@ target("Smile2Unlock")
         "common/modules/*.cppm"
     )
     add_includedirs("common", {public = true})
+    add_includedirs("Smile2Unlock", {public = true})
     apply_common_windows_settings("0x0602")
     add_packages("glfw", "imgui", "boost", "sqlite3", "mbedtls")
     add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32", "version")

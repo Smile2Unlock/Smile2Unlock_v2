@@ -5,10 +5,9 @@ module;
 #include <windows.h>
 #include <wincrypt.h>
 #include <boost/asio.hpp>
-#include "models/udp_auth_request_packet.h"
-#include "models/udp_password_packet.h"
-#include "models/recognition_status.h"
-#include "models/udp_status_packet.h"
+
+// 使用统一的 UDP 管理头文件
+#include "managers/ipc/udp/udp_manager.h"
 #include "models/shared_frame_ipc.h"
 
 export module smile2unlock.face_recognition;
@@ -17,9 +16,6 @@ import std;
 import service_runtime;
 import smile2unlock.models;
 import smile2unlock.database;
-
-namespace asio = boost::asio;
-using udp = asio::ip::udp;
 
 namespace fs = std::filesystem;
 
@@ -62,170 +58,20 @@ bool IsProcessHandleActive(HANDLE process_handle) {
     return GetExitCodeProcess(process_handle, &exit_code) && exit_code == STILL_ACTIVE;
 }
 
-class UdpReceiverFromFR {
-public:
-    using StatusCallback = std::function<void(RecognitionStatus, const std::string&)>;
-    explicit UdpReceiverFromFR(uint16_t port = 51235) : socket_(io_context_, udp::endpoint(udp::v4(), port)), running_(false) {}
-    ~UdpReceiverFromFR() { stop(); }
-    void set_callback(StatusCallback callback) { callback_ = callback; }
-    void start() { if (!running_) { running_ = true; recv_thread_ = std::thread([this]() { receive_loop(); }); } }
-    void stop() {
-        if (!running_) return;
-        running_ = false;
-        boost::system::error_code ec;
-        socket_.close(ec);
-        if (recv_thread_.joinable()) recv_thread_.join();
-    }
-private:
-    void receive_loop() {
-        UdpStatusPacket packet;
-        udp::endpoint sender_endpoint;
-        while (running_) {
-            try {
-                boost::system::error_code ec;
-                size_t len = socket_.receive_from(asio::buffer(&packet, sizeof(packet)), sender_endpoint, 0, ec);
-                if (ec == asio::error::operation_aborted || ec == asio::error::bad_descriptor) break;
-                if (ec || len != sizeof(UdpStatusPacket)) continue;
-                if (packet.magic_number != MAGIC_NUMBER || packet.version != PROTOCOL_VERSION) continue;
-                if (callback_) callback_(static_cast<RecognitionStatus>(packet.status_code), std::string(packet.username));
-            } catch (const std::exception&) {}
-        }
-    }
-    asio::io_context io_context_;
-    udp::socket socket_;
-    std::atomic<bool> running_;
-    std::thread recv_thread_;
-    StatusCallback callback_;
-};
+// 使用统一 UDP 类的别名
+using UdpReceiverFromFR = ::smile2unlock::udp::StatusReceiver;
+using UdpSenderToCP = ::smile2unlock::udp::StatusSender;
+using UdpPasswordSenderToCP = ::smile2unlock::udp::PasswordSender;
+using UdpReceiverFromCP = ::smile2unlock::udp::AuthRequestReceiver;
 
-class UdpSenderToCP {
-public:
-    UdpSenderToCP(const std::string& host = "127.0.0.1", uint16_t port = 51234)
-        : socket_(io_context_, udp::v4()), endpoint_(asio::ip::make_address(host), port) {}
-    ~UdpSenderToCP() { boost::system::error_code ec; socket_.close(ec); }
-    bool send_status(RecognitionStatus status, const std::string& username = "", uint32_t session_id = 0) {
-        try {
-            UdpStatusPacket packet;
-            packet.magic_number = MAGIC_NUMBER;
-            packet.version = PROTOCOL_VERSION;
-            packet.status_code = static_cast<int32_t>(status);
-            memset(packet.username, 0, sizeof(packet.username));
-            if (!username.empty()) strncpy_s(packet.username, sizeof(packet.username), username.c_str(), _TRUNCATE);
-            packet.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
-            std::cout << "[SU->CP] 发送状态"
-                      << " session=" << session_id
-                      << " status=" << ToString(status)
-                      << "(" << static_cast<int>(status) << ")"
-                      << " username=" << (username.empty() ? "(empty)" : username)
-                      << std::endl;
-            return true;
-        } catch (const std::exception&) { return false; }
-    }
-private:
-    asio::io_context io_context_;
-    udp::socket socket_;
-    udp::endpoint endpoint_;
-};
+// 端口常量
+constexpr uint16_t kFrStatusPort = ::smile2unlock::udp::UdpPorts::kFrStatusPort;
+constexpr uint16_t kCpStatusPort = ::smile2unlock::udp::UdpPorts::kCpStatusPort;
+constexpr uint16_t kAuthRequestPort = ::smile2unlock::udp::UdpPorts::kAuthRequestPort;
+constexpr uint16_t kPasswordPort = ::smile2unlock::udp::UdpPorts::kPasswordPort;
 
-class UdpPasswordSenderToCP {
-public:
-    UdpPasswordSenderToCP(const std::string& host = "127.0.0.1", uint16_t port = 51237)
-        : socket_(io_context_, udp::v4()), endpoint_(asio::ip::make_address(host), port) {}
-    ~UdpPasswordSenderToCP() { boost::system::error_code ec; socket_.close(ec); }
-
-    bool send_password(uint32_t session_id, const std::string& username, const std::string& password, bool success) {
-        try {
-            UdpPasswordResponsePacket packet{};
-            packet.magic_number = PASSWORD_RESPONSE_MAGIC;
-            packet.version = PASSWORD_RESPONSE_VERSION;
-            packet.session_id = session_id;
-            packet.result_code = success ? 0 : 1;
-            packet.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            strncpy_s(packet.username, sizeof(packet.username), username.c_str(), _TRUNCATE);
-
-            if (success) {
-                DATA_BLOB input_blob{};
-                input_blob.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(password.data()));
-                input_blob.cbData = static_cast<DWORD>(password.size());
-
-                DATA_BLOB output_blob{};
-                if (!CryptProtectData(&input_blob, nullptr, nullptr, nullptr, nullptr, 0, &output_blob)) {
-                    return false;
-                }
-
-                const DWORD copy_size = std::min<DWORD>(output_blob.cbData, sizeof(packet.protected_password));
-                if (copy_size != output_blob.cbData) {
-                    SecureZeroMemory(output_blob.pbData, output_blob.cbData);
-                    LocalFree(output_blob.pbData);
-                    return false;
-                }
-
-                packet.protected_password_size = copy_size;
-                memcpy(packet.protected_password, output_blob.pbData, copy_size);
-                SecureZeroMemory(output_blob.pbData, output_blob.cbData);
-                LocalFree(output_blob.pbData);
-            }
-
-            socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
-            std::cout << "[SU->CP] 发送密码响应"
-                      << " session=" << session_id
-                      << " success=" << (success ? 1 : 0)
-                      << " username=" << (username.empty() ? "(empty)" : username)
-                      << " protected_size=" << packet.protected_password_size
-                      << std::endl;
-            return true;
-        } catch (const std::exception&) {
-            return false;
-        }
-    }
-
-private:
-    asio::io_context io_context_;
-    udp::socket socket_;
-    udp::endpoint endpoint_;
-};
-
-class UdpReceiverFromCP {
-public:
-    using RequestCallback = std::function<void(AuthRequestType, const std::string&, uint32_t)>;
-    explicit UdpReceiverFromCP(uint16_t port = 51236) : socket_(io_context_, udp::endpoint(udp::v4(), port)), running_(false) {}
-    ~UdpReceiverFromCP() { stop(); }
-    void set_callback(RequestCallback callback) { callback_ = callback; }
-    void start() { if (!running_) { running_ = true; recv_thread_ = std::thread([this]() { receive_loop(); }); } }
-    void stop() {
-        if (!running_) return;
-        running_ = false;
-        boost::system::error_code ec;
-        socket_.close(ec);
-        if (recv_thread_.joinable()) recv_thread_.join();
-    }
-private:
-    void receive_loop() {
-        UdpAuthRequestPacket packet;
-        udp::endpoint sender_endpoint;
-        while (running_) {
-            try {
-                boost::system::error_code ec;
-                size_t len = socket_.receive_from(asio::buffer(&packet, sizeof(packet)), sender_endpoint, 0, ec);
-                if (ec == asio::error::operation_aborted || ec == asio::error::bad_descriptor) break;
-                if (ec || len != sizeof(UdpAuthRequestPacket)) continue;
-                if (packet.magic_number != AUTH_REQUEST_MAGIC || packet.version != AUTH_REQUEST_VERSION) continue;
-                if (callback_) callback_(static_cast<AuthRequestType>(packet.request_type), std::string(packet.username_hint), packet.session_id);
-            } catch (const std::exception&) {
-                if (running_) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-        }
-    }
-    asio::io_context io_context_;
-    udp::socket socket_;
-    std::thread recv_thread_;
-    std::atomic<bool> running_;
-    RequestCallback callback_;
-};
-}
-}
+} // anonymous namespace
+} // namespace smile2unlock::managers
 
 export namespace smile2unlock::managers {
 
@@ -358,7 +204,7 @@ bool FaceRecognition::start_fr_process() {
     auto* result_header = static_cast<SharedFrameHeader*>(recognition_result_view_);
     *result_header = SharedFrameHeader{};
 
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m recognize --udp-port 51235 --result-map \"" + recognition_result_map_name_ + "\"";
+    std::string cmd_line = "\"" + fr_exe.string() + "\" -m recognize --udp-port " + std::to_string(kFrStatusPort) + " --result-map \"" + recognition_result_map_name_ + "\"";
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &fr_process_info_)) {
         UnmapViewOfFile(recognition_result_view_);
         CloseHandle(recognition_result_mapping_);
@@ -568,20 +414,20 @@ bool FaceRecognition::Initialize(std::string& error_message) {
             return false;
         }
 
-        udp_receiver_cp_ = std::make_unique<UdpReceiverFromCP>(51236);
+        udp_receiver_cp_ = std::make_unique<UdpReceiverFromCP>(kAuthRequestPort);
         udp_receiver_cp_->set_callback([this](AuthRequestType type, const std::string& username_hint, uint32_t session_id) {
             on_cp_request_received(type, username_hint, session_id);
         });
         udp_receiver_cp_->start();
 
-        udp_receiver_fr_ = std::make_unique<UdpReceiverFromFR>(51235);
+        udp_receiver_fr_ = std::make_unique<UdpReceiverFromFR>(kFrStatusPort);
         udp_receiver_fr_->set_callback([this](RecognitionStatus status, const std::string& username) {
             on_fr_status_received(status, username);
         });
         udp_receiver_fr_->start();
 
-        udp_sender_ = std::make_unique<UdpSenderToCP>("127.0.0.1", 51234);
-        udp_password_sender_ = std::make_unique<UdpPasswordSenderToCP>("127.0.0.1", 51237);
+        udp_sender_ = std::make_unique<UdpSenderToCP>("127.0.0.1", kCpStatusPort);
+        udp_password_sender_ = std::make_unique<UdpPasswordSenderToCP>("127.0.0.1", kPasswordPort);
         initialized_ = true;
         error_message = "人脸识别模块已初始化";
         return true;

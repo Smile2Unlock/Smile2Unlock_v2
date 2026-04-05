@@ -10,13 +10,15 @@
 #include <string>
 
 #include "models/udp_auth_request_packet.h"
+#include "udp_manager.h"  // 使用统一的端口配置
 
 namespace asio = boost::asio;
 using udp = asio::ip::udp;
 
 class AuthRequestSender {
 public:
-    AuthRequestSender(const std::string& host = "127.0.0.1", uint16_t port = 51236)
+    AuthRequestSender(const std::string& host = "127.0.0.1", 
+                      uint16_t port = smile2unlock::udp::UdpPorts::kAuthRequestPort)
         : socket_(io_context_, udp::v4()),
           endpoint_(asio::ip::make_address(host), port) {
     }

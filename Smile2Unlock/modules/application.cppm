@@ -24,6 +24,20 @@ public:
     bool Initialize();
     void Run();
     void Shutdown();
+    
+    // 设置后端服务（本地或远程）
+    void SetBackend(std::unique_ptr<IBackendService> backend) {
+        backend_ = std::move(backend);
+    }
+    
+    // 是否使用远程后端
+    bool IsUsingRemoteBackend() const {
+        return is_remote_backend_;
+    }
+    
+    void SetRemoteBackendFlag(bool is_remote) {
+        is_remote_backend_ = is_remote;
+    }
 
 private:
     void RenderUI();
@@ -35,7 +49,7 @@ private:
     void UpdatePreviewTexture(const std::vector<unsigned char>& image_data, int width, int height);
     void ClearPreviewTexture();
 
-    std::unique_ptr<BackendService> backend_;
+    std::unique_ptr<IBackendService> backend_;
     GLFWwindow* window_;
 
     struct UIState {
@@ -63,10 +77,15 @@ private:
         bool request_preview_refresh{};
         bool camera_enabled{};
         std::string preview_message;
+        
+        // 缓存的 DLL 状态
+        DllStatus cached_dll_status;
+        float dll_status_refresh_timer{-1.0f};  // -1 表示需要立即刷新
     };
 
     UIState ui_state_;
     bool initialized_;
+    bool is_remote_backend_{false};
 };
 
 } // namespace smile2unlock
@@ -78,7 +97,7 @@ namespace smile2unlock {
 constexpr GLint kGlClampToEdge = 0x812F;
 
 Application::Application() : window_(nullptr), initialized_(false) {
-    backend_ = std::make_unique<BackendService>();
+    // 后端由外部设置，不再在此处创建
     char username[256];
     DWORD username_len = sizeof(username);
     if (GetUserNameA(username, &username_len)) {
@@ -258,7 +277,14 @@ void Application::RenderUI() {
 }
 
 void Application::RenderInjectorPanel() {
-    auto status = backend_->GetDllStatus();
+    // 只在需要时刷新 DLL 状态（每 2 秒或首次加载）
+    if (ui_state_.dll_status_refresh_timer < 0 || ui_state_.dll_status_refresh_timer > 2.0f) {
+        ui_state_.cached_dll_status = backend_->GetDllStatus();
+        ui_state_.dll_status_refresh_timer = 0.0f;
+    }
+    ui_state_.dll_status_refresh_timer += ImGui::GetIO().DeltaTime;
+    
+    const auto& status = ui_state_.cached_dll_status;
     ImGui::TextColored(ImVec4(1,1,0,1), "CredentialProvider DLL Status");
     ImGui::Separator(); ImGui::Spacing();
     ImGui::Text("Injection Status:"); ImGui::SameLine();
@@ -269,7 +295,10 @@ void Application::RenderInjectorPanel() {
     ImGui::Text("Source DLL:"); ImGui::TextWrapped("%s", status.source_path.c_str());
     ImGui::Text("Target DLL:"); ImGui::TextWrapped("%s", status.target_path.c_str());
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
-    if (ImGui::Button("Calculate Hashes", ImVec2(200, 30))) status = backend_->GetDllStatus();
+    if (ImGui::Button("Calculate Hashes", ImVec2(200, 30))) {
+        ui_state_.cached_dll_status = backend_->GetDllStatus();
+        ui_state_.dll_status_refresh_timer = 0.0f;
+    }
     if (!status.source_hash.empty()) {
         ImGui::Text("Source Hash:"); ImGui::TextWrapped("%s", status.source_hash.c_str());
         ImGui::Text("Target Hash:"); ImGui::TextWrapped("%s", status.target_hash.c_str());
@@ -282,6 +311,8 @@ void Application::RenderInjectorPanel() {
             std::string error;
             ui_state_.status_message = backend_->InjectDll(error) ? "✓ DLL injected successfully!" : "✗ Failed: " + error;
             ui_state_.status_message_timer = 5.0f;
+            // 刷新 DLL 状态
+            ui_state_.dll_status_refresh_timer = -1.0f;
         }
     }
     if (ui_state_.status_message_timer > 0.0f) {

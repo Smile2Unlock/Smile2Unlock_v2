@@ -14,6 +14,7 @@
 #include <string>
 #include "models/recognition_status.h"
 #include "models/udp_status_packet.h"
+#include "udp_manager.h"  // 使用统一的端口配置
 
 namespace asio = boost::asio;
 using udp = asio::ip::udp;
@@ -24,7 +25,7 @@ inline std::string recognized_username;
 
 class UdpReceiver {
 public:
-    explicit UdpReceiver(uint16_t port = 51234)
+    explicit UdpReceiver(uint16_t port = smile2unlock::udp::UdpPorts::kCpStatusPort)
         : socket_(io_context_, udp::endpoint(udp::v4(), port)),
           running_(false) {
         std::cout << "[UDP Receiver] 已初始化，监听端口: " << port << std::endl;
