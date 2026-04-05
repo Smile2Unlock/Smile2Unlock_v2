@@ -62,8 +62,8 @@ struct GuiIpcRequest {
     int64_t timestamp = 0;
     int32_t request_id = 0;
     int32_t reserved = 0;
-    char payload[8192] = {0};
-    
+    char payload[1024 * 1024] = {0};
+
     void clear() {
         magic = GUI_IPC_MAGIC;
         version = GUI_IPC_VERSION;
@@ -85,8 +85,8 @@ struct GuiIpcResponse {
     int64_t timestamp = 0;
     int32_t request_id = 0;
     int32_t reserved = 0;
-    char payload[8192] = {0};
-    
+    char payload[1024 * 1024] = {0};
+
     void clear() {
         magic = GUI_IPC_MAGIC;
         version = GUI_IPC_VERSION;
