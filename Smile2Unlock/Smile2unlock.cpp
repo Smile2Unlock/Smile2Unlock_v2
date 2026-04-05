@@ -17,6 +17,72 @@ bool HasArg(const std::vector<std::string>& args, const std::string& value) {
     return std::find(args.begin(), args.end(), value) != args.end();
 }
 
+bool IsRunningAsAdministrator() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const BOOL ok = GetTokenInformation(
+        token,
+        TokenElevation,
+        &elevation,
+        sizeof(elevation),
+        &size
+    );
+    CloseHandle(token);
+    return ok == TRUE && elevation.TokenIsElevated != 0;
+}
+
+int RelaunchAsAdministrator() {
+    wchar_t exe_path[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, exe_path, MAX_PATH)) {
+        MessageBoxW(nullptr, L"无法获取 Smile2Unlock 可执行文件路径。", L"Smile2Unlock", MB_OK | MB_ICONERROR);
+        return -1;
+    }
+
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::wstring parameters;
+    if (argv != nullptr) {
+        for (int i = 1; i < argc; ++i) {
+            if (!parameters.empty()) {
+                parameters += L' ';
+            }
+            parameters += L'"';
+            parameters += argv[i];
+            parameters += L'"';
+        }
+        LocalFree(argv);
+    }
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = exe_path;
+    sei.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_CANCELLED) {
+            MessageBoxW(nullptr, L"Smile2Unlock 需要管理员权限才能继续运行。", L"Smile2Unlock", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+
+        std::wstring message = L"请求管理员权限失败，错误码: " + std::to_wstring(error);
+        MessageBoxW(nullptr, message.c_str(), L"Smile2Unlock", MB_OK | MB_ICONERROR);
+        return -1;
+    }
+
+    if (sei.hProcess != nullptr) {
+        CloseHandle(sei.hProcess);
+    }
+    return 0;
+}
+
 void RegisterInstallPath() {
     char exe_path[MAX_PATH];
     if (!GetModuleFileNameA(nullptr, exe_path, MAX_PATH)) {
@@ -131,6 +197,10 @@ int RunGuiMode() {
 } // namespace
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    if (!IsRunningAsAdministrator()) {
+        return RelaunchAsAdministrator();
+    }
+
     int argc = 0;
     LPWSTR* argv_w = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::string> args;

@@ -10,6 +10,7 @@
 #include <sstream>
 #include <cstring>
 #include <chrono>
+#include <unordered_map>
 
 namespace smile2unlock {
 
@@ -422,6 +423,66 @@ private:
     // 解析预览数据 - 二进制格式
     bool parse_preview_data(const std::string& data, std::vector<unsigned char>& image_data,
                            int& width, int& height, std::string& error_message) {
+        if (data.rfind("transport=shared_memory\n", 0) == 0) {
+            std::unordered_map<std::string, std::string> fields;
+            std::istringstream ss(data);
+            std::string line;
+            while (std::getline(ss, line)) {
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                fields[line.substr(0, eq)] = line.substr(eq + 1);
+            }
+
+            const auto map_it = fields.find("map_name");
+            const auto size_it = fields.find("image_bytes");
+            const auto width_it = fields.find("width");
+            const auto height_it = fields.find("height");
+            if (map_it == fields.end() || size_it == fields.end() ||
+                width_it == fields.end() || height_it == fields.end()) {
+                error_message = "Invalid preview descriptor";
+                return false;
+            }
+
+            std::string map_name;
+            DWORD image_bytes = 0;
+            try {
+                map_name = map_it->second;
+                image_bytes = static_cast<DWORD>(std::stoul(size_it->second));
+                width = std::stoi(width_it->second);
+                height = std::stoi(height_it->second);
+            } catch (const std::exception&) {
+                error_message = "Invalid preview descriptor numeric field";
+                return false;
+            }
+
+            HANDLE mapping = OpenFileMappingA(FILE_MAP_READ, FALSE, map_name.c_str());
+            if (!mapping) {
+                std::ostringstream err;
+                err << "OpenFileMapping failed (GetLastError=" << GetLastError() << ")";
+                error_message = err.str();
+                return false;
+            }
+
+            void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, image_bytes == 0 ? 1 : image_bytes);
+            if (!view) {
+                std::ostringstream err;
+                err << "MapViewOfFile failed (GetLastError=" << GetLastError() << ")";
+                error_message = err.str();
+                CloseHandle(mapping);
+                return false;
+            }
+
+            image_data.clear();
+            if (image_bytes > 0) {
+                const auto* bytes = static_cast<const unsigned char*>(view);
+                image_data.assign(bytes, bytes + image_bytes);
+            }
+
+            UnmapViewOfFile(view);
+            CloseHandle(mapping);
+            return true;
+        }
+
         // 二进制格式: [4 bytes: width][4 bytes: height][4 bytes: data_size][data_size bytes: image_data]
         const size_t kHeaderSize = 12;
         
