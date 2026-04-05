@@ -13,7 +13,7 @@ Windows Credential Provider DLL that integrates facial recognition into Windows 
 ## Requirements
 
 - Windows 10 or later
-- Visual Studio 2022 or later
+- llvm-mingw-ucrt-x86_64
 - xmake build system
 - Dependencies (automatically managed via xmake):
   - SeetaFace6
@@ -28,6 +28,8 @@ Windows Credential Provider DLL that integrates facial recognition into Windows 
 ## Building
 
 ```bash
+xmake f -y -c -p mingw -a x86_64 --mingw="your mingw path"  --sdk="your mingw path" --toolchain=clang --runtimes=c++_static
+xmake require --build -f -y seetaface6open
 xmake build
 ```
 
