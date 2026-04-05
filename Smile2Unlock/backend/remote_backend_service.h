@@ -160,7 +160,7 @@ public:
             return false;
         }
         // 解析预览数据：宽x高x数据(十六进制)
-        return parse_preview_data(response.payload, image_data, width, height, error_message);
+        return parse_preview_data(std::string(response.payload, response.payload_size), image_data, width, height, error_message);
     }
     
     bool CapturePreviewFrame(std::vector<unsigned char>& image_data,
