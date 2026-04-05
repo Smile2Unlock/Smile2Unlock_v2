@@ -107,7 +107,7 @@ public:
         
         // 接收响应
         DWORD bytes_read = 0;
-        if (!ReadFile(pipe_, &response, sizeof(response), &bytes_read, nullptr)) {
+        if (!ReadFile(pipe_, &response, sizeof(response), &bytes_read, nullptr) || bytes_read != sizeof(response)) {
             std::cerr << "[IPC Client] 接收响应失败: " << GetLastError() << std::endl;
             disconnect();
             response.set_error("Read failed");
