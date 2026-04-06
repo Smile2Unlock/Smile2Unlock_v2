@@ -63,15 +63,16 @@ HRESULT CSampleProvider::SetUsageScenario(
     {
     case CPUS_LOGON:
     case CPUS_UNLOCK_WORKSTATION:
+    case CPUS_CREDUI:
         // The reason why we need _fRecreateEnumeratedCredentials is because ICredentialProviderSetUserArray::SetUserArray() is called after ICredentialProvider::SetUsageScenario(),
-        // while we need the ICredentialProviderUserArray during enumeration in ICredentialProvider::GetCredentialCount()
+        // while we need the ICredentialProviderUserArray during enumeration in ICredentialProvider::GetCredentialCount().
+        // CPUS_CREDUI does not depend on a user array, but we keep the same flow so the tile is recreated cleanly per scenario.
         _cpus = cpus;
         _fRecreateEnumeratedCredentials = true;
         hr = S_OK;
         break;
 
     case CPUS_CHANGE_PASSWORD:
-    case CPUS_CREDUI:
         hr = E_NOTIMPL;
         break;
 
@@ -204,7 +205,7 @@ HRESULT CSampleProvider::GetCredentialCount(
     _Out_ DWORD *pdwDefault,
     _Out_ BOOL *pbAutoLogonWithDefault)
 {
-    *pdwDefault = CREDENTIAL_PROVIDER_NO_DEFAULT;
+    *pdwDefault = 0;
     *pbAutoLogonWithDefault = FALSE;
 
     if (_fRecreateEnumeratedCredentials)
@@ -225,6 +226,7 @@ HRESULT CSampleProvider::GetCredentialCount(
     else
     {
         *pdwCount = 1;
+        *pdwDefault = 0;
     }
 
     wchar_t buffer[256];
@@ -262,9 +264,15 @@ HRESULT CSampleProvider::SetUserArray(_In_ ICredentialProviderUserArray *users)
     if (_pCredProviderUserArray)
     {
         _pCredProviderUserArray->Release();
+        _pCredProviderUserArray = nullptr;
     }
+
     _pCredProviderUserArray = users;
-    _pCredProviderUserArray->AddRef();
+    if (_pCredProviderUserArray != nullptr)
+    {
+        _pCredProviderUserArray->AddRef();
+    }
+
     return S_OK;
 }
 
@@ -274,10 +282,11 @@ void CSampleProvider::_CreateEnumeratedCredentials()
     {
     case CPUS_LOGON:
     case CPUS_UNLOCK_WORKSTATION:
-        {
-            _EnumerateCredentials();
-            break;
-        }
+        _EnumerateCredentials();
+        break;
+    case CPUS_CREDUI:
+        _EnumerateEmptyTileCredential();
+        break;
     default:
         break;
     }
@@ -324,6 +333,24 @@ HRESULT CSampleProvider::_EnumerateCredentials()
             }
         }
     }
+    return hr;
+}
+
+HRESULT CSampleProvider::_EnumerateEmptyTileCredential()
+{
+    HRESULT hr = E_OUTOFMEMORY;
+
+    _pCredential = new(std::nothrow) CSampleCredential();
+    if (_pCredential != nullptr)
+    {
+        hr = _pCredential->Initialize(_cpus, s_rgCredProvFieldDescriptors, s_rgFieldStatePairs, nullptr, this);
+        if (FAILED(hr))
+        {
+            _pCredential->Release();
+            _pCredential = nullptr;
+        }
+    }
+
     return hr;
 }
 

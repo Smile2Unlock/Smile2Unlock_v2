@@ -123,7 +123,7 @@ public:
     HRESULT Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
                        _In_ CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR const *rgcpfd,
                        _In_ FIELD_STATE_PAIR const *rgfsp,
-                       _In_ ICredentialProviderUser *pcpUser,
+                       _In_opt_ ICredentialProviderUser *pcpUser,
                        _In_opt_ CSampleProvider *pProvider = nullptr);
     CSampleCredential();
 
@@ -156,6 +156,7 @@ public:
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
     bool                                    _fWarmupModeEnabled;                            // 启用预热模式（智能检测）
+    bool                                    _fHideCredentialInputFields;                    // 识别成功后隐藏用户名/密码输入框
     CSampleProvider                         *_pProvider;                                    // Provider指针，用于通知凭证准备好
 
     // 辅助函数
