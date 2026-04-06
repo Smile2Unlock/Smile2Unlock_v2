@@ -20,6 +20,7 @@
 #include <shlguid.h>
 #include <propkey.h>
 #include <memory>
+#include <atomic>
 #include <thread>
 #include <mutex>
 #include "models/udp_auth_request_packet.h"
@@ -149,6 +150,8 @@ public:
     std::unique_ptr<UdpReceiver>             _pUdpReceiver;                                   // UDP接收器
     HANDLE                                  _hSmile2UnlockProcess;                         // Smile2Unlock进程句柄
     DWORD                                   _dwSmile2UnlockPID;                            // Smile2Unlock进程ID
+    std::mutex                              _serviceMutex;                                  // 保护SU进程句柄与启停时序
+    std::atomic<ULONGLONG>                  _serviceGeneration;                             // 区分新旧识别会话，避免旧停止任务误杀新进程
     std::thread                             _faceRecognitionThread;                         // 人脸识别等待线程
     std::mutex                              _faceMutex;                                     // 线程同步互斥量
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
