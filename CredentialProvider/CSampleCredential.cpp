@@ -25,6 +25,7 @@
 // 新增包含
 #include "managers/ipc/udp/auth_request_sender.h"
 #include "managers/ipc/udp/udp_receiver.h"
+#include "models/gui_ipc_protocol.h"
 #include "models/udp_password_packet.h"
 #include "registryhelper.h"
 #include "CSampleProvider.h"
@@ -84,6 +85,17 @@ bool Utf8ToWidePassword(const std::string& utf8_password, PWSTR* ppwszPassword) 
 
   *ppwszPassword = password;
   return true;
+}
+
+bool IsSmile2UnlockServiceMutexPresent() {
+  HANDLE mutex = OpenMutexA(SYNCHRONIZE, FALSE, smile2unlock::SERVICE_MUTEX_NAME);
+  if (mutex != nullptr) {
+    CloseHandle(mutex);
+    return true;
+  }
+
+  const DWORD error = GetLastError();
+  return error != ERROR_FILE_NOT_FOUND;
 }
 
 }
@@ -162,6 +174,7 @@ CSampleCredential::CSampleCredential():
     _dwComboIndex(0),
     _hSmile2UnlockProcess(nullptr),
     _dwSmile2UnlockPID(0),
+    _serviceGeneration(0),
     _fFaceRecognitionRunning(false),
     _fWarmupModeEnabled(false),
     _pwzUsername(nullptr),
@@ -729,6 +742,8 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
 // ============ 人脸识别辅助函数实现 ============
 
 HRESULT CSampleCredential::LaunchSmile2UnlockService() {
+  std::lock_guard<std::mutex> service_lock(_serviceMutex);
+
   // 1. 检查现有进程是否仍在运行
   if (_hSmile2UnlockProcess != nullptr) {
     DWORD dwExitCode;
@@ -743,6 +758,11 @@ HRESULT CSampleCredential::LaunchSmile2UnlockService() {
     CloseHandle(_hSmile2UnlockProcess);
     _hSmile2UnlockProcess = nullptr;
     _dwSmile2UnlockPID = 0;
+  }
+
+  if (IsSmile2UnlockServiceMutexPresent()) {
+    LogDebugMessage(L"[INFO] 检测到已存在的 Smile2Unlock 服务实例，复用外部服务");
+    return S_OK;
   }
 
   // 2. 获取 Smile2Unlock.exe 的路径
@@ -813,6 +833,28 @@ HRESULT CSampleCredential::LaunchSmile2UnlockService() {
   LogDebugMessage(L"[INFO] Smile2Unlock服务进程已启动，PID: %u", pi.dwProcessId);
 
   CloseHandle(pi.hThread);
+
+  // 刚开机时 SU 冷启动较慢，给它一个短暂的自检/绑定窗口，避免过早发送首个 START 请求。
+  constexpr DWORD kStartupGraceMs = 800;
+  constexpr DWORD kStartupPollMs = 50;
+  for (DWORD waited = 0; waited < kStartupGraceMs; waited += kStartupPollMs) {
+    DWORD dwExitCode = STILL_ACTIVE;
+    if (!GetExitCodeProcess(_hSmile2UnlockProcess, &dwExitCode)) {
+      break;
+    }
+
+    if (dwExitCode != STILL_ACTIVE) {
+      LogDebugMessage(L"[ERROR] Smile2Unlock 在冷启动等待阶段提前退出，退出代码: %d", dwExitCode);
+      CloseHandle(_hSmile2UnlockProcess);
+      _hSmile2UnlockProcess = nullptr;
+      _dwSmile2UnlockPID = 0;
+      return E_FAIL;
+    }
+
+    Sleep(kStartupPollMs);
+  }
+
+  LogDebugMessage(L"[INFO] Smile2Unlock 冷启动等待完成，准备发送识别请求");
   return S_OK;
 }
 
@@ -1326,6 +1368,8 @@ HRESULT CSampleCredential::GetFieldOptions(DWORD dwFieldID,
 // ============ 新增：改进的生命周期管理函数 ============
 
 bool CSampleCredential::IsProcessStillRunning() {
+    std::lock_guard<std::mutex> service_lock(_serviceMutex);
+
     if (_hSmile2UnlockProcess == nullptr) {
         return false;
     }
@@ -1339,6 +1383,8 @@ bool CSampleCredential::IsProcessStillRunning() {
 }
 
 HRESULT CSampleCredential::TerminateSmile2UnlockService() {
+    std::lock_guard<std::mutex> service_lock(_serviceMutex);
+
     if (_hSmile2UnlockProcess == nullptr) {
         return S_OK;
     }
@@ -1458,12 +1504,24 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
             _fFaceRecognitionRunning = true;
         }
 
+        const ULONGLONG session_generation = _serviceGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        LogDebugMessage(L"[INFO] 创建新的人脸识别会话，generation=%llu", session_generation);
+
         // 启动新线程
-        _faceRecognitionThread = std::thread([this]() {
-            LogDebugMessage(L"[INFO] 启动人脸识别线程");
+        _faceRecognitionThread = std::thread([this, session_generation]() {
+            LogDebugMessage(L"[INFO] 启动人脸识别线程，generation=%llu", session_generation);
 
             LogDebugMessage(L"[INFO] 启动 Smile2Unlock 服务并请求识别");
             HRESULT hr = LaunchSmile2UnlockService();
+            if (SUCCEEDED(hr)) {
+                const ULONGLONG current_generation = _serviceGeneration.load(std::memory_order_acquire);
+                if (current_generation != session_generation) {
+                    LogDebugMessage(L"[WARNING] 检测到识别会话已被新的 generation=%llu 替换，取消本次启动 generation=%llu",
+                                    current_generation, session_generation);
+                    hr = E_ABORT;
+                }
+            }
+
             if (SUCCEEDED(hr)) {
                 hr = SendAuthRequestToSmile2Unlock(AuthRequestType::START_RECOGNITION);
             }
@@ -1523,12 +1581,17 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                 LogDebugMessage(L"[ERROR] 启动Smile2Unlock服务或发送识别请求失败: 0x%08X", hr);
             }
 
+            if (_hSmile2UnlockProcess != nullptr) {
+                LogDebugMessage(L"[INFO] 人脸识别线程准备清理当前启动的 Smile2Unlock 服务");
+                TerminateSmile2UnlockService();
+            }
+
             // 清理
             {
                 std::lock_guard<std::mutex> lock(_faceMutex);
                 _fFaceRecognitionRunning = false;
             }
-            LogDebugMessage(L"[INFO] 人脸识别线程结束");
+            LogDebugMessage(L"[INFO] 人脸识别线程结束，generation=%llu", session_generation);
         });
 
         return S_OK;
@@ -1547,13 +1610,10 @@ void CSampleCredential::StopFaceRecognition() {
         _fFaceRecognitionRunning = false;
     }
 
-    // 使用现代C++特性：异步终止进程，不阻塞当前线程
-    std::thread([this]() {
-        LogDebugMessage(L"[INFO] 后台线程开始停止 Smile2Unlock 服务");
-        SendAuthRequestToSmile2Unlock(AuthRequestType::CANCEL_RECOGNITION);
-        TerminateSmile2UnlockService();
-        LogDebugMessage(L"[INFO] 后台线程完成服务停止");
-    }).detach();  // 分离线程，让它在后台运行
+    const ULONGLONG stop_generation = _serviceGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    LogDebugMessage(L"[INFO] 开始同步停止 Smile2Unlock 服务，generation=%llu", stop_generation);
+
+    SendAuthRequestToSmile2Unlock(AuthRequestType::CANCEL_RECOGNITION);
 
     // 使用带超时的异步线程停止
     if (_faceRecognitionThread.joinable()) {
@@ -1584,5 +1644,8 @@ void CSampleCredential::StopFaceRecognition() {
         }
     }
 
-    LogDebugMessage(L"[INFO] 人脸识别停止信号已发送，将在后台完成清理");
+    TerminateSmile2UnlockService();
+    LogDebugMessage(L"[INFO] Smile2Unlock 服务停止完成，generation=%llu", stop_generation);
+
+    LogDebugMessage(L"[INFO] 人脸识别停止信号已发送，清理已完成");
 }
