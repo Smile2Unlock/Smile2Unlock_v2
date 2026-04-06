@@ -65,26 +65,55 @@ bool IsAckStatusForRequest(AuthRequestType request_type, RecognitionStatus statu
   }
 }
 
-bool Utf8ToWidePassword(const std::string& utf8_password, PWSTR* ppwszPassword) {
-  *ppwszPassword = nullptr;
+bool Utf8ToWideString(const std::string& utf8_text, PWSTR* ppwszText) {
+  *ppwszText = nullptr;
 
-  const int bufferSize = MultiByteToWideChar(CP_UTF8, 0, utf8_password.c_str(), -1, nullptr, 0);
+  const int bufferSize = MultiByteToWideChar(CP_UTF8, 0, utf8_text.c_str(), -1, nullptr, 0);
   if (bufferSize <= 0) {
     return false;
   }
 
-  PWSTR password = static_cast<PWSTR>(CoTaskMemAlloc(bufferSize * sizeof(wchar_t)));
-  if (!password) {
+  PWSTR text = static_cast<PWSTR>(CoTaskMemAlloc(bufferSize * sizeof(wchar_t)));
+  if (!text) {
     return false;
   }
 
-  if (!MultiByteToWideChar(CP_UTF8, 0, utf8_password.c_str(), -1, password, bufferSize)) {
-    CoTaskMemFree(password);
+  if (!MultiByteToWideChar(CP_UTF8, 0, utf8_text.c_str(), -1, text, bufferSize)) {
+    CoTaskMemFree(text);
     return false;
   }
 
-  *ppwszPassword = password;
+  *ppwszText = text;
   return true;
+}
+
+bool IsQualifiedUsername(_In_opt_ PCWSTR username) {
+  return username != nullptr &&
+         (wcschr(username, L'\\') != nullptr || wcschr(username, L'@') != nullptr);
+}
+
+HRESULT BuildQualifiedUsername(_In_ PCWSTR username, _Outptr_result_nullonfailure_ PWSTR* ppwszQualifiedUsername) {
+  *ppwszQualifiedUsername = nullptr;
+
+  if (username == nullptr || *username == L'\0') {
+    return E_INVALIDARG;
+  }
+
+  if (wcschr(username, L'\\') != nullptr) {
+    return SHStrDupW(username, ppwszQualifiedUsername);
+  }
+
+  if (wcschr(username, L'@') != nullptr) {
+    return DomainUsernameStringAlloc(L"MicrosoftAccount", username, ppwszQualifiedUsername);
+  }
+
+  WCHAR computer_name[MAX_COMPUTERNAME_LENGTH + 1];
+  DWORD cch = ARRAYSIZE(computer_name);
+  if (!GetComputerNameW(computer_name, &cch)) {
+    return HRESULT_FROM_WIN32(GetLastError());
+  }
+
+  return DomainUsernameStringAlloc(computer_name, username, ppwszQualifiedUsername);
 }
 
 bool IsSmile2UnlockServiceMutexPresent() {
@@ -177,6 +206,7 @@ CSampleCredential::CSampleCredential():
     _serviceGeneration(0),
     _fFaceRecognitionRunning(false),
     _fWarmupModeEnabled(false),
+    _fHideCredentialInputFields(false),
     _pwzUsername(nullptr),
     _pwzPassword(nullptr),
     _pProvider(nullptr)
@@ -217,7 +247,7 @@ CSampleCredential::~CSampleCredential()
 HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
                                       _In_ CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR const *rgcpfd,
                                       _In_ FIELD_STATE_PAIR const *rgfsp,
-                                      _In_ ICredentialProviderUser *pcpUser,
+                                      _In_opt_ ICredentialProviderUser *pcpUser,
                                       _In_opt_ CSampleProvider *pProvider)
 {
     HRESULT hr = S_OK;
@@ -225,10 +255,18 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     _cpus = cpus;
     _pProvider = pProvider;  // 保存Provider指针
 
-    GUID guidProvider;
-    pcpUser->GetProviderID(&guidProvider);
-    _fIsLocalUser = (guidProvider == Identity_LocalUserProvider);
-    LogDebugMessage(L"[INFO] 用户类型: %s", _fIsLocalUser ? L"本地用户" : L"域用户");
+    GUID guidProvider = GUID_NULL;
+    if (pcpUser != nullptr)
+    {
+        pcpUser->GetProviderID(&guidProvider);
+        _fIsLocalUser = (guidProvider == Identity_LocalUserProvider);
+        LogDebugMessage(L"[INFO] 用户类型: %s", _fIsLocalUser ? L"本地用户" : L"域用户");
+    }
+    else
+    {
+        _fIsLocalUser = true;
+        LogDebugMessage(L"[INFO] 当前场景未绑定用户对象，按空用户凭证初始化");
+    }
 
     // Copy the field descriptors for each field. This is useful if you want to vary the field
     // descriptors based on what Usage scenario the credential was created for.
@@ -244,6 +282,15 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
         }
     }
 
+    if (_cpus == CPUS_CREDUI)
+    {
+        _rgFieldStatePairs[SFI_EDIT_TEXT] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_FOCUSED };
+        _rgFieldStatePairs[SFI_PASSWORD] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE };
+        SHStrDupW(L"用户名", &_rgCredProvFieldDescriptors[SFI_EDIT_TEXT].pszLabel);
+        SHStrDupW(L"密码", &_rgCredProvFieldDescriptors[SFI_PASSWORD].pszLabel);
+        SHStrDupW(L"提交凭证", &_rgCredProvFieldDescriptors[SFI_SUBMIT_BUTTON].pszLabel);
+    }
+
     // Initialize the String value of all the fields
     // 即使某些操作失败，也继续尝试初始化其他字段，确保Credential Provider处于一致状态
     
@@ -256,11 +303,11 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
         } \
     } while(0)
     
-    INIT_FIELD_STRING(SFI_LABEL, L"Sample Credential", L"SFI_LABEL");
-    INIT_FIELD_STRING(SFI_LARGE_TEXT, L"Sample Credential Provider", L"SFI_LARGE_TEXT");
-    INIT_FIELD_STRING(SFI_EDIT_TEXT, L"Edit Text", L"SFI_EDIT_TEXT");
+    INIT_FIELD_STRING(SFI_LABEL, L"Smile2Unlock", L"SFI_LABEL");
+    INIT_FIELD_STRING(SFI_LARGE_TEXT, _cpus == CPUS_CREDUI ? L"Smile2Unlock 凭证提示" : L"Smile2Unlock Credential Provider", L"SFI_LARGE_TEXT");
+    INIT_FIELD_STRING(SFI_EDIT_TEXT, L"", L"SFI_EDIT_TEXT");
     INIT_FIELD_STRING(SFI_PASSWORD, L"", L"SFI_PASSWORD");
-    INIT_FIELD_STRING(SFI_SUBMIT_BUTTON, L"Submit", L"SFI_SUBMIT_BUTTON");
+    INIT_FIELD_STRING(SFI_SUBMIT_BUTTON, L"提交", L"SFI_SUBMIT_BUTTON");
     INIT_FIELD_STRING(SFI_CHECKBOX, L"Checkbox", L"SFI_CHECKBOX");
     INIT_FIELD_STRING(SFI_COMBOBOX, L"Combobox", L"SFI_COMBOBOX");
     INIT_FIELD_STRING(SFI_LAUNCHWINDOW_LINK, L"Launch helper window", L"SFI_LAUNCHWINDOW_LINK");
@@ -268,92 +315,97 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
     
     #undef INIT_FIELD_STRING
     
-    // 获取用户信息
-    HRESULT hrTemp = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
-    if (FAILED(hrTemp)) {
-        LogDebugMessage(L"[WARNING] Get QualifiedUserName failed: 0x%08X", hrTemp);
-        if (SUCCEEDED(hr)) hr = hrTemp;
-        _pszQualifiedUserName = nullptr;
-    }
-
-    // 获取用户名
-    PWSTR pszUserName = nullptr;
-    hrTemp = pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName);
-    if (SUCCEEDED(hrTemp) && pszUserName != nullptr)
+    HRESULT hrTemp = S_OK;
+    if (pcpUser != nullptr)
     {
-        wchar_t szString[256];
-        StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
-        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        hrTemp = pcpUser->GetStringValue(PKEY_Identity_QualifiedUserName, &_pszQualifiedUserName);
         if (FAILED(hrTemp)) {
-            LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT failed: 0x%08X", hrTemp);
+            LogDebugMessage(L"[WARNING] Get QualifiedUserName failed: 0x%08X", hrTemp);
             if (SUCCEEDED(hr)) hr = hrTemp;
+            _pszQualifiedUserName = nullptr;
         }
-        SAFE_COTASK_MEM_FREE(pszUserName);
+
+        PWSTR pszUserName = nullptr;
+        hrTemp = pcpUser->GetStringValue(PKEY_Identity_UserName, &pszUserName);
+        if (SUCCEEDED(hrTemp) && pszUserName != nullptr)
+        {
+            wchar_t szString[256];
+            StringCchPrintf(szString, ARRAYSIZE(szString), L"User Name: %s", pszUserName);
+            hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+            if (FAILED(hrTemp)) {
+                LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT failed: 0x%08X", hrTemp);
+                if (SUCCEEDED(hr)) hr = hrTemp;
+            }
+            SAFE_COTASK_MEM_FREE(pszUserName);
+        }
+        else
+        {
+            hrTemp = SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+            if (FAILED(hrTemp)) {
+                LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
+                if (SUCCEEDED(hr)) hr = hrTemp;
+            }
+            SAFE_COTASK_MEM_FREE(pszUserName);
+        }
+
+        PWSTR pszDisplayName = nullptr;
+        hrTemp = pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName);
+        if (SUCCEEDED(hrTemp) && pszDisplayName != nullptr)
+        {
+            wchar_t szString[256];
+            StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
+            hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+            if (FAILED(hrTemp)) {
+                LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT failed: 0x%08X", hrTemp);
+                if (SUCCEEDED(hr)) hr = hrTemp;
+            }
+            SAFE_COTASK_MEM_FREE(pszDisplayName);
+        }
+        else
+        {
+            hrTemp = SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+            if (FAILED(hrTemp)) {
+                LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
+                if (SUCCEEDED(hr)) hr = hrTemp;
+            }
+            SAFE_COTASK_MEM_FREE(pszDisplayName);
+        }
+
+        PWSTR pszLogonStatus = nullptr;
+        hrTemp = pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus);
+        if (SUCCEEDED(hrTemp) && pszLogonStatus != nullptr)
+        {
+            wchar_t szString[256];
+            StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
+            hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+            if (FAILED(hrTemp)) {
+                LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT failed: 0x%08X", hrTemp);
+                if (SUCCEEDED(hr)) hr = hrTemp;
+            }
+            SAFE_COTASK_MEM_FREE(pszLogonStatus);
+        }
+        else
+        {
+            hrTemp = SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+            if (FAILED(hrTemp)) {
+                LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT (NULL) failed: 0x%08X", hrTemp);
+                if (SUCCEEDED(hr)) hr = hrTemp;
+            }
+            SAFE_COTASK_MEM_FREE(pszLogonStatus);
+        }
+
+        hrTemp = pcpUser->GetSid(&_pszUserSid);
+        if (FAILED(hrTemp)) {
+            LogDebugMessage(L"[WARNING] Get User SID failed: 0x%08X", hrTemp);
+            if (SUCCEEDED(hr)) hr = hrTemp;
+            _pszUserSid = nullptr;
+        }
     }
     else
     {
-        hrTemp = SHStrDupW(L"User Name is NULL", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
-        if (FAILED(hrTemp)) {
-            LogDebugMessage(L"[WARNING] Initialize SFI_FULLNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
-            if (SUCCEEDED(hr)) hr = hrTemp;
-        }
-        SAFE_COTASK_MEM_FREE(pszUserName); // 安全释放，即使为nullptr
-    }
-
-    // 获取显示名
-    PWSTR pszDisplayName = nullptr;
-    hrTemp = pcpUser->GetStringValue(PKEY_Identity_DisplayName, &pszDisplayName);
-    if (SUCCEEDED(hrTemp) && pszDisplayName != nullptr)
-    {
-        wchar_t szString[256];
-        StringCchPrintf(szString, ARRAYSIZE(szString), L"Display Name: %s", pszDisplayName);
-        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
-        if (FAILED(hrTemp)) {
-            LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT failed: 0x%08X", hrTemp);
-            if (SUCCEEDED(hr)) hr = hrTemp;
-        }
-        SAFE_COTASK_MEM_FREE(pszDisplayName);
-    }
-    else
-    {
-        hrTemp = SHStrDupW(L"Display Name is NULL", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
-        if (FAILED(hrTemp)) {
-            LogDebugMessage(L"[WARNING] Initialize SFI_DISPLAYNAME_TEXT (NULL) failed: 0x%08X", hrTemp);
-            if (SUCCEEDED(hr)) hr = hrTemp;
-        }
-        SAFE_COTASK_MEM_FREE(pszDisplayName);
-    }
-
-    // 获取登录状态
-    PWSTR pszLogonStatus = nullptr;
-    hrTemp = pcpUser->GetStringValue(PKEY_Identity_LogonStatusString, &pszLogonStatus);
-    if (SUCCEEDED(hrTemp) && pszLogonStatus != nullptr)
-    {
-        wchar_t szString[256];
-        StringCchPrintf(szString, ARRAYSIZE(szString), L"Logon Status: %s", pszLogonStatus);
-        hrTemp = SHStrDupW(szString, &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
-        if (FAILED(hrTemp)) {
-            LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT failed: 0x%08X", hrTemp);
-            if (SUCCEEDED(hr)) hr = hrTemp;
-        }
-        SAFE_COTASK_MEM_FREE(pszLogonStatus);
-    }
-    else
-    {
-        hrTemp = SHStrDupW(L"Logon Status is NULL", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
-        if (FAILED(hrTemp)) {
-            LogDebugMessage(L"[WARNING] Initialize SFI_LOGONSTATUS_TEXT (NULL) failed: 0x%08X", hrTemp);
-            if (SUCCEEDED(hr)) hr = hrTemp;
-        }
-        SAFE_COTASK_MEM_FREE(pszLogonStatus);
-    }
-
-    // 获取用户SID
-    hrTemp = pcpUser->GetSid(&_pszUserSid);
-    if (FAILED(hrTemp)) {
-        LogDebugMessage(L"[WARNING] Get User SID failed: 0x%08X", hrTemp);
-        if (SUCCEEDED(hr)) hr = hrTemp;
-        _pszUserSid = nullptr;
+        SHStrDupW(L"", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        SHStrDupW(L"", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+        SHStrDupW(L"", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
     }
 
     // 初始化 _pwzUsername 和 _pwzPassword（来自 Sparkin 实现）
@@ -373,6 +425,11 @@ HRESULT CSampleCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
             _pwzUsername = _pszQualifiedUserName;
             LogDebugMessage(L"[INFO] 使用整个QualifiedUserName作为用户名: %s", _pwzUsername);
         }
+    }
+    else if (_cpus == CPUS_CREDUI)
+    {
+        _pwzUsername = _rgFieldStrings[SFI_EDIT_TEXT];
+        LogDebugMessage(L"[INFO] CredUI 场景使用编辑框输入用户名");
     }
     
     // _pwzPassword 在 GetSerialization 时从密码字段获取
@@ -455,6 +512,14 @@ HRESULT CSampleCredential::UnAdvise()
 HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 {
     *pbAutoLogon = FALSE;
+    _fHideCredentialInputFields = false;
+
+    if (_cpus == CPUS_CREDUI)
+    {
+        _rgFieldStatePairs[SFI_EDIT_TEXT] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_FOCUSED };
+        _rgFieldStatePairs[SFI_PASSWORD] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE };
+        _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE };
+    }
 
     extern std::atomic<RecognitionStatus> face_recognition_status;
     extern std::atomic<ULONGLONG> face_recognition_status_tick;
@@ -493,6 +558,7 @@ HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 HRESULT CSampleCredential::SetDeselected()
 {
     LogDebugMessage(L"[INFO] CSampleCredential::SetDeselected - 开始清理当前识别会话");
+    _fHideCredentialInputFields = false;
     if (_pProvider) {
         _pProvider->ResetCredentialReady();
     }
@@ -628,6 +694,16 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
             LogDebugMessage(L"[ERROR] SetStringValue failed: 0x%08X", hr);
             return hr;
         }
+
+        if (dwFieldID == SFI_EDIT_TEXT)
+        {
+            _pwzUsername = _rgFieldStrings[SFI_EDIT_TEXT];
+        }
+        else if (dwFieldID == SFI_PASSWORD)
+        {
+            _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
+        }
+
         return S_OK;
     }
     
@@ -1077,7 +1153,7 @@ HRESULT CSampleCredential::RequestAndDecryptPasswordFromSU(PWSTR *ppwszPassword)
     }
 
     std::string decrypted_password(reinterpret_cast<const char*>(output_blob.pbData), output_blob.cbData);
-    if (!Utf8ToWidePassword(decrypted_password, ppwszPassword)) {
+    if (!Utf8ToWideString(decrypted_password, ppwszPassword)) {
       SecureZeroMemory(decrypted_password.data(), decrypted_password.size());
       SecureZeroMemory(output_blob.pbData, output_blob.cbData);
       LocalFree(output_blob.pbData);
@@ -1205,73 +1281,178 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     LogDebugMessage(L"[DEBUG] 密码字段长度: %u", _rgFieldStrings[SFI_PASSWORD] ? static_cast<unsigned>(wcslen(_rgFieldStrings[SFI_PASSWORD])) : 0);
     LogDebugMessage(L"[DEBUG] QualifiedUserName: %s", _pszQualifiedUserName ? _pszQualifiedUserName : L"NULL");
 
-    // 获取计算机名称作为域
-    WCHAR wsz[MAX_COMPUTERNAME_LENGTH+1];
-    DWORD cch = ARRAYSIZE(wsz);
-    if (!GetComputerNameW(wsz, &cch)) {
-        LogDebugMessage(L"[ERROR] GetComputerNameW失败");
-        return E_FAIL;
-    }
-    
-    LogDebugMessage(L"[INFO] 计算机名称: %s", wsz);
-    
     // 设置 _pwzPassword 为当前密码字段值（来自Sparkin的方式）
     _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
-    
-    // 对所有用户类型使用统一的 KerbInteractiveUnlockLogon 方式
-    LogDebugMessage(L"[INFO] 使用KerbInteractiveUnlockLogon方式处理凭证");
-    PWSTR pwzProtectedPassword;
-    hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
-    LogDebugMessage(L"[DEBUG] ProtectIfNecessaryAndCopyPassword返回: 0x%08X", hr);
-    
-    if (SUCCEEDED(hr))
+
+    if (_cpus == CPUS_CREDUI)
     {
-        KERB_INTERACTIVE_UNLOCK_LOGON kiul;
-        
-        // 关键：使用原始用户名（格式: domain\username 或 MicrosoftAccount\email）
-        // 这里直接使用原始密码而非受保护的密码
-        hr = KerbInteractiveUnlockLogonInit(wsz, _pwzUsername, _pwzPassword, _cpus, &kiul);
-        LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonInit返回: 0x%08X, 使用用户名: %s, 密码: %s", 
-                       hr, _pwzUsername ? _pwzUsername : L"NULL", _pwzPassword ? L"****" : L"NULL");
-        
+        const PWSTR pwzCredUiUsername = (_pwzUsername != nullptr) ? _pwzUsername : _rgFieldStrings[SFI_EDIT_TEXT];
+        if (pwzCredUiUsername == nullptr || *pwzCredUiUsername == L'\0')
+        {
+            LogDebugMessage(L"[ERROR] CredUI 场景缺少用户名");
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            SHStrDupW(L"请输入用户名。", ppwszOptionalStatusText);
+            return E_INVALIDARG;
+        }
+
+        PWSTR pwzPackedUsername = nullptr;
+        if (IsQualifiedUsername(pwzCredUiUsername))
+        {
+            hr = SHStrDupW(pwzCredUiUsername, &pwzPackedUsername);
+        }
+        else
+        {
+            hr = BuildQualifiedUsername(pwzCredUiUsername, &pwzPackedUsername);
+        }
+        if (FAILED(hr) || pwzPackedUsername == nullptr)
+        {
+            LogDebugMessage(L"[ERROR] CredUI 用户名规范化失败: 0x%08X", hr);
+            return FAILED(hr) ? hr : E_FAIL;
+        }
+
+        DWORD cbSerialization = 0;
+        if (!CredPackAuthenticationBufferW(0, pwzPackedUsername, _pwzPassword, nullptr, &cbSerialization))
+        {
+            const DWORD dwErr = GetLastError();
+            if (dwErr != ERROR_INSUFFICIENT_BUFFER)
+            {
+                hr = HRESULT_FROM_WIN32(dwErr);
+                LogDebugMessage(L"[ERROR] CredPackAuthenticationBufferW 预计算失败: 0x%08X", hr);
+                CoTaskMemFree(pwzPackedUsername);
+                return hr;
+            }
+        }
+
+        pcpcs->rgbSerialization = static_cast<BYTE*>(CoTaskMemAlloc(cbSerialization));
+        if (pcpcs->rgbSerialization == nullptr)
+        {
+            LogDebugMessage(L"[ERROR] CredUI 序列化缓冲区分配失败");
+            CoTaskMemFree(pwzPackedUsername);
+            return E_OUTOFMEMORY;
+        }
+
+        if (!CredPackAuthenticationBufferW(0, pwzPackedUsername, _pwzPassword, pcpcs->rgbSerialization, &cbSerialization))
+        {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            CoTaskMemFree(pcpcs->rgbSerialization);
+            pcpcs->rgbSerialization = nullptr;
+            LogDebugMessage(L"[ERROR] CredPackAuthenticationBufferW 失败: 0x%08X", hr);
+            CoTaskMemFree(pwzPackedUsername);
+            return hr;
+        }
+
+        pcpcs->cbSerialization = cbSerialization;
+        hr = RetrieveNegotiateAuthPackage(&pcpcs->ulAuthenticationPackage);
         if (SUCCEEDED(hr))
         {
-            // We use KERB_INTERACTIVE_UNLOCK_LOGON in both unlock and logon scenarios.  It contains a
-            // KERB_INTERACTIVE_LOGON to hold the creds plus a LUID that is filled in for us by Winlogon
-            // as necessary.
-            hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
-            LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonPack返回: 0x%08X, 序列化大小: %d", 
-                           hr, pcpcs->cbSerialization);
-            
+            pcpcs->clsidCredentialProvider = CLSID_CSample;
+            *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+            LogDebugMessage(L"[INFO] CredUI 序列化成功，原始用户名: %s, 打包用户名: %s", pwzCredUiUsername, pwzPackedUsername);
+        }
+        else
+        {
+            CoTaskMemFree(pcpcs->rgbSerialization);
+            pcpcs->rgbSerialization = nullptr;
+            pcpcs->cbSerialization = 0;
+            LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
+        }
+        CoTaskMemFree(pwzPackedUsername);
+    }
+    else
+    {
+        PWSTR pwzDomain = nullptr;
+        PWSTR pwzUsername = nullptr;
+
+        if (_pszQualifiedUserName != nullptr && wcschr(_pszQualifiedUserName, L'\\') != nullptr)
+        {
+            hr = SplitDomainAndUsername(_pszQualifiedUserName, &pwzDomain, &pwzUsername);
+        }
+        else if (_pwzUsername != nullptr && wcschr(_pwzUsername, L'\\') != nullptr)
+        {
+            hr = SplitDomainAndUsername(_pwzUsername, &pwzDomain, &pwzUsername);
+        }
+        else if (_pwzUsername != nullptr && wcschr(_pwzUsername, L'@') != nullptr)
+        {
+            hr = SHStrDupW(L"MicrosoftAccount", &pwzDomain);
             if (SUCCEEDED(hr))
             {
-                ULONG ulAuthPackage;
-                hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
-                LogDebugMessage(L"[DEBUG] RetrieveNegotiateAuthPackage返回: 0x%08X, AuthPackage: %u", 
-                               hr, ulAuthPackage);
-                
+                hr = SHStrDupW(_pwzUsername, &pwzUsername);
+            }
+        }
+        else
+        {
+            WCHAR wsz[MAX_COMPUTERNAME_LENGTH+1];
+            DWORD cch = ARRAYSIZE(wsz);
+            if (!GetComputerNameW(wsz, &cch)) {
+                LogDebugMessage(L"[ERROR] GetComputerNameW失败");
+                return E_FAIL;
+            }
+
+            hr = SHStrDupW(wsz, &pwzDomain);
+            if (SUCCEEDED(hr) && _pwzUsername != nullptr)
+            {
+                hr = SHStrDupW(_pwzUsername, &pwzUsername);
+            }
+        }
+
+        if (FAILED(hr) || pwzDomain == nullptr || pwzUsername == nullptr)
+        {
+            SAFE_COTASK_MEM_FREE(pwzDomain);
+            SAFE_COTASK_MEM_FREE(pwzUsername);
+            LogDebugMessage(L"[ERROR] 登录用户名拆分/构造失败: 0x%08X", hr);
+            return FAILED(hr) ? hr : E_FAIL;
+        }
+
+        LogDebugMessage(L"[INFO] 序列化登录名 domain=%s username=%s", pwzDomain, pwzUsername);
+
+        LogDebugMessage(L"[INFO] 使用KerbInteractiveUnlockLogon方式处理凭证");
+        PWSTR pwzProtectedPassword;
+        hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
+        LogDebugMessage(L"[DEBUG] ProtectIfNecessaryAndCopyPassword返回: 0x%08X", hr);
+
+        if (SUCCEEDED(hr))
+        {
+            KERB_INTERACTIVE_UNLOCK_LOGON kiul;
+
+            hr = KerbInteractiveUnlockLogonInit(pwzDomain, pwzUsername, _pwzPassword, _cpus, &kiul);
+            LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonInit返回: 0x%08X, 使用用户名: %s, 密码: %s",
+                           hr, pwzUsername ? pwzUsername : L"NULL", _pwzPassword ? L"****" : L"NULL");
+
+            if (SUCCEEDED(hr))
+            {
+                hr = KerbInteractiveUnlockLogonPack(kiul, &pcpcs->rgbSerialization, &pcpcs->cbSerialization);
+                LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonPack返回: 0x%08X, 序列化大小: %d",
+                               hr, pcpcs->cbSerialization);
+
                 if (SUCCEEDED(hr))
                 {
-                    pcpcs->ulAuthenticationPackage = ulAuthPackage;
-                    pcpcs->clsidCredentialProvider = CLSID_CSample;
-                    // At this point the credential has created the serialized credential used for logon
-                    // By setting this to CPGSR_RETURN_CREDENTIAL_FINISHED we are letting logonUI know
-                    // that we have all the information we need and it should attempt to submit the
-                    // serialized credential.
-                    *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
-                    LogDebugMessage(L"[INFO] GetSerialization成功！凭证已打包，状态设为CPGSR_RETURN_CREDENTIAL_FINISHED");
+                    ULONG ulAuthPackage;
+                    hr = RetrieveNegotiateAuthPackage(&ulAuthPackage);
+                    LogDebugMessage(L"[DEBUG] RetrieveNegotiateAuthPackage返回: 0x%08X, AuthPackage: %u",
+                                   hr, ulAuthPackage);
+
+                    if (SUCCEEDED(hr))
+                    {
+                        pcpcs->ulAuthenticationPackage = ulAuthPackage;
+                        pcpcs->clsidCredentialProvider = CLSID_CSample;
+                        *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+                        LogDebugMessage(L"[INFO] GetSerialization成功！凭证已打包，状态设为CPGSR_RETURN_CREDENTIAL_FINISHED");
+                    } else {
+                        LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
+                    }
                 } else {
-                    LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
+                    LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonPack失败");
                 }
             } else {
-                LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonPack失败");
+                LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonInit失败");
             }
+            CoTaskMemFree(pwzProtectedPassword);
         } else {
-            LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonInit失败");
+            LogDebugMessage(L"[ERROR] ProtectIfNecessaryAndCopyPassword失败");
         }
-        CoTaskMemFree(pwzProtectedPassword);
-    } else {
-        LogDebugMessage(L"[ERROR] ProtectIfNecessaryAndCopyPassword失败");
+
+        SAFE_COTASK_MEM_FREE(pwzDomain);
+        SAFE_COTASK_MEM_FREE(pwzUsername);
     }
     
     LogDebugMessage(L"[INFO] GetSerialization返回: hr=0x%08X, pcpgsr=%d", hr, *pcpgsr);
@@ -1342,7 +1523,7 @@ HRESULT CSampleCredential::ReportResult(NTSTATUS ntsStatus,
 HRESULT CSampleCredential::GetUserSid(_Outptr_result_nullonfailure_ PWSTR *ppszSid)
 {
     *ppszSid = nullptr;
-    HRESULT hr = E_UNEXPECTED;
+    HRESULT hr = S_FALSE;
     if (_pszUserSid != nullptr)
     {
         hr = SHStrDupW(_pszUserSid, ppszSid);
@@ -1543,15 +1724,39 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                     HRESULT decryptResult = RequestAndDecryptPasswordFromSU(&pwszPassword);
 
                     if (SUCCEEDED(decryptResult) && pwszPassword) {
-                        LogDebugMessage(L"[INFO] 密码解密成功，设置密码字段");
+                        LogDebugMessage(L"[INFO] 密码解密成功，设置凭证字段");
 
-                        // 设置密码到密码字段
+                        extern std::string recognized_username;
+                        PWSTR pwszRecognizedUsername = nullptr;
+                        if (!recognized_username.empty()) {
+                            if (!Utf8ToWideString(recognized_username, &pwszRecognizedUsername)) {
+                                LogDebugMessage(L"[WARNING] 识别用户名转宽字符失败，username=%hs", recognized_username.c_str());
+                            }
+                        } else {
+                            LogDebugMessage(L"[WARNING] 识别成功但未收到用户名回填，继续沿用现有用户名");
+                        }
+
+                        // 设置用户名和密码到字段缓存
                         {
                             std::lock_guard<std::mutex> lock(_faceMutex);
+                            _fHideCredentialInputFields = true;
+                            _rgFieldStatePairs[SFI_EDIT_TEXT] = { CPFS_HIDDEN, CPFIS_NONE };
+                            _rgFieldStatePairs[SFI_PASSWORD] = { CPFS_HIDDEN, CPFIS_NONE };
+                            _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = { CPFS_HIDDEN, CPFIS_NONE };
+
+                            if (pwszRecognizedUsername != nullptr) {
+                                if (_rgFieldStrings[SFI_EDIT_TEXT]) {
+                                    CoTaskMemFree(_rgFieldStrings[SFI_EDIT_TEXT]);
+                                }
+                                _rgFieldStrings[SFI_EDIT_TEXT] = pwszRecognizedUsername;
+                                _pwzUsername = _rgFieldStrings[SFI_EDIT_TEXT];
+                            }
+
                             if (_rgFieldStrings[SFI_PASSWORD]) {
                                 CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
                             }
                             _rgFieldStrings[SFI_PASSWORD] = pwszPassword;
+                            _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
                         }
 
                         // 更新UI
@@ -1559,7 +1764,13 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                             LogDebugMessage(L"[INFO] 更新CP字段并准备触发自动登录，events=%p provider=%p",
                                             _pCredProvCredentialEvents, _pProvider);
                             _pCredProvCredentialEvents->BeginFieldUpdates();
+                            if (pwszRecognizedUsername != nullptr) {
+                                _pCredProvCredentialEvents->SetFieldString(this, SFI_EDIT_TEXT, pwszRecognizedUsername);
+                            }
                             _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, pwszPassword);
+                            _pCredProvCredentialEvents->SetFieldState(this, SFI_EDIT_TEXT, CPFS_HIDDEN);
+                            _pCredProvCredentialEvents->SetFieldState(this, SFI_PASSWORD, CPFS_HIDDEN);
+                            _pCredProvCredentialEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, CPFS_HIDDEN);
                             _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"人脸识别成功，正在登录...");
                             _pCredProvCredentialEvents->EndFieldUpdates();
 

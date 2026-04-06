@@ -85,7 +85,7 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
     { SFI_DISPLAYNAME_TEXT,  CPFT_SMALL_TEXT,    const_cast<LPWSTR>(L"Display name: ")                                             },
     { SFI_LOGONSTATUS_TEXT,  CPFT_SMALL_TEXT,    const_cast<LPWSTR>(L"Logon status: ")                                             },
     { SFI_CHECKBOX,          CPFT_CHECKBOX,      const_cast<LPWSTR>(L"Checkbox")                                                   },
-    { SFI_EDIT_TEXT,         CPFT_EDIT_TEXT,     const_cast<LPWSTR>(L"Edit text")                                                  },
+    { SFI_EDIT_TEXT,         CPFT_EDIT_TEXT,     const_cast<LPWSTR>(L"Username")                                                  },
     { SFI_COMBOBOX,          CPFT_COMBOBOX,      const_cast<LPWSTR>(L"Combobox")                                                   },
     { SFI_FACE_RECOGNITION_LINK, CPFT_COMMAND_LINK, const_cast<LPWSTR>(L"使用面部识别登录") },
 };
