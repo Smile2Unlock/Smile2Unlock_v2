@@ -6,6 +6,7 @@ module;
 export module smile2unlock.service;
 
 import std;
+import app_paths;
 import smile2unlock.models;
 import smile2unlock.database;
 import smile2unlock.dll_injector;
@@ -70,7 +71,8 @@ std::string EncryptPasswordForPersistence(const std::string& password, std::stri
         return {};
     }
 
-    const std::string encrypted_password = managers::EncryptPasswordForStorage(password, "smile2unlock.db");
+    const std::string encrypted_password = managers::EncryptPasswordForStorage(
+        password, smile2unlock::paths::GetDatabasePath().string());
     if (encrypted_password.empty()) {
         error_message = "密码加密失败";
         return {};

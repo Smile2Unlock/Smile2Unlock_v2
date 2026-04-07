@@ -192,6 +192,12 @@ void ConfigManager::setConfig(const ConfigManager::CoreConfig& newConfig) {
 
 bool ConfigManager::createDefaultConfig() const {
     // 创建默认配置文件
+    std::error_code ec;
+    const auto path = std::filesystem::path(m_filename);
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
+
     std::ofstream file(m_filename);
     if (!file.is_open()) {
         std::cerr << "Failed to create config file: " << m_filename << std::endl;
@@ -212,6 +218,12 @@ bool ConfigManager::createDefaultConfig() const {
 
 bool ConfigManager::saveConfig() const {
     // 直接写入配置文件
+    std::error_code ec;
+    const auto path = std::filesystem::path(m_filename);
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
+
     std::ofstream file(m_filename);
     if (!file.is_open()) {
         std::cerr << "Failed to save config file: " << m_filename << std::endl;

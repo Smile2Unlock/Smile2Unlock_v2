@@ -17,6 +17,7 @@ module;
 export module smile2unlock.application;
 
 import std;
+import app_paths;
 import smile2unlock.models;
 import smile2unlock.service;
 
@@ -104,6 +105,7 @@ private:
     };
 
     UIState ui_state_;
+    std::string imgui_ini_path_;
     bool initialized_;
     bool is_remote_backend_{false};
 };
@@ -231,6 +233,8 @@ bool Application::Initialize() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
+    imgui_ini_path_ = smile2unlock::paths::GetImguiIniPath().string();
+    io.IniFilename = imgui_ini_path_.c_str();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyh.ttc", 24.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
     if (io.Fonts->Fonts.Size == 0) {

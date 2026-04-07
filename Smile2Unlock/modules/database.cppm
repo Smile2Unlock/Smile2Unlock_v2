@@ -7,6 +7,7 @@ module;
 export module smile2unlock.database;
 
 import std;
+import app_paths;
 import crypto;
 import smile2unlock.models;
 
@@ -20,7 +21,7 @@ public:
     Database();
     ~Database();
 
-    bool Initialize(const std::string& db_path = "smile2unlock.db");
+    bool Initialize(const std::string& db_path = smile2unlock::paths::GetDatabasePath().string());
 
     std::vector<User> GetAllUsers() const;
     std::optional<User> GetUserById(int id) const;
@@ -68,9 +69,7 @@ std::filesystem::path ResolveAbsolutePath(const std::string& path) {
 }
 
 std::filesystem::path GetKeyFilePath(const std::filesystem::path& db_path) {
-    auto key_path = db_path;
-    key_path.replace_extension(".key");
-    return key_path;
+    return smile2unlock::paths::GetDatabaseKeyPath();
 }
 
 std::string TrimWhitespace(std::string value) {
@@ -196,6 +195,8 @@ Database::~Database() {
 }
 
 bool Database::Initialize(const std::string& db_path) {
+    smile2unlock::paths::EnsureRuntimeDirectories();
+    smile2unlock::paths::MigrateLegacyDataFiles();
     db_path_ = ResolveAbsolutePath(db_path).string();
     if (sqlite3_open(db_path_.c_str(), &db_) != SQLITE_OK) {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(db_) << std::endl;

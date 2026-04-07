@@ -8,6 +8,7 @@
 #include <windows.h>
 
 import service_runtime;
+import app_paths;
 import smile2unlock.application;
 import smile2unlock.service;
 import std;
@@ -98,6 +99,8 @@ void RegisterInstallPath() {
 }
 
 void InitializeProcessLogging() {
+    smile2unlock::paths::EnsureRuntimeDirectories();
+    smile2unlock::paths::MigrateLegacyDataFiles();
     smile2unlock::ConfigureProcessFileLogging(
         "SU", smile2unlock::ResolveLogDirectoryFromModule(nullptr));
     smile2unlock::InstallStandardStreamFileLogging();

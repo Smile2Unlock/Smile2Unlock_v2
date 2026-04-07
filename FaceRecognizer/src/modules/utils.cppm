@@ -13,6 +13,7 @@ module;
 export module utils;
 
 import std;
+import app_paths;
 
 /**
  * @brief 工具类，提供人脸特征文件操作和系统工具函数
@@ -37,12 +38,6 @@ public:
      */
     static std::shared_ptr<float> LoadFeaturesBinary(const std::string& data_file, int size);
 
-    /**
-     * @brief 获取当前工作目录
-     *
-     * @return std::string 当前工作目录路径
-     */
-    static std::string getCurrentDirectory();
 };
 
 // 实现部分
@@ -65,13 +60,7 @@ void Utils::SaveFeaturesBinary(std::shared_ptr<float> features, int size, const 
         throw std::invalid_argument("文件名不能为空");
     }
 
-    // 获取当前目录并构建完整文件路径
-    std::string current_dir = getCurrentDirectory();
-    if (current_dir.empty()) {
-        throw std::runtime_error("无法获取当前目录");
-    }
-
-    std::filesystem::path save_path = std::filesystem::path(current_dir) / "data" / "face" / data_file;
+    std::filesystem::path save_path = smile2unlock::paths::GetFaceDataDirectory() / data_file;
 
     // 确保目录存在
     try {
@@ -108,13 +97,7 @@ std::shared_ptr<float> Utils::LoadFeaturesBinary(const std::string& data_file, i
         throw std::invalid_argument("文件名不能为空");
     }
 
-    // 获取当前目录并构建完整文件路径
-    std::string current_dir = getCurrentDirectory();
-    if (current_dir.empty()) {
-        throw std::runtime_error("无法获取当前目录");
-    }
-
-    std::filesystem::path load_path = std::filesystem::path(current_dir) / "data" / "face" / data_file;
+    std::filesystem::path load_path = smile2unlock::paths::GetFaceDataDirectory() / data_file;
 
     // 使用C++文件流，自动管理资源
     std::ifstream file(load_path, std::ios::binary);
@@ -137,16 +120,3 @@ std::shared_ptr<float> Utils::LoadFeaturesBinary(const std::string& data_file, i
     return features;
 }
 
-/**
- * @brief 获取当前工作目录
- *
- * @return std::string 当前工作目录路径
- */
-std::string Utils::getCurrentDirectory() {
-    try {
-        std::cout << "当前工作目录: " << std::filesystem::current_path() << std::endl;
-        return std::filesystem::current_path().string();
-    } catch (const std::filesystem::filesystem_error& e) {
-        throw std::runtime_error("获取当前目录失败: " + std::string(e.what()));
-    }
-}

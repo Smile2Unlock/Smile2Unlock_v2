@@ -10,6 +10,7 @@
 #include "registryhelper.h"
 
 import camera;
+import app_paths;
 import utils;
 import config;
 import std;
@@ -23,6 +24,8 @@ int g_udp_port = 51234;
 namespace {
 
 void InitializeProcessLogging() {
+    smile2unlock::paths::EnsureRuntimeDirectories();
+    smile2unlock::paths::MigrateLegacyDataFiles();
     smile2unlock::ConfigureProcessFileLogging(
         "FR", smile2unlock::ResolveLogDirectoryFromModule(nullptr));
     smile2unlock::InstallStandardStreamFileLogging();
@@ -448,7 +451,7 @@ int mainOptimized(int argc, char* argv[]) {
     g_udp_port = result["udp-port"].as<int>();
     
     // 加载配置
-    ConfigManager config_manager("config.ini");
+    ConfigManager config_manager(smile2unlock::paths::GetConfigIniPath().string());
     // 1. 尝试加载现有配置
         if (!config_manager.loadConfig()) {
             std::cout << "无法加载配置文件，创建默认配置..." << std::endl;
