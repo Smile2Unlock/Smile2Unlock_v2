@@ -11,6 +11,8 @@
 
 namespace smile2unlock {
 
+void NotifyServiceActivity();
+
 /**
  * @brief IPC 请求处理器 - 在 Service 端处理 GUI 的请求
  */
@@ -22,6 +24,7 @@ public:
         response.clear();
         response.request_id = request.request_id;
         response.timestamp = request.timestamp;
+        NotifyServiceActivity();
         
         if (!backend_) {
             response.set_error("Backend not available");

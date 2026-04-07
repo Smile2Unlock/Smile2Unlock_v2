@@ -1,11 +1,15 @@
 module;
 
 #include <windows.h>
+#ifndef SECURITY_WIN32
+#define SECURITY_WIN32
+#endif
+#include <secext.h>
 #include <GL/gl.h>
 
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
@@ -150,11 +154,58 @@ ImVec4 WithAlpha(const ImVec4& color, const float alpha) {
     return ImVec4(color.x, color.y, color.z, alpha);
 }
 
+bool TryCopyWideStringToUtf8(_In_z_ const wchar_t* source,
+                             _Out_writes_z_(target_size) char* target,
+                             const size_t target_size) {
+    if (source == nullptr || target == nullptr || target_size == 0) {
+        return false;
+    }
+
+    const int required_size = WideCharToMultiByte(
+        CP_UTF8, 0, source, -1, nullptr, 0, nullptr, nullptr);
+    if (required_size <= 0 || static_cast<size_t>(required_size) > target_size) {
+        return false;
+    }
+
+    return WideCharToMultiByte(
+               CP_UTF8, 0, source, -1, target, required_size, nullptr, nullptr) > 0;
+}
+
+bool TryGetDefaultCpUsername(_Out_writes_z_(buffer_size) char* buffer,
+                             const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    buffer[0] = '\0';
+
+    ULONG upn_length = 0;
+    if (!GetUserNameExW(NameUserPrincipal, nullptr, &upn_length) &&
+        GetLastError() == ERROR_MORE_DATA && upn_length > 1) {
+        std::wstring upn(static_cast<size_t>(upn_length), L'\0');
+        if (GetUserNameExW(NameUserPrincipal, upn.data(), &upn_length) && upn_length > 0) {
+            if (TryCopyWideStringToUtf8(upn.c_str(), buffer, buffer_size)) {
+                return true;
+            }
+        }
+    }
+
+    DWORD username_length = 0;
+    if (!GetUserNameW(nullptr, &username_length) &&
+        GetLastError() == ERROR_INSUFFICIENT_BUFFER && username_length > 1) {
+        std::wstring username(static_cast<size_t>(username_length), L'\0');
+        if (GetUserNameW(username.data(), &username_length) && username_length > 0) {
+            return TryCopyWideStringToUtf8(username.c_str(), buffer, buffer_size);
+        }
+    }
+
+    return false;
+}
+
 Application::Application() : window_(nullptr), initialized_(false) {
     // 后端由外部设置，不再在此处创建
-    char username[256];
-    DWORD username_len = sizeof(username);
-    if (GetUserNameA(username, &username_len)) {
+    char username[256]{};
+    if (TryGetDefaultCpUsername(username, sizeof(username))) {
         strncpy_s(ui_state_.new_username, sizeof(ui_state_.new_username), username, _TRUNCATE);
     }
 }

@@ -158,15 +158,12 @@ int RunGuiMode() {
         
         auto remote_backend = std::make_unique<smile2unlock::RemoteBackendService>();
         if (!remote_backend->Initialize()) {
-            std::cerr << "Failed to connect to Service! Falling back to local mode." << std::endl;
-            // 降级到本地模式
-            auto local_backend = std::make_unique<smile2unlock::BackendService>();
-            if (!local_backend->Initialize()) {
-                std::cerr << "Failed to initialize local backend!" << std::endl;
-                return -1;
-            }
-            app.SetBackend(std::move(local_backend));
-            app.SetRemoteBackendFlag(false);
+            const wchar_t* message =
+                L"检测到已有 Smile2Unlock 服务正在运行，但当前 GUI 无法连接到它。\n"
+                L"为避免启动第二个本地实例影响 Winlogon 拉起的服务，本次将停止启动。";
+            std::cerr << "Failed to connect to existing Service. Aborting GUI startup to avoid local fallback." << std::endl;
+            MessageBoxW(nullptr, message, L"Smile2Unlock", MB_OK | MB_ICONWARNING);
+            return -1;
         } else {
             app.SetBackend(std::move(remote_backend));
             app.SetRemoteBackendFlag(true);
