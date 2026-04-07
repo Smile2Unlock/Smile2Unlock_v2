@@ -28,6 +28,7 @@
 #include "models/gui_ipc_protocol.h"
 #include "models/udp_password_packet.h"
 #include "registryhelper.h"
+#include "utils/logger.h"
 #include "CSampleProvider.h"
 #include "hresult_helper.h"
 #include <chrono>
@@ -37,6 +38,7 @@
 #include <future>
 #include <stdio.h>
 #include <stdarg.h>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -139,6 +141,40 @@ inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFOR
   }
 }
 
+inline void LogDebugMessage(const wchar_t* format, ...);
+
+inline std::string WideToUtf8LogMessage(const wchar_t* text) {
+  if (text == nullptr) {
+    return {};
+  }
+
+  const int required = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+  if (required <= 1) {
+    return {};
+  }
+
+  std::string utf8(static_cast<size_t>(required - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8.data(), required, nullptr, nullptr);
+  return utf8;
+}
+
+inline std::string ResolveCredentialProviderLogDirectory() {
+  const std::string registry_path = RegistryHelper::ReadStringFromRegistry(
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", "");
+  if (!registry_path.empty()) {
+    return (std::filesystem::path(registry_path) / "logs").string();
+  }
+
+  HMODULE module_handle = nullptr;
+  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(&LogDebugMessage), &module_handle)) {
+    return smile2unlock::ResolveLogDirectoryFromModule(module_handle);
+  }
+
+  return {};
+}
+
 inline void LogDebugMessage(const wchar_t* format, ...) {
   wchar_t buffer[1024];
   va_list args;
@@ -152,6 +188,13 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
 
   // 输出到事件日志
   LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
+
+  static const bool logging_initialized = []() {
+    smile2unlock::ConfigureProcessFileLogging("CP", ResolveCredentialProviderLogDirectory());
+    return true;
+  }();
+  (void)logging_initialized;
+  smile2unlock::WriteFileLogLine("CP", WideToUtf8LogMessage(buffer));
 
   // 只在 OUT_DEBUG_TO_FILE 为 1 时输出到文件
 #if OUT_DEBUG_TO_FILE

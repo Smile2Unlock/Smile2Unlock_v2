@@ -5,6 +5,7 @@
 #include "models/shared_frame_ipc.h"
 #include "seetaface.h"
 #include "exceptions.h"
+#include "utils/logger.h"
 #include <cxxopts.hpp>
 #include "registryhelper.h"
 
@@ -20,6 +21,13 @@ std::unique_ptr<UdpSender> g_udp_sender;
 int g_udp_port = 51234;
 
 namespace {
+
+void InitializeProcessLogging() {
+    smile2unlock::ConfigureProcessFileLogging(
+        "FR", smile2unlock::ResolveLogDirectoryFromModule(nullptr));
+    smile2unlock::InstallStandardStreamFileLogging();
+    smile2unlock::WriteFileLogLine("BOOT", "FaceRecognizer process logging initialized");
+}
 
 std::string EncodeBytesToHex(const unsigned char* data, size_t size) {
     static constexpr char kHex[] = "0123456789ABCDEF";
@@ -515,6 +523,7 @@ int main(int argc, char* argv[]) {
     #ifdef _WIN32
     SetConsoleOutputCP(65001);
     #endif
+    InitializeProcessLogging();
     try {
         return mainOptimized(argc, argv);
     } catch (const FaceRecognition::FaceRecognitionException& e) {

@@ -1,4 +1,5 @@
 #include "registryhelper.h"
+#include "utils/logger.h"
 #include "backend/managers/ipc/gui_ipc_server.h"
 #include "backend/gui_ipc_handler.h"
 #include "backend/remote_backend_service.h"
@@ -94,6 +95,13 @@ void RegisterInstallPath() {
         "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path",
         install_dir
     );
+}
+
+void InitializeProcessLogging() {
+    smile2unlock::ConfigureProcessFileLogging(
+        "SU", smile2unlock::ResolveLogDirectoryFromModule(nullptr));
+    smile2unlock::InstallStandardStreamFileLogging();
+    smile2unlock::WriteFileLogLine("BOOT", "Smile2Unlock process logging initialized");
 }
 
 int RunServiceMode() {
@@ -194,6 +202,8 @@ int RunGuiMode() {
 } // namespace
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    InitializeProcessLogging();
+
     if (!IsRunningAsAdministrator()) {
         return RelaunchAsAdministrator();
     }
