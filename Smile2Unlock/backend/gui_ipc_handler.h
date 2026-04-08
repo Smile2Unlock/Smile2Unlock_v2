@@ -214,6 +214,14 @@ private:
             case GuiIpcCommand::GET_RECOGNITION_RESULT:
                 handle_get_recognition_result(response);
                 break;
+
+            case GuiIpcCommand::GET_RECOGNIZER_CONFIG:
+                handle_get_recognizer_config(response);
+                break;
+
+            case GuiIpcCommand::SAVE_RECOGNIZER_CONFIG:
+                handle_save_recognizer_config(payload, response);
+                break;
                 
             default:
                 response.set_error("Unknown command");
@@ -488,6 +496,56 @@ private:
         std::strncpy(response.payload, str.c_str(), sizeof(response.payload) - 1);
         response.payload_size = static_cast<int32_t>(str.size());
         response.status = static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+    }
+
+    void handle_get_recognizer_config(GuiIpcResponse& response) {
+        FaceRecognizerConfig config;
+        std::string error;
+        if (!backend_->GetRecognizerConfig(config, error)) {
+            std::strncpy(response.payload, error.c_str(), sizeof(response.payload) - 1);
+            response.payload_size = static_cast<int32_t>(error.size());
+            response.status = static_cast<int32_t>(GuiIpcStatus::SERVICE_ERROR);
+            return;
+        }
+
+        std::ostringstream ss;
+        ss << "camera=" << config.camera << "\n";
+        ss << "liveness=" << (config.liveness ? "1" : "0") << "\n";
+        ss << "face_threshold=" << config.face_threshold << "\n";
+        ss << "liveness_threshold=" << config.liveness_threshold << "\n";
+        ss << "debug=" << (config.debug ? "1" : "0") << "\n";
+
+        const std::string result = ss.str();
+        std::strncpy(response.payload, result.c_str(), sizeof(response.payload) - 1);
+        response.payload_size = static_cast<int32_t>(result.size());
+        response.status = static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+    }
+
+    void handle_save_recognizer_config(const std::string& payload, GuiIpcResponse& response) {
+        std::istringstream ss(payload);
+        std::string line;
+        FaceRecognizerConfig config;
+
+        while (std::getline(ss, line)) {
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+
+            const std::string key = line.substr(0, eq);
+            const std::string value = line.substr(eq + 1);
+
+            if (key == "camera") config.camera = std::stoi(value);
+            else if (key == "liveness") config.liveness = (value == "1" || value == "true");
+            else if (key == "face_threshold") config.face_threshold = std::stof(value);
+            else if (key == "liveness_threshold") config.liveness_threshold = std::stof(value);
+            else if (key == "debug") config.debug = (value == "1" || value == "true");
+        }
+
+        std::string error;
+        const bool success = backend_->SaveRecognizerConfig(config, error);
+        std::strncpy(response.payload, error.c_str(), sizeof(response.payload) - 1);
+        response.payload_size = static_cast<int32_t>(error.size());
+        response.status = success ? static_cast<int32_t>(GuiIpcStatus::SUCCESS)
+                                  : static_cast<int32_t>(GuiIpcStatus::SERVICE_ERROR);
     }
 };
 

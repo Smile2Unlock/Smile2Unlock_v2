@@ -428,13 +428,13 @@ int mainOptimized(int argc, char* argv[]) {
         ("m,mode", "操作模式: recognize, capture-image, preview-stream, compare-features, test",
          cxxopts::value<std::string>()->default_value("help"))
         ("c,camera", "摄像头索引",
-         cxxopts::value<int>()->default_value("0"))
+         cxxopts::value<int>())
         ("t,threshold", "阈值类型和值: face=<value>, liveness=<value>",
          cxxopts::value<std::vector<std::string>>())
         ("d,debug", "启用调试输出",
-         cxxopts::value<bool>()->default_value("false"))
+         cxxopts::value<bool>())
         ("l,liveness-detection", "启用活体检测",
-         cxxopts::value<bool>()->default_value("true"))
+         cxxopts::value<bool>())
         ("udp-port", "UDP target port for sending recognition results",
          cxxopts::value<int>()->default_value("51234"))
         ("frame-map", "Shared memory mapping name for one-shot frame capture",
@@ -483,6 +483,16 @@ int mainOptimized(int argc, char* argv[]) {
         }
     
     auto config = config_manager.getConfig();
+
+    if (result.count("camera")) {
+        config.camera = result["camera"].as<int>();
+    }
+    if (result.count("liveness-detection")) {
+        config.liveness = result["liveness-detection"].as<bool>();
+    }
+    if (result.count("debug")) {
+        config.debug = result["debug"].as<bool>();
+    }
     
     // 解析阈值参数
     float face_threshold = config.face_threshold;

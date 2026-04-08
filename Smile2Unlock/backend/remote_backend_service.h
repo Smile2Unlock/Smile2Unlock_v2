@@ -250,6 +250,34 @@ public:
         return parse_recognition_result(response->payload);
     }
 
+    bool GetRecognizerConfig(FaceRecognizerConfig& config, std::string& error_message) override {
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::GET_RECOGNIZER_CONFIG, "", *response)) {
+            error_message = response->payload;
+            return false;
+        }
+        error_message.clear();
+        config = parse_recognizer_config(response->payload);
+        return true;
+    }
+
+    bool SaveRecognizerConfig(const FaceRecognizerConfig& config, std::string& error_message) override {
+        std::ostringstream payload;
+        payload << "camera=" << config.camera << "\n";
+        payload << "liveness=" << (config.liveness ? "1" : "0") << "\n";
+        payload << "face_threshold=" << config.face_threshold << "\n";
+        payload << "liveness_threshold=" << config.liveness_threshold << "\n";
+        payload << "debug=" << (config.debug ? "1" : "0") << "\n";
+
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::SAVE_RECOGNIZER_CONFIG, payload.str(), *response)) {
+            error_message = response->payload;
+            return false;
+        }
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+    }
+
 private:
     HANDLE pipe_;
     int32_t request_id_;
@@ -535,6 +563,28 @@ private:
         }
         
         return result;
+    }
+
+    FaceRecognizerConfig parse_recognizer_config(const std::string& data) {
+        FaceRecognizerConfig config;
+        std::istringstream ss(data);
+        std::string line;
+
+        while (std::getline(ss, line)) {
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+
+            std::string key = line.substr(0, eq);
+            std::string val = line.substr(eq + 1);
+
+            if (key == "camera") config.camera = std::stoi(val);
+            else if (key == "liveness") config.liveness = (val == "1");
+            else if (key == "face_threshold") config.face_threshold = std::stof(val);
+            else if (key == "liveness_threshold") config.liveness_threshold = std::stof(val);
+            else if (key == "debug") config.debug = (val == "1");
+        }
+
+        return config;
     }
 };
 

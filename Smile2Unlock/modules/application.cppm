@@ -100,6 +100,11 @@ private:
         bool camera_enabled{};
         std::string preview_message;
         int active_panel{};
+        FaceRecognizerConfig recognizer_config{};
+        FaceRecognizerConfig recognizer_saved_config{};
+        bool recognizer_config_loaded{};
+        bool recognizer_config_dirty{};
+        std::string recognizer_config_message;
         
         // 缓存的 DLL 状态
         DllStatus cached_dll_status;
@@ -923,8 +928,129 @@ void Application::RenderUsersPanel() {
 
 void Application::RenderRecognizerPanel() {
     BeginPanelCard("RecognizerPanel");
-    RenderSectionHeader("SERVICE", "FaceRecognizer", "服务控制区保持最少元素，只呈现运行结果和操作。");
+    RenderSectionHeader("SERVICE", "FaceRecognizer", "配置由 Smile2Unlock 持有并落盘，启动 FR 时显式传参，不再只是编辑 ini 文本。");
+
+    if (!ui_state_.recognizer_config_loaded) {
+        std::string error;
+        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_loaded = true;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = "已从配置文件载入当前识别参数";
+        } else {
+            ui_state_.recognizer_config_message = "加载配置失败: " + error;
+        }
+    }
+
+    const bool recognition_running = backend_->IsRecognitionRunning();
+    RenderInfoRow("识别进程", recognition_running ? "运行中" : "未运行", recognition_running ? Nord14 : Nord3);
     RenderInfoRow("摄像头预览", ui_state_.camera_enabled ? "活跃" : "未启动", ui_state_.camera_enabled ? Nord8 : Nord3);
+    RenderInfoRow("配置状态", ui_state_.recognizer_config_dirty ? "有未保存修改" : "已与磁盘同步",
+                  ui_state_.recognizer_config_dirty ? Nord13 : Nord14);
+
+    ImGui::Spacing();
+    RenderSectionHeader("CONFIG", "识别参数", "使用明确控件调整摄像头、活体和阈值，保存后会影响后续预览、抓拍和识别。");
+
+    auto mark_dirty = [this]() {
+        ui_state_.recognizer_config_dirty =
+            ui_state_.recognizer_config.camera != ui_state_.recognizer_saved_config.camera ||
+            ui_state_.recognizer_config.liveness != ui_state_.recognizer_saved_config.liveness ||
+            std::abs(ui_state_.recognizer_config.face_threshold - ui_state_.recognizer_saved_config.face_threshold) > 0.0001f ||
+            std::abs(ui_state_.recognizer_config.liveness_threshold - ui_state_.recognizer_saved_config.liveness_threshold) > 0.0001f ||
+            ui_state_.recognizer_config.debug != ui_state_.recognizer_saved_config.debug;
+    };
+
+    int camera_index = ui_state_.recognizer_config.camera;
+    if (ImGui::InputInt("摄像头索引", &camera_index, 1, 1)) {
+        ui_state_.recognizer_config.camera = std::max(0, camera_index);
+        mark_dirty();
+    }
+
+    if (ImGui::Checkbox("启用活体检测", &ui_state_.recognizer_config.liveness)) {
+        mark_dirty();
+    }
+    if (ImGui::SliderFloat("人脸阈值", &ui_state_.recognizer_config.face_threshold, 0.30f, 0.95f, "%.2f")) {
+        mark_dirty();
+    }
+    if (ImGui::SliderFloat("活体阈值", &ui_state_.recognizer_config.liveness_threshold, 0.30f, 0.99f, "%.2f")) {
+        mark_dirty();
+    }
+    if (ImGui::Checkbox("输出调试日志", &ui_state_.recognizer_config.debug)) {
+        mark_dirty();
+    }
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
+    ImGui::TextWrapped("%s", "预设会立即写入当前编辑态；只有点击“保存配置”后，才会落盘并成为 SU 启动 FR 的默认参数。");
+    ImGui::PopStyleColor();
+
+    auto apply_preset = [this, &mark_dirty](int camera, bool liveness, float face, float live, bool debug, const char* label) {
+        ui_state_.recognizer_config.camera = camera;
+        ui_state_.recognizer_config.liveness = liveness;
+        ui_state_.recognizer_config.face_threshold = face;
+        ui_state_.recognizer_config.liveness_threshold = live;
+        ui_state_.recognizer_config.debug = debug;
+        ui_state_.recognizer_config_message = std::string("已应用预设: ") + label;
+        mark_dirty();
+    };
+
+    if (ImGui::Button("平衡预设", ImVec2(160, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.62f, 0.80f, false, "平衡");
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("严格预设", ImVec2(160, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.72f, 0.88f, false, "严格");
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("快速预设", ImVec2(160, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), false, 0.55f, 0.65f, false, "快速");
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("重新加载磁盘配置", ImVec2(220, 0))) {
+        std::string error;
+        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_loaded = true;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = "已重新加载磁盘配置";
+        } else {
+            ui_state_.recognizer_config_message = "重新加载失败: " + error;
+        }
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("恢复默认值", ImVec2(180, 0))) {
+        ui_state_.recognizer_config.camera = 0;
+        ui_state_.recognizer_config.liveness = true;
+        ui_state_.recognizer_config.face_threshold = 0.62f;
+        ui_state_.recognizer_config.liveness_threshold = 0.8f;
+        ui_state_.recognizer_config.debug = false;
+        ui_state_.recognizer_config_message = "已恢复默认参数";
+        mark_dirty();
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("保存配置", ImVec2(160, 0))) {
+        std::string error;
+        if (backend_->SaveRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = error;
+            ui_state_.status_message = error;
+            ui_state_.status_message_timer = 3.0f;
+        } else {
+            ui_state_.recognizer_config_message = "保存失败: " + error;
+            ui_state_.status_message = ui_state_.recognizer_config_message;
+            ui_state_.status_message_timer = 3.0f;
+        }
+    }
+
+    if (!ui_state_.recognizer_config_message.empty()) {
+        ImGui::Spacing();
+        RenderInfoRow("配置反馈", ui_state_.recognizer_config_message, ui_state_.recognizer_config_dirty ? Nord13 : Nord8);
+    }
+
+    ImGui::Spacing();
+    RenderSectionHeader("CONTROL", "进程控制", "配置保存后，会在下一次启动预览、抓拍或识别时由 SU 显式传给 FR。");
     if (ImGui::Button("启动 FaceRecognizer", ImVec2(240, 0))) {
         std::string error;
         ui_state_.status_message = backend_->StartRecognition(error) ? "人脸识别进程已启动" : "启动失败: " + error;

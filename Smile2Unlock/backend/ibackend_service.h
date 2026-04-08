@@ -46,6 +46,8 @@ public:
     virtual void StopRecognition() = 0;
     virtual bool IsRecognitionRunning() const = 0;
     virtual RecognitionResult GetRecognitionResult() = 0;
+    virtual bool GetRecognizerConfig(FaceRecognizerConfig& config, std::string& error_message) = 0;
+    virtual bool SaveRecognizerConfig(const FaceRecognizerConfig& config, std::string& error_message) = 0;
 };
 
 } // namespace smile2unlock

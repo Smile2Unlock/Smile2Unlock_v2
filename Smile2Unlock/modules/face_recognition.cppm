@@ -115,6 +115,8 @@ public:
     RecognitionResult GetLastResult() const;
     std::string ExtractFaceFeature(const std::string& image_path);
     bool CompareFaces(const std::string& feature1, const std::string& feature2, float& similarity);
+    void SetConfig(const FaceRecognizerConfig& config) { config_ = config; }
+    FaceRecognizerConfig GetConfig() const { return config_; }
 
 private:
     static constexpr float kRecognitionThreshold = 0.62f;
@@ -146,6 +148,7 @@ private:
     std::unique_ptr<UdpSenderToCP> udp_sender_;
     std::unique_ptr<UdpPasswordSenderToCP> udp_password_sender_;
     std::unique_ptr<smile2unlock::managers::Database> database_;
+    FaceRecognizerConfig config_;
 
     uint32_t current_session_id_;
     std::string pending_username_hint_;
@@ -231,7 +234,16 @@ bool FaceRecognition::start_fr_process() {
     auto* result_header = static_cast<SharedFrameHeader*>(recognition_result_view_);
     *result_header = SharedFrameHeader{};
 
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m recognize --udp-port " + std::to_string(kFrStatusPort) + " --result-map \"" + recognition_result_map_name_ + "\"";
+    std::ostringstream cmd;
+    cmd << "\"" << fr_exe.string() << "\" -m recognize"
+        << " --udp-port " << kFrStatusPort
+        << " --camera " << config_.camera
+        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --threshold face=" << config_.face_threshold
+        << " --threshold liveness=" << config_.liveness_threshold
+        << " --debug " << (config_.debug ? "true" : "false")
+        << " --result-map \"" << recognition_result_map_name_ << "\"";
+    std::string cmd_line = cmd.str();
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &fr_process_info_)) {
         UnmapViewOfFile(recognition_result_view_);
         CloseHandle(recognition_result_mapping_);
@@ -263,7 +275,15 @@ bool FaceRecognition::start_fr_capture_process(const std::string& map_name, bool
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m capture-image --frame-map \"" + map_name + "\"";
+    std::ostringstream cmd;
+    cmd << "\"" << fr_exe.string() << "\" -m capture-image"
+        << " --camera " << config_.camera
+        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --threshold face=" << config_.face_threshold
+        << " --threshold liveness=" << config_.liveness_threshold
+        << " --debug " << (config_.debug ? "true" : "false")
+        << " --frame-map \"" << map_name << "\"";
+    std::string cmd_line = cmd.str();
     if (extract_feature) {
         cmd_line += " --extract-feature true";
     }
@@ -302,7 +322,15 @@ bool FaceRecognition::start_fr_preview_process(const std::string& map_name, std:
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     memset(&preview_process_info_, 0, sizeof(preview_process_info_));
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m preview-stream --frame-map \"" + map_name + "\"";
+    std::ostringstream cmd;
+    cmd << "\"" << fr_exe.string() << "\" -m preview-stream"
+        << " --camera " << config_.camera
+        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --threshold face=" << config_.face_threshold
+        << " --threshold liveness=" << config_.liveness_threshold
+        << " --debug " << (config_.debug ? "true" : "false")
+        << " --frame-map \"" << map_name << "\"";
+    std::string cmd_line = cmd.str();
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &preview_process_info_)) {
         error_message = "启动 FaceRecognizer 预览进程失败";
         return false;
