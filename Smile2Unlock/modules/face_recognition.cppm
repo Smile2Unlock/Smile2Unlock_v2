@@ -338,11 +338,16 @@ void FaceRecognition::ReadSubProcessLogs() {
 }
 
 void FaceRecognition::stop_fr_process() {
+    if (recognition_result_view_ != nullptr) {
+        auto* header = static_cast<SharedFrameHeader*>(recognition_result_view_);
+        header->stop_requested = 1;
+    }
+
     if (fr_process_) {
         std::cout << "[SU] stop_fr_process session=" << current_session_id_
                   << " notifying PROCESS_ENDED" << std::endl;
         if (udp_sender_) udp_sender_->send_status(RecognitionStatus::PROCESS_ENDED, "", current_session_id_);
-        if (IsProcessHandleActive(fr_process_) && WaitForSingleObject(fr_process_, 3000) == WAIT_TIMEOUT) {
+        if (IsProcessHandleActive(fr_process_) && WaitForSingleObject(fr_process_, 500) == WAIT_TIMEOUT) {
             TerminateProcess(fr_process_, 0);
         }
     }

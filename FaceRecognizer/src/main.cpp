@@ -286,6 +286,7 @@ int recognizeFace(int camera_index, bool liveness_detection,
 
     // 识别结果标志
     bool recognition_success = false;
+    bool stop_requested = false;
     
     // 初始化UDP发送器
     if (!g_udp_sender) {
@@ -314,9 +315,19 @@ int recognizeFace(int camera_index, bool liveness_detection,
         
     // 主识别循环
     while (true) {
+        if (result_header != nullptr && result_header->stop_requested != 0) {
+            stop_requested = true;
+            break;
+        }
+
         // 从摄像头捕获帧
         SeetaImageData img_data = {};
         if (cam.CaptureFrame(img_data)) {
+            if (result_header != nullptr && result_header->stop_requested != 0) {
+                stop_requested = true;
+                delete[] img_data.data;
+                break;
+            }
             
             // 检查识别成功或超时
             if (recognition_success) {
@@ -387,9 +398,13 @@ int recognizeFace(int camera_index, bool liveness_detection,
     }
     
     // 输出识别结果
-    std::cout << "识别结果：" << (recognition_success ? "成功" : "超时/失败") << std::endl;
+    if (stop_requested) {
+        std::cout << "识别结果：已取消" << std::endl;
+    } else {
+        std::cout << "识别结果：" << (recognition_success ? "成功" : "超时/失败") << std::endl;
+    }
 
-    if (!recognition_success && g_udp_sender) {
+    if (!recognition_success && !stop_requested && g_udp_sender) {
         g_udp_sender->send_status(RecognitionStatus::TIMEOUT, "");
     }
 
@@ -400,7 +415,7 @@ int recognizeFace(int camera_index, bool liveness_detection,
         CloseHandle(result_mapping);
     }
     
-    std::cout << "人脸识别结束。" << std::endl;
+    std::cout << "人脸识别结束。" << (stop_requested ? " (cancelled)" : "") << std::endl;
     return 0;
 }
 
