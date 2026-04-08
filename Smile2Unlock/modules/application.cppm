@@ -158,6 +158,7 @@ enum WindowControlIcon {
 };
 
 constexpr GLint kGlClampToEdge = 0x812F;
+constexpr ImGuiWindowFlags kStaticChildFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
 ImVec4 WithAlpha(const ImVec4& color, const float alpha) {
     return ImVec4(color.x, color.y, color.z, alpha);
@@ -576,7 +577,7 @@ void Application::RenderShell() {
 void Application::RenderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord1, 0.97f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(Nord3, 0.65f));
-    ImGui::BeginChild("TitleBar", ImVec2(0, 118.0f), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("TitleBar", ImVec2(0, 118.0f), true, kStaticChildFlags);
 
     const bool is_maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) == GLFW_TRUE;
     const char* current_panel =
@@ -1144,7 +1145,7 @@ void Application::RenderInfoRow(const char* label, const std::string& value, con
     const float row_height = std::max(84.0f, 48.0f + text_height + ImGui::GetStyle().WindowPadding.y * 0.7f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord0, 0.28f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(Nord3, 0.25f));
-    ImGui::BeginChild(label, ImVec2(0, row_height), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild(label, ImVec2(0, row_height), true, kStaticChildFlags);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.62f));
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
@@ -1159,7 +1160,7 @@ void Application::RenderInfoRow(const char* label, const std::string& value, con
 void Application::RenderStatTile(const char* id, const char* label, const std::string& value, const std::string& hint, const ImVec4& accent, float width) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord1, 0.96f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(accent, 0.42f));
-    ImGui::BeginChild(id, ImVec2(width, 136.0f), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild(id, ImVec2(width, 136.0f), true, kStaticChildFlags);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.65f));
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
@@ -1176,7 +1177,7 @@ void Application::RenderStatTile(const char* id, const char* label, const std::s
 bool Application::RenderNavItem(const char* id, const char* label, const char* hint, bool selected) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, selected ? WithAlpha(Nord10, 0.36f) : WithAlpha(Nord1, 0.92f));
     ImGui::PushStyleColor(ImGuiCol_Border, selected ? WithAlpha(Nord8, 0.65f) : WithAlpha(Nord3, 0.30f));
-    ImGui::BeginChild(id, ImVec2(0, 98.0f), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild(id, ImVec2(0, 98.0f), true, kStaticChildFlags);
     ImGui::PushStyleColor(ImGuiCol_Text, selected ? Nord6 : Nord4);
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
