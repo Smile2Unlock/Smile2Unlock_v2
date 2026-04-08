@@ -1,6 +1,8 @@
 module;
 
 #include <windows.h>
+#include <mfapi.h>
+#include <mfidl.h>
 #ifndef SECURITY_WIN32
 #define SECURITY_WIN32
 #endif
@@ -24,6 +26,11 @@ import smile2unlock.models;
 import smile2unlock.service;
 
 export namespace smile2unlock {
+
+struct CameraDeviceOption {
+    int index{};
+    std::string label;
+};
 
 class Application {
 public:
@@ -57,6 +64,7 @@ private:
     void RenderInjectorPanel();
     void RenderUsersPanel();
     void RenderRecognizerPanel();
+    void RefreshCameraDeviceList();
     void PollPreviewStream();
     void RefreshFacePreview();
     void UpdatePreviewTexture(const std::vector<unsigned char>& image_data, int width, int height);
@@ -105,6 +113,9 @@ private:
         bool recognizer_config_loaded{};
         bool recognizer_config_dirty{};
         std::string recognizer_config_message;
+        std::vector<CameraDeviceOption> camera_devices;
+        bool camera_devices_loaded{};
+        std::string camera_devices_message;
         
         // 缓存的 DLL 状态
         DllStatus cached_dll_status;
@@ -379,11 +390,106 @@ bool TryGetDefaultCpUsername(_Out_writes_z_(buffer_size) char* buffer,
     return false;
 }
 
+bool EnsureApplicationMFInitialized() {
+    static struct MFInitGuard {
+        HRESULT hr{MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)};
+        ~MFInitGuard() {
+            if (SUCCEEDED(hr)) {
+                MFShutdown();
+            }
+        }
+    } guard;
+    return SUCCEEDED(guard.hr);
+}
+
+std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_message) {
+    std::vector<CameraDeviceOption> devices;
+    error_message.clear();
+
+    if (!EnsureApplicationMFInitialized()) {
+        error_message = "Media Foundation 初始化失败";
+        return devices;
+    }
+
+    IMFAttributes* attributes = nullptr;
+    HRESULT hr = MFCreateAttributes(&attributes, 1);
+    if (FAILED(hr)) {
+        error_message = "创建摄像头枚举属性失败";
+        return devices;
+    }
+
+    hr = attributes->SetGUID(
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+    if (FAILED(hr)) {
+        attributes->Release();
+        error_message = "设置摄像头枚举属性失败";
+        return devices;
+    }
+
+    IMFActivate** activate_array = nullptr;
+    UINT32 count = 0;
+    hr = MFEnumDeviceSources(attributes, &activate_array, &count);
+    attributes->Release();
+
+    if (FAILED(hr)) {
+        error_message = "枚举摄像头设备失败";
+        return devices;
+    }
+
+    devices.reserve(count);
+    for (UINT32 i = 0; i < count; ++i) {
+        WCHAR* friendly_name = nullptr;
+        UINT32 name_length = 0;
+        std::string label = "摄像头 " + std::to_string(i);
+
+        if (SUCCEEDED(activate_array[i]->GetAllocatedString(
+                MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+                &friendly_name,
+                &name_length)) &&
+            friendly_name != nullptr) {
+            const int required = WideCharToMultiByte(CP_UTF8, 0, friendly_name, -1, nullptr, 0, nullptr, nullptr);
+            if (required > 1) {
+                std::string utf8_name(static_cast<size_t>(required - 1), '\0');
+                WideCharToMultiByte(CP_UTF8, 0, friendly_name, -1, utf8_name.data(), required, nullptr, nullptr);
+                label = utf8_name + "  [索引 " + std::to_string(i) + "]";
+            }
+            CoTaskMemFree(friendly_name);
+        } else {
+            label += "  [索引 " + std::to_string(i) + "]";
+        }
+
+        devices.push_back({static_cast<int>(i), label});
+        activate_array[i]->Release();
+    }
+
+    if (activate_array != nullptr) {
+        CoTaskMemFree(activate_array);
+    }
+
+    if (devices.empty()) {
+        error_message = "未检测到摄像头设备";
+    }
+
+    return devices;
+}
+
 Application::Application() : window_(nullptr), initialized_(false) {
     // 后端由外部设置，不再在此处创建
     char username[256]{};
     if (TryGetDefaultCpUsername(username, sizeof(username))) {
         strncpy_s(ui_state_.new_username, sizeof(ui_state_.new_username), username, _TRUNCATE);
+    }
+}
+
+void Application::RefreshCameraDeviceList() {
+    std::string error_message;
+    ui_state_.camera_devices = EnumerateCameraDevices(error_message);
+    ui_state_.camera_devices_loaded = true;
+    if (!error_message.empty()) {
+        ui_state_.camera_devices_message = error_message;
+    } else {
+        ui_state_.camera_devices_message = "已检测到 " + std::to_string(ui_state_.camera_devices.size()) + " 个摄像头设备";
     }
 }
 
@@ -942,6 +1048,9 @@ void Application::RenderRecognizerPanel() {
             ui_state_.recognizer_config_message = "加载配置失败: " + error;
         }
     }
+    if (!ui_state_.camera_devices_loaded) {
+        RefreshCameraDeviceList();
+    }
 
     const bool recognition_running = backend_->IsRecognitionRunning();
     RenderInfoRow("识别进程", recognition_running ? "运行中" : "未运行", recognition_running ? Nord14 : Nord3);
@@ -961,10 +1070,34 @@ void Application::RenderRecognizerPanel() {
             ui_state_.recognizer_config.debug != ui_state_.recognizer_saved_config.debug;
     };
 
-    int camera_index = ui_state_.recognizer_config.camera;
-    if (ImGui::InputInt("摄像头索引", &camera_index, 1, 1)) {
-        ui_state_.recognizer_config.camera = std::max(0, camera_index);
-        mark_dirty();
+    std::string selected_camera_label = "索引 " + std::to_string(ui_state_.recognizer_config.camera) + " (未在当前设备列表中)";
+    for (const auto& device : ui_state_.camera_devices) {
+        if (device.index == ui_state_.recognizer_config.camera) {
+            selected_camera_label = device.label;
+            break;
+        }
+    }
+
+    if (ImGui::BeginCombo("摄像头设备", selected_camera_label.c_str())) {
+        for (const auto& device : ui_state_.camera_devices) {
+            const bool selected = (device.index == ui_state_.recognizer_config.camera);
+            if (ImGui::Selectable(device.label.c_str(), selected)) {
+                ui_state_.recognizer_config.camera = device.index;
+                mark_dirty();
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("刷新设备", ImVec2(140, 0))) {
+        RefreshCameraDeviceList();
+    }
+    RenderInfoRow("当前摄像头索引", std::to_string(ui_state_.recognizer_config.camera), Nord8);
+    if (!ui_state_.camera_devices_message.empty()) {
+        RenderInfoRow("设备枚举", ui_state_.camera_devices_message, ui_state_.camera_devices.empty() ? Nord13 : Nord14);
     }
 
     if (ImGui::Checkbox("启用活体检测", &ui_state_.recognizer_config.liveness)) {
