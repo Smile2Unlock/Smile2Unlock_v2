@@ -14,6 +14,8 @@ module;
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#include "utils/logger.h"
+
 export module smile2unlock.application;
 
 import std;
@@ -173,6 +175,177 @@ bool TryCopyWideStringToUtf8(_In_z_ const wchar_t* source,
                CP_UTF8, 0, source, -1, target, required_size, nullptr, nullptr) > 0;
 }
 
+bool TryGetUtf8WindowsUsername(_Out_writes_z_(buffer_size) char* buffer,
+                               const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    WCHAR username[256]{};
+    DWORD username_length = ARRAYSIZE(username);
+    if (GetUserNameW(username, &username_length) && username_length > 0) {
+        return TryCopyWideStringToUtf8(username, buffer, buffer_size);
+    }
+
+    return false;
+}
+
+bool TryReadMicrosoftAccountEmailFromRegistry(_Out_writes_z_(buffer_size) char* buffer,
+                                              const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    const wchar_t* registry_paths[] = {
+        L"Software\\Microsoft\\IdentityCRL\\UserExtendedProperties",
+        L"Software\\Microsoft\\IdentityCRL\\StoredIdentities"
+    };
+
+    for (const wchar_t* registry_path : registry_paths) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_path, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+            continue;
+        }
+
+        DWORD index = 0;
+        wchar_t subkey_name[512]{};
+        DWORD subkey_name_length = ARRAYSIZE(subkey_name);
+        while (RegEnumKeyExW(key, index, subkey_name, &subkey_name_length,
+                             nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            if (wcschr(subkey_name, L'@') != nullptr) {
+                if (TryCopyWideStringToUtf8(subkey_name, buffer, buffer_size)) {
+                    RegCloseKey(key);
+                    return true;
+                }
+            }
+
+            ++index;
+            subkey_name[0] = L'\0';
+            subkey_name_length = ARRAYSIZE(subkey_name);
+        }
+
+        RegCloseKey(key);
+    }
+
+    return false;
+}
+
+bool TryGetMicrosoftAccountEmailFromToken(_Out_writes_z_(buffer_size) char* buffer,
+                                          const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    DWORD required_size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required_size);
+    if (required_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return false;
+    }
+
+    PTOKEN_USER token_user = static_cast<PTOKEN_USER>(LocalAlloc(LPTR, required_size));
+    if (token_user == nullptr) {
+        CloseHandle(token);
+        return false;
+    }
+
+    if (!GetTokenInformation(token, TokenUser, token_user, required_size, &required_size)) {
+        LocalFree(token_user);
+        CloseHandle(token);
+        return false;
+    }
+
+    wchar_t account_name[512]{};
+    wchar_t domain_name[512]{};
+    DWORD account_name_size = ARRAYSIZE(account_name);
+    DWORD domain_name_size = ARRAYSIZE(domain_name);
+    SID_NAME_USE sid_type = SidTypeUnknown;
+
+    const BOOL lookup_ok = LookupAccountSidW(
+        nullptr,
+        token_user->User.Sid,
+        account_name,
+        &account_name_size,
+        domain_name,
+        &domain_name_size,
+        &sid_type);
+    LocalFree(token_user);
+    CloseHandle(token);
+
+    if (!lookup_ok) {
+        return false;
+    }
+
+    if (_wcsicmp(domain_name, L"MicrosoftAccount") != 0) {
+        return false;
+    }
+
+    if (wcschr(account_name, L'@') != nullptr) {
+        return TryCopyWideStringToUtf8(account_name, buffer, buffer_size);
+    }
+
+    return TryReadMicrosoftAccountEmailFromRegistry(buffer, buffer_size);
+}
+
+bool IsCurrentUserLocalBySid() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    DWORD required_size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required_size);
+    if (required_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return false;
+    }
+
+    PTOKEN_USER token_user = static_cast<PTOKEN_USER>(LocalAlloc(LPTR, required_size));
+    if (token_user == nullptr) {
+        CloseHandle(token);
+        return false;
+    }
+
+    if (!GetTokenInformation(token, TokenUser, token_user, required_size, &required_size)) {
+        LocalFree(token_user);
+        CloseHandle(token);
+        return false;
+    }
+    CloseHandle(token);
+
+    WCHAR account_name[256]{};
+    WCHAR domain_name[256]{};
+    DWORD account_name_length = ARRAYSIZE(account_name);
+    DWORD domain_name_length = ARRAYSIZE(domain_name);
+    SID_NAME_USE sid_type = SidTypeUnknown;
+
+    const BOOL lookup_ok = LookupAccountSidW(
+        nullptr,
+        token_user->User.Sid,
+        account_name,
+        &account_name_length,
+        domain_name,
+        &domain_name_length,
+        &sid_type);
+    LocalFree(token_user);
+    if (!lookup_ok) {
+        return false;
+    }
+
+    WCHAR computer_name[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD computer_name_length = ARRAYSIZE(computer_name);
+    if (!GetComputerNameW(computer_name, &computer_name_length)) {
+        return false;
+    }
+
+    return _wcsicmp(domain_name, computer_name) == 0;
+}
+
 bool TryGetDefaultCpUsername(_Out_writes_z_(buffer_size) char* buffer,
                              const size_t buffer_size) {
     if (buffer == nullptr || buffer_size == 0) {
@@ -181,26 +354,22 @@ bool TryGetDefaultCpUsername(_Out_writes_z_(buffer_size) char* buffer,
 
     buffer[0] = '\0';
 
-    ULONG upn_length = 0;
-    if (!GetUserNameExW(NameUserPrincipal, nullptr, &upn_length) &&
-        GetLastError() == ERROR_MORE_DATA && upn_length > 1) {
-        std::wstring upn(static_cast<size_t>(upn_length), L'\0');
-        if (GetUserNameExW(NameUserPrincipal, upn.data(), &upn_length) && upn_length > 0) {
-            if (TryCopyWideStringToUtf8(upn.c_str(), buffer, buffer_size)) {
-                return true;
-            }
-        }
+    char username[256]{};
+    const bool has_username = TryGetUtf8WindowsUsername(username, sizeof(username));
+    const bool is_local_user = IsCurrentUserLocalBySid();
+
+    if (!is_local_user && TryGetMicrosoftAccountEmailFromToken(buffer, buffer_size)) {
+        LOG_INFO(LOG_MODULE_SERVICE, "Default CP username source=microsoft-account-email value=%s", buffer);
+        return true;
     }
 
-    DWORD username_length = 0;
-    if (!GetUserNameW(nullptr, &username_length) &&
-        GetLastError() == ERROR_INSUFFICIENT_BUFFER && username_length > 1) {
-        std::wstring username(static_cast<size_t>(username_length), L'\0');
-        if (GetUserNameW(username.data(), &username_length) && username_length > 0) {
-            return TryCopyWideStringToUtf8(username.c_str(), buffer, buffer_size);
-        }
+    if (has_username) {
+        strncpy_s(buffer, buffer_size, username, _TRUNCATE);
+        LOG_INFO(LOG_MODULE_SERVICE, "Default CP username source=local-username value=%s", buffer);
+        return true;
     }
 
+    LOG_WARNING(LOG_MODULE_SERVICE, "Default CP username unavailable");
     return false;
 }
 
