@@ -28,12 +28,6 @@ local function apply_common_module_binary_target()
     set_policy("build.c++.modules", true)
 end
 
-target("BrandAssets")
-    set_kind("phony")
-    on_build(function (target)
-        os.vrunv("python", {path.join(os.projectdir(), "tools", "generate_brand_assets.py")})
-    end)
-
 local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
     if not is_plat("windows", "mingw") then
         return
@@ -142,7 +136,6 @@ target("FaceRecognizer")
 
 target("SampleV2CredentialProvider")
     set_kind("shared")
-    add_deps("BrandAssets")
     set_filename("SampleV2CredentialProvider.dll")
     set_prefixname("")
     -- add_sysincludedirs("D:/Tools/llvm-mingw-ucrt-x86_64/include/c++/v1")
@@ -170,7 +163,6 @@ target("SampleV2CredentialProvider")
 
 target("Smile2Unlock")
     apply_common_module_binary_target()
-    add_deps("BrandAssets")
     add_files(
         "Smile2Unlock/*.cpp",
         "Smile2Unlock/modules/*.cppm",
