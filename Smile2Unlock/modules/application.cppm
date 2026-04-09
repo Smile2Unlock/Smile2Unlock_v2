@@ -64,6 +64,7 @@ private:
     void RenderInjectorPanel();
     void RenderUsersPanel();
     void RenderRecognizerPanel();
+    void RenderConfigPanel();
     void RefreshCameraDeviceList();
     void SyncCameraPreviewState();
     void PollPreviewStream();
@@ -168,7 +169,8 @@ using namespace NordColors;
 enum PanelIndex {
     PanelInjector = 0,
     PanelUsers = 1,
-    PanelRecognizer = 2
+    PanelRecognizer = 2,
+    PanelConfig = 3
 };
 
 enum WindowControlIcon {
@@ -826,8 +828,10 @@ void Application::RenderShell() {
         RenderInjectorPanel();
     } else if (ui_state_.active_panel == PanelUsers) {
         RenderUsersPanel();
-    } else {
+    } else if (ui_state_.active_panel == PanelRecognizer) {
         RenderRecognizerPanel();
+    } else {
+        RenderConfigPanel();
     }
 
     RenderStatusMessage();
@@ -845,7 +849,9 @@ void Application::RenderTitleBar() {
     const bool is_maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) == GLFW_TRUE;
     const char* current_panel =
         ui_state_.active_panel == PanelInjector ? Tr("panel_injector") :
-        ui_state_.active_panel == PanelUsers ? Tr("panel_users") : Tr("panel_recognizer");
+        ui_state_.active_panel == PanelUsers ? Tr("panel_users") :
+        ui_state_.active_panel == PanelRecognizer ? Tr("panel_recognizer")
+                                                  : Tr("panel_config");
 
     ImGui::PushStyleColor(ImGuiCol_Text, Nord6);
     ImGui::TextUnformatted("Smile2Unlock");
@@ -938,6 +944,9 @@ void Application::RenderSidebar() {
     }
     if (RenderNavItem("NavRecognizer", Tr("panel_recognizer"), Tr("nav_recognizer_hint"), ui_state_.active_panel == PanelRecognizer)) {
         ui_state_.active_panel = PanelRecognizer;
+    }
+    if (RenderNavItem("NavConfig", Tr("panel_config"), Tr("nav_config_hint"), ui_state_.active_panel == PanelConfig)) {
+        ui_state_.active_panel = PanelConfig;
     }
 
     ImGui::Spacing();
@@ -1243,11 +1252,48 @@ void Application::RenderRecognizerPanel() {
     const bool recognition_running = backend_->IsRecognitionRunning();
     RenderInfoRow(Tr("recognition_process"), recognition_running ? Tr("running") : Tr("stopped"), recognition_running ? Nord14 : Nord3);
     RenderInfoRow(Tr("camera_preview"), ui_state_.camera_enabled ? Tr("active") : Tr("not_started"), ui_state_.camera_enabled ? Nord8 : Nord3);
-    RenderInfoRow(Tr("config_state"), ui_state_.recognizer_config_dirty ? Tr("unsaved_changes") : Tr("synced_to_disk"),
-                  ui_state_.recognizer_config_dirty ? Nord13 : Nord14);
 
     ImGui::Spacing();
+    RenderSectionHeader(Tr("section_control"), Tr("control_title"), Tr("control_body"));
+    const float start_width = CalcButtonWidth(Tr("start_fr"), 240.0f);
+    const float stop_width = CalcButtonWidth(Tr("stop_fr"), 240.0f);
+    if (ImGui::Button(Tr("start_fr"), ImVec2(start_width, 0))) {
+        std::string error;
+        ui_state_.status_message = backend_->StartRecognition(error) ? Tr("fr_started") : DynFormat(Tr("start_failed"), error);
+        ui_state_.status_message_timer = 3.0f;
+    }
+    if (CanFitInline({start_width, stop_width})) {
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+    if (ImGui::Button(Tr("stop_fr"), ImVec2(stop_width, 0))) {
+        backend_->StopRecognition();
+        ui_state_.status_message = Tr("fr_stopped");
+        ui_state_.status_message_timer = 3.0f;
+    }
+    EndPanelCard();
+}
+
+void Application::RenderConfigPanel() {
+    SyncCameraPreviewState();
+    BeginPanelCard("RecognizerConfigPanel");
     RenderSectionHeader(Tr("section_gui"), Tr("gui_title"), Tr("gui_body"));
+
+    if (!ui_state_.recognizer_config_loaded) {
+        std::string error;
+        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
+            ApplyLanguage(ui_state_.recognizer_config.language);
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_loaded = true;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = Tr("config_loaded");
+        } else {
+            ui_state_.recognizer_config_message = DynFormat(Tr("config_load_failed"), error);
+        }
+    }
+    if (!ui_state_.camera_devices_loaded) {
+        RefreshCameraDeviceList();
+    }
 
     auto mark_dirty = [this]() {
         ui_state_.recognizer_config_dirty =
@@ -1261,13 +1307,16 @@ void Application::RenderRecognizerPanel() {
 
     ui_state_.recognizer_config.language = NormalizeLanguageCode(ui_state_.recognizer_config.language);
     const std::array<std::pair<const char*, const char*>, 2> languages{{
-        {"zh-CN", "简体中文"},
-        {"en-US", "English"}
+        {"zh-CN", "language_option_zh_cn"},
+        {"en-US", "language_option_en_us"}
     }};
-    std::string selected_language_label = ui_state_.recognizer_config.language == "en-US" ? "English" : "简体中文";
+    std::string selected_language_label = Tr(ui_state_.recognizer_config.language == "en-US"
+                                                 ? "language_option_en_us"
+                                                 : "language_option_zh_cn");
     if (ImGui::BeginCombo(Tr("ui_language"), selected_language_label.c_str())) {
-        for (const auto& [code, label] : languages) {
+        for (const auto& [code, label_key] : languages) {
             const bool selected = ui_state_.recognizer_config.language == code;
+            const char* label = Tr(label_key);
             if (ImGui::Selectable(label, selected)) {
                 ui_state_.recognizer_config.language = code;
                 ApplyLanguage(code);
@@ -1286,6 +1335,9 @@ void Application::RenderRecognizerPanel() {
 
     ImGui::Spacing();
     RenderSectionHeader(Tr("section_config"), Tr("config_title"), Tr("config_body"));
+
+    RenderInfoRow(Tr("config_state"), ui_state_.recognizer_config_dirty ? Tr("unsaved_changes") : Tr("synced_to_disk"),
+                  ui_state_.recognizer_config_dirty ? Nord13 : Nord14);
 
     std::string selected_camera_label = DynFormat(Tr("camera_not_listed_fmt"), ui_state_.recognizer_config.camera);
     for (const auto& device : ui_state_.camera_devices) {
@@ -1420,23 +1472,6 @@ void Application::RenderRecognizerPanel() {
         RenderInfoRow(Tr("config_feedback"), ui_state_.recognizer_config_message, ui_state_.recognizer_config_dirty ? Nord13 : Nord8);
     }
 
-    ImGui::Spacing();
-    RenderSectionHeader(Tr("section_control"), Tr("control_title"), Tr("control_body"));
-    const float start_width = CalcButtonWidth(Tr("start_fr"), 240.0f);
-    const float stop_width = CalcButtonWidth(Tr("stop_fr"), 240.0f);
-    if (ImGui::Button(Tr("start_fr"), ImVec2(start_width, 0))) {
-        std::string error;
-        ui_state_.status_message = backend_->StartRecognition(error) ? Tr("fr_started") : DynFormat(Tr("start_failed"), error);
-        ui_state_.status_message_timer = 3.0f;
-    }
-    if (CanFitInline({start_width, stop_width})) {
-        ImGui::SameLine(0.0f, 12.0f);
-    }
-    if (ImGui::Button(Tr("stop_fr"), ImVec2(stop_width, 0))) {
-        backend_->StopRecognition();
-        ui_state_.status_message = Tr("fr_stopped");
-        ui_state_.status_message_timer = 3.0f;
-    }
     EndPanelCard();
 }
 
