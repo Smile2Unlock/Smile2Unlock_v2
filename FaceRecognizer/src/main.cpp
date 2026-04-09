@@ -80,9 +80,16 @@ int captureImageToSharedMemory(int camera_index, const std::string& map_name, bo
         sizeof(smile2unlock::SharedFrameHeader) +
         smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES +
         smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
-    HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
+    HANDLE mapping = nullptr;
+    for (int attempt = 0; attempt < 10 && mapping == nullptr; ++attempt) {
+        mapping = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, map_name.c_str());
+        if (mapping == nullptr) {
+            Sleep(50);
+        }
+    }
     if (mapping == nullptr) {
-        std::cerr << "[Capture] 打开共享内存失败, GetLastError=" << GetLastError() << std::endl;
+        std::cerr << "[Capture] 打开共享内存失败, map=" << map_name
+                  << ", GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 
@@ -169,9 +176,16 @@ int streamPreviewToSharedMemory(int camera_index, const std::string& map_name) {
         sizeof(smile2unlock::SharedFrameHeader) +
         smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES +
         smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
-    HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
+    HANDLE mapping = nullptr;
+    for (int attempt = 0; attempt < 10 && mapping == nullptr; ++attempt) {
+        mapping = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, map_name.c_str());
+        if (mapping == nullptr) {
+            Sleep(50);
+        }
+    }
     if (mapping == nullptr) {
-        std::cerr << "[Preview] 打开共享内存失败, GetLastError=" << GetLastError() << std::endl;
+        std::cerr << "[Preview] 打开共享内存失败, map=" << map_name
+                  << ", GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 
@@ -257,32 +271,9 @@ int compareFeatures(const std::string& feature_a_hex, const std::string& feature
 
 // 人脸识别函数
 int recognizeFace(int camera_index, bool liveness_detection,
-                  float liveness_threshold, bool debug, const std::string& result_map) {
+                  float liveness_threshold, bool debug) {
     
     std::cout << "[Recognize] 启动人脸识别模式" << std::endl;
-    
-    HANDLE result_mapping = nullptr;
-    void* result_view = nullptr;
-    smile2unlock::SharedFrameHeader* result_header = nullptr;
-    unsigned char* result_bytes = nullptr;
-    if (!result_map.empty()) {
-        const size_t mapping_size =
-            sizeof(smile2unlock::SharedFrameHeader) +
-            smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES +
-            smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
-        result_mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, result_map.c_str());
-        if (result_mapping != nullptr) {
-            result_view = MapViewOfFile(result_mapping, FILE_MAP_ALL_ACCESS, 0, 0, mapping_size);
-            if (result_view != nullptr) {
-                result_header = static_cast<smile2unlock::SharedFrameHeader*>(result_view);
-                *result_header = smile2unlock::SharedFrameHeader{};
-                result_bytes = reinterpret_cast<unsigned char*>(result_header + 1);
-            } else {
-                CloseHandle(result_mapping);
-                result_mapping = nullptr;
-            }
-        }
-    }
 
     // 识别结果标志
     bool recognition_success = false;
@@ -315,20 +306,9 @@ int recognizeFace(int camera_index, bool liveness_detection,
         
     // 主识别循环
     while (true) {
-        if (result_header != nullptr && result_header->stop_requested != 0) {
-            stop_requested = true;
-            break;
-        }
-
         // 从摄像头捕获帧
         SeetaImageData img_data = {};
         if (cam.CaptureFrame(img_data)) {
-            if (result_header != nullptr && result_header->stop_requested != 0) {
-                stop_requested = true;
-                delete[] img_data.data;
-                break;
-            }
-            
             // 检查识别成功或超时
             if (recognition_success) {
                 delete[] img_data.data;
@@ -363,25 +343,21 @@ int recognizeFace(int camera_index, bool liveness_detection,
                         std::cout << "[Recognize] 检测到真人脸，识别结果交由 Smile2Unlock 编排层处理" << std::endl;
                     }
 
-                    recognition_success = true;
-
-                    if (result_header != nullptr && result_bytes != nullptr) {
-                        const int feature_size = recognizer.feature_size();
-                        const auto* feature_bytes = reinterpret_cast<const unsigned char*>(current_features.get());
-                        const std::string feature_hex = EncodeBytesToHex(
-                            feature_bytes,
-                            static_cast<size_t>(feature_size) * sizeof(float));
-                        if (feature_hex.size() <= smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES) {
-                            result_header->feature_bytes = static_cast<uint32_t>(feature_hex.size());
-                            result_header->status_code = static_cast<int32_t>(smile2unlock::SharedFrameStatus::READY);
-                            memcpy(result_bytes, feature_hex.data(), feature_hex.size());
-                        } else {
-                            result_header->status_code = static_cast<int32_t>(smile2unlock::SharedFrameStatus::FEATURE_TOO_LARGE);
-                        }
+                    const int feature_size = recognizer.feature_size();
+                    const auto* feature_bytes = reinterpret_cast<const unsigned char*>(current_features.get());
+                    const std::string feature_hex = EncodeBytesToHex(
+                        feature_bytes,
+                        static_cast<size_t>(feature_size) * sizeof(float));
+                    if (feature_hex.empty()) {
+                        std::cerr << "[Recognize] 提取到的特征为空，放弃本次识别" << std::endl;
+                        delete[] img_data.data;
+                        continue;
                     }
 
+                    recognition_success = true;
+
                     if (g_udp_sender) {
-                        g_udp_sender->send_status(RecognitionStatus::SUCCESS, "");
+                        g_udp_sender->send_status(RecognitionStatus::SUCCESS, "", 0, feature_hex);
                     }
 
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -406,13 +382,6 @@ int recognizeFace(int camera_index, bool liveness_detection,
 
     if (!recognition_success && !stop_requested && g_udp_sender) {
         g_udp_sender->send_status(RecognitionStatus::TIMEOUT, "");
-    }
-
-    if (result_view != nullptr) {
-        UnmapViewOfFile(result_view);
-    }
-    if (result_mapping != nullptr) {
-        CloseHandle(result_mapping);
     }
     
     std::cout << "人脸识别结束。" << (stop_requested ? " (cancelled)" : "") << std::endl;
@@ -439,8 +408,6 @@ int mainOptimized(int argc, char* argv[]) {
          cxxopts::value<int>()->default_value("51234"))
         ("frame-map", "Shared memory mapping name for one-shot frame capture",
          cxxopts::value<std::string>()->default_value(""))
-        ("result-map", "Shared memory mapping name for recognition result feature",
-         cxxopts::value<std::string>()->default_value(""))
         ("feature-a", "First feature hex string for compare-features mode",
          cxxopts::value<std::string>()->default_value(""))
         ("feature-b", "Second feature hex string for compare-features mode",
@@ -459,7 +426,6 @@ int mainOptimized(int argc, char* argv[]) {
     
     std::string mode = result["mode"].as<std::string>();
     std::string frame_map = result["frame-map"].as<std::string>();
-    std::string result_map = result["result-map"].as<std::string>();
     std::string feature_a_hex = result["feature-a"].as<std::string>();
     std::string feature_b_hex = result["feature-b"].as<std::string>();
     const bool extract_feature = result["extract-feature"].as<bool>();
@@ -520,7 +486,7 @@ int mainOptimized(int argc, char* argv[]) {
                 
         return recognizeFace(config.camera,
                                      config.liveness, liveness_threshold,
-                                     config.debug, result_map);
+                                     config.debug);
     }
     else if (mode == "capture-image") {
         std::cout << "=== 单帧抓拍模式 ===" << std::endl;

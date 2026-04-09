@@ -22,6 +22,8 @@ using udp = asio::ip::udp;
 inline std::atomic<RecognitionStatus> face_recognition_status{RecognitionStatus::IDLE};
 inline std::atomic<ULONGLONG> face_recognition_status_tick{0};
 inline std::string recognized_username;
+inline uint32_t recognized_session_id = 0;
+inline std::string recognized_feature;
 
 class UdpReceiver {
 public:
@@ -37,7 +39,7 @@ public:
         std::cout << "[UDP Receiver] 已关闭" << std::endl;
     }
 
-    void set_callback(std::function<void(RecognitionStatus, const std::string&)> callback) {
+    void set_callback(std::function<void(RecognitionStatus, const std::string&, uint32_t, const std::string&)> callback) {
         status_callback_ = callback;
     }
 
@@ -128,15 +130,25 @@ private:
                 if (packet.username[0] != '\0') {
                     recognized_username = std::string(packet.username);
                 }
+                recognized_session_id = packet.session_id;
+                if (packet.feature_bytes > 0 && packet.feature_bytes <= sizeof(packet.feature)) {
+                    recognized_feature.assign(packet.feature, packet.feature + packet.feature_bytes);
+                } else {
+                    recognized_feature.clear();
+                }
 
                 std::cout << "[UDP Receiver] 收到状态更新: " << packet.status_code
                           << " (旧状态: " << static_cast<int>(old_status) << ")"
-                          << ", 用户: " << (packet.username[0] ? packet.username : "(无)") << std::endl;
+                          << ", 用户: " << (packet.username[0] ? packet.username : "(无)")
+                          << ", 会话: " << packet.session_id
+                          << ", 特征字节: " << packet.feature_bytes << std::endl;
 
                 if (status_callback_) {
                     status_callback_(
                         static_cast<RecognitionStatus>(packet.status_code),
-                        std::string(packet.username)
+                        std::string(packet.username),
+                        packet.session_id,
+                        recognized_feature
                     );
                 }
             }
@@ -154,5 +166,5 @@ private:
     udp::socket socket_;
     std::thread recv_thread_;
     std::atomic<bool> running_;
-    std::function<void(RecognitionStatus, const std::string&)> status_callback_;
+    std::function<void(RecognitionStatus, const std::string&, uint32_t, const std::string&)> status_callback_;
 };

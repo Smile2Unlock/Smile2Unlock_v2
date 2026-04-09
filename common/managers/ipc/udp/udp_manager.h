@@ -70,7 +70,10 @@ public:
         socket_.close(ec);
     }
 
-    bool send_status(RecognitionStatus status, const std::string& username = "", uint32_t session_id = 0) {
+    bool send_status(RecognitionStatus status,
+                     const std::string& username = "",
+                     uint32_t session_id = 0,
+                     const std::string& feature = "") {
         if (!initialized_) return false;
 
         try {
@@ -78,11 +81,19 @@ public:
             packet.magic_number = MAGIC_NUMBER;
             packet.version = PROTOCOL_VERSION;
             packet.status_code = static_cast<int32_t>(status);
+            packet.session_id = session_id;
             packet.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
 
             if (!username.empty()) {
                 strncpy_s(packet.username, sizeof(packet.username), username.c_str(), _TRUNCATE);
+            }
+            if (!feature.empty()) {
+                if (feature.size() >= sizeof(packet.feature)) {
+                    return false;
+                }
+                packet.feature_bytes = static_cast<uint32_t>(feature.size());
+                memcpy(packet.feature, feature.data(), feature.size());
             }
 
             socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
@@ -107,7 +118,7 @@ private:
 // ============================================================================
 class StatusReceiver {
 public:
-    using StatusCallback = std::function<void(RecognitionStatus, const std::string&)>;
+    using StatusCallback = std::function<void(RecognitionStatus, const std::string&, uint32_t, const std::string&)>;
 
     explicit StatusReceiver(uint16_t port = UdpPorts::kCpStatusPort)
         : socket_(io_context_, ::udp::endpoint(::udp::v4(), port)),
@@ -153,8 +164,14 @@ private:
                 if (packet.magic_number != MAGIC_NUMBER || packet.version != PROTOCOL_VERSION) continue;
 
                 if (callback_) {
+                    std::string feature;
+                    if (packet.feature_bytes > 0 && packet.feature_bytes <= sizeof(packet.feature)) {
+                        feature.assign(packet.feature, packet.feature + packet.feature_bytes);
+                    }
                     callback_(static_cast<RecognitionStatus>(packet.status_code),
-                              std::string(packet.username));
+                              std::string(packet.username),
+                              packet.session_id,
+                              feature);
                 }
             } catch (const std::exception&) {
                 if (running_) {

@@ -67,6 +67,36 @@ inline bool QueryActiveConsoleUserSid(std::vector<BYTE>& sid_buffer) {
     return CopySidToBuffer(token_user->User.Sid, sid_buffer);
 }
 
+inline bool QueryCurrentProcessUserSid(std::vector<BYTE>& sid_buffer) {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    DWORD required_size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required_size);
+    if (required_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return false;
+    }
+
+    std::vector<BYTE> token_buffer(required_size);
+    if (!GetTokenInformation(
+            token,
+            TokenUser,
+            token_buffer.data(),
+            required_size,
+            &required_size)) {
+        CloseHandle(token);
+        return false;
+    }
+
+    CloseHandle(token);
+    const auto* token_user =
+        reinterpret_cast<const TOKEN_USER*>(token_buffer.data());
+    return CopySidToBuffer(token_user->User.Sid, sid_buffer);
+}
+
 inline bool BuildFallbackInteractiveSid(std::vector<BYTE>& sid_buffer) {
     DWORD sid_size = SECURITY_MAX_SID_SIZE;
     sid_buffer.resize(sid_size);
@@ -119,32 +149,48 @@ inline bool BuildServiceIpcSecurityAttributes(
         return false;
     }
 
+    std::vector<BYTE> current_user_sid;
+    if (!detail::QueryCurrentProcessUserSid(current_user_sid)) {
+        return false;
+    }
+
     std::vector<BYTE> interactive_sid;
-    if (!detail::QueryActiveConsoleUserSid(interactive_sid) &&
+    const bool has_active_console_user =
+        detail::QueryActiveConsoleUserSid(interactive_sid);
+    if (!has_active_console_user &&
         !detail::BuildFallbackInteractiveSid(interactive_sid)) {
         return false;
     }
 
-    EXPLICIT_ACCESSW access_entries[2]{};
+    std::vector<EXPLICIT_ACCESSW> access_entries;
+    access_entries.reserve(3);
 
-    access_entries[0].grfAccessPermissions = GENERIC_ALL;
-    access_entries[0].grfAccessMode = SET_ACCESS;
-    access_entries[0].grfInheritance = NO_INHERITANCE;
-    access_entries[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-    access_entries[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
-    access_entries[0].Trustee.ptstrName =
-        static_cast<LPWSTR>(reinterpret_cast<wchar_t*>(system_sid.data()));
+    auto add_access_entry = [&access_entries](PSID sid, DWORD permissions, TRUSTEE_TYPE trustee_type) {
+        EXPLICIT_ACCESSW entry{};
+        entry.grfAccessPermissions = permissions;
+        entry.grfAccessMode = SET_ACCESS;
+        entry.grfInheritance = NO_INHERITANCE;
+        entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        entry.Trustee.TrusteeType = trustee_type;
+        entry.Trustee.ptstrName =
+            static_cast<LPWSTR>(reinterpret_cast<wchar_t*>(sid));
+        access_entries.push_back(entry);
+    };
 
-    access_entries[1].grfAccessPermissions = GENERIC_READ | GENERIC_WRITE;
-    access_entries[1].grfAccessMode = SET_ACCESS;
-    access_entries[1].grfInheritance = NO_INHERITANCE;
-    access_entries[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-    access_entries[1].Trustee.TrusteeType = TRUSTEE_IS_USER;
-    access_entries[1].Trustee.ptstrName =
-        static_cast<LPWSTR>(reinterpret_cast<wchar_t*>(interactive_sid.data()));
+    add_access_entry(system_sid.data(), GENERIC_ALL, TRUSTEE_IS_USER);
+    add_access_entry(current_user_sid.data(), GENERIC_READ | GENERIC_WRITE, TRUSTEE_IS_USER);
+    if (!EqualSid(current_user_sid.data(), interactive_sid.data())) {
+        add_access_entry(
+            interactive_sid.data(),
+            GENERIC_READ | GENERIC_WRITE,
+            has_active_console_user ? TRUSTEE_IS_USER : TRUSTEE_IS_WELL_KNOWN_GROUP);
+    }
 
     const DWORD acl_result = SetEntriesInAclW(
-        2, access_entries, nullptr, &acl);
+        static_cast<ULONG>(access_entries.size()),
+        access_entries.data(),
+        nullptr,
+        &acl);
     if (acl_result != ERROR_SUCCESS) {
         SetLastError(acl_result);
         return false;

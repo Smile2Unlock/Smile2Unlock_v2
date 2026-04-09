@@ -54,6 +54,7 @@ public:
     bool SaveRecognizerConfig(const FaceRecognizerConfig& config, std::string& error_message);
 
 private:
+    bool ApplyRecognizerConfigFromStorage(std::string& error_message);
     bool initialized_;
     std::unique_ptr<managers::DllInjector> dll_injector_;
     std::unique_ptr<managers::Database> database_;
@@ -98,20 +99,10 @@ BackendService::BackendService() : initialized_(false) {
 bool BackendService::Initialize() {
     if (initialized_) return true;
     if (!database_->Initialize()) return false;
-    if (!config_manager_->loadConfig()) {
-        if (!config_manager_->createDefaultConfig() || !config_manager_->loadConfig()) {
-            return false;
-        }
+    std::string config_error;
+    if (!ApplyRecognizerConfigFromStorage(config_error)) {
+        return false;
     }
-
-    const auto& loaded_config = config_manager_->getConfig();
-    FaceRecognizerConfig recognizer_config;
-    recognizer_config.camera = loaded_config.camera;
-    recognizer_config.liveness = loaded_config.liveness;
-    recognizer_config.face_threshold = loaded_config.face_threshold;
-    recognizer_config.liveness_threshold = loaded_config.liveness_threshold;
-    recognizer_config.debug = loaded_config.debug;
-    face_recognition_->SetConfig(recognizer_config);
 
     std::string error_message;
     if (!face_recognition_->Initialize(error_message)) return false;
@@ -212,6 +203,9 @@ bool BackendService::AddFace(int user_id, const std::string& feature, const std:
 }
 
 bool BackendService::StartCameraPreview(std::string& error_message) {
+    if (!ApplyRecognizerConfigFromStorage(error_message)) {
+        return false;
+    }
     return face_recognition_->StartPreviewStream(error_message);
 }
 
@@ -251,6 +245,7 @@ bool BackendService::CaptureAndAddFace(int user_id, const std::string& remark, s
 
     if (restart_preview) {
         std::string restart_error;
+        ApplyRecognizerConfigFromStorage(restart_error);
         face_recognition_->StartPreviewStream(restart_error);
     }
 
@@ -286,6 +281,9 @@ std::vector<FaceData> BackendService::GetUserFaces(int user_id) { return databas
 
 bool BackendService::StartRecognition(std::string& error_message) {
     if (!face_recognition_->IsInitialized() && !face_recognition_->Initialize(error_message)) return false;
+    if (!ApplyRecognizerConfigFromStorage(error_message)) {
+        return false;
+    }
     return face_recognition_->StartRecognition();
 }
 void BackendService::StopRecognition() { face_recognition_->StopRecognition(); }
@@ -327,6 +325,17 @@ bool BackendService::SaveRecognizerConfig(const FaceRecognizerConfig& config, st
 
     face_recognition_->SetConfig(config);
     error_message = "识别配置已保存";
+    return true;
+}
+
+bool BackendService::ApplyRecognizerConfigFromStorage(std::string& error_message) {
+    FaceRecognizerConfig config;
+    if (!GetRecognizerConfig(config, error_message)) {
+        return false;
+    }
+
+    face_recognition_->SetConfig(config);
+    error_message.clear();
     return true;
 }
 

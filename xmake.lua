@@ -166,7 +166,8 @@ target("Smile2Unlock")
     add_files(
         "Smile2Unlock/*.cpp",
         "Smile2Unlock/modules/*.cppm",
-        "common/modules/*.cppm"
+        "common/modules/*.cppm",
+        "Smile2Unlock/resources.rc"
     )
     add_includedirs("common", {public = true})
     add_includedirs("Smile2Unlock", {public = true})
@@ -180,5 +181,12 @@ target("Smile2Unlock")
             "libc++.dll",
             "libomp.dll"
         })
+    end)
+    after_build(function (target)
+        local output_resources = path.join(target:targetdir(), "resources")
+        os.mkdir(output_resources)
+        os.rm(path.join(output_resources, "img"))
+        os.rm(path.join(output_resources, "resources"))
+        os.cp(path.join(os.projectdir(), "common", "resources", "*"), output_resources)
     end)
 
