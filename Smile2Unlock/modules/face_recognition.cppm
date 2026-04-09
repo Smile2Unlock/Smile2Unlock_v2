@@ -144,6 +144,7 @@ private:
 
     uint32_t current_session_id_;
     std::string pending_username_hint_;
+    std::string last_recognition_feature_;
 
     bool start_fr_process();
     bool start_fr_capture_process(const std::string& map_name, bool extract_feature, std::string& error_message);
@@ -151,11 +152,10 @@ private:
     void stop_fr_process();
     void cleanup_fr_process_handles();
     void on_cp_request_received(AuthRequestType type, const std::string& username_hint, uint32_t session_id);
-    void on_fr_status_received(RecognitionStatus status, const std::string& username);
+    void on_fr_status_received(RecognitionStatus status, const std::string& username, uint32_t session_id, const std::string& feature);
     bool capture_shared_payload(std::vector<unsigned char>& image_data, int& width, int& height, std::string* feature, std::string& error_message);
     bool compare_features_with_fr(const std::string& feature1, const std::string& feature2, float& similarity);
-    std::string resolve_recognized_username(std::string& error_message);
-    std::string read_recognition_feature(std::string& error_message) const;
+    std::string resolve_recognized_username(const std::string& probe_feature, std::string& error_message);
 };
 
 } // namespace smile2unlock::managers
@@ -203,31 +203,6 @@ bool FaceRecognition::start_fr_process() {
     si.dwFlags |= STARTF_USESTDHANDLES;
     memset(&fr_process_info_, 0, sizeof(fr_process_info_));
 
-    SECURITY_ATTRIBUTES mapping_sa{};
-    SECURITY_DESCRIPTOR mapping_sd{};
-    PACL mapping_acl = nullptr;
-    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd, mapping_acl)) {
-        CloseHandle(hStdoutWrite);
-        CloseHandle(hStderrWrite);
-        return false;
-    }
-
-    recognition_result_map_name_ = "Local\\Smile2Unlock_Recognition_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
-    recognition_result_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, recognition_result_map_name_.c_str());
-    windows_security::FreeSecurityAcl(mapping_acl);
-    if (!recognition_result_mapping_) {
-        return false;
-    }
-    recognition_result_view_ = MapViewOfFile(recognition_result_mapping_, FILE_MAP_ALL_ACCESS, 0, 0, kSharedFrameMappingSize);
-    if (!recognition_result_view_) {
-        CloseHandle(recognition_result_mapping_);
-        recognition_result_mapping_ = nullptr;
-        recognition_result_map_name_.clear();
-        return false;
-    }
-    auto* result_header = static_cast<SharedFrameHeader*>(recognition_result_view_);
-    *result_header = SharedFrameHeader{};
-
     std::ostringstream cmd;
     cmd << "\"" << fr_exe.string() << "\" -m recognize"
         << " --udp-port " << kFrStatusPort
@@ -235,15 +210,9 @@ bool FaceRecognition::start_fr_process() {
         << " --liveness-detection " << (config_.liveness ? "true" : "false")
         << " --threshold face=" << config_.face_threshold
         << " --threshold liveness=" << config_.liveness_threshold
-        << " --debug " << (config_.debug ? "true" : "false")
-        << " --result-map \"" << recognition_result_map_name_ << "\"";
+        << " --debug " << (config_.debug ? "true" : "false");
     std::string cmd_line = cmd.str();
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &fr_process_info_)) {
-        UnmapViewOfFile(recognition_result_view_);
-        CloseHandle(recognition_result_mapping_);
-        recognition_result_view_ = nullptr;
-        recognition_result_mapping_ = nullptr;
-        recognition_result_map_name_.clear();
         CloseHandle(hStdoutWrite);
         CloseHandle(hStderrWrite);
         return false;
@@ -439,8 +408,19 @@ void FaceRecognition::cleanup_fr_process_handles() {
     if (fr_stderr_read_) { CloseHandle(fr_stderr_read_); fr_stderr_read_ = nullptr; }
 }
 
-void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std::string& username) {
+void FaceRecognition::on_fr_status_received(RecognitionStatus status,
+                                            const std::string& username,
+                                            uint32_t session_id,
+                                            const std::string& feature) {
     NotifyServiceActivity();
+    if (session_id != 0) {
+        current_session_id_ = session_id;
+    }
+    if (!feature.empty()) {
+        last_recognition_feature_ = feature;
+    } else if (status != RecognitionStatus::SUCCESS) {
+        last_recognition_feature_.clear();
+    }
 
     std::cout << "[SU] FR状态回调"
               << " session=" << current_session_id_
@@ -448,6 +428,7 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std:
               << "(" << static_cast<int>(status) << ")"
               << " username=" << (username.empty() ? "(empty)" : username)
               << " pending_hint=" << (pending_username_hint_.empty() ? "(empty)" : pending_username_hint_)
+              << " feature_bytes=" << last_recognition_feature_.size()
               << std::endl;
 
     RecognitionStatus final_status = status;
@@ -458,7 +439,7 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status, const std:
 
     if (status == RecognitionStatus::SUCCESS && last_result_.username.empty()) {
         std::string match_error;
-        const std::string matched_username = resolve_recognized_username(match_error);
+        const std::string matched_username = resolve_recognized_username(last_recognition_feature_, match_error);
         if (!matched_username.empty()) {
             last_result_.username = matched_username;
             std::cout << "[SU] 人脸匹配成功"
@@ -513,8 +494,11 @@ bool FaceRecognition::Initialize(std::string& error_message) {
         udp_receiver_cp_->start();
 
         udp_receiver_fr_ = std::make_unique<UdpReceiverFromFR>(kFrStatusPort);
-        udp_receiver_fr_->set_callback([this](RecognitionStatus status, const std::string& username) {
-            on_fr_status_received(status, username);
+        udp_receiver_fr_->set_callback([this](RecognitionStatus status,
+                                              const std::string& username,
+                                              uint32_t session_id,
+                                              const std::string& feature) {
+            on_fr_status_received(status, username, session_id, feature);
         });
         udp_receiver_fr_->start();
 
@@ -536,6 +520,7 @@ bool FaceRecognition::StartRecognition() {
     if (fr_process_ && !IsProcessHandleActive(fr_process_)) {
         cleanup_fr_process_handles();
     }
+    last_recognition_feature_.clear();
     if (!fr_process_ && !start_fr_process()) return false;
     is_running_ = true;
     return true;
@@ -827,15 +812,15 @@ bool FaceRecognition::compare_features_with_fr(const std::string& feature1, cons
     return true;
 }
 
-std::string FaceRecognition::resolve_recognized_username(std::string& error_message) {
+std::string FaceRecognition::resolve_recognized_username(const std::string& probe_feature, std::string& error_message) {
     error_message.clear();
     if (!database_) {
         error_message = "识别数据库未初始化";
         return "";
     }
 
-    const std::string probe_feature = read_recognition_feature(error_message);
     if (probe_feature.empty()) {
+        error_message = "识别结果特征为空";
         return "";
     }
 
@@ -872,31 +857,6 @@ std::string FaceRecognition::resolve_recognized_username(std::string& error_mess
 
     last_result_.confidence = best_similarity;
     return best_username;
-}
-
-std::string FaceRecognition::read_recognition_feature(std::string& error_message) const {
-    error_message.clear();
-    if (recognition_result_view_ == nullptr) {
-        error_message = "识别结果共享内存不存在";
-        return "";
-    }
-
-    const auto* header = static_cast<const SharedFrameHeader*>(recognition_result_view_);
-    if (header->magic != SharedFrameHeader::MAGIC || header->version != SharedFrameHeader::VERSION) {
-        error_message = "识别结果共享内存无效";
-        return "";
-    }
-    if (header->status_code != static_cast<int32_t>(SharedFrameStatus::READY)) {
-        error_message = "识别结果特征尚未就绪";
-        return "";
-    }
-    if (header->feature_bytes == 0 || header->feature_bytes > SharedFrameHeader::MAX_FEATURE_BYTES) {
-        error_message = "识别结果特征无效";
-        return "";
-    }
-
-    const char* feature_bytes = reinterpret_cast<const char*>(header + 1);
-    return std::string(feature_bytes, feature_bytes + header->feature_bytes);
 }
 
 void FaceRecognition::on_cp_request_received(AuthRequestType type, const std::string& username_hint, uint32_t session_id) {

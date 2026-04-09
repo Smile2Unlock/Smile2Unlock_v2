@@ -38,16 +38,27 @@ public:
         std::cout << "[UDP Sender] 已关闭" << std::endl;
     }
 
-    bool send_status(RecognitionStatus status, const std::string& username = "") {
+    bool send_status(RecognitionStatus status,
+                     const std::string& username = "",
+                     uint32_t session_id = 0,
+                     const std::string& feature = "") {
         try {
-            UdpStatusPacket packet;
+            UdpStatusPacket packet{};
             packet.magic_number = MAGIC_NUMBER;
             packet.version = PROTOCOL_VERSION;
             packet.status_code = static_cast<int32_t>(status);
+            packet.session_id = session_id;
 
-            memset(packet.username, 0, sizeof(packet.username));
             if (!username.empty()) {
                 strncpy_s(packet.username, sizeof(packet.username), username.c_str(), _TRUNCATE);
+            }
+            if (!feature.empty()) {
+                if (feature.size() >= sizeof(packet.feature)) {
+                    std::cerr << "[UDP Sender] 特征数据过大，无法发送: " << feature.size() << std::endl;
+                    return false;
+                }
+                packet.feature_bytes = static_cast<uint32_t>(feature.size());
+                memcpy(packet.feature, feature.data(), feature.size());
             }
 
             packet.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -57,7 +68,9 @@ public:
             socket_.send_to(asio::buffer(&packet, sizeof(packet)), endpoint_);
 
             std::cout << "[UDP Sender] 已发送状态: " << static_cast<int>(status)
-                      << ", 用户: " << (username.empty() ? "(无)" : username) << std::endl;
+                      << ", 用户: " << (username.empty() ? "(无)" : username)
+                      << ", 会话: " << session_id
+                      << ", 特征字节: " << packet.feature_bytes << std::endl;
 
             return true;
         }
