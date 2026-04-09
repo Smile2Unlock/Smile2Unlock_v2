@@ -5,10 +5,12 @@
 #include "models/shared_frame_ipc.h"
 #include "seetaface.h"
 #include "exceptions.h"
+#include "utils/logger.h"
 #include <cxxopts.hpp>
 #include "registryhelper.h"
 
 import camera;
+import app_paths;
 import utils;
 import config;
 import std;
@@ -20,6 +22,15 @@ std::unique_ptr<UdpSender> g_udp_sender;
 int g_udp_port = 51234;
 
 namespace {
+
+void InitializeProcessLogging() {
+    smile2unlock::paths::EnsureRuntimeDirectories();
+    smile2unlock::paths::MigrateLegacyDataFiles();
+    smile2unlock::ConfigureProcessFileLogging(
+        "FR", smile2unlock::ResolveLogDirectoryFromModule(nullptr));
+    smile2unlock::InstallStandardStreamFileLogging();
+    smile2unlock::WriteFileLogLine("BOOT", "FaceRecognizer process logging initialized");
+}
 
 std::string EncodeBytesToHex(const unsigned char* data, size_t size) {
     static constexpr char kHex[] = "0123456789ABCDEF";
@@ -275,6 +286,7 @@ int recognizeFace(int camera_index, bool liveness_detection,
 
     // 识别结果标志
     bool recognition_success = false;
+    bool stop_requested = false;
     
     // 初始化UDP发送器
     if (!g_udp_sender) {
@@ -303,9 +315,19 @@ int recognizeFace(int camera_index, bool liveness_detection,
         
     // 主识别循环
     while (true) {
+        if (result_header != nullptr && result_header->stop_requested != 0) {
+            stop_requested = true;
+            break;
+        }
+
         // 从摄像头捕获帧
         SeetaImageData img_data = {};
         if (cam.CaptureFrame(img_data)) {
+            if (result_header != nullptr && result_header->stop_requested != 0) {
+                stop_requested = true;
+                delete[] img_data.data;
+                break;
+            }
             
             // 检查识别成功或超时
             if (recognition_success) {
@@ -376,9 +398,13 @@ int recognizeFace(int camera_index, bool liveness_detection,
     }
     
     // 输出识别结果
-    std::cout << "识别结果：" << (recognition_success ? "成功" : "超时/失败") << std::endl;
+    if (stop_requested) {
+        std::cout << "识别结果：已取消" << std::endl;
+    } else {
+        std::cout << "识别结果：" << (recognition_success ? "成功" : "超时/失败") << std::endl;
+    }
 
-    if (!recognition_success && g_udp_sender) {
+    if (!recognition_success && !stop_requested && g_udp_sender) {
         g_udp_sender->send_status(RecognitionStatus::TIMEOUT, "");
     }
 
@@ -389,7 +415,7 @@ int recognizeFace(int camera_index, bool liveness_detection,
         CloseHandle(result_mapping);
     }
     
-    std::cout << "人脸识别结束。" << std::endl;
+    std::cout << "人脸识别结束。" << (stop_requested ? " (cancelled)" : "") << std::endl;
     return 0;
 }
 
@@ -402,13 +428,13 @@ int mainOptimized(int argc, char* argv[]) {
         ("m,mode", "操作模式: recognize, capture-image, preview-stream, compare-features, test",
          cxxopts::value<std::string>()->default_value("help"))
         ("c,camera", "摄像头索引",
-         cxxopts::value<int>()->default_value("0"))
+         cxxopts::value<int>())
         ("t,threshold", "阈值类型和值: face=<value>, liveness=<value>",
          cxxopts::value<std::vector<std::string>>())
         ("d,debug", "启用调试输出",
-         cxxopts::value<bool>()->default_value("false"))
+         cxxopts::value<bool>())
         ("l,liveness-detection", "启用活体检测",
-         cxxopts::value<bool>()->default_value("true"))
+         cxxopts::value<bool>())
         ("udp-port", "UDP target port for sending recognition results",
          cxxopts::value<int>()->default_value("51234"))
         ("frame-map", "Shared memory mapping name for one-shot frame capture",
@@ -440,7 +466,7 @@ int mainOptimized(int argc, char* argv[]) {
     g_udp_port = result["udp-port"].as<int>();
     
     // 加载配置
-    ConfigManager config_manager("config.ini");
+    ConfigManager config_manager(smile2unlock::paths::GetConfigIniPath().string());
     // 1. 尝试加载现有配置
         if (!config_manager.loadConfig()) {
             std::cout << "无法加载配置文件，创建默认配置..." << std::endl;
@@ -457,6 +483,16 @@ int mainOptimized(int argc, char* argv[]) {
         }
     
     auto config = config_manager.getConfig();
+
+    if (result.count("camera")) {
+        config.camera = result["camera"].as<int>();
+    }
+    if (result.count("liveness-detection")) {
+        config.liveness = result["liveness-detection"].as<bool>();
+    }
+    if (result.count("debug")) {
+        config.debug = result["debug"].as<bool>();
+    }
     
     // 解析阈值参数
     float face_threshold = config.face_threshold;
@@ -515,6 +551,7 @@ int main(int argc, char* argv[]) {
     #ifdef _WIN32
     SetConsoleOutputCP(65001);
     #endif
+    InitializeProcessLogging();
     try {
         return mainOptimized(argc, argv);
     } catch (const FaceRecognition::FaceRecognitionException& e) {

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <algorithm>
+#include <string>
 
 namespace smile2unlock {
 
@@ -39,6 +41,8 @@ enum class GuiIpcCommand : int32_t {
     STOP_RECOGNITION = 501,
     IS_RECOGNITION_RUNNING = 502,
     GET_RECOGNITION_RESULT = 503,
+    GET_RECOGNIZER_CONFIG = 504,
+    SAVE_RECOGNIZER_CONFIG = 505,
     
     // 相机状态
     IS_CAMERA_PREVIEW_RUNNING = 600,
@@ -97,13 +101,38 @@ struct GuiIpcResponse {
         reserved = 0;
         std::memset(payload, 0, sizeof(payload));
     }
+
+    void set_payload_text(const char* msg, GuiIpcStatus new_status = GuiIpcStatus::SUCCESS) {
+        status = static_cast<int32_t>(new_status);
+        payload_size = 0;
+        payload[0] = '\0';
+        if (msg == nullptr) {
+            return;
+        }
+
+        const size_t to_copy = (std::min)(std::strlen(msg), sizeof(payload) - 1);
+        if (to_copy != 0) {
+            std::memcpy(payload, msg, to_copy);
+        }
+        payload[to_copy] = '\0';
+        payload_size = static_cast<int32_t>(to_copy);
+    }
+
+    void set_payload_text(const std::string& msg, GuiIpcStatus new_status = GuiIpcStatus::SUCCESS) {
+        status = static_cast<int32_t>(new_status);
+        payload_size = 0;
+        payload[0] = '\0';
+
+        const size_t to_copy = (std::min)(msg.size(), sizeof(payload) - 1);
+        if (to_copy != 0) {
+            std::memcpy(payload, msg.data(), to_copy);
+        }
+        payload[to_copy] = '\0';
+        payload_size = static_cast<int32_t>(to_copy);
+    }
     
     void set_error(const char* msg) {
-        status = static_cast<int32_t>(GuiIpcStatus::FAILURE);
-        if (msg) {
-            std::strncpy(payload, msg, sizeof(payload) - 1);
-            payload_size = static_cast<int32_t>(std::strlen(payload));
-        }
+        set_payload_text(msg, GuiIpcStatus::FAILURE);
     }
 };
 

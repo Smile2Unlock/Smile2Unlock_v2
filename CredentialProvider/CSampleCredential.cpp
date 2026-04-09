@@ -28,6 +28,7 @@
 #include "models/gui_ipc_protocol.h"
 #include "models/udp_password_packet.h"
 #include "registryhelper.h"
+#include "utils/logger.h"
 #include "CSampleProvider.h"
 #include "hresult_helper.h"
 #include <chrono>
@@ -37,6 +38,7 @@
 #include <future>
 #include <stdio.h>
 #include <stdarg.h>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -139,6 +141,40 @@ inline void LogToEventViewer(const wchar_t* message, WORD wType = EVENTLOG_INFOR
   }
 }
 
+inline void LogDebugMessage(const wchar_t* format, ...);
+
+inline std::string WideToUtf8LogMessage(const wchar_t* text) {
+  if (text == nullptr) {
+    return {};
+  }
+
+  const int required = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+  if (required <= 1) {
+    return {};
+  }
+
+  std::string utf8(static_cast<size_t>(required - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, text, -1, utf8.data(), required, nullptr, nullptr);
+  return utf8;
+}
+
+inline std::string ResolveCredentialProviderLogDirectory() {
+  const std::string registry_path = RegistryHelper::ReadStringFromRegistry(
+      "HKEY_LOCAL_MACHINE\\SOFTWARE\\Smile2Unlock_v2\\path", "");
+  if (!registry_path.empty()) {
+    return (std::filesystem::path(registry_path) / "logs").string();
+  }
+
+  HMODULE module_handle = nullptr;
+  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(&LogDebugMessage), &module_handle)) {
+    return smile2unlock::ResolveLogDirectoryFromModule(module_handle);
+  }
+
+  return {};
+}
+
 inline void LogDebugMessage(const wchar_t* format, ...) {
   wchar_t buffer[1024];
   va_list args;
@@ -152,6 +188,13 @@ inline void LogDebugMessage(const wchar_t* format, ...) {
 
   // 输出到事件日志
   LogToEventViewer(buffer, EVENTLOG_INFORMATION_TYPE);
+
+  static const bool logging_initialized = []() {
+    smile2unlock::ConfigureProcessFileLogging("CP", ResolveCredentialProviderLogDirectory());
+    return true;
+  }();
+  (void)logging_initialized;
+  smile2unlock::WriteFileLogLine("CP", WideToUtf8LogMessage(buffer));
 
   // 只在 OUT_DEBUG_TO_FILE 为 1 时输出到文件
 #if OUT_DEBUG_TO_FILE
@@ -491,6 +534,9 @@ HRESULT CSampleCredential::Advise(_In_ ICredentialProviderCredentialEvents *pcpc
 HRESULT CSampleCredential::UnAdvise()
 {
     LogDebugMessage(L"[INFO] CSampleCredential::UnAdvise - 释放事件回调与UDP接收器");
+
+    StopFaceRecognition();
+
     if (_pCredProvCredentialEvents)
     {
         _pCredProvCredentialEvents->Release();
@@ -1696,6 +1742,15 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
 
         // 启动新线程
         _faceRecognitionThread = std::thread([this, session_generation]() {
+            auto is_session_current = [this, session_generation]() -> bool {
+                if (_serviceGeneration.load(std::memory_order_acquire) != session_generation) {
+                    return false;
+                }
+
+                std::lock_guard<std::mutex> lock(_faceMutex);
+                return _fFaceRecognitionRunning;
+            };
+
             LogDebugMessage(L"[INFO] 启动人脸识别线程，generation=%llu", session_generation);
 
             LogDebugMessage(L"[INFO] 启动 Smile2Unlock 服务并请求识别");
@@ -1709,21 +1764,21 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                 }
             }
 
-            if (SUCCEEDED(hr)) {
+            if (SUCCEEDED(hr) && is_session_current()) {
                 hr = SendAuthRequestToSmile2Unlock(AuthRequestType::START_RECOGNITION);
             }
 
-            if (SUCCEEDED(hr)) {
+            if (SUCCEEDED(hr) && is_session_current()) {
                 HRESULT waitResult = WaitForFaceRecognitionResult();
 
-                if (SUCCEEDED(waitResult)) {
+                if (SUCCEEDED(waitResult) && is_session_current()) {
                     LogDebugMessage(L"[INFO] 人脸识别成功，开始向 SU 请求密码");
 
                     // 识别成功，请求 SU 返回受保护密码并在本地解密
                     PWSTR pwszPassword = nullptr;
                     HRESULT decryptResult = RequestAndDecryptPasswordFromSU(&pwszPassword);
 
-                    if (SUCCEEDED(decryptResult) && pwszPassword) {
+                    if (SUCCEEDED(decryptResult) && pwszPassword && is_session_current()) {
                         LogDebugMessage(L"[INFO] 密码解密成功，设置凭证字段");
 
                         extern std::string recognized_username;
@@ -1782,17 +1837,22 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                         } else {
                             LogDebugMessage(L"[ERROR] 识别成功但 _pCredProvCredentialEvents 为空，无法通知LogonUI更新字段");
                         }
+                    } else if (SUCCEEDED(decryptResult) && pwszPassword) {
+                        CoTaskMemFree(pwszPassword);
                     } else {
                         LogDebugMessage(L"[ERROR] 密码解密失败: 0x%08X", decryptResult);
-                        if (_pCredProvCredentialEvents) {
+                        if (is_session_current() && _pCredProvCredentialEvents) {
                             _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"密码解密失败");
                         }
                     }
-                } else {
+                } else if (FAILED(waitResult) && is_session_current()) {
                     LogDebugMessage(L"[ERROR] 人脸识别失败或超时");
                     if (_pCredProvCredentialEvents) {
                         _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"人脸识别失败");
                     }
+                } else {
+                    LogDebugMessage(L"[INFO] 人脸识别线程检测到会话已过期，跳过结果回写，generation=%llu",
+                                    session_generation);
                 }
             } else {
                 LogDebugMessage(L"[ERROR] 启动Smile2Unlock服务或发送识别请求失败: 0x%08X", hr);

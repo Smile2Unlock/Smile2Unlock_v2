@@ -6,6 +6,8 @@ module;
 export module smile2unlock.service;
 
 import std;
+import app_paths;
+import config;
 import smile2unlock.models;
 import smile2unlock.database;
 import smile2unlock.dll_injector;
@@ -48,12 +50,15 @@ public:
     void StopRecognition();
     bool IsRecognitionRunning() const;
     RecognitionResult GetRecognitionResult();
+    bool GetRecognizerConfig(FaceRecognizerConfig& config, std::string& error_message);
+    bool SaveRecognizerConfig(const FaceRecognizerConfig& config, std::string& error_message);
 
 private:
     bool initialized_;
     std::unique_ptr<managers::DllInjector> dll_injector_;
     std::unique_ptr<managers::Database> database_;
     std::unique_ptr<managers::FaceRecognition> face_recognition_;
+    std::unique_ptr<ConfigManager> config_manager_;
 };
 
 } // namespace smile2unlock
@@ -70,7 +75,8 @@ std::string EncryptPasswordForPersistence(const std::string& password, std::stri
         return {};
     }
 
-    const std::string encrypted_password = managers::EncryptPasswordForStorage(password, "smile2unlock.db");
+    const std::string encrypted_password = managers::EncryptPasswordForStorage(
+        password, smile2unlock::paths::GetDatabasePath().string());
     if (encrypted_password.empty()) {
         error_message = "密码加密失败";
         return {};
@@ -86,11 +92,27 @@ BackendService::BackendService() : initialized_(false) {
     dll_injector_ = std::make_unique<managers::DllInjector>();
     database_ = std::make_unique<managers::Database>();
     face_recognition_ = std::make_unique<managers::FaceRecognition>();
+    config_manager_ = std::make_unique<ConfigManager>(smile2unlock::paths::GetConfigIniPath().string());
 }
 
 bool BackendService::Initialize() {
     if (initialized_) return true;
     if (!database_->Initialize()) return false;
+    if (!config_manager_->loadConfig()) {
+        if (!config_manager_->createDefaultConfig() || !config_manager_->loadConfig()) {
+            return false;
+        }
+    }
+
+    const auto& loaded_config = config_manager_->getConfig();
+    FaceRecognizerConfig recognizer_config;
+    recognizer_config.camera = loaded_config.camera;
+    recognizer_config.liveness = loaded_config.liveness;
+    recognizer_config.face_threshold = loaded_config.face_threshold;
+    recognizer_config.liveness_threshold = loaded_config.liveness_threshold;
+    recognizer_config.debug = loaded_config.debug;
+    face_recognition_->SetConfig(recognizer_config);
+
     std::string error_message;
     if (!face_recognition_->Initialize(error_message)) return false;
     initialized_ = true;
@@ -269,5 +291,43 @@ bool BackendService::StartRecognition(std::string& error_message) {
 void BackendService::StopRecognition() { face_recognition_->StopRecognition(); }
 bool BackendService::IsRecognitionRunning() const { return face_recognition_->IsRunning(); }
 RecognitionResult BackendService::GetRecognitionResult() { return face_recognition_->GetLastResult(); }
+
+bool BackendService::GetRecognizerConfig(FaceRecognizerConfig& config, std::string& error_message) {
+    if (!config_manager_->loadConfig()) {
+        if (!config_manager_->createDefaultConfig() || !config_manager_->loadConfig()) {
+            error_message = "加载识别配置失败";
+            return false;
+        }
+    }
+
+    const auto& loaded = config_manager_->getConfig();
+    config.camera = loaded.camera;
+    config.liveness = loaded.liveness;
+    config.face_threshold = loaded.face_threshold;
+    config.liveness_threshold = loaded.liveness_threshold;
+    config.debug = loaded.debug;
+    face_recognition_->SetConfig(config);
+    error_message = "识别配置已加载";
+    return true;
+}
+
+bool BackendService::SaveRecognizerConfig(const FaceRecognizerConfig& config, std::string& error_message) {
+    ConfigManager::CoreConfig core_config;
+    core_config.camera = config.camera;
+    core_config.liveness = config.liveness;
+    core_config.face_threshold = config.face_threshold;
+    core_config.liveness_threshold = config.liveness_threshold;
+    core_config.debug = config.debug;
+
+    config_manager_->setConfig(core_config);
+    if (!config_manager_->saveConfig()) {
+        error_message = "保存识别配置失败";
+        return false;
+    }
+
+    face_recognition_->SetConfig(config);
+    error_message = "识别配置已保存";
+    return true;
+}
 
 } // namespace smile2unlock

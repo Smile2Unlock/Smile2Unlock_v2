@@ -5,6 +5,7 @@
 #include <string>
 #include <iostream>
 #include <chrono>
+#include <memory>
 
 namespace smile2unlock {
 
@@ -82,23 +83,23 @@ public:
         }
         
         // 构造请求
-        GuiIpcRequest request;
-        request.clear();
-        request.command = static_cast<int32_t>(cmd);
-        request.request_id = ++request_id_counter_;
-        request.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        auto request = std::make_unique<GuiIpcRequest>();
+        request->clear();
+        request->command = static_cast<int32_t>(cmd);
+        request->request_id = ++request_id_counter_;
+        request->timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()
         ).count();
         
         if (!payload.empty()) {
-            size_t copy_size = std::min(payload.size(), sizeof(request.payload) - 1);
-            std::memcpy(request.payload, payload.data(), copy_size);
-            request.payload_size = static_cast<int32_t>(copy_size);
+            size_t copy_size = std::min(payload.size(), sizeof(request->payload) - 1);
+            std::memcpy(request->payload, payload.data(), copy_size);
+            request->payload_size = static_cast<int32_t>(copy_size);
         }
         
         // 发送请求
         DWORD bytes_written = 0;
-        if (!WriteFile(pipe_, &request, sizeof(request), &bytes_written, nullptr)) {
+        if (!WriteFile(pipe_, request.get(), sizeof(*request), &bytes_written, nullptr)) {
             std::cerr << "[IPC Client] 发送请求失败: " << GetLastError() << std::endl;
             disconnect();
             response.set_error("Write failed");
@@ -120,7 +121,7 @@ public:
             return false;
         }
         
-        if (response.request_id != request.request_id) {
+        if (response.request_id != request->request_id) {
             response.set_error("Request ID mismatch");
             return false;
         }
@@ -130,8 +131,8 @@ public:
     
     // Ping 测试连接
     bool ping() {
-        GuiIpcResponse response;
-        return send_request(GuiIpcCommand::PING, "", response, 1000);
+        auto response = std::make_unique<GuiIpcResponse>();
+        return send_request(GuiIpcCommand::PING, "", *response, 1000);
     }
 
 private:

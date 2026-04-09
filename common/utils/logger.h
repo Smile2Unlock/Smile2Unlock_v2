@@ -14,6 +14,13 @@
 #include <ctime>
 #include <string>
 #include <mutex>
+#include <memory>
+#include <filesystem>
+#include <fstream>
+#include <streambuf>
+#include <ostream>
+#include <iostream>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -36,6 +43,21 @@ inline std::mutex& GetLogMutex() {
     return mutex;
 }
 
+inline std::string& GetProcessLogSource() {
+    static std::string source = "APP";
+    return source;
+}
+
+inline std::string& GetProcessLogDirectory() {
+    static std::string directory;
+    return directory;
+}
+
+inline bool& IsProcessFileLoggingEnabled() {
+    static bool enabled = false;
+    return enabled;
+}
+
 inline const char* LogLevelToString(LogLevel level) {
     switch (level) {
         case LogLevel::DEBUG:   return "DEBUG";
@@ -45,6 +67,226 @@ inline const char* LogLevelToString(LogLevel level) {
         case LogLevel::FATAL:   return "FATAL";
         default:                return "UNKNOWN";
     }
+}
+
+inline std::string CurrentDateStamp() {
+    time_t now = time(nullptr);
+    struct tm tm_info;
+#ifdef _WIN32
+    localtime_s(&tm_info, &now);
+#else
+    localtime_r(&now, &tm_info);
+#endif
+
+    char date_buf[16];
+    strftime(date_buf, sizeof(date_buf), "%Y%m%d", &tm_info);
+    return date_buf;
+}
+
+inline std::string CurrentTimestampWithMilliseconds() {
+#ifdef _WIN32
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char time_buf[40];
+    snprintf(time_buf, sizeof(time_buf), "%04d-%02d-%02d %02d:%02d:%02d.%03d",
+             st.wYear, st.wMonth, st.wDay,
+             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    return time_buf;
+#else
+    time_t now = time(nullptr);
+    struct tm tm_info;
+    localtime_r(&now, &tm_info);
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &tm_info);
+    return time_buf;
+#endif
+}
+
+inline void EnsureLogDirectoryExists() {
+    if (!IsProcessFileLoggingEnabled() || GetProcessLogDirectory().empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(GetProcessLogDirectory(), ec);
+}
+
+inline void CleanupExpiredLogFiles() {
+    if (!IsProcessFileLoggingEnabled() || GetProcessLogDirectory().empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path log_directory = GetProcessLogDirectory();
+    if (!std::filesystem::exists(log_directory, ec)) {
+        return;
+    }
+
+    const auto now = std::filesystem::file_time_type::clock::now();
+    const auto retention = std::chrono::hours(24 * 3);
+
+    for (const auto& entry : std::filesystem::directory_iterator(log_directory, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || ec) {
+            ec.clear();
+            continue;
+        }
+        if (entry.path().extension() != ".log") {
+            continue;
+        }
+
+        const auto last_write_time = entry.last_write_time(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+
+        if (now > last_write_time && now - last_write_time > retention) {
+            std::filesystem::remove(entry.path(), ec);
+            ec.clear();
+        }
+    }
+}
+
+inline std::filesystem::path CurrentLogFilePath() {
+    return std::filesystem::path(GetProcessLogDirectory()) /
+           (GetProcessLogSource() + "-" + CurrentDateStamp() + ".log");
+}
+
+struct ProcessLogFileState {
+    std::filesystem::path path;
+    std::ofstream stream;
+};
+
+inline ProcessLogFileState& GetProcessLogFileState() {
+    static ProcessLogFileState state;
+    return state;
+}
+
+inline void AppendFileLogLine(const char* channel, const std::string& message) {
+    if (!IsProcessFileLoggingEnabled() || GetProcessLogDirectory().empty()) {
+        return;
+    }
+
+    EnsureLogDirectoryExists();
+    auto& file_state = GetProcessLogFileState();
+    const auto target_path = CurrentLogFilePath();
+    if (file_state.path != target_path || !file_state.stream.is_open()) {
+        if (file_state.stream.is_open()) {
+            file_state.stream.close();
+        }
+        file_state.stream.open(target_path, std::ios::app | std::ios::binary);
+        if (!file_state.stream.is_open()) {
+            file_state.path.clear();
+            return;
+        }
+        file_state.path = target_path;
+    }
+
+    if (!file_state.stream.good()) {
+        return;
+    }
+
+    file_state.stream << "[" << CurrentTimestampWithMilliseconds() << "] "
+                      << "[" << GetProcessLogSource() << "] ";
+    if (channel != nullptr && channel[0] != '\0') {
+        file_state.stream << "[" << channel << "] ";
+    }
+    file_state.stream << message << '\n';
+}
+
+class RedirectStreamBuf final : public std::streambuf {
+public:
+    RedirectStreamBuf(std::streambuf* original, std::string channel)
+        : original_(original), channel_(std::move(channel)) {}
+
+    ~RedirectStreamBuf() override {
+        sync();
+    }
+
+protected:
+    int overflow(int ch) override {
+        if (ch == traits_type::eof()) {
+            return sync() == 0 ? traits_type::not_eof(ch) : traits_type::eof();
+        }
+
+        original_->sputc(static_cast<char>(ch));
+        std::string pending_line;
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            line_buffer_.push_back(static_cast<char>(ch));
+            if (ch == '\n') {
+                pending_line = consume_line_buffer_locked();
+            }
+        }
+        if (!pending_line.empty()) {
+            append_line(pending_line);
+        }
+        return ch;
+    }
+
+    int sync() override {
+        if (original_ != nullptr) {
+            original_->pubsync();
+        }
+        std::string pending_line;
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            pending_line = consume_line_buffer_locked();
+        }
+        if (!pending_line.empty()) {
+            append_line(pending_line);
+        }
+        return 0;
+    }
+
+private:
+    std::string consume_line_buffer_locked() {
+        while (!line_buffer_.empty() &&
+               (line_buffer_.back() == '\n' || line_buffer_.back() == '\r')) {
+            line_buffer_.pop_back();
+        }
+
+        if (line_buffer_.empty()) {
+            return {};
+        }
+
+        std::string pending_line = std::move(line_buffer_);
+        line_buffer_.clear();
+        return pending_line;
+    }
+
+    void append_line(const std::string& message) {
+        std::lock_guard<std::mutex> lock(GetLogMutex());
+        AppendFileLogLine(channel_.c_str(), message);
+    }
+
+    std::streambuf* original_;
+    std::string channel_;
+    std::mutex buffer_mutex_;
+    std::string line_buffer_;
+};
+
+inline std::unique_ptr<RedirectStreamBuf>& StdoutRedirect() {
+    static std::unique_ptr<RedirectStreamBuf> redirect;
+    return redirect;
+}
+
+inline std::unique_ptr<RedirectStreamBuf>& StderrRedirect() {
+    static std::unique_ptr<RedirectStreamBuf> redirect;
+    return redirect;
+}
+
+inline std::streambuf*& OriginalStdoutBuf() {
+    static std::streambuf* buffer = nullptr;
+    return buffer;
+}
+
+inline std::streambuf*& OriginalStderrBuf() {
+    static std::streambuf* buffer = nullptr;
+    return buffer;
 }
 
 inline void LogImpl(LogLevel level, const char* module, const char* format, ...) {
@@ -92,6 +334,61 @@ inline void LogDebugViewImpl(LogLevel level, const char* module, const char* for
 #endif
 
 } // namespace detail
+
+inline void ConfigureProcessFileLogging(const char* source, const std::string& log_directory) {
+    std::lock_guard<std::mutex> lock(detail::GetLogMutex());
+    auto& file_state = detail::GetProcessLogFileState();
+    if (file_state.stream.is_open()) {
+        file_state.stream.close();
+    }
+    file_state.stream.clear();
+    file_state.path.clear();
+
+    detail::GetProcessLogSource() = (source != nullptr && source[0] != '\0') ? source : "APP";
+    detail::GetProcessLogDirectory() = log_directory;
+    detail::IsProcessFileLoggingEnabled() = !log_directory.empty();
+    detail::EnsureLogDirectoryExists();
+    detail::CleanupExpiredLogFiles();
+}
+
+inline std::string ResolveLogDirectoryFromModule(HMODULE module_handle = nullptr) {
+#ifdef _WIN32
+    char module_path[MAX_PATH] = {};
+    if (GetModuleFileNameA(module_handle, module_path, MAX_PATH) == 0) {
+        return {};
+    }
+    return (std::filesystem::path(module_path).parent_path() / "logs").string();
+#else
+    (void)module_handle;
+    return "logs";
+#endif
+}
+
+inline void InstallStandardStreamFileLogging() {
+    std::lock_guard<std::mutex> lock(detail::GetLogMutex());
+    if (!detail::IsProcessFileLoggingEnabled()) {
+        return;
+    }
+
+    if (detail::OriginalStdoutBuf() == nullptr) {
+        detail::OriginalStdoutBuf() = std::cout.rdbuf();
+        detail::StdoutRedirect() = std::make_unique<detail::RedirectStreamBuf>(
+            detail::OriginalStdoutBuf(), "STDOUT");
+        std::cout.rdbuf(detail::StdoutRedirect().get());
+    }
+
+    if (detail::OriginalStderrBuf() == nullptr) {
+        detail::OriginalStderrBuf() = std::cerr.rdbuf();
+        detail::StderrRedirect() = std::make_unique<detail::RedirectStreamBuf>(
+            detail::OriginalStderrBuf(), "STDERR");
+        std::cerr.rdbuf(detail::StderrRedirect().get());
+    }
+}
+
+inline void WriteFileLogLine(const char* channel, const std::string& message) {
+    std::lock_guard<std::mutex> lock(detail::GetLogMutex());
+    detail::AppendFileLogLine(channel, message);
+}
 
 // ============================================================================
 // 日志宏

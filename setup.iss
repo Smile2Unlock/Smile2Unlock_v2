@@ -51,6 +51,10 @@ Root: HKCR; Subkey: "CLSID\{{5fd3d285-0dd9-4362-8855-e0abaacd4af6}}\InprocServer
 ; Remove application configuration on uninstall
 Root: HKLM; Subkey: "SOFTWARE\Smile2Unlock_v2"; ValueType: string; ValueName: "__installer_cleanup__"; ValueData: ""; Flags: uninsdeletekey
 
+[UninstallDelete]
+; Remove the whole installation directory, including files generated after install
+Type: filesandordirs; Name: "{app}"
+
 [Code]
 function ShouldCreateStartMenuShortcut(): Boolean;
 begin

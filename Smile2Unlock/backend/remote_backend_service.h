@@ -46,15 +46,15 @@ public:
     // ==================== DLL 管理 ====================
     
     DllStatus GetDllStatus() override {
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         std::string payload;
         
-        if (!send_request(GuiIpcCommand::GET_DLL_STATUS, "", response)) {
+        if (!send_request(GuiIpcCommand::GET_DLL_STATUS, "", *response)) {
             return DllStatus{};
         }
         
         DllStatus status;
-        parse_dll_status(response.payload, status);
+        parse_dll_status(response->payload, status);
         return status;
     }
     
@@ -63,61 +63,61 @@ public:
     }
     
     bool InjectDll(std::string& error_message) override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::INJECT_DLL, "", response)) {
-            error_message = response.payload;
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::INJECT_DLL, "", *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     // ==================== 用户管理 ====================
     
     std::vector<User> GetAllUsers() override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::GET_ALL_USERS, "", response)) {
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::GET_ALL_USERS, "", *response)) {
             return {};
         }
-        return parse_users(response.payload);
+        return parse_users(response->payload);
     }
     
     bool AddUser(const std::string& username, const std::string& password, 
                  const std::string& remark, std::string& error_message) override {
         std::string payload = username + "|" + password + "|" + remark;
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         
-        if (!send_request(GuiIpcCommand::ADD_USER, payload, response)) {
-            error_message = response.payload;
+        if (!send_request(GuiIpcCommand::ADD_USER, payload, *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     bool UpdateUser(int user_id, const std::string& username, const std::string& password,
                     const std::string& remark, std::string& error_message) override {
         std::string payload = std::to_string(user_id) + "|" + username + "|" + password + "|" + remark;
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         
-        if (!send_request(GuiIpcCommand::UPDATE_USER, payload, response)) {
-            error_message = response.payload;
+        if (!send_request(GuiIpcCommand::UPDATE_USER, payload, *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     bool DeleteUser(int userId, std::string& error_message) override {
         std::string payload = std::to_string(userId);
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         
-        if (!send_request(GuiIpcCommand::DELETE_USER, payload, response)) {
-            error_message = response.payload;
+        if (!send_request(GuiIpcCommand::DELETE_USER, payload, *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     // ==================== 人脸管理 ====================
@@ -129,75 +129,75 @@ public:
     }
     
     bool StartCameraPreview(std::string& error_message) override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::START_CAMERA_PREVIEW, "", response)) {
-            error_message = response.payload;
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::START_CAMERA_PREVIEW, "", *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     void StopCameraPreview() override {
-        GuiIpcResponse response;
-        send_request(GuiIpcCommand::STOP_CAMERA_PREVIEW, "", response);
+        auto response = std::make_unique<GuiIpcResponse>();
+        send_request(GuiIpcCommand::STOP_CAMERA_PREVIEW, "", *response);
     }
     
     bool IsCameraPreviewRunning() const override {
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         if (!const_cast<RemoteBackendService*>(this)->send_request(
-                GuiIpcCommand::IS_CAMERA_PREVIEW_RUNNING, "", response)) {
+                GuiIpcCommand::IS_CAMERA_PREVIEW_RUNNING, "", *response)) {
             return false;
         }
-        return std::string(response.payload) == "1";
+        return std::string(response->payload) == "1";
     }
     
     bool GetLatestCameraPreview(std::vector<unsigned char>& image_data, 
                                 int& width, int& height, 
                                 std::string& error_message) override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::GET_LATEST_PREVIEW, "", response)) {
-            error_message = response.payload;
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::GET_LATEST_PREVIEW, "", *response)) {
+            error_message = response->payload;
             return false;
         }
         // 解析预览数据：宽x高x数据(十六进制)
-        return parse_preview_data(std::string(response.payload, response.payload_size), image_data, width, height, error_message);
+        return parse_preview_data(std::string(response->payload, response->payload_size), image_data, width, height, error_message);
     }
     
     bool CapturePreviewFrame(std::vector<unsigned char>& image_data,
                              int& width, int& height,
                              std::string& error_message) override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::CAPTURE_PREVIEW_FRAME, "", response)) {
-            error_message = response.payload;
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::CAPTURE_PREVIEW_FRAME, "", *response)) {
+            error_message = response->payload;
             return false;
         }
-        return parse_preview_data(response.payload, image_data, width, height, error_message);
+        return parse_preview_data(response->payload, image_data, width, height, error_message);
     }
     
     bool CaptureAndAddFace(int user_id, const std::string& remark,
                           std::string& error_message) override {
         std::string payload = std::to_string(user_id) + "|" + remark;
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         
-        if (!send_request(GuiIpcCommand::CAPTURE_AND_ADD_FACE, payload, response)) {
-            error_message = response.payload;
+        if (!send_request(GuiIpcCommand::CAPTURE_AND_ADD_FACE, payload, *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     bool DeleteFace(int user_id, int face_id, std::string& error_message) override {
         std::string payload = std::to_string(user_id) + "|" + std::to_string(face_id);
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         
-        if (!send_request(GuiIpcCommand::DELETE_FACE, payload, response)) {
-            error_message = response.payload;
+        if (!send_request(GuiIpcCommand::DELETE_FACE, payload, *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     bool UpdateFaceRemark(int user_id, int face_id, const std::string& remark,
@@ -208,46 +208,74 @@ public:
     
     std::vector<FaceData> GetUserFaces(int user_id) override {
         std::string payload = std::to_string(user_id);
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         
-        if (!send_request(GuiIpcCommand::GET_USER_FACES, payload, response)) {
+        if (!send_request(GuiIpcCommand::GET_USER_FACES, payload, *response)) {
             return {};
         }
-        return parse_faces(response.payload);
+        return parse_faces(response->payload);
     }
     
     // ==================== 人脸识别 ====================
     
     bool StartRecognition(std::string& error_message) override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::START_RECOGNITION, "", response)) {
-            error_message = response.payload;
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::START_RECOGNITION, "", *response)) {
+            error_message = response->payload;
             return false;
         }
-        error_message = response.payload;
-        return response.status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
     
     void StopRecognition() override {
-        GuiIpcResponse response;
-        send_request(GuiIpcCommand::STOP_RECOGNITION, "", response);
+        auto response = std::make_unique<GuiIpcResponse>();
+        send_request(GuiIpcCommand::STOP_RECOGNITION, "", *response);
     }
     
     bool IsRecognitionRunning() const override {
-        GuiIpcResponse response;
+        auto response = std::make_unique<GuiIpcResponse>();
         if (!const_cast<RemoteBackendService*>(this)->send_request(
-                GuiIpcCommand::IS_RECOGNITION_RUNNING, "", response)) {
+                GuiIpcCommand::IS_RECOGNITION_RUNNING, "", *response)) {
             return false;
         }
-        return std::string(response.payload) == "1";
+        return std::string(response->payload) == "1";
     }
     
     RecognitionResult GetRecognitionResult() override {
-        GuiIpcResponse response;
-        if (!send_request(GuiIpcCommand::GET_RECOGNITION_RESULT, "", response)) {
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::GET_RECOGNITION_RESULT, "", *response)) {
             return RecognitionResult{};
         }
-        return parse_recognition_result(response.payload);
+        return parse_recognition_result(response->payload);
+    }
+
+    bool GetRecognizerConfig(FaceRecognizerConfig& config, std::string& error_message) override {
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::GET_RECOGNIZER_CONFIG, "", *response)) {
+            error_message = response->payload;
+            return false;
+        }
+        error_message.clear();
+        config = parse_recognizer_config(response->payload);
+        return true;
+    }
+
+    bool SaveRecognizerConfig(const FaceRecognizerConfig& config, std::string& error_message) override {
+        std::ostringstream payload;
+        payload << "camera=" << config.camera << "\n";
+        payload << "liveness=" << (config.liveness ? "1" : "0") << "\n";
+        payload << "face_threshold=" << config.face_threshold << "\n";
+        payload << "liveness_threshold=" << config.liveness_threshold << "\n";
+        payload << "debug=" << (config.debug ? "1" : "0") << "\n";
+
+        auto response = std::make_unique<GuiIpcResponse>();
+        if (!send_request(GuiIpcCommand::SAVE_RECOGNIZER_CONFIG, payload.str(), *response)) {
+            error_message = response->payload;
+            return false;
+        }
+        error_message = response->payload;
+        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
     }
 
 private:
@@ -302,22 +330,22 @@ private:
             return false;
         }
         
-        GuiIpcRequest request;
-        request.clear();
-        request.command = static_cast<int32_t>(cmd);
-        request.request_id = ++request_id_;
-        request.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        auto request = std::make_unique<GuiIpcRequest>();
+        request->clear();
+        request->command = static_cast<int32_t>(cmd);
+        request->request_id = ++request_id_;
+        request->timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()
         ).count();
         
         if (!payload.empty()) {
-            size_t copy_size = std::min(payload.size(), sizeof(request.payload) - 1);
-            std::memcpy(request.payload, payload.data(), copy_size);
-            request.payload_size = static_cast<int32_t>(copy_size);
+            size_t copy_size = std::min(payload.size(), sizeof(request->payload) - 1);
+            std::memcpy(request->payload, payload.data(), copy_size);
+            request->payload_size = static_cast<int32_t>(copy_size);
         }
         
         DWORD bytes_written = 0;
-        if (!WriteFile(pipe_, &request, sizeof(request), &bytes_written, nullptr)) {
+        if (!WriteFile(pipe_, request.get(), sizeof(*request), &bytes_written, nullptr)) {
             disconnect();
             response.set_error("Write failed");
             return false;
@@ -535,6 +563,28 @@ private:
         }
         
         return result;
+    }
+
+    FaceRecognizerConfig parse_recognizer_config(const std::string& data) {
+        FaceRecognizerConfig config;
+        std::istringstream ss(data);
+        std::string line;
+
+        while (std::getline(ss, line)) {
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+
+            std::string key = line.substr(0, eq);
+            std::string val = line.substr(eq + 1);
+
+            if (key == "camera") config.camera = std::stoi(val);
+            else if (key == "liveness") config.liveness = (val == "1");
+            else if (key == "face_threshold") config.face_threshold = std::stof(val);
+            else if (key == "liveness_threshold") config.liveness_threshold = std::stof(val);
+            else if (key == "debug") config.debug = (val == "1");
+        }
+
+        return config;
     }
 };
 

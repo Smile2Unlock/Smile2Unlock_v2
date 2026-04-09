@@ -1,5 +1,6 @@
 #include "seetaface.h"
 
+import app_paths;
 import utils;
 import std;
 
@@ -13,8 +14,11 @@ T* create_seeta_model(const std::string& model_path) {
 
 seeta::FaceAntiSpoofing *new_fas_v2() {
     seeta::ModelSetting setting;
-    setting.append(Utils::getCurrentDirectory() + "\\resources\\models\\" + "fas_first.csta");
-    setting.append(Utils::getCurrentDirectory() + "\\resources\\models\\" + "fas_second.csta");
+    const auto model_dir = smile2unlock::paths::GetRecognizerModelsDirectory();
+    const std::string fas_first = (model_dir / "fas_first.csta").string();
+    const std::string fas_second = (model_dir / "fas_second.csta").string();
+    setting.append(fas_first.c_str());
+    setting.append(fas_second.c_str());
     return new seeta::FaceAntiSpoofing(setting);
 }
 
@@ -22,12 +26,12 @@ seetaface::seetaface() : pFD(nullptr), pFL(nullptr), pFR(nullptr), pFAS(nullptr)
     std::cout << "[Recognizer] 初始化中..." << std::endl;
 
     // 初始化模型路径字符串 (避免悬空指针)
-    std::string project_root = Utils::getCurrentDirectory(); // 使用 getCurrentDirectory 替代 GetProjectRoot
-    model_path_fd = project_root + "\\resources\\models\\face_detector.csta";
-    model_path_fl = project_root + "\\resources\\models\\face_landmarker_pts5.csta";
-    model_path_fr = project_root + "\\resources\\models\\face_recognizer.csta";
-    model_path_fas1 = project_root + "\\resources\\models\\fas_first.csta";
-    model_path_fas2 = project_root + "\\resources\\models\\fas_second.csta";
+    const auto model_dir = smile2unlock::paths::GetRecognizerModelsDirectory();
+    model_path_fd = (model_dir / "face_detector.csta").string();
+    model_path_fl = (model_dir / "face_landmarker_pts5.csta").string();
+    model_path_fr = (model_dir / "face_recognizer.csta").string();
+    model_path_fas1 = (model_dir / "fas_first.csta").string();
+    model_path_fas2 = (model_dir / "fas_second.csta").string();
 
     try {
         // 检查模型文件是否存在

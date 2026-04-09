@@ -5,6 +5,7 @@ module;
 #include <windows.h>
 #include <wincrypt.h>
 #include <boost/asio.hpp>
+#include "utils/windows_security.h"
 
 // 使用统一的 UDP 管理头文件
 #include "managers/ipc/udp/udp_manager.h"
@@ -58,17 +59,8 @@ bool IsProcessHandleActive(HANDLE process_handle) {
     return GetExitCodeProcess(process_handle, &exit_code) && exit_code == STILL_ACTIVE;
 }
 
-bool BuildSharedMappingSecurity(SECURITY_ATTRIBUTES& sa, SECURITY_DESCRIPTOR& sd) {
-    if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)) {
-        return false;
-    }
-    if (!SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE)) {
-        return false;
-    }
-    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-    sa.lpSecurityDescriptor = &sd;
-    sa.bInheritHandle = FALSE;
-    return true;
+bool BuildSharedMappingSecurity(SECURITY_ATTRIBUTES& sa, SECURITY_DESCRIPTOR& sd, PACL& acl) {
+    return windows_security::BuildServiceIpcSecurityAttributes(sa, sd, acl);
 }
 
 std::string LastErrorText(const char* prefix) {
@@ -115,6 +107,8 @@ public:
     RecognitionResult GetLastResult() const;
     std::string ExtractFaceFeature(const std::string& image_path);
     bool CompareFaces(const std::string& feature1, const std::string& feature2, float& similarity);
+    void SetConfig(const FaceRecognizerConfig& config) { config_ = config; }
+    FaceRecognizerConfig GetConfig() const { return config_; }
 
 private:
     static constexpr float kRecognitionThreshold = 0.62f;
@@ -146,6 +140,7 @@ private:
     std::unique_ptr<UdpSenderToCP> udp_sender_;
     std::unique_ptr<UdpPasswordSenderToCP> udp_password_sender_;
     std::unique_ptr<smile2unlock::managers::Database> database_;
+    FaceRecognizerConfig config_;
 
     uint32_t current_session_id_;
     std::string pending_username_hint_;
@@ -210,7 +205,8 @@ bool FaceRecognition::start_fr_process() {
 
     SECURITY_ATTRIBUTES mapping_sa{};
     SECURITY_DESCRIPTOR mapping_sd{};
-    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd)) {
+    PACL mapping_acl = nullptr;
+    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd, mapping_acl)) {
         CloseHandle(hStdoutWrite);
         CloseHandle(hStderrWrite);
         return false;
@@ -218,6 +214,7 @@ bool FaceRecognition::start_fr_process() {
 
     recognition_result_map_name_ = "Local\\Smile2Unlock_Recognition_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
     recognition_result_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, recognition_result_map_name_.c_str());
+    windows_security::FreeSecurityAcl(mapping_acl);
     if (!recognition_result_mapping_) {
         return false;
     }
@@ -231,7 +228,16 @@ bool FaceRecognition::start_fr_process() {
     auto* result_header = static_cast<SharedFrameHeader*>(recognition_result_view_);
     *result_header = SharedFrameHeader{};
 
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m recognize --udp-port " + std::to_string(kFrStatusPort) + " --result-map \"" + recognition_result_map_name_ + "\"";
+    std::ostringstream cmd;
+    cmd << "\"" << fr_exe.string() << "\" -m recognize"
+        << " --udp-port " << kFrStatusPort
+        << " --camera " << config_.camera
+        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --threshold face=" << config_.face_threshold
+        << " --threshold liveness=" << config_.liveness_threshold
+        << " --debug " << (config_.debug ? "true" : "false")
+        << " --result-map \"" << recognition_result_map_name_ << "\"";
+    std::string cmd_line = cmd.str();
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &fr_process_info_)) {
         UnmapViewOfFile(recognition_result_view_);
         CloseHandle(recognition_result_mapping_);
@@ -263,7 +269,15 @@ bool FaceRecognition::start_fr_capture_process(const std::string& map_name, bool
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m capture-image --frame-map \"" + map_name + "\"";
+    std::ostringstream cmd;
+    cmd << "\"" << fr_exe.string() << "\" -m capture-image"
+        << " --camera " << config_.camera
+        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --threshold face=" << config_.face_threshold
+        << " --threshold liveness=" << config_.liveness_threshold
+        << " --debug " << (config_.debug ? "true" : "false")
+        << " --frame-map \"" << map_name << "\"";
+    std::string cmd_line = cmd.str();
     if (extract_feature) {
         cmd_line += " --extract-feature true";
     }
@@ -302,7 +316,15 @@ bool FaceRecognition::start_fr_preview_process(const std::string& map_name, std:
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     memset(&preview_process_info_, 0, sizeof(preview_process_info_));
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m preview-stream --frame-map \"" + map_name + "\"";
+    std::ostringstream cmd;
+    cmd << "\"" << fr_exe.string() << "\" -m preview-stream"
+        << " --camera " << config_.camera
+        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --threshold face=" << config_.face_threshold
+        << " --threshold liveness=" << config_.liveness_threshold
+        << " --debug " << (config_.debug ? "true" : "false")
+        << " --frame-map \"" << map_name << "\"";
+    std::string cmd_line = cmd.str();
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &preview_process_info_)) {
         error_message = "启动 FaceRecognizer 预览进程失败";
         return false;
@@ -338,11 +360,16 @@ void FaceRecognition::ReadSubProcessLogs() {
 }
 
 void FaceRecognition::stop_fr_process() {
+    if (recognition_result_view_ != nullptr) {
+        auto* header = static_cast<SharedFrameHeader*>(recognition_result_view_);
+        header->stop_requested = 1;
+    }
+
     if (fr_process_) {
         std::cout << "[SU] stop_fr_process session=" << current_session_id_
                   << " notifying PROCESS_ENDED" << std::endl;
         if (udp_sender_) udp_sender_->send_status(RecognitionStatus::PROCESS_ENDED, "", current_session_id_);
-        if (IsProcessHandleActive(fr_process_) && WaitForSingleObject(fr_process_, 3000) == WAIT_TIMEOUT) {
+        if (IsProcessHandleActive(fr_process_) && WaitForSingleObject(fr_process_, 500) == WAIT_TIMEOUT) {
             TerminateProcess(fr_process_, 0);
         }
     }
@@ -490,13 +517,15 @@ bool FaceRecognition::StartPreviewStream(std::string& error_message) {
 
     SECURITY_ATTRIBUTES mapping_sa{};
     SECURITY_DESCRIPTOR mapping_sd{};
-    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd)) {
+    PACL mapping_acl = nullptr;
+    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd, mapping_acl)) {
         error_message = LastErrorText("构建预览共享内存安全描述符失败");
         return false;
     }
 
     preview_map_name_ = "Local\\Smile2Unlock_Preview_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
     preview_mapping_ = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, preview_map_name_.c_str());
+    windows_security::FreeSecurityAcl(mapping_acl);
     if (!preview_mapping_) {
         error_message = LastErrorText("创建预览共享内存失败");
         return false;
@@ -612,12 +641,14 @@ bool FaceRecognition::capture_shared_payload(std::vector<unsigned char>& image_d
     }
     SECURITY_ATTRIBUTES mapping_sa{};
     SECURITY_DESCRIPTOR mapping_sd{};
-    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd)) {
+    PACL mapping_acl = nullptr;
+    if (!BuildSharedMappingSecurity(mapping_sa, mapping_sd, mapping_acl)) {
         error_message = LastErrorText("构建抓拍共享内存安全描述符失败");
         return false;
     }
     const std::string map_name = "Local\\Smile2Unlock_Frame_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
     HANDLE mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, &mapping_sa, PAGE_READWRITE, 0, kSharedFrameMappingSize, map_name.c_str());
+    windows_security::FreeSecurityAcl(mapping_acl);
     if (!mapping) {
         error_message = LastErrorText("创建共享内存失败");
         return false;

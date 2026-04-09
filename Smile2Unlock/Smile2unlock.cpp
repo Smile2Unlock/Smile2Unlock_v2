@@ -1,4 +1,5 @@
 #include "registryhelper.h"
+#include "utils/logger.h"
 #include "backend/managers/ipc/gui_ipc_server.h"
 #include "backend/gui_ipc_handler.h"
 #include "backend/remote_backend_service.h"
@@ -7,6 +8,7 @@
 #include <windows.h>
 
 import service_runtime;
+import app_paths;
 import smile2unlock.application;
 import smile2unlock.service;
 import std;
@@ -96,6 +98,15 @@ void RegisterInstallPath() {
     );
 }
 
+void InitializeProcessLogging() {
+    smile2unlock::paths::EnsureRuntimeDirectories();
+    smile2unlock::paths::MigrateLegacyDataFiles();
+    smile2unlock::ConfigureProcessFileLogging(
+        "SU", smile2unlock::ResolveLogDirectoryFromModule(nullptr));
+    smile2unlock::InstallStandardStreamFileLogging();
+    smile2unlock::WriteFileLogLine("BOOT", "Smile2Unlock process logging initialized");
+}
+
 int RunServiceMode() {
     RegisterInstallPath();
 
@@ -158,15 +169,12 @@ int RunGuiMode() {
         
         auto remote_backend = std::make_unique<smile2unlock::RemoteBackendService>();
         if (!remote_backend->Initialize()) {
-            std::cerr << "Failed to connect to Service! Falling back to local mode." << std::endl;
-            // 降级到本地模式
-            auto local_backend = std::make_unique<smile2unlock::BackendService>();
-            if (!local_backend->Initialize()) {
-                std::cerr << "Failed to initialize local backend!" << std::endl;
-                return -1;
-            }
-            app.SetBackend(std::move(local_backend));
-            app.SetRemoteBackendFlag(false);
+            const wchar_t* message =
+                L"检测到已有 Smile2Unlock 服务正在运行，但当前 GUI 无法连接到它。\n"
+                L"为避免启动第二个本地实例影响 Winlogon 拉起的服务，本次将停止启动。";
+            std::cerr << "Failed to connect to existing Service. Aborting GUI startup to avoid local fallback." << std::endl;
+            MessageBoxW(nullptr, message, L"Smile2Unlock", MB_OK | MB_ICONWARNING);
+            return -1;
         } else {
             app.SetBackend(std::move(remote_backend));
             app.SetRemoteBackendFlag(true);
@@ -197,6 +205,8 @@ int RunGuiMode() {
 } // namespace
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    InitializeProcessLogging();
+
     if (!IsRunningAsAdministrator()) {
         return RelaunchAsAdministrator();
     }

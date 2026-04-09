@@ -9,3 +9,4 @@ export using ::smile2unlock::FaceData;
 export using ::smile2unlock::User;
 export using ::smile2unlock::DllStatus;
 export using ::smile2unlock::RecognitionResult;
+export using ::smile2unlock::FaceRecognizerConfig;

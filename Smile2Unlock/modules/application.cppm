@@ -1,22 +1,36 @@
 module;
 
 #include <windows.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#ifndef SECURITY_WIN32
+#define SECURITY_WIN32
+#endif
+#include <secext.h>
 #include <GL/gl.h>
 
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#include "utils/logger.h"
+
 export module smile2unlock.application;
 
 import std;
+import app_paths;
 import smile2unlock.models;
 import smile2unlock.service;
 
 export namespace smile2unlock {
+
+struct CameraDeviceOption {
+    int index{};
+    std::string label;
+};
 
 class Application {
 public:
@@ -50,6 +64,7 @@ private:
     void RenderInjectorPanel();
     void RenderUsersPanel();
     void RenderRecognizerPanel();
+    void RefreshCameraDeviceList();
     void PollPreviewStream();
     void RefreshFacePreview();
     void UpdatePreviewTexture(const std::vector<unsigned char>& image_data, int width, int height);
@@ -93,6 +108,14 @@ private:
         bool camera_enabled{};
         std::string preview_message;
         int active_panel{};
+        FaceRecognizerConfig recognizer_config{};
+        FaceRecognizerConfig recognizer_saved_config{};
+        bool recognizer_config_loaded{};
+        bool recognizer_config_dirty{};
+        std::string recognizer_config_message;
+        std::vector<CameraDeviceOption> camera_devices;
+        bool camera_devices_loaded{};
+        std::string camera_devices_message;
         
         // 缓存的 DLL 状态
         DllStatus cached_dll_status;
@@ -100,6 +123,7 @@ private:
     };
 
     UIState ui_state_;
+    std::string imgui_ini_path_;
     bool initialized_;
     bool is_remote_backend_{false};
 };
@@ -145,17 +169,327 @@ enum WindowControlIcon {
 };
 
 constexpr GLint kGlClampToEdge = 0x812F;
+constexpr ImGuiWindowFlags kStaticChildFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
 ImVec4 WithAlpha(const ImVec4& color, const float alpha) {
     return ImVec4(color.x, color.y, color.z, alpha);
 }
 
+bool TryCopyWideStringToUtf8(_In_z_ const wchar_t* source,
+                             _Out_writes_z_(target_size) char* target,
+                             const size_t target_size) {
+    if (source == nullptr || target == nullptr || target_size == 0) {
+        return false;
+    }
+
+    const int required_size = WideCharToMultiByte(
+        CP_UTF8, 0, source, -1, nullptr, 0, nullptr, nullptr);
+    if (required_size <= 0 || static_cast<size_t>(required_size) > target_size) {
+        return false;
+    }
+
+    return WideCharToMultiByte(
+               CP_UTF8, 0, source, -1, target, required_size, nullptr, nullptr) > 0;
+}
+
+bool TryGetUtf8WindowsUsername(_Out_writes_z_(buffer_size) char* buffer,
+                               const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    WCHAR username[256]{};
+    DWORD username_length = ARRAYSIZE(username);
+    if (GetUserNameW(username, &username_length) && username_length > 0) {
+        return TryCopyWideStringToUtf8(username, buffer, buffer_size);
+    }
+
+    return false;
+}
+
+bool TryReadMicrosoftAccountEmailFromRegistry(_Out_writes_z_(buffer_size) char* buffer,
+                                              const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    const wchar_t* registry_paths[] = {
+        L"Software\\Microsoft\\IdentityCRL\\UserExtendedProperties",
+        L"Software\\Microsoft\\IdentityCRL\\StoredIdentities"
+    };
+
+    for (const wchar_t* registry_path : registry_paths) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, registry_path, 0, KEY_READ, &key) != ERROR_SUCCESS) {
+            continue;
+        }
+
+        DWORD index = 0;
+        wchar_t subkey_name[512]{};
+        DWORD subkey_name_length = ARRAYSIZE(subkey_name);
+        while (RegEnumKeyExW(key, index, subkey_name, &subkey_name_length,
+                             nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+            if (wcschr(subkey_name, L'@') != nullptr) {
+                if (TryCopyWideStringToUtf8(subkey_name, buffer, buffer_size)) {
+                    RegCloseKey(key);
+                    return true;
+                }
+            }
+
+            ++index;
+            subkey_name[0] = L'\0';
+            subkey_name_length = ARRAYSIZE(subkey_name);
+        }
+
+        RegCloseKey(key);
+    }
+
+    return false;
+}
+
+bool TryGetMicrosoftAccountEmailFromToken(_Out_writes_z_(buffer_size) char* buffer,
+                                          const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    DWORD required_size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required_size);
+    if (required_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return false;
+    }
+
+    PTOKEN_USER token_user = static_cast<PTOKEN_USER>(LocalAlloc(LPTR, required_size));
+    if (token_user == nullptr) {
+        CloseHandle(token);
+        return false;
+    }
+
+    if (!GetTokenInformation(token, TokenUser, token_user, required_size, &required_size)) {
+        LocalFree(token_user);
+        CloseHandle(token);
+        return false;
+    }
+
+    wchar_t account_name[512]{};
+    wchar_t domain_name[512]{};
+    DWORD account_name_size = ARRAYSIZE(account_name);
+    DWORD domain_name_size = ARRAYSIZE(domain_name);
+    SID_NAME_USE sid_type = SidTypeUnknown;
+
+    const BOOL lookup_ok = LookupAccountSidW(
+        nullptr,
+        token_user->User.Sid,
+        account_name,
+        &account_name_size,
+        domain_name,
+        &domain_name_size,
+        &sid_type);
+    LocalFree(token_user);
+    CloseHandle(token);
+
+    if (!lookup_ok) {
+        return false;
+    }
+
+    if (_wcsicmp(domain_name, L"MicrosoftAccount") != 0) {
+        return false;
+    }
+
+    if (wcschr(account_name, L'@') != nullptr) {
+        return TryCopyWideStringToUtf8(account_name, buffer, buffer_size);
+    }
+
+    return TryReadMicrosoftAccountEmailFromRegistry(buffer, buffer_size);
+}
+
+bool IsCurrentUserLocalBySid() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    DWORD required_size = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &required_size);
+    if (required_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        CloseHandle(token);
+        return false;
+    }
+
+    PTOKEN_USER token_user = static_cast<PTOKEN_USER>(LocalAlloc(LPTR, required_size));
+    if (token_user == nullptr) {
+        CloseHandle(token);
+        return false;
+    }
+
+    if (!GetTokenInformation(token, TokenUser, token_user, required_size, &required_size)) {
+        LocalFree(token_user);
+        CloseHandle(token);
+        return false;
+    }
+    CloseHandle(token);
+
+    WCHAR account_name[256]{};
+    WCHAR domain_name[256]{};
+    DWORD account_name_length = ARRAYSIZE(account_name);
+    DWORD domain_name_length = ARRAYSIZE(domain_name);
+    SID_NAME_USE sid_type = SidTypeUnknown;
+
+    const BOOL lookup_ok = LookupAccountSidW(
+        nullptr,
+        token_user->User.Sid,
+        account_name,
+        &account_name_length,
+        domain_name,
+        &domain_name_length,
+        &sid_type);
+    LocalFree(token_user);
+    if (!lookup_ok) {
+        return false;
+    }
+
+    WCHAR computer_name[MAX_COMPUTERNAME_LENGTH + 1]{};
+    DWORD computer_name_length = ARRAYSIZE(computer_name);
+    if (!GetComputerNameW(computer_name, &computer_name_length)) {
+        return false;
+    }
+
+    return _wcsicmp(domain_name, computer_name) == 0;
+}
+
+bool TryGetDefaultCpUsername(_Out_writes_z_(buffer_size) char* buffer,
+                             const size_t buffer_size) {
+    if (buffer == nullptr || buffer_size == 0) {
+        return false;
+    }
+
+    buffer[0] = '\0';
+
+    char username[256]{};
+    const bool has_username = TryGetUtf8WindowsUsername(username, sizeof(username));
+    const bool is_local_user = IsCurrentUserLocalBySid();
+
+    if (!is_local_user && TryGetMicrosoftAccountEmailFromToken(buffer, buffer_size)) {
+        LOG_INFO(LOG_MODULE_SERVICE, "Default CP username source=microsoft-account-email value=%s", buffer);
+        return true;
+    }
+
+    if (has_username) {
+        strncpy_s(buffer, buffer_size, username, _TRUNCATE);
+        LOG_INFO(LOG_MODULE_SERVICE, "Default CP username source=local-username value=%s", buffer);
+        return true;
+    }
+
+    LOG_WARNING(LOG_MODULE_SERVICE, "Default CP username unavailable");
+    return false;
+}
+
+bool EnsureApplicationMFInitialized() {
+    static struct MFInitGuard {
+        HRESULT hr{MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)};
+        ~MFInitGuard() {
+            if (SUCCEEDED(hr)) {
+                MFShutdown();
+            }
+        }
+    } guard;
+    return SUCCEEDED(guard.hr);
+}
+
+std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_message) {
+    std::vector<CameraDeviceOption> devices;
+    error_message.clear();
+
+    if (!EnsureApplicationMFInitialized()) {
+        error_message = "Media Foundation 初始化失败";
+        return devices;
+    }
+
+    IMFAttributes* attributes = nullptr;
+    HRESULT hr = MFCreateAttributes(&attributes, 1);
+    if (FAILED(hr)) {
+        error_message = "创建摄像头枚举属性失败";
+        return devices;
+    }
+
+    hr = attributes->SetGUID(
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+        MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+    if (FAILED(hr)) {
+        attributes->Release();
+        error_message = "设置摄像头枚举属性失败";
+        return devices;
+    }
+
+    IMFActivate** activate_array = nullptr;
+    UINT32 count = 0;
+    hr = MFEnumDeviceSources(attributes, &activate_array, &count);
+    attributes->Release();
+
+    if (FAILED(hr)) {
+        error_message = "枚举摄像头设备失败";
+        return devices;
+    }
+
+    devices.reserve(count);
+    for (UINT32 i = 0; i < count; ++i) {
+        WCHAR* friendly_name = nullptr;
+        UINT32 name_length = 0;
+        std::string label = "摄像头 " + std::to_string(i);
+
+        if (SUCCEEDED(activate_array[i]->GetAllocatedString(
+                MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
+                &friendly_name,
+                &name_length)) &&
+            friendly_name != nullptr) {
+            const int required = WideCharToMultiByte(CP_UTF8, 0, friendly_name, -1, nullptr, 0, nullptr, nullptr);
+            if (required > 1) {
+                std::string utf8_name(static_cast<size_t>(required - 1), '\0');
+                WideCharToMultiByte(CP_UTF8, 0, friendly_name, -1, utf8_name.data(), required, nullptr, nullptr);
+                label = utf8_name + "  [索引 " + std::to_string(i) + "]";
+            }
+            CoTaskMemFree(friendly_name);
+        } else {
+            label += "  [索引 " + std::to_string(i) + "]";
+        }
+
+        devices.push_back({static_cast<int>(i), label});
+        activate_array[i]->Release();
+    }
+
+    if (activate_array != nullptr) {
+        CoTaskMemFree(activate_array);
+    }
+
+    if (devices.empty()) {
+        error_message = "未检测到摄像头设备";
+    }
+
+    return devices;
+}
+
 Application::Application() : window_(nullptr), initialized_(false) {
     // 后端由外部设置，不再在此处创建
-    char username[256];
-    DWORD username_len = sizeof(username);
-    if (GetUserNameA(username, &username_len)) {
+    char username[256]{};
+    if (TryGetDefaultCpUsername(username, sizeof(username))) {
         strncpy_s(ui_state_.new_username, sizeof(ui_state_.new_username), username, _TRUNCATE);
+    }
+}
+
+void Application::RefreshCameraDeviceList() {
+    std::string error_message;
+    ui_state_.camera_devices = EnumerateCameraDevices(error_message);
+    ui_state_.camera_devices_loaded = true;
+    if (!error_message.empty()) {
+        ui_state_.camera_devices_message = error_message;
+    } else {
+        ui_state_.camera_devices_message = "已检测到 " + std::to_string(ui_state_.camera_devices.size()) + " 个摄像头设备";
     }
 }
 
@@ -180,6 +514,8 @@ bool Application::Initialize() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
+    imgui_ini_path_ = smile2unlock::paths::GetImguiIniPath().string();
+    io.IniFilename = imgui_ini_path_.c_str();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\msyh.ttc", 24.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
     if (io.Fonts->Fonts.Size == 0) {
@@ -347,7 +683,7 @@ void Application::RenderShell() {
 void Application::RenderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord1, 0.97f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(Nord3, 0.65f));
-    ImGui::BeginChild("TitleBar", ImVec2(0, 118.0f), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("TitleBar", ImVec2(0, 118.0f), true, kStaticChildFlags);
 
     const bool is_maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) == GLFW_TRUE;
     const char* current_panel =
@@ -699,8 +1035,156 @@ void Application::RenderUsersPanel() {
 
 void Application::RenderRecognizerPanel() {
     BeginPanelCard("RecognizerPanel");
-    RenderSectionHeader("SERVICE", "FaceRecognizer", "服务控制区保持最少元素，只呈现运行结果和操作。");
+    RenderSectionHeader("SERVICE", "FaceRecognizer", "配置由 Smile2Unlock 持有并落盘，启动 FR 时显式传参，不再只是编辑 ini 文本。");
+
+    if (!ui_state_.recognizer_config_loaded) {
+        std::string error;
+        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_loaded = true;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = "已从配置文件载入当前识别参数";
+        } else {
+            ui_state_.recognizer_config_message = "加载配置失败: " + error;
+        }
+    }
+    if (!ui_state_.camera_devices_loaded) {
+        RefreshCameraDeviceList();
+    }
+
+    const bool recognition_running = backend_->IsRecognitionRunning();
+    RenderInfoRow("识别进程", recognition_running ? "运行中" : "未运行", recognition_running ? Nord14 : Nord3);
     RenderInfoRow("摄像头预览", ui_state_.camera_enabled ? "活跃" : "未启动", ui_state_.camera_enabled ? Nord8 : Nord3);
+    RenderInfoRow("配置状态", ui_state_.recognizer_config_dirty ? "有未保存修改" : "已与磁盘同步",
+                  ui_state_.recognizer_config_dirty ? Nord13 : Nord14);
+
+    ImGui::Spacing();
+    RenderSectionHeader("CONFIG", "识别参数", "使用明确控件调整摄像头、活体和阈值，保存后会影响后续预览、抓拍和识别。");
+
+    auto mark_dirty = [this]() {
+        ui_state_.recognizer_config_dirty =
+            ui_state_.recognizer_config.camera != ui_state_.recognizer_saved_config.camera ||
+            ui_state_.recognizer_config.liveness != ui_state_.recognizer_saved_config.liveness ||
+            std::abs(ui_state_.recognizer_config.face_threshold - ui_state_.recognizer_saved_config.face_threshold) > 0.0001f ||
+            std::abs(ui_state_.recognizer_config.liveness_threshold - ui_state_.recognizer_saved_config.liveness_threshold) > 0.0001f ||
+            ui_state_.recognizer_config.debug != ui_state_.recognizer_saved_config.debug;
+    };
+
+    std::string selected_camera_label = "索引 " + std::to_string(ui_state_.recognizer_config.camera) + " (未在当前设备列表中)";
+    for (const auto& device : ui_state_.camera_devices) {
+        if (device.index == ui_state_.recognizer_config.camera) {
+            selected_camera_label = device.label;
+            break;
+        }
+    }
+
+    if (ImGui::BeginCombo("摄像头设备", selected_camera_label.c_str())) {
+        for (const auto& device : ui_state_.camera_devices) {
+            const bool selected = (device.index == ui_state_.recognizer_config.camera);
+            if (ImGui::Selectable(device.label.c_str(), selected)) {
+                ui_state_.recognizer_config.camera = device.index;
+                mark_dirty();
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("刷新设备", ImVec2(140, 0))) {
+        RefreshCameraDeviceList();
+    }
+    RenderInfoRow("当前摄像头索引", std::to_string(ui_state_.recognizer_config.camera), Nord8);
+    if (!ui_state_.camera_devices_message.empty()) {
+        RenderInfoRow("设备枚举", ui_state_.camera_devices_message, ui_state_.camera_devices.empty() ? Nord13 : Nord14);
+    }
+
+    if (ImGui::Checkbox("启用活体检测", &ui_state_.recognizer_config.liveness)) {
+        mark_dirty();
+    }
+    if (ImGui::SliderFloat("人脸阈值", &ui_state_.recognizer_config.face_threshold, 0.30f, 0.95f, "%.2f")) {
+        mark_dirty();
+    }
+    if (ImGui::SliderFloat("活体阈值", &ui_state_.recognizer_config.liveness_threshold, 0.30f, 0.99f, "%.2f")) {
+        mark_dirty();
+    }
+    if (ImGui::Checkbox("输出调试日志", &ui_state_.recognizer_config.debug)) {
+        mark_dirty();
+    }
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
+    ImGui::TextWrapped("%s", "预设会立即写入当前编辑态；只有点击“保存配置”后，才会落盘并成为 SU 启动 FR 的默认参数。");
+    ImGui::PopStyleColor();
+
+    auto apply_preset = [this, &mark_dirty](int camera, bool liveness, float face, float live, bool debug, const char* label) {
+        ui_state_.recognizer_config.camera = camera;
+        ui_state_.recognizer_config.liveness = liveness;
+        ui_state_.recognizer_config.face_threshold = face;
+        ui_state_.recognizer_config.liveness_threshold = live;
+        ui_state_.recognizer_config.debug = debug;
+        ui_state_.recognizer_config_message = std::string("已应用预设: ") + label;
+        mark_dirty();
+    };
+
+    if (ImGui::Button("平衡预设", ImVec2(160, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.62f, 0.80f, false, "平衡");
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("严格预设", ImVec2(160, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.72f, 0.88f, false, "严格");
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("快速预设", ImVec2(160, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), false, 0.55f, 0.65f, false, "快速");
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("重新加载磁盘配置", ImVec2(220, 0))) {
+        std::string error;
+        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_loaded = true;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = "已重新加载磁盘配置";
+        } else {
+            ui_state_.recognizer_config_message = "重新加载失败: " + error;
+        }
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("恢复默认值", ImVec2(180, 0))) {
+        ui_state_.recognizer_config.camera = 0;
+        ui_state_.recognizer_config.liveness = true;
+        ui_state_.recognizer_config.face_threshold = 0.62f;
+        ui_state_.recognizer_config.liveness_threshold = 0.8f;
+        ui_state_.recognizer_config.debug = false;
+        ui_state_.recognizer_config_message = "已恢复默认参数";
+        mark_dirty();
+    }
+    ImGui::SameLine(0.0f, 12.0f);
+    if (ImGui::Button("保存配置", ImVec2(160, 0))) {
+        std::string error;
+        if (backend_->SaveRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = error;
+            ui_state_.status_message = error;
+            ui_state_.status_message_timer = 3.0f;
+        } else {
+            ui_state_.recognizer_config_message = "保存失败: " + error;
+            ui_state_.status_message = ui_state_.recognizer_config_message;
+            ui_state_.status_message_timer = 3.0f;
+        }
+    }
+
+    if (!ui_state_.recognizer_config_message.empty()) {
+        ImGui::Spacing();
+        RenderInfoRow("配置反馈", ui_state_.recognizer_config_message, ui_state_.recognizer_config_dirty ? Nord13 : Nord8);
+    }
+
+    ImGui::Spacing();
+    RenderSectionHeader("CONTROL", "进程控制", "配置保存后，会在下一次启动预览、抓拍或识别时由 SU 显式传给 FR。");
     if (ImGui::Button("启动 FaceRecognizer", ImVec2(240, 0))) {
         std::string error;
         ui_state_.status_message = backend_->StartRecognition(error) ? "人脸识别进程已启动" : "启动失败: " + error;
@@ -794,7 +1278,7 @@ void Application::RenderInfoRow(const char* label, const std::string& value, con
     const float row_height = std::max(84.0f, 48.0f + text_height + ImGui::GetStyle().WindowPadding.y * 0.7f);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord0, 0.28f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(Nord3, 0.25f));
-    ImGui::BeginChild(label, ImVec2(0, row_height), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild(label, ImVec2(0, row_height), true, kStaticChildFlags);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.62f));
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
@@ -809,7 +1293,7 @@ void Application::RenderInfoRow(const char* label, const std::string& value, con
 void Application::RenderStatTile(const char* id, const char* label, const std::string& value, const std::string& hint, const ImVec4& accent, float width) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord1, 0.96f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(accent, 0.42f));
-    ImGui::BeginChild(id, ImVec2(width, 136.0f), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild(id, ImVec2(width, 136.0f), true, kStaticChildFlags);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.65f));
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
@@ -826,7 +1310,7 @@ void Application::RenderStatTile(const char* id, const char* label, const std::s
 bool Application::RenderNavItem(const char* id, const char* label, const char* hint, bool selected) {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, selected ? WithAlpha(Nord10, 0.36f) : WithAlpha(Nord1, 0.92f));
     ImGui::PushStyleColor(ImGuiCol_Border, selected ? WithAlpha(Nord8, 0.65f) : WithAlpha(Nord3, 0.30f));
-    ImGui::BeginChild(id, ImVec2(0, 98.0f), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild(id, ImVec2(0, 98.0f), true, kStaticChildFlags);
     ImGui::PushStyleColor(ImGuiCol_Text, selected ? Nord6 : Nord4);
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();

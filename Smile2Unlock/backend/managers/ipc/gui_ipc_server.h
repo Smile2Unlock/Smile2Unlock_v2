@@ -1,6 +1,7 @@
 #pragma once
 
 #include "models/gui_ipc_protocol.h"
+#include "utils/windows_security.h"
 #include <windows.h>
 #include <thread>
 #include <atomic>
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace smile2unlock {
 
@@ -64,8 +66,23 @@ public:
     bool is_running() const { return running_; }
 
 private:
+    static bool build_pipe_security(SECURITY_ATTRIBUTES& sa, SECURITY_DESCRIPTOR& sd, PACL& acl) {
+        return windows_security::BuildServiceIpcSecurityAttributes(sa, sd, acl);
+    }
+
     void server_loop() {
         while (running_) {
+            SECURITY_ATTRIBUTES sa{};
+            SECURITY_DESCRIPTOR sd{};
+            PACL acl = nullptr;
+            SECURITY_ATTRIBUTES* pipe_sa = nullptr;
+            if (build_pipe_security(sa, sd, acl)) {
+                pipe_sa = &sa;
+            } else if (running_) {
+                std::cerr << "[IPC Server] 构建管道安全描述符失败，使用默认安全属性: "
+                          << GetLastError() << std::endl;
+            }
+
             // 创建命名管道
             pipe_ = CreateNamedPipeA(
                 GUI_IPC_PIPE_NAME,
@@ -75,8 +92,9 @@ private:
                 sizeof(GuiIpcResponse),
                 sizeof(GuiIpcRequest),
                 0,
-                nullptr
+                pipe_sa
             );
+            windows_security::FreeSecurityAcl(acl);
             
             if (pipe_ == INVALID_HANDLE_VALUE) {
                 if (running_) {
@@ -106,20 +124,20 @@ private:
     void handle_client() {
         // 在同一个连接中处理多个请求
         while (running_) {
-            GuiIpcRequest request;
-            GuiIpcResponse response;
+            auto request = std::make_unique<GuiIpcRequest>();
+            auto response = std::make_unique<GuiIpcResponse>();
             
             DWORD bytes_read = 0;
             const BOOL read_ok = ReadFile(
                 pipe_,
-                &request,
-                sizeof(request),
+                request.get(),
+                sizeof(*request),
                 &bytes_read,
                 nullptr
             );
             
             // 检查是否连接断开或出错
-            if (!read_ok || bytes_read != sizeof(request)) {
+            if (!read_ok || bytes_read != sizeof(*request)) {
                 DWORD err = GetLastError();
                 if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA) {
                     // 客户端断开连接，正常退出
@@ -132,32 +150,32 @@ private:
             }
             
             // 验证协议
-            if (request.magic != GUI_IPC_MAGIC) {
-                response.set_error("Invalid magic number");
-                send_response(response);
+            if (request->magic != GUI_IPC_MAGIC) {
+                response->set_error("Invalid magic number");
+                send_response(*response);
                 continue;
             }
             
-            if (request.version != GUI_IPC_VERSION) {
-                response.set_error("Version mismatch");
-                send_response(response);
+            if (request->version != GUI_IPC_VERSION) {
+                response->set_error("Version mismatch");
+                send_response(*response);
                 continue;
             }
             
             // 清空响应
-            response.clear();
-            response.request_id = request.request_id;
-            response.timestamp = request.timestamp;
+            response->clear();
+            response->request_id = request->request_id;
+            response->timestamp = request->timestamp;
             
             // 调用处理器
             if (handler_) {
-                handler_(request, response);
+                handler_(*request, *response);
             } else {
-                response.set_error("No handler registered");
+                response->set_error("No handler registered");
             }
             
             // 发送响应
-            send_response(response);
+            send_response(*response);
         }
     }
     

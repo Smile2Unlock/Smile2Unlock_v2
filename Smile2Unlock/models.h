@@ -42,4 +42,12 @@ struct RecognitionResult {
     std::string error_message;
 };
 
+struct FaceRecognizerConfig {
+    int camera{};
+    bool liveness{true};
+    float face_threshold{0.62f};
+    float liveness_threshold{0.8f};
+    bool debug{};
+};
+
 } // namespace smile2unlock
