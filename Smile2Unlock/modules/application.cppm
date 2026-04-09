@@ -79,6 +79,13 @@ private:
     void RenderStatusMessage();
     void BeginPanelCard(const char* id, float height = 0.0f);
     void EndPanelCard();
+    const char* Tr(std::string_view key) const;
+    bool ApplyLanguage(std::string_view requested_language);
+    std::string ResolveInitialLanguage(std::string_view configured_language) const;
+    std::unordered_map<std::string, std::string> LoadLanguageFile(const std::string& language_code, std::string& error_message) const;
+    static bool IsEnglishSystemUiLanguage();
+    float CalcButtonWidth(std::string_view label, float min_width) const;
+    bool CanFitInline(std::initializer_list<float> widths, float spacing = 12.0f) const;
 
     std::unique_ptr<IBackendService> backend_;
     GLFWwindow* window_;
@@ -126,6 +133,9 @@ private:
     std::string imgui_ini_path_;
     bool initialized_;
     bool is_remote_backend_{false};
+    std::string active_language_code_{"zh-CN"};
+    std::unordered_map<std::string, std::string> active_translations_;
+    std::unordered_map<std::string, std::string> fallback_translations_;
 };
 
 } // namespace smile2unlock
@@ -168,11 +178,32 @@ enum WindowControlIcon {
     WindowControlClose = 3
 };
 
+enum class UiLanguage {
+    ZhCN,
+    EnUS
+};
+
 constexpr GLint kGlClampToEdge = 0x812F;
 constexpr ImGuiWindowFlags kStaticChildFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
 ImVec4 WithAlpha(const ImVec4& color, const float alpha) {
     return ImVec4(color.x, color.y, color.z, alpha);
+}
+
+UiLanguage ParseUiLanguage(std::string_view language_code) {
+    if (language_code == "en-US" || language_code == "en") {
+        return UiLanguage::EnUS;
+    }
+    return UiLanguage::ZhCN;
+}
+
+const char* NormalizeLanguageCode(std::string_view language_code) {
+    return ParseUiLanguage(language_code) == UiLanguage::EnUS ? "en-US" : "zh-CN";
+}
+
+template <typename... Args>
+std::string DynFormat(const std::string_view format, Args&&... args) {
+    return std::vformat(format, std::make_format_args(args...));
 }
 
 bool TryCopyWideStringToUtf8(_In_z_ const wchar_t* source,
@@ -405,16 +436,17 @@ bool EnsureApplicationMFInitialized() {
 std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_message) {
     std::vector<CameraDeviceOption> devices;
     error_message.clear();
+    const bool english = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_ENGLISH;
 
     if (!EnsureApplicationMFInitialized()) {
-        error_message = "Media Foundation 初始化失败";
+        error_message = english ? "Failed to initialize Media Foundation" : "Media Foundation 初始化失败";
         return devices;
     }
 
     IMFAttributes* attributes = nullptr;
     HRESULT hr = MFCreateAttributes(&attributes, 1);
     if (FAILED(hr)) {
-        error_message = "创建摄像头枚举属性失败";
+        error_message = english ? "Failed to create camera enumeration attributes" : "创建摄像头枚举属性失败";
         return devices;
     }
 
@@ -423,7 +455,7 @@ std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_messag
         MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
     if (FAILED(hr)) {
         attributes->Release();
-        error_message = "设置摄像头枚举属性失败";
+        error_message = english ? "Failed to set camera enumeration attributes" : "设置摄像头枚举属性失败";
         return devices;
     }
 
@@ -433,7 +465,7 @@ std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_messag
     attributes->Release();
 
     if (FAILED(hr)) {
-        error_message = "枚举摄像头设备失败";
+        error_message = english ? "Failed to enumerate camera devices" : "枚举摄像头设备失败";
         return devices;
     }
 
@@ -441,7 +473,7 @@ std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_messag
     for (UINT32 i = 0; i < count; ++i) {
         WCHAR* friendly_name = nullptr;
         UINT32 name_length = 0;
-        std::string label = "摄像头 " + std::to_string(i);
+        std::string label = english ? "Camera " + std::to_string(i) : "摄像头 " + std::to_string(i);
 
         if (SUCCEEDED(activate_array[i]->GetAllocatedString(
                 MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
@@ -452,11 +484,11 @@ std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_messag
             if (required > 1) {
                 std::string utf8_name(static_cast<size_t>(required - 1), '\0');
                 WideCharToMultiByte(CP_UTF8, 0, friendly_name, -1, utf8_name.data(), required, nullptr, nullptr);
-                label = utf8_name + "  [索引 " + std::to_string(i) + "]";
+                label = utf8_name + (english ? "  [Index " : "  [索引 ") + std::to_string(i) + "]";
             }
             CoTaskMemFree(friendly_name);
         } else {
-            label += "  [索引 " + std::to_string(i) + "]";
+            label += (english ? "  [Index " : "  [索引 ") + std::to_string(i) + "]";
         }
 
         devices.push_back({static_cast<int>(i), label});
@@ -468,7 +500,7 @@ std::vector<CameraDeviceOption> EnumerateCameraDevices(std::string& error_messag
     }
 
     if (devices.empty()) {
-        error_message = "未检测到摄像头设备";
+        error_message = english ? "No camera devices detected" : "未检测到摄像头设备";
     }
 
     return devices;
@@ -489,7 +521,7 @@ void Application::RefreshCameraDeviceList() {
     if (!error_message.empty()) {
         ui_state_.camera_devices_message = error_message;
     } else {
-        ui_state_.camera_devices_message = "已检测到 " + std::to_string(ui_state_.camera_devices.size()) + " 个摄像头设备";
+        ui_state_.camera_devices_message = DynFormat(Tr("camera_detected"), ui_state_.camera_devices.size());
     }
 }
 
@@ -502,29 +534,142 @@ void Application::SyncCameraPreviewState() {
     ui_state_.camera_enabled = preview_running;
     if (!preview_running) {
         if (ui_state_.preview_message.empty() ||
-            ui_state_.preview_message == "摄像头实时预览中" ||
-            ui_state_.preview_message == "摄像头已打开") {
-            ui_state_.preview_message = "摄像头未开启";
+            ui_state_.preview_message == Tr("camera_live_preview") ||
+            ui_state_.preview_message == Tr("camera_opened")) {
+            ui_state_.preview_message = Tr("camera_not_running");
         }
         ClearPreviewTexture();
     } else if (ui_state_.preview_message.empty() ||
-               ui_state_.preview_message == "摄像头未开启" ||
-               ui_state_.preview_message == "摄像头已关闭") {
-        ui_state_.preview_message = "摄像头实时预览中";
+               ui_state_.preview_message == Tr("camera_not_running") ||
+               ui_state_.preview_message == Tr("camera_closed")) {
+        ui_state_.preview_message = Tr("camera_live_preview");
     }
 }
 
 Application::~Application() { Shutdown(); }
 
+bool Application::IsEnglishSystemUiLanguage() {
+    const LANGID language = GetUserDefaultUILanguage();
+    return PRIMARYLANGID(language) == LANG_ENGLISH;
+}
+
+std::unordered_map<std::string, std::string> Application::LoadLanguageFile(
+    const std::string& language_code,
+    std::string& error_message) const {
+    std::unordered_map<std::string, std::string> translations;
+    error_message.clear();
+
+    const auto path = smile2unlock::paths::GetResourcesDirectory() / "lang" / (language_code + ".ini");
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        error_message = "Failed to open language file: " + path.string();
+        return translations;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.rfind("\xEF\xBB\xBF", 0) == 0) {
+            line.erase(0, 3);
+        }
+        if (line.empty() || line[0] == '#' || line[0] == ';') {
+            continue;
+        }
+
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+
+        std::string key = line.substr(0, eq);
+        std::string value = line.substr(eq + 1);
+        if (!key.empty()) {
+            translations[std::move(key)] = std::move(value);
+        }
+    }
+
+    return translations;
+}
+
+std::string Application::ResolveInitialLanguage(std::string_view configured_language) const {
+    if (!configured_language.empty()) {
+        return std::string(NormalizeLanguageCode(configured_language));
+    }
+    return IsEnglishSystemUiLanguage() ? "en-US" : "zh-CN";
+}
+
+bool Application::ApplyLanguage(std::string_view requested_language) {
+    const std::string desired_language = std::string(NormalizeLanguageCode(requested_language));
+    if (fallback_translations_.empty()) {
+        std::string fallback_error;
+        fallback_translations_ = LoadLanguageFile("zh-CN", fallback_error);
+        if (fallback_translations_.empty()) {
+            LOG_ERROR(LOG_MODULE_SERVICE, "Failed to load fallback language file: %s", fallback_error.c_str());
+            return false;
+        }
+    }
+
+    std::string error_message;
+    auto translations = LoadLanguageFile(desired_language, error_message);
+    if (translations.empty()) {
+        LOG_WARNING(LOG_MODULE_SERVICE, "Failed to load language '%s': %s", desired_language.c_str(), error_message.c_str());
+        if (desired_language != "zh-CN") {
+            translations = fallback_translations_;
+            active_language_code_ = "zh-CN";
+        } else {
+            return false;
+        }
+    } else {
+        active_language_code_ = desired_language;
+    }
+
+    active_translations_ = std::move(translations);
+    ui_state_.recognizer_config.language = active_language_code_;
+    return true;
+}
+
+float Application::CalcButtonWidth(std::string_view label, float min_width) const {
+    return std::max(min_width, ImGui::CalcTextSize(label.data()).x + 40.0f);
+}
+
+bool Application::CanFitInline(std::initializer_list<float> widths, float spacing) const {
+    float total = 0.0f;
+    bool first = true;
+    for (const float width : widths) {
+        if (!first) {
+            total += spacing;
+        }
+        total += width;
+        first = false;
+    }
+    return total <= ImGui::GetContentRegionAvail().x;
+}
+
 bool Application::Initialize() {
     if (!backend_->Initialize()) return false;
+    std::string config_message;
+    if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, config_message)) {
+        ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
+        ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+        ui_state_.recognizer_config_loaded = true;
+        ui_state_.recognizer_config_dirty = false;
+    } else {
+        ui_state_.recognizer_config.language = ResolveInitialLanguage({});
+        ui_state_.recognizer_saved_config.language = ui_state_.recognizer_config.language;
+    }
+
+    if (!ApplyLanguage(ui_state_.recognizer_config.language)) {
+        return false;
+    }
     if (!glfwInit()) return false;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
-    window_ = glfwCreateWindow(1600, 900, "Smile2Unlock Control Panel", nullptr, nullptr);
+    window_ = glfwCreateWindow(1600, 900, Tr("window_title"), nullptr, nullptr);
     if (!window_) {
         glfwTerminate();
         return false;
@@ -620,9 +765,9 @@ void Application::RefreshFacePreview() {
     std::string error_message;
     if (backend_->CapturePreviewFrame(image_data, width, height, error_message)) {
         UpdatePreviewTexture(image_data, width, height);
-        ui_state_.preview_message = "预览已更新";
+        ui_state_.preview_message = Tr("preview_updated");
     } else {
-        ui_state_.preview_message = error_message.empty() ? "无法获取预览" : error_message;
+        ui_state_.preview_message = error_message.empty() ? Tr("cannot_get_preview") : error_message;
     }
 }
 
@@ -638,13 +783,14 @@ void Application::PollPreviewStream() {
     std::string error_message;
     if (backend_->GetLatestCameraPreview(image_data, width, height, error_message)) {
         UpdatePreviewTexture(image_data, width, height);
-        ui_state_.preview_message = "摄像头实时预览中";
+        ui_state_.preview_message = Tr("camera_live_preview");
     } else if (!error_message.empty()) {
         ui_state_.preview_message = error_message;
     }
 }
 
 void Application::RenderUI() {
+    glfwSetWindowTitle(window_, Tr("window_title"));
     if (ui_state_.dll_status_refresh_timer < 0 || ui_state_.dll_status_refresh_timer > 2.0f) {
         ui_state_.cached_dll_status = backend_->GetDllStatus();
         ui_state_.dll_status_refresh_timer = 0.0f;
@@ -658,7 +804,7 @@ void Application::RenderUI() {
 void Application::RenderShell() {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-    ImGui::Begin("Smile2Unlock 控制面板", nullptr,
+    ImGui::Begin(Tr("window_title"), nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
@@ -666,7 +812,7 @@ void Application::RenderShell() {
     ImGui::Spacing();
 
     const float content_height = ImGui::GetContentRegionAvail().y;
-    ImGui::BeginChild("Sidebar", ImVec2(320.0f, content_height), true);
+    ImGui::BeginChild("Sidebar", ImVec2(380.0f, content_height), true);
     RenderSidebar();
     ImGui::EndChild();
 
@@ -694,12 +840,12 @@ void Application::RenderShell() {
 void Application::RenderTitleBar() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, WithAlpha(Nord1, 0.97f));
     ImGui::PushStyleColor(ImGuiCol_Border, WithAlpha(Nord3, 0.65f));
-    ImGui::BeginChild("TitleBar", ImVec2(0, 118.0f), true, kStaticChildFlags);
+    ImGui::BeginChild("TitleBar", ImVec2(0, 148.0f), true, kStaticChildFlags);
 
     const bool is_maximized = glfwGetWindowAttrib(window_, GLFW_MAXIMIZED) == GLFW_TRUE;
     const char* current_panel =
-        ui_state_.active_panel == PanelInjector ? "DLL 部署" :
-        ui_state_.active_panel == PanelUsers ? "用户管理" : "识别服务";
+        ui_state_.active_panel == PanelInjector ? Tr("panel_injector") :
+        ui_state_.active_panel == PanelUsers ? Tr("panel_users") : Tr("panel_recognizer");
 
     ImGui::PushStyleColor(ImGuiCol_Text, Nord6);
     ImGui::TextUnformatted("Smile2Unlock");
@@ -707,12 +853,14 @@ void Application::RenderTitleBar() {
     ImGui::SameLine();
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 16.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
-    ImGui::TextUnformatted("Control Surface");
+    ImGui::TextUnformatted(Tr("control_surface"));
     ImGui::PopStyleColor();
 
     const float button_width = 52.0f;
     const float button_spacing = 8.0f;
     const float total_buttons_width = button_width * 3.0f + button_spacing * 2.0f;
+    const float text_region_width =
+        ImGui::GetWindowWidth() - total_buttons_width - ImGui::GetStyle().WindowPadding.x * 3.0f;
     ImGui::SetCursorPos(ImVec2(
         ImGui::GetWindowWidth() - total_buttons_width - ImGui::GetStyle().WindowPadding.x,
         18.0f
@@ -735,18 +883,24 @@ void Application::RenderTitleBar() {
 
     ImGui::SetCursorPosY(58.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.78f));
-    ImGui::TextWrapped("当前分区: %s | 后端: %s | 窗口: %s",
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(320.0f, text_region_width));
+    const std::string title_status = DynFormat(
+        Tr("title_status_line"),
         current_panel,
-        is_remote_backend_ ? "Remote Service" : "Standalone",
-        is_maximized ? "最大化" : "窗口模式");
+        is_remote_backend_ ? Tr("backend_remote") : Tr("backend_standalone"),
+        is_maximized ? Tr("window_maximized") : Tr("window_normal"));
+    ImGui::TextWrapped("%s", title_status.c_str());
+    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
-    ImGui::SetCursorPosY(82.0f);
+    ImGui::SetCursorPosY(98.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord9, 0.88f));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(320.0f, text_region_width));
     ImGui::TextWrapped("%s",
         ui_state_.cached_dll_status.is_injected
-            ? "CredentialProvider 已部署，可继续检查用户与采集流程。"
-            : "CredentialProvider 尚未部署，建议先完成 DLL 注入与注册表修复。");
+            ? Tr("cp_ready_hint")
+            : Tr("cp_not_ready_hint"));
+    ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 
     const bool title_bar_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
@@ -775,23 +929,23 @@ void Application::RenderTitleBar() {
 }
 
 void Application::RenderSidebar() {
-    RenderSectionHeader("NAVIGATION", "控制区", "用分区导航替代挤在一起的标签页。");
-    if (RenderNavItem("NavInjector", "DLL 部署", "检查注入与注册表状态", ui_state_.active_panel == PanelInjector)) {
+    RenderSectionHeader(Tr("section_navigation"), Tr("nav_title"), Tr("nav_body"));
+    if (RenderNavItem("NavInjector", Tr("panel_injector"), Tr("nav_injector_hint"), ui_state_.active_panel == PanelInjector)) {
         ui_state_.active_panel = PanelInjector;
     }
-    if (RenderNavItem("NavUsers", "用户管理", "浏览账号、人脸和录入流程", ui_state_.active_panel == PanelUsers)) {
+    if (RenderNavItem("NavUsers", Tr("panel_users"), Tr("nav_users_hint"), ui_state_.active_panel == PanelUsers)) {
         ui_state_.active_panel = PanelUsers;
     }
-    if (RenderNavItem("NavRecognizer", "识别服务", "启动或停止 FaceRecognizer", ui_state_.active_panel == PanelRecognizer)) {
+    if (RenderNavItem("NavRecognizer", Tr("panel_recognizer"), Tr("nav_recognizer_hint"), ui_state_.active_panel == PanelRecognizer)) {
         ui_state_.active_panel = PanelRecognizer;
     }
 
     ImGui::Spacing();
     BeginPanelCard("SidebarState");
-    RenderSectionHeader("STATUS", "当前环境");
-    RenderInfoRow("后端模式", is_remote_backend_ ? "远程 Service" : "本地进程");
-    RenderInfoRow("DLL 注入", ui_state_.cached_dll_status.is_injected ? "已完成" : "未完成", ui_state_.cached_dll_status.is_injected ? Nord14 : Nord13);
-    RenderInfoRow("摄像头预览", ui_state_.camera_enabled ? "实时传输中" : "未启用", ui_state_.camera_enabled ? Nord8 : Nord3);
+    RenderSectionHeader(Tr("section_status"), Tr("current_environment"));
+    RenderInfoRow(Tr("backend_mode"), is_remote_backend_ ? Tr("backend_remote") : Tr("backend_standalone"));
+    RenderInfoRow(Tr("dll_injection"), ui_state_.cached_dll_status.is_injected ? Tr("done") : Tr("pending"), ui_state_.cached_dll_status.is_injected ? Nord14 : Nord13);
+    RenderInfoRow(Tr("camera_preview"), ui_state_.camera_enabled ? Tr("streaming") : Tr("disabled"), ui_state_.camera_enabled ? Nord8 : Nord3);
     EndPanelCard();
 }
 
@@ -801,46 +955,50 @@ void Application::RenderOverview() {
         return total + static_cast<int>(user.faces.size());
     });
 
-    RenderSectionHeader("OVERVIEW", "系统概览", "把短胶囊改成带说明的统计块，数值和含义一起展示。");
+    RenderSectionHeader(Tr("section_overview"), Tr("overview_title"), Tr("overview_body"));
     const float total_width = ImGui::GetContentRegionAvail().x;
     const float gap = ImGui::GetStyle().ItemSpacing.x;
     const float tile_width = (total_width - gap * 2.0f) / 3.0f;
 
-    RenderStatTile("OverviewUsers", "用户数量", std::to_string(users.size()), "已登记账号", Nord8, tile_width);
+    RenderStatTile("OverviewUsers", Tr("user_count"), std::to_string(users.size()), Tr("registered_accounts"), Nord8, tile_width);
     ImGui::SameLine(0.0f, gap);
-    RenderStatTile("OverviewFaces", "人脸样本", std::to_string(face_count), "数据库内总记录", Nord14, tile_width);
+    RenderStatTile("OverviewFaces", Tr("face_samples"), std::to_string(face_count), Tr("db_total_records"), Nord14, tile_width);
     ImGui::SameLine(0.0f, gap);
-    RenderStatTile("OverviewDll", "部署状态", ui_state_.cached_dll_status.is_registry_configured ? "Ready" : "Pending", "CredentialProvider", ui_state_.cached_dll_status.is_registry_configured ? Nord9 : Nord13, tile_width);
+    RenderStatTile("OverviewDll", Tr("deployment_status"), ui_state_.cached_dll_status.is_registry_configured ? Tr("ready") : Tr("pending_en"), "CredentialProvider", ui_state_.cached_dll_status.is_registry_configured ? Nord9 : Nord13, tile_width);
 }
 
 void Application::RenderInjectorPanel() {
     const auto& status = ui_state_.cached_dll_status;
 
     BeginPanelCard("InjectorPanel");
-    RenderSectionHeader("DEPLOYMENT", "CredentialProvider DLL", "用明细行而不是胶囊展示长路径、版本和哈希。");
-    RenderInfoRow("注入状态", status.is_injected ? "已注入" : "未注入", status.is_injected ? Nord14 : Nord11);
-    RenderInfoRow("注册表状态", status.is_registry_configured ? "已配置" : "未配置", status.is_registry_configured ? Nord14 : Nord13);
-    RenderInfoRow("源 DLL 路径", status.source_path);
-    RenderInfoRow("目标 DLL 路径", status.target_path);
+    RenderSectionHeader(Tr("section_deployment"), Tr("cp_dll_title"), Tr("cp_dll_body"));
+    RenderInfoRow(Tr("injection_status"), status.is_injected ? Tr("injected") : Tr("not_injected"), status.is_injected ? Nord14 : Nord11);
+    RenderInfoRow(Tr("registry_status"), status.is_registry_configured ? Tr("configured") : Tr("not_configured"), status.is_registry_configured ? Nord14 : Nord13);
+    RenderInfoRow(Tr("source_dll_path"), status.source_path);
+    RenderInfoRow(Tr("target_dll_path"), status.target_path);
     if (!status.source_hash.empty()) {
-        RenderInfoRow("源 DLL 哈希", status.source_hash, Nord7);
-        RenderInfoRow("目标 DLL 哈希", status.target_hash, Nord7);
-        RenderInfoRow("源 DLL 版本", status.source_version);
-        RenderInfoRow("目标 DLL 版本", status.target_version);
+        RenderInfoRow(Tr("source_dll_hash"), status.source_hash, Nord7);
+        RenderInfoRow(Tr("target_dll_hash"), status.target_hash, Nord7);
+        RenderInfoRow(Tr("source_dll_version"), status.source_version);
+        RenderInfoRow(Tr("target_dll_version"), status.target_version);
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("刷新部署信息", ImVec2(220, 0))) {
+    const float refresh_width = CalcButtonWidth(Tr("refresh_deployment"), 220.0f);
+    const float inject_width = CalcButtonWidth(Tr("inject_and_fix"), 280.0f);
+    if (ImGui::Button(Tr("refresh_deployment"), ImVec2(refresh_width, 0))) {
         ui_state_.cached_dll_status = backend_->GetDllStatus();
         ui_state_.dll_status_refresh_timer = 0.0f;
     }
-    ImGui::SameLine();
+    if (CanFitInline({refresh_width, inject_width})) {
+        ImGui::SameLine();
+    }
     if (!status.is_injected || !status.is_registry_configured) {
         ImGui::PushStyleColor(ImGuiCol_Button, WithAlpha(Nord12, 0.82f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, WithAlpha(Nord12, 0.96f));
-        if (ImGui::Button("注入 DLL 并修复注册表", ImVec2(280, 0))) {
+        if (ImGui::Button(Tr("inject_and_fix"), ImVec2(inject_width, 0))) {
             std::string error;
-            ui_state_.status_message = backend_->InjectDll(error) ? "DLL 部署已完成。" : "部署失败: " + error;
+            ui_state_.status_message = backend_->InjectDll(error) ? Tr("deploy_finished") : DynFormat(Tr("deploy_failed"), error);
             ui_state_.status_message_timer = 5.0f;
             ui_state_.dll_status_refresh_timer = -1.0f;
         }
@@ -852,26 +1010,30 @@ void Application::RenderInjectorPanel() {
 void Application::RenderUsersPanel() {
     SyncCameraPreviewState();
     BeginPanelCard("UsersPanel");
-    RenderSectionHeader("USERS", "账号与人脸", "列表保留表格，新增和采集改成独立区块。");
+    RenderSectionHeader(Tr("section_users"), Tr("users_title"), Tr("users_body"));
     auto users = backend_->GetAllUsers();
-    RenderInfoRow("已注册用户", std::to_string(static_cast<int>(users.size())) + " 位", Nord8);
+    RenderInfoRow(Tr("registered_users"),
+                  DynFormat(Tr("users_count_fmt"), static_cast<int>(users.size())),
+                  Nord8);
 
     if (ImGui::BeginTable("UsersTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 72.0f);
-        ImGui::TableSetupColumn("登录用户名", ImGuiTableColumnFlags_WidthStretch, 1.2f);
-        ImGui::TableSetupColumn("人脸数量", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-        ImGui::TableSetupColumn("备注", ImGuiTableColumnFlags_WidthStretch, 1.5f);
-        ImGui::TableSetupColumn("操作", ImGuiTableColumnFlags_WidthFixed, 220.0f);
-        ImGui::TableSetupColumn("人脸管理", ImGuiTableColumnFlags_WidthFixed, 180.0f);
+        ImGui::TableSetupColumn(Tr("login_username"), ImGuiTableColumnFlags_WidthStretch, 1.15f);
+        ImGui::TableSetupColumn(Tr("faces_column"), ImGuiTableColumnFlags_WidthFixed, 136.0f);
+        ImGui::TableSetupColumn(Tr("remark"), ImGuiTableColumnFlags_WidthStretch, 1.35f);
+        ImGui::TableSetupColumn(Tr("actions"), ImGuiTableColumnFlags_WidthStretch, 1.05f);
+        ImGui::TableSetupColumn(Tr("face_management"), ImGuiTableColumnFlags_WidthStretch, 1.2f);
         ImGui::TableHeadersRow();
         for (auto& user : users) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0); ImGui::Text("%d", user.id);
             ImGui::TableSetColumnIndex(1); ImGui::Text("%s", user.username.c_str());
-            ImGui::TableSetColumnIndex(2); ImGui::Text("%d 张", static_cast<int>(user.faces.size()));
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%s", DynFormat(Tr("faces_count_fmt"), static_cast<int>(user.faces.size())).c_str());
             ImGui::TableSetColumnIndex(3); ImGui::TextWrapped("%s", user.remark.c_str());
             ImGui::TableSetColumnIndex(4);
-            if (ImGui::Button(("编辑##user_" + std::to_string(user.id)).c_str(), ImVec2(92.0f, 0.0f))) {
+            const std::string edit_button = std::string(Tr("edit_button")) + "##user_" + std::to_string(user.id);
+            if (ImGui::Button(edit_button.c_str(), ImVec2(CalcButtonWidth(Tr("edit_button"), 96.0f), 0.0f))) {
                 ui_state_.editing_user_id = user.id;
                 strncpy_s(ui_state_.edit_username, sizeof(ui_state_.edit_username), user.username.c_str(), _TRUNCATE);
                 memset(ui_state_.edit_password, 0, sizeof(ui_state_.edit_password));
@@ -879,11 +1041,13 @@ void Application::RenderUsersPanel() {
                 ui_state_.show_edit_user = true;
             }
             ImGui::SameLine(0.0f, 10.0f);
-            if (ImGui::Button(("删除##user_" + std::to_string(user.id)).c_str(), ImVec2(92.0f, 0.0f))) {
+            const std::string delete_button = std::string(Tr("delete_button")) + "##user_" + std::to_string(user.id);
+            if (ImGui::Button(delete_button.c_str(), ImVec2(CalcButtonWidth(Tr("delete_button"), 96.0f), 0.0f))) {
                 std::string error; backend_->DeleteUser(user.id, error);
             }
             ImGui::TableSetColumnIndex(5);
-            if (ImGui::Button(("管理人脸##face_" + std::to_string(user.id)).c_str(), ImVec2(148.0f, 0.0f))) {
+            const std::string manage_faces_button = std::string(Tr("manage_faces_button")) + "##face_" + std::to_string(user.id);
+            if (ImGui::Button(manage_faces_button.c_str(), ImVec2(CalcButtonWidth(Tr("manage_faces_button"), 150.0f), 0.0f))) {
                 ui_state_.selected_user_id = user.id;
                 ui_state_.show_face_capture = true;
                 ui_state_.request_preview_refresh = false;
@@ -893,116 +1057,125 @@ void Application::RenderUsersPanel() {
     }
 
     ImGui::Spacing();
-    RenderSectionHeader("CREATE", "添加新用户");
-    ImGui::InputText("CP登录用户名", ui_state_.new_username, sizeof(ui_state_.new_username));
-    ImGui::InputText("密码", ui_state_.new_password, sizeof(ui_state_.new_password), ImGuiInputTextFlags_Password);
-    ImGui::InputText("备注", ui_state_.new_remark, sizeof(ui_state_.new_remark));
-    if (ImGui::Button("添加用户", ImVec2(180, 0))) {
+    RenderSectionHeader(Tr("section_create"), Tr("create_user_title"));
+    ImGui::PushItemWidth(-1.0f);
+    ImGui::InputText(Tr("cp_login_username"), ui_state_.new_username, sizeof(ui_state_.new_username));
+    ImGui::InputText(Tr("password"), ui_state_.new_password, sizeof(ui_state_.new_password), ImGuiInputTextFlags_Password);
+    ImGui::InputText(Tr("remark"), ui_state_.new_remark, sizeof(ui_state_.new_remark));
+    ImGui::PopItemWidth();
+    if (ImGui::Button(Tr("add_user_button"), ImVec2(CalcButtonWidth(Tr("add_user_button"), 180.0f), 0))) {
         std::string error;
         if (backend_->AddUser(ui_state_.new_username, ui_state_.new_password, ui_state_.new_remark, error)) {
-            ui_state_.status_message = error;
+            ui_state_.status_message = Tr("user_added");
             memset(ui_state_.new_username, 0, sizeof(ui_state_.new_username));
             memset(ui_state_.new_password, 0, sizeof(ui_state_.new_password));
             memset(ui_state_.new_remark, 0, sizeof(ui_state_.new_remark));
         } else {
-            ui_state_.status_message = "添加失败: " + error;
+            ui_state_.status_message = DynFormat(Tr("add_failed"), error);
         }
         ui_state_.status_message_timer = 3.0f;
     }
 
+    const std::string edit_popup_name = std::string(Tr("edit_user_title")) + "###EditUserModal";
     if (ui_state_.show_edit_user) {
-        ImGui::OpenPopup("编辑用户");
+        ImGui::OpenPopup(edit_popup_name.c_str());
         ui_state_.show_edit_user = false;
     }
 
-    if (ImGui::BeginPopupModal("编辑用户", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        RenderSectionHeader("EDIT", "修改用户信息");
-        ImGui::InputText("CP登录用户名##edit", ui_state_.edit_username, sizeof(ui_state_.edit_username));
-        ImGui::InputText("新密码##edit", ui_state_.edit_password, sizeof(ui_state_.edit_password), ImGuiInputTextFlags_Password);
-        ImGui::InputText("备注##edit", ui_state_.edit_remark, sizeof(ui_state_.edit_remark));
-        ImGui::TextDisabled("密码留空表示保持原密码不变");
+    if (ImGui::BeginPopupModal(edit_popup_name.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        RenderSectionHeader(Tr("section_edit"), Tr("edit_user_header"));
+        ImGui::PushItemWidth(std::max(420.0f, ImGui::GetContentRegionAvail().x * 0.72f));
+        ImGui::InputText((std::string(Tr("cp_login_username")) + "##edit").c_str(), ui_state_.edit_username, sizeof(ui_state_.edit_username));
+        ImGui::InputText((std::string(Tr("new_password")) + "##edit").c_str(), ui_state_.edit_password, sizeof(ui_state_.edit_password), ImGuiInputTextFlags_Password);
+        ImGui::InputText((std::string(Tr("remark")) + "##edit").c_str(), ui_state_.edit_remark, sizeof(ui_state_.edit_remark));
+        ImGui::PopItemWidth();
+        ImGui::TextDisabled("%s", Tr("keep_password_hint"));
         ImGui::Spacing();
-        if (ImGui::Button("保存", ImVec2(120, 0))) {
+        if (ImGui::Button(Tr("save_button"), ImVec2(CalcButtonWidth(Tr("save_button"), 120.0f), 0))) {
             std::string error;
             if (backend_->UpdateUser(ui_state_.editing_user_id, ui_state_.edit_username, ui_state_.edit_password, ui_state_.edit_remark, error)) {
-                ui_state_.status_message = error;
+                ui_state_.status_message = Tr("user_updated");
                 memset(ui_state_.edit_password, 0, sizeof(ui_state_.edit_password));
                 ImGui::CloseCurrentPopup();
             } else {
-                ui_state_.status_message = "更新失败: " + error;
+                ui_state_.status_message = DynFormat(Tr("update_failed"), error);
             }
             ui_state_.status_message_timer = 3.0f;
         }
         ImGui::SameLine();
-        if (ImGui::Button("取消", ImVec2(120, 0))) {
+        if (ImGui::Button(Tr("cancel_button"), ImVec2(CalcButtonWidth(Tr("cancel_button"), 120.0f), 0))) {
             memset(ui_state_.edit_password, 0, sizeof(ui_state_.edit_password));
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
     }
 
+    const std::string face_popup_name = std::string(Tr("face_management")) + "###FaceManagementModal";
     if (ui_state_.show_face_capture) {
         SyncCameraPreviewState();
-        ImGui::OpenPopup("人脸管理");
+        ImGui::OpenPopup(face_popup_name.c_str());
         ui_state_.show_face_capture = false;
     }
 
-    if (ImGui::BeginPopupModal("人脸管理", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal(face_popup_name.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         auto all_users = backend_->GetAllUsers();
         auto user_it = std::find_if(all_users.begin(), all_users.end(), [this](const User& u) { return u.id == ui_state_.selected_user_id; });
         if (user_it != all_users.end()) {
-            RenderSectionHeader("CAPTURE", user_it->username.c_str(), "人脸列表和预览区分开展示，避免信息堆在一行里。");
+            RenderSectionHeader(Tr("section_capture"), user_it->username.c_str(), Tr("capture_body"));
             auto faces = backend_->GetUserFaces(user_it->id);
-            RenderInfoRow("已录入人脸", std::to_string(static_cast<int>(faces.size())) + " 张", Nord8);
+            RenderInfoRow(Tr("enrolled_faces"), DynFormat(Tr("faces_count_fmt"), static_cast<int>(faces.size())), Nord8);
             ImGui::Spacing();
             if (ImGui::BeginTable("FacesTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-                ImGui::TableSetupColumn("ID"); ImGui::TableSetupColumn("备注"); ImGui::TableSetupColumn("操作"); ImGui::TableHeadersRow();
+                ImGui::TableSetupColumn("ID"); ImGui::TableSetupColumn(Tr("remark")); ImGui::TableSetupColumn(Tr("actions")); ImGui::TableHeadersRow();
                 for (const auto& face : faces) {
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0); ImGui::Text("%d", face.id);
                     ImGui::TableSetColumnIndex(1); ImGui::TextWrapped("%s", face.remark.c_str());
                     ImGui::TableSetColumnIndex(2);
-                    if (ImGui::Button(("删除##face_" + std::to_string(face.id)).c_str())) {
+                    const std::string delete_face_button = std::string(Tr("delete_button")) + "##face_" + std::to_string(face.id);
+                    if (ImGui::Button(delete_face_button.c_str())) {
                         std::string error; backend_->DeleteFace(user_it->id, face.id, error);
                     }
                 }
                 ImGui::EndTable();
             }
             ImGui::Spacing();
-            RenderSectionHeader("NEW FACE", "录入新人脸");
-            ImGui::InputText("备注##face", ui_state_.face_remark, sizeof(ui_state_.face_remark));
+            RenderSectionHeader(Tr("section_new_face"), Tr("new_face_title"));
+            ImGui::PushItemWidth(std::max(420.0f, ImGui::GetContentRegionAvail().x * 0.72f));
+            ImGui::InputText((std::string(Tr("remark")) + "##face").c_str(), ui_state_.face_remark, sizeof(ui_state_.face_remark));
+            ImGui::PopItemWidth();
             PollPreviewStream();
-            RenderInfoRow("预览说明", "摄像头由 FaceRecognizer 负责，Smile2Unlock 通过 IPC 接收预览图像与人脸特征。");
+            RenderInfoRow(Tr("preview_notes"), Tr("preview_notes_body"));
             if (!ui_state_.camera_enabled) {
-                if (ImGui::Button("打开摄像头", ImVec2(160, 0))) {
+                if (ImGui::Button(Tr("open_camera"), ImVec2(CalcButtonWidth(Tr("open_camera"), 160.0f), 0))) {
                     std::string error;
                     if (backend_->StartCameraPreview(error)) {
                         ui_state_.camera_enabled = true;
-                        ui_state_.preview_message = error.empty() ? "摄像头已打开" : error;
+                        ui_state_.preview_message = error.empty() ? Tr("camera_opened") : error;
                     } else {
-                        ui_state_.preview_message = error.empty() ? "打开摄像头失败" : error;
+                        ui_state_.preview_message = error.empty() ? Tr("open_camera_failed") : error;
                     }
                 }
             } else {
-                if (ImGui::Button("关闭摄像头", ImVec2(160, 0))) {
+                if (ImGui::Button(Tr("close_camera"), ImVec2(CalcButtonWidth(Tr("close_camera"), 160.0f), 0))) {
                     backend_->StopCameraPreview();
                     ui_state_.camera_enabled = false;
-                    ui_state_.preview_message = "摄像头已关闭";
+                    ui_state_.preview_message = Tr("camera_closed");
                     ClearPreviewTexture();
                 }
             }
             ImGui::SameLine();
             if (!ui_state_.camera_enabled) {
-                if (ImGui::Button("单次抓拍", ImVec2(160, 0))) {
+                if (ImGui::Button(Tr("single_capture"), ImVec2(CalcButtonWidth(Tr("single_capture"), 160.0f), 0))) {
                     RefreshFacePreview();
                 }
             } else {
                 ImGui::BeginDisabled();
-                ImGui::Button("单次抓拍", ImVec2(160, 0));
+                ImGui::Button(Tr("single_capture"), ImVec2(CalcButtonWidth(Tr("single_capture"), 160.0f), 0));
                 ImGui::EndDisabled();
             }
             if (!ui_state_.preview_message.empty()) {
-                RenderInfoRow("预览状态", ui_state_.preview_message, ui_state_.camera_enabled ? Nord8 : Nord13);
+                RenderInfoRow(Tr("preview_status"), ui_state_.preview_message, ui_state_.camera_enabled ? Nord8 : Nord13);
             }
             ImGui::Spacing();
             if (ui_state_.has_preview && ui_state_.preview_texture != 0) {
@@ -1013,27 +1186,27 @@ void Application::RenderUsersPanel() {
                     static_cast<float>(ui_state_.preview_height) * scale);
                 ImGui::Image((ImTextureID)(intptr_t)ui_state_.preview_texture, preview_size);
             } else {
-                RenderInfoRow("预览画面", "当前还没有可显示的预览画面");
+                RenderInfoRow(Tr("preview_frame"), Tr("no_preview"));
             }
-            if (ImGui::Button("抓拍并录入", ImVec2(180, 0))) {
+            if (ImGui::Button(Tr("capture_and_enroll"), ImVec2(CalcButtonWidth(Tr("capture_and_enroll"), 180.0f), 0))) {
                 std::string error_msg;
                 bool success = backend_->CaptureAndAddFace(user_it->id, ui_state_.face_remark, error_msg);
                 if (success) {
-                    ui_state_.status_message = "人脸特征已成功记录至系统数据库。";
+                    ui_state_.status_message = Tr("face_saved");
                     ui_state_.save_face_success = true;
                     memset(ui_state_.face_remark, 0, sizeof(ui_state_.face_remark));
                     if (!ui_state_.camera_enabled) {
                         ui_state_.request_preview_refresh = true;
                     }
                 } else {
-                    ui_state_.status_message = "错误: " + error_msg;
+                    ui_state_.status_message = DynFormat(Tr("error_prefix"), error_msg);
                     ui_state_.save_face_success = false;
                 }
                 ui_state_.status_message_timer = 3.0f;
             }
         }
         ImGui::Spacing();
-        if (ImGui::Button("关闭", ImVec2(120, 0))) {
+        if (ImGui::Button(Tr("close_button"), ImVec2(CalcButtonWidth(Tr("close_button"), 120.0f), 0))) {
             backend_->StopCameraPreview();
             ui_state_.camera_enabled = false;
             ui_state_.preview_message.clear();
@@ -1048,17 +1221,19 @@ void Application::RenderUsersPanel() {
 void Application::RenderRecognizerPanel() {
     SyncCameraPreviewState();
     BeginPanelCard("RecognizerPanel");
-    RenderSectionHeader("SERVICE", "FaceRecognizer", "配置由 Smile2Unlock 持有并落盘，启动 FR 时显式传参，不再只是编辑 ini 文本。");
+    RenderSectionHeader(Tr("section_service"), "FaceRecognizer", Tr("service_body"));
 
     if (!ui_state_.recognizer_config_loaded) {
         std::string error;
         if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
+            ApplyLanguage(ui_state_.recognizer_config.language);
             ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
             ui_state_.recognizer_config_loaded = true;
             ui_state_.recognizer_config_dirty = false;
-            ui_state_.recognizer_config_message = "已从配置文件载入当前识别参数";
+            ui_state_.recognizer_config_message = Tr("config_loaded");
         } else {
-            ui_state_.recognizer_config_message = "加载配置失败: " + error;
+            ui_state_.recognizer_config_message = DynFormat(Tr("config_load_failed"), error);
         }
     }
     if (!ui_state_.camera_devices_loaded) {
@@ -1066,13 +1241,13 @@ void Application::RenderRecognizerPanel() {
     }
 
     const bool recognition_running = backend_->IsRecognitionRunning();
-    RenderInfoRow("识别进程", recognition_running ? "运行中" : "未运行", recognition_running ? Nord14 : Nord3);
-    RenderInfoRow("摄像头预览", ui_state_.camera_enabled ? "活跃" : "未启动", ui_state_.camera_enabled ? Nord8 : Nord3);
-    RenderInfoRow("配置状态", ui_state_.recognizer_config_dirty ? "有未保存修改" : "已与磁盘同步",
+    RenderInfoRow(Tr("recognition_process"), recognition_running ? Tr("running") : Tr("stopped"), recognition_running ? Nord14 : Nord3);
+    RenderInfoRow(Tr("camera_preview"), ui_state_.camera_enabled ? Tr("active") : Tr("not_started"), ui_state_.camera_enabled ? Nord8 : Nord3);
+    RenderInfoRow(Tr("config_state"), ui_state_.recognizer_config_dirty ? Tr("unsaved_changes") : Tr("synced_to_disk"),
                   ui_state_.recognizer_config_dirty ? Nord13 : Nord14);
 
     ImGui::Spacing();
-    RenderSectionHeader("CONFIG", "识别参数", "使用明确控件调整摄像头、活体和阈值，保存后会影响后续预览、抓拍和识别。");
+    RenderSectionHeader(Tr("section_gui"), Tr("gui_title"), Tr("gui_body"));
 
     auto mark_dirty = [this]() {
         ui_state_.recognizer_config_dirty =
@@ -1080,10 +1255,39 @@ void Application::RenderRecognizerPanel() {
             ui_state_.recognizer_config.liveness != ui_state_.recognizer_saved_config.liveness ||
             std::abs(ui_state_.recognizer_config.face_threshold - ui_state_.recognizer_saved_config.face_threshold) > 0.0001f ||
             std::abs(ui_state_.recognizer_config.liveness_threshold - ui_state_.recognizer_saved_config.liveness_threshold) > 0.0001f ||
-            ui_state_.recognizer_config.debug != ui_state_.recognizer_saved_config.debug;
+            ui_state_.recognizer_config.debug != ui_state_.recognizer_saved_config.debug ||
+            ui_state_.recognizer_config.language != ui_state_.recognizer_saved_config.language;
     };
 
-    std::string selected_camera_label = "索引 " + std::to_string(ui_state_.recognizer_config.camera) + " (未在当前设备列表中)";
+    ui_state_.recognizer_config.language = NormalizeLanguageCode(ui_state_.recognizer_config.language);
+    const std::array<std::pair<const char*, const char*>, 2> languages{{
+        {"zh-CN", "简体中文"},
+        {"en-US", "English"}
+    }};
+    std::string selected_language_label = ui_state_.recognizer_config.language == "en-US" ? "English" : "简体中文";
+    if (ImGui::BeginCombo(Tr("ui_language"), selected_language_label.c_str())) {
+        for (const auto& [code, label] : languages) {
+            const bool selected = ui_state_.recognizer_config.language == code;
+            if (ImGui::Selectable(label, selected)) {
+                ui_state_.recognizer_config.language = code;
+                ApplyLanguage(code);
+                ui_state_.recognizer_config_message = Tr("language_saved_note");
+                mark_dirty();
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
+    ImGui::TextWrapped("%s", Tr("gui_language_help"));
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+    RenderSectionHeader(Tr("section_config"), Tr("config_title"), Tr("config_body"));
+
+    std::string selected_camera_label = DynFormat(Tr("camera_not_listed_fmt"), ui_state_.recognizer_config.camera);
     for (const auto& device : ui_state_.camera_devices) {
         if (device.index == ui_state_.recognizer_config.camera) {
             selected_camera_label = device.label;
@@ -1091,7 +1295,7 @@ void Application::RenderRecognizerPanel() {
         }
     }
 
-    if (ImGui::BeginCombo("摄像头设备", selected_camera_label.c_str())) {
+    if (ImGui::BeginCombo(Tr("camera_device"), selected_camera_label.c_str())) {
         for (const auto& device : ui_state_.camera_devices) {
             const bool selected = (device.index == ui_state_.recognizer_config.camera);
             if (ImGui::Selectable(device.label.c_str(), selected)) {
@@ -1105,30 +1309,30 @@ void Application::RenderRecognizerPanel() {
         ImGui::EndCombo();
     }
     ImGui::SameLine(0.0f, 12.0f);
-    if (ImGui::Button("刷新设备", ImVec2(140, 0))) {
+    if (ImGui::Button(Tr("refresh_devices"), ImVec2(CalcButtonWidth(Tr("refresh_devices"), 150.0f), 0))) {
         RefreshCameraDeviceList();
     }
-    RenderInfoRow("当前摄像头索引", std::to_string(ui_state_.recognizer_config.camera), Nord8);
+    RenderInfoRow(Tr("current_camera_index"), std::to_string(ui_state_.recognizer_config.camera), Nord8);
     if (!ui_state_.camera_devices_message.empty()) {
-        RenderInfoRow("设备枚举", ui_state_.camera_devices_message, ui_state_.camera_devices.empty() ? Nord13 : Nord14);
+        RenderInfoRow(Tr("device_enumeration"), ui_state_.camera_devices_message, ui_state_.camera_devices.empty() ? Nord13 : Nord14);
     }
 
-    if (ImGui::Checkbox("启用活体检测", &ui_state_.recognizer_config.liveness)) {
+    if (ImGui::Checkbox(Tr("enable_liveness"), &ui_state_.recognizer_config.liveness)) {
         mark_dirty();
     }
-    if (ImGui::SliderFloat("人脸阈值", &ui_state_.recognizer_config.face_threshold, 0.30f, 0.95f, "%.2f")) {
+    if (ImGui::SliderFloat(Tr("face_threshold"), &ui_state_.recognizer_config.face_threshold, 0.30f, 0.95f, "%.2f")) {
         mark_dirty();
     }
-    if (ImGui::SliderFloat("活体阈值", &ui_state_.recognizer_config.liveness_threshold, 0.30f, 0.99f, "%.2f")) {
+    if (ImGui::SliderFloat(Tr("liveness_threshold"), &ui_state_.recognizer_config.liveness_threshold, 0.30f, 0.99f, "%.2f")) {
         mark_dirty();
     }
-    if (ImGui::Checkbox("输出调试日志", &ui_state_.recognizer_config.debug)) {
+    if (ImGui::Checkbox(Tr("debug_log"), &ui_state_.recognizer_config.debug)) {
         mark_dirty();
     }
 
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
-    ImGui::TextWrapped("%s", "预设会立即写入当前编辑态；只有点击“保存配置”后，才会落盘并成为 SU 启动 FR 的默认参数。");
+    ImGui::TextWrapped("%s", Tr("preset_hint"));
     ImGui::PopStyleColor();
 
     auto apply_preset = [this, &mark_dirty](int camera, bool liveness, float face, float live, bool debug, const char* label) {
@@ -1137,55 +1341,75 @@ void Application::RenderRecognizerPanel() {
         ui_state_.recognizer_config.face_threshold = face;
         ui_state_.recognizer_config.liveness_threshold = live;
         ui_state_.recognizer_config.debug = debug;
-        ui_state_.recognizer_config_message = std::string("已应用预设: ") + label;
+        ui_state_.recognizer_config_message = DynFormat(Tr("preset_applied"), label);
         mark_dirty();
     };
 
-    if (ImGui::Button("平衡预设", ImVec2(160, 0))) {
-        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.62f, 0.80f, false, "平衡");
+    const float preset_balanced_width = CalcButtonWidth(Tr("preset_balanced"), 160.0f);
+    const float preset_strict_width = CalcButtonWidth(Tr("preset_strict"), 160.0f);
+    const float preset_fast_width = CalcButtonWidth(Tr("preset_fast"), 160.0f);
+    const bool presets_inline = CanFitInline({preset_balanced_width, preset_strict_width, preset_fast_width});
+    if (ImGui::Button(Tr("preset_balanced"), ImVec2(preset_balanced_width, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.62f, 0.80f, false, Tr("preset_balanced"));
     }
-    ImGui::SameLine(0.0f, 12.0f);
-    if (ImGui::Button("严格预设", ImVec2(160, 0))) {
-        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.72f, 0.88f, false, "严格");
+    if (presets_inline) {
+        ImGui::SameLine(0.0f, 12.0f);
     }
-    ImGui::SameLine(0.0f, 12.0f);
-    if (ImGui::Button("快速预设", ImVec2(160, 0))) {
-        apply_preset(std::max(0, ui_state_.recognizer_config.camera), false, 0.55f, 0.65f, false, "快速");
+    if (ImGui::Button(Tr("preset_strict"), ImVec2(preset_strict_width, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), true, 0.72f, 0.88f, false, Tr("preset_strict"));
+    }
+    if (presets_inline) {
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+    if (ImGui::Button(Tr("preset_fast"), ImVec2(preset_fast_width, 0))) {
+        apply_preset(std::max(0, ui_state_.recognizer_config.camera), false, 0.55f, 0.65f, false, Tr("preset_fast"));
     }
 
     ImGui::Spacing();
-    if (ImGui::Button("重新加载磁盘配置", ImVec2(220, 0))) {
+    const float reload_width = CalcButtonWidth(Tr("reload_disk_config"), 220.0f);
+    const float defaults_width = CalcButtonWidth(Tr("restore_defaults"), 180.0f);
+    const float save_width = CalcButtonWidth(Tr("save_config"), 160.0f);
+    const bool config_buttons_inline = CanFitInline({reload_width, defaults_width, save_width});
+    if (ImGui::Button(Tr("reload_disk_config"), ImVec2(reload_width, 0))) {
         std::string error;
         if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
+            ApplyLanguage(ui_state_.recognizer_config.language);
             ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
             ui_state_.recognizer_config_loaded = true;
             ui_state_.recognizer_config_dirty = false;
-            ui_state_.recognizer_config_message = "已重新加载磁盘配置";
+            ui_state_.recognizer_config_message = Tr("reloaded_disk_config");
         } else {
-            ui_state_.recognizer_config_message = "重新加载失败: " + error;
+            ui_state_.recognizer_config_message = DynFormat(Tr("reload_failed"), error);
         }
     }
-    ImGui::SameLine(0.0f, 12.0f);
-    if (ImGui::Button("恢复默认值", ImVec2(180, 0))) {
+    if (config_buttons_inline) {
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+    if (ImGui::Button(Tr("restore_defaults"), ImVec2(defaults_width, 0))) {
         ui_state_.recognizer_config.camera = 0;
         ui_state_.recognizer_config.liveness = true;
         ui_state_.recognizer_config.face_threshold = 0.62f;
         ui_state_.recognizer_config.liveness_threshold = 0.8f;
         ui_state_.recognizer_config.debug = false;
-        ui_state_.recognizer_config_message = "已恢复默认参数";
+        ui_state_.recognizer_config.language = ResolveInitialLanguage({});
+        ApplyLanguage(ui_state_.recognizer_config.language);
+        ui_state_.recognizer_config_message = Tr("restored_defaults");
         mark_dirty();
     }
-    ImGui::SameLine(0.0f, 12.0f);
-    if (ImGui::Button("保存配置", ImVec2(160, 0))) {
+    if (config_buttons_inline) {
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+    if (ImGui::Button(Tr("save_config"), ImVec2(save_width, 0))) {
         std::string error;
         if (backend_->SaveRecognizerConfig(ui_state_.recognizer_config, error)) {
             ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
             ui_state_.recognizer_config_dirty = false;
-            ui_state_.recognizer_config_message = error;
-            ui_state_.status_message = error;
+            ui_state_.recognizer_config_message = Tr("config_saved");
+            ui_state_.status_message = ui_state_.recognizer_config_message;
             ui_state_.status_message_timer = 3.0f;
         } else {
-            ui_state_.recognizer_config_message = "保存失败: " + error;
+            ui_state_.recognizer_config_message = DynFormat(Tr("save_failed"), error);
             ui_state_.status_message = ui_state_.recognizer_config_message;
             ui_state_.status_message_timer = 3.0f;
         }
@@ -1193,20 +1417,24 @@ void Application::RenderRecognizerPanel() {
 
     if (!ui_state_.recognizer_config_message.empty()) {
         ImGui::Spacing();
-        RenderInfoRow("配置反馈", ui_state_.recognizer_config_message, ui_state_.recognizer_config_dirty ? Nord13 : Nord8);
+        RenderInfoRow(Tr("config_feedback"), ui_state_.recognizer_config_message, ui_state_.recognizer_config_dirty ? Nord13 : Nord8);
     }
 
     ImGui::Spacing();
-    RenderSectionHeader("CONTROL", "进程控制", "配置保存后，会在下一次启动预览、抓拍或识别时由 SU 显式传给 FR。");
-    if (ImGui::Button("启动 FaceRecognizer", ImVec2(240, 0))) {
+    RenderSectionHeader(Tr("section_control"), Tr("control_title"), Tr("control_body"));
+    const float start_width = CalcButtonWidth(Tr("start_fr"), 240.0f);
+    const float stop_width = CalcButtonWidth(Tr("stop_fr"), 240.0f);
+    if (ImGui::Button(Tr("start_fr"), ImVec2(start_width, 0))) {
         std::string error;
-        ui_state_.status_message = backend_->StartRecognition(error) ? "人脸识别进程已启动" : "启动失败: " + error;
+        ui_state_.status_message = backend_->StartRecognition(error) ? Tr("fr_started") : DynFormat(Tr("start_failed"), error);
         ui_state_.status_message_timer = 3.0f;
     }
-    ImGui::SameLine(0.0f, 12.0f);
-    if (ImGui::Button("停止 FaceRecognizer", ImVec2(240, 0))) {
+    if (CanFitInline({start_width, stop_width})) {
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+    if (ImGui::Button(Tr("stop_fr"), ImVec2(stop_width, 0))) {
         backend_->StopRecognition();
-        ui_state_.status_message = "人脸识别进程已停止";
+        ui_state_.status_message = Tr("fr_stopped");
         ui_state_.status_message_timer = 3.0f;
     }
     EndPanelCard();
@@ -1415,8 +1643,8 @@ void Application::RenderStatusMessage() {
     ui_state_.status_message_timer -= ImGui::GetIO().DeltaTime;
     ImGui::Spacing();
     BeginPanelCard("StatusMessage");
-    RenderSectionHeader("FEEDBACK", "最近操作结果");
-    RenderInfoRow("消息", ui_state_.status_message, Nord13);
+    RenderSectionHeader(Tr("section_feedback"), Tr("recent_result"));
+    RenderInfoRow(Tr("message"), ui_state_.status_message, Nord13);
     EndPanelCard();
 }
 
@@ -1429,6 +1657,16 @@ void Application::BeginPanelCard(const char* id, float height) {
 void Application::EndPanelCard() {
     ImGui::EndChild();
     ImGui::PopStyleColor(2);
+}
+
+const char* Application::Tr(std::string_view key) const {
+    if (const auto active_it = active_translations_.find(std::string(key)); active_it != active_translations_.end()) {
+        return active_it->second.c_str();
+    }
+    if (const auto fallback_it = fallback_translations_.find(std::string(key)); fallback_it != fallback_translations_.end()) {
+        return fallback_it->second.c_str();
+    }
+    return key.data();
 }
 
 } // namespace smile2unlock

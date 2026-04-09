@@ -304,6 +304,7 @@ bool BackendService::GetRecognizerConfig(FaceRecognizerConfig& config, std::stri
     config.face_threshold = loaded.face_threshold;
     config.liveness_threshold = loaded.liveness_threshold;
     config.debug = loaded.debug;
+    config.language = loaded.language;
     face_recognition_->SetConfig(config);
     error_message = "识别配置已加载";
     return true;
@@ -316,6 +317,7 @@ bool BackendService::SaveRecognizerConfig(const FaceRecognizerConfig& config, st
     core_config.face_threshold = config.face_threshold;
     core_config.liveness_threshold = config.liveness_threshold;
     core_config.debug = config.debug;
+    core_config.language = config.language;
 
     config_manager_->setConfig(core_config);
     if (!config_manager_->saveConfig()) {
