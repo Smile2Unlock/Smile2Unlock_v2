@@ -80,9 +80,16 @@ int captureImageToSharedMemory(int camera_index, const std::string& map_name, bo
         sizeof(smile2unlock::SharedFrameHeader) +
         smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES +
         smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
-    HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
+    HANDLE mapping = nullptr;
+    for (int attempt = 0; attempt < 10 && mapping == nullptr; ++attempt) {
+        mapping = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, map_name.c_str());
+        if (mapping == nullptr) {
+            Sleep(50);
+        }
+    }
     if (mapping == nullptr) {
-        std::cerr << "[Capture] 打开共享内存失败, GetLastError=" << GetLastError() << std::endl;
+        std::cerr << "[Capture] 打开共享内存失败, map=" << map_name
+                  << ", GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 
@@ -169,9 +176,16 @@ int streamPreviewToSharedMemory(int camera_index, const std::string& map_name) {
         sizeof(smile2unlock::SharedFrameHeader) +
         smile2unlock::SharedFrameHeader::MAX_IMAGE_BYTES +
         smile2unlock::SharedFrameHeader::MAX_FEATURE_BYTES;
-    HANDLE mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, map_name.c_str());
+    HANDLE mapping = nullptr;
+    for (int attempt = 0; attempt < 10 && mapping == nullptr; ++attempt) {
+        mapping = OpenFileMappingA(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, map_name.c_str());
+        if (mapping == nullptr) {
+            Sleep(50);
+        }
+    }
     if (mapping == nullptr) {
-        std::cerr << "[Preview] 打开共享内存失败, GetLastError=" << GetLastError() << std::endl;
+        std::cerr << "[Preview] 打开共享内存失败, map=" << map_name
+                  << ", GetLastError=" << GetLastError() << std::endl;
         return -1;
     }
 

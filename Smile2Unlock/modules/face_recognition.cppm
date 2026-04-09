@@ -325,13 +325,51 @@ bool FaceRecognition::start_fr_preview_process(const std::string& map_name, std:
         << " --debug " << (config_.debug ? "true" : "false")
         << " --frame-map \"" << map_name << "\"";
     std::string cmd_line = cmd.str();
+    std::cout << "[SU] Starting FR preview process: " << cmd_line << std::endl;
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &preview_process_info_)) {
-        error_message = "启动 FaceRecognizer 预览进程失败";
+        error_message = LastErrorText("启动 FaceRecognizer 预览进程失败");
         return false;
     }
 
     preview_process_ = preview_process_info_.hProcess;
-    Sleep(300);
+    auto* header = (preview_view_ != nullptr)
+        ? static_cast<SharedFrameHeader*>(preview_view_)
+        : nullptr;
+
+    constexpr int kStartupProbeMs = 2000;
+    constexpr int kProbeIntervalMs = 50;
+    for (int waited = 0; waited < kStartupProbeMs; waited += kProbeIntervalMs) {
+        DWORD exit_code = STILL_ACTIVE;
+        if (!GetExitCodeProcess(preview_process_, &exit_code)) {
+            error_message = LastErrorText("检查 FaceRecognizer 预览进程状态失败");
+            return false;
+        }
+        if (exit_code != STILL_ACTIVE) {
+            std::ostringstream ss;
+            ss << "FaceRecognizer 预览进程启动后立即退出 (exit=" << exit_code
+               << ")，请检查 FR 日志";
+            error_message = ss.str();
+            return false;
+        }
+
+        if (header != nullptr) {
+            if (header->magic == SharedFrameHeader::MAGIC &&
+                header->version == SharedFrameHeader::VERSION &&
+                header->status_code == static_cast<int32_t>(SharedFrameStatus::READY) &&
+                header->image_bytes > 0) {
+                return true;
+            }
+            if (header->status_code == static_cast<int32_t>(SharedFrameStatus::CAPTURE_FAILED)) {
+                error_message = "FaceRecognizer 已启动，但摄像头初始化/取帧失败";
+            } else if (header->status_code == static_cast<int32_t>(SharedFrameStatus::INVALID_FRAME)) {
+                error_message = "FaceRecognizer 已启动，但首帧数据无效";
+            }
+        }
+
+        Sleep(kProbeIntervalMs);
+    }
+
+    error_message = "FaceRecognizer 预览进程已启动，等待摄像头输出画面";
     return true;
 }
 
@@ -544,11 +582,7 @@ bool FaceRecognition::StartPreviewStream(std::string& error_message) {
     last_preview_sequence_ = 0;
 
     if (!start_fr_preview_process(preview_map_name_, error_message)) {
-        UnmapViewOfFile(preview_view_);
-        CloseHandle(preview_mapping_);
-        preview_view_ = nullptr;
-        preview_mapping_ = nullptr;
-        preview_map_name_.clear();
+        StopPreviewStream();
         return false;
     }
 

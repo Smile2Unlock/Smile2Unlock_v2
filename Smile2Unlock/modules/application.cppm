@@ -65,6 +65,7 @@ private:
     void RenderUsersPanel();
     void RenderRecognizerPanel();
     void RefreshCameraDeviceList();
+    void SyncCameraPreviewState();
     void PollPreviewStream();
     void RefreshFacePreview();
     void UpdatePreviewTexture(const std::vector<unsigned char>& image_data, int width, int height);
@@ -98,7 +99,6 @@ private:
         int selected_user_id{};
         bool show_face_capture{};
         char face_remark[256]{};
-        bool show_save_face_result{};
         bool save_face_success{};
         GLuint preview_texture{};
         int preview_width{};
@@ -493,6 +493,27 @@ void Application::RefreshCameraDeviceList() {
     }
 }
 
+void Application::SyncCameraPreviewState() {
+    const bool preview_running = backend_ && backend_->IsCameraPreviewRunning();
+    if (ui_state_.camera_enabled == preview_running) {
+        return;
+    }
+
+    ui_state_.camera_enabled = preview_running;
+    if (!preview_running) {
+        if (ui_state_.preview_message.empty() ||
+            ui_state_.preview_message == "摄像头实时预览中" ||
+            ui_state_.preview_message == "摄像头已打开") {
+            ui_state_.preview_message = "摄像头未开启";
+        }
+        ClearPreviewTexture();
+    } else if (ui_state_.preview_message.empty() ||
+               ui_state_.preview_message == "摄像头未开启" ||
+               ui_state_.preview_message == "摄像头已关闭") {
+        ui_state_.preview_message = "摄像头实时预览中";
+    }
+}
+
 Application::~Application() { Shutdown(); }
 
 bool Application::Initialize() {
@@ -606,6 +627,7 @@ void Application::RefreshFacePreview() {
 }
 
 void Application::PollPreviewStream() {
+    SyncCameraPreviewState();
     if (!ui_state_.camera_enabled) {
         return;
     }
@@ -631,17 +653,6 @@ void Application::RenderUI() {
 
     RenderShell();
 
-    if (ui_state_.show_save_face_result) {
-        ImGui::OpenPopup("保存结果");
-        ui_state_.show_save_face_result = false;
-    }
-    if (ImGui::BeginPopupModal("保存结果", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        RenderSectionHeader("RESULT", ui_state_.save_face_success ? "保存成功" : "保存失败");
-        RenderInfoRow("详情", ui_state_.status_message, ui_state_.save_face_success ? Nord14 : Nord11);
-        ImGui::Spacing();
-        if (ImGui::Button("确定", ImVec2(160, 0))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
 }
 
 void Application::RenderShell() {
@@ -839,6 +850,7 @@ void Application::RenderInjectorPanel() {
 }
 
 void Application::RenderUsersPanel() {
+    SyncCameraPreviewState();
     BeginPanelCard("UsersPanel");
     RenderSectionHeader("USERS", "账号与人脸", "列表保留表格，新增和采集改成独立区块。");
     auto users = backend_->GetAllUsers();
@@ -930,6 +942,7 @@ void Application::RenderUsersPanel() {
     }
 
     if (ui_state_.show_face_capture) {
+        SyncCameraPreviewState();
         ImGui::OpenPopup("人脸管理");
         ui_state_.show_face_capture = false;
     }
@@ -1017,7 +1030,6 @@ void Application::RenderUsersPanel() {
                     ui_state_.save_face_success = false;
                 }
                 ui_state_.status_message_timer = 3.0f;
-                ui_state_.show_save_face_result = true;
             }
         }
         ImGui::Spacing();
@@ -1034,6 +1046,7 @@ void Application::RenderUsersPanel() {
 }
 
 void Application::RenderRecognizerPanel() {
+    SyncCameraPreviewState();
     BeginPanelCard("RecognizerPanel");
     RenderSectionHeader("SERVICE", "FaceRecognizer", "配置由 Smile2Unlock 持有并落盘，启动 FR 时显式传参，不再只是编辑 ini 文本。");
 
