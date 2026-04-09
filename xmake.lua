@@ -28,6 +28,12 @@ local function apply_common_module_binary_target()
     set_policy("build.c++.modules", true)
 end
 
+target("BrandAssets")
+    set_kind("phony")
+    on_build(function (target)
+        os.vrunv("python", {path.join(os.projectdir(), "tools", "generate_brand_assets.py")})
+    end)
+
 local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
     if not is_plat("windows", "mingw") then
         return
@@ -136,6 +142,7 @@ target("FaceRecognizer")
 
 target("SampleV2CredentialProvider")
     set_kind("shared")
+    add_deps("BrandAssets")
     set_filename("SampleV2CredentialProvider.dll")
     set_prefixname("")
     -- add_sysincludedirs("D:/Tools/llvm-mingw-ucrt-x86_64/include/c++/v1")
@@ -163,10 +170,12 @@ target("SampleV2CredentialProvider")
 
 target("Smile2Unlock")
     apply_common_module_binary_target()
+    add_deps("BrandAssets")
     add_files(
         "Smile2Unlock/*.cpp",
         "Smile2Unlock/modules/*.cppm",
-        "common/modules/*.cppm"
+        "common/modules/*.cppm",
+        "Smile2Unlock/resources.rc"
     )
     add_includedirs("common", {public = true})
     add_includedirs("Smile2Unlock", {public = true})
@@ -180,5 +189,12 @@ target("Smile2Unlock")
             "libc++.dll",
             "libomp.dll"
         })
+    end)
+    after_build(function (target)
+        local output_resources = path.join(target:targetdir(), "resources")
+        os.mkdir(output_resources)
+        os.rm(path.join(output_resources, "img"))
+        os.rm(path.join(output_resources, "resources"))
+        os.cp(path.join(os.projectdir(), "common", "resources", "*"), output_resources)
     end)
 
