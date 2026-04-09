@@ -1,6 +1,7 @@
 #pragma once
 
 #include "models/gui_ipc_protocol.h"
+#include "utils/windows_security.h"
 #include <windows.h>
 #include <thread>
 #include <atomic>
@@ -65,28 +66,17 @@ public:
     bool is_running() const { return running_; }
 
 private:
-    static bool build_pipe_security(SECURITY_ATTRIBUTES& sa, SECURITY_DESCRIPTOR& sd) {
-        if (!InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION)) {
-            return false;
-        }
-
-        // 空 DACL: 允许不同会话/权限上下文的 GUI 连接到由 winlogon/CP 拉起的服务实例。
-        if (!SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE)) {
-            return false;
-        }
-
-        sa.nLength = sizeof(SECURITY_ATTRIBUTES);
-        sa.lpSecurityDescriptor = &sd;
-        sa.bInheritHandle = FALSE;
-        return true;
+    static bool build_pipe_security(SECURITY_ATTRIBUTES& sa, SECURITY_DESCRIPTOR& sd, PACL& acl) {
+        return windows_security::BuildServiceIpcSecurityAttributes(sa, sd, acl);
     }
 
     void server_loop() {
         while (running_) {
             SECURITY_ATTRIBUTES sa{};
             SECURITY_DESCRIPTOR sd{};
+            PACL acl = nullptr;
             SECURITY_ATTRIBUTES* pipe_sa = nullptr;
-            if (build_pipe_security(sa, sd)) {
+            if (build_pipe_security(sa, sd, acl)) {
                 pipe_sa = &sa;
             } else if (running_) {
                 std::cerr << "[IPC Server] 构建管道安全描述符失败，使用默认安全属性: "
@@ -104,6 +94,7 @@ private:
                 0,
                 pipe_sa
             );
+            windows_security::FreeSecurityAcl(acl);
             
             if (pipe_ == INVALID_HANDLE_VALUE) {
                 if (running_) {

@@ -155,24 +155,46 @@ inline std::filesystem::path CurrentLogFilePath() {
            (GetProcessLogSource() + "-" + CurrentDateStamp() + ".log");
 }
 
+struct ProcessLogFileState {
+    std::filesystem::path path;
+    std::ofstream stream;
+};
+
+inline ProcessLogFileState& GetProcessLogFileState() {
+    static ProcessLogFileState state;
+    return state;
+}
+
 inline void AppendFileLogLine(const char* channel, const std::string& message) {
     if (!IsProcessFileLoggingEnabled() || GetProcessLogDirectory().empty()) {
         return;
     }
 
     EnsureLogDirectoryExists();
-    std::ofstream file(CurrentLogFilePath(), std::ios::app | std::ios::binary);
-    if (!file.is_open()) {
+    auto& file_state = GetProcessLogFileState();
+    const auto target_path = CurrentLogFilePath();
+    if (file_state.path != target_path || !file_state.stream.is_open()) {
+        if (file_state.stream.is_open()) {
+            file_state.stream.close();
+        }
+        file_state.stream.open(target_path, std::ios::app | std::ios::binary);
+        if (!file_state.stream.is_open()) {
+            file_state.path.clear();
+            return;
+        }
+        file_state.path = target_path;
+    }
+
+    if (!file_state.stream.good()) {
         return;
     }
 
-    file << "[" << CurrentTimestampWithMilliseconds() << "] "
-         << "[" << GetProcessLogSource() << "] ";
+    file_state.stream << "[" << CurrentTimestampWithMilliseconds() << "] "
+                      << "[" << GetProcessLogSource() << "] ";
     if (channel != nullptr && channel[0] != '\0') {
-        file << "[" << channel << "] ";
+        file_state.stream << "[" << channel << "] ";
     }
-    file << message << '\n';
-    file.flush();
+    file_state.stream << message << '\n';
 }
 
 class RedirectStreamBuf final : public std::streambuf {
@@ -191,9 +213,16 @@ protected:
         }
 
         original_->sputc(static_cast<char>(ch));
-        line_buffer_.push_back(static_cast<char>(ch));
-        if (ch == '\n') {
-            flush_line_buffer();
+        std::string pending_line;
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            line_buffer_.push_back(static_cast<char>(ch));
+            if (ch == '\n') {
+                pending_line = consume_line_buffer_locked();
+            }
+        }
+        if (!pending_line.empty()) {
+            append_line(pending_line);
         }
         return ch;
     }
@@ -202,28 +231,41 @@ protected:
         if (original_ != nullptr) {
             original_->pubsync();
         }
-        flush_line_buffer();
+        std::string pending_line;
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            pending_line = consume_line_buffer_locked();
+        }
+        if (!pending_line.empty()) {
+            append_line(pending_line);
+        }
         return 0;
     }
 
 private:
-    void flush_line_buffer() {
+    std::string consume_line_buffer_locked() {
         while (!line_buffer_.empty() &&
                (line_buffer_.back() == '\n' || line_buffer_.back() == '\r')) {
             line_buffer_.pop_back();
         }
 
         if (line_buffer_.empty()) {
-            return;
+            return {};
         }
 
-        std::lock_guard<std::mutex> lock(GetLogMutex());
-        AppendFileLogLine(channel_.c_str(), line_buffer_);
+        std::string pending_line = std::move(line_buffer_);
         line_buffer_.clear();
+        return pending_line;
+    }
+
+    void append_line(const std::string& message) {
+        std::lock_guard<std::mutex> lock(GetLogMutex());
+        AppendFileLogLine(channel_.c_str(), message);
     }
 
     std::streambuf* original_;
     std::string channel_;
+    std::mutex buffer_mutex_;
     std::string line_buffer_;
 };
 
@@ -295,6 +337,13 @@ inline void LogDebugViewImpl(LogLevel level, const char* module, const char* for
 
 inline void ConfigureProcessFileLogging(const char* source, const std::string& log_directory) {
     std::lock_guard<std::mutex> lock(detail::GetLogMutex());
+    auto& file_state = detail::GetProcessLogFileState();
+    if (file_state.stream.is_open()) {
+        file_state.stream.close();
+    }
+    file_state.stream.clear();
+    file_state.path.clear();
+
     detail::GetProcessLogSource() = (source != nullptr && source[0] != '\0') ? source : "APP";
     detail::GetProcessLogDirectory() = log_directory;
     detail::IsProcessFileLoggingEnabled() = !log_directory.empty();
