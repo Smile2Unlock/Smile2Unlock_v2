@@ -17,6 +17,7 @@ module;
 #include <GLFW/glfw3native.h>
 
 #include "utils/logger.h"
+#include "inicpp.hpp"
 
 export module smile2unlock.application;
 
@@ -87,6 +88,7 @@ private:
     static bool IsEnglishSystemUiLanguage();
     float CalcButtonWidth(std::string_view label, float min_width) const;
     bool CanFitInline(std::initializer_list<float> widths, float spacing = 12.0f) const;
+    void LoadRecognizerConfigOnce();
 
     std::unique_ptr<IBackendService> backend_;
     GLFWwindow* window_;
@@ -193,7 +195,7 @@ ImVec4 WithAlpha(const ImVec4& color, const float alpha) {
 }
 
 UiLanguage ParseUiLanguage(std::string_view language_code) {
-    if (language_code == "en-US" || language_code == "en") {
+    if (language_code.starts_with("en")) {
         return UiLanguage::EnUS;
     }
     return UiLanguage::ZhCN;
@@ -568,31 +570,83 @@ std::unordered_map<std::string, std::string> Application::LoadLanguageFile(
         return translations;
     }
 
-    std::string line;
-    while (std::getline(file, line)) {
+    // Read entire file
+    std::string content(std::istreambuf_iterator<char>{file}, {});
+
+    // Handle UTF-8 BOM
+    if (content.starts_with("\xEF\xBB\xBF")) {
+        content.erase(0, 3);
+    }
+
+    // Split into lines and process
+    std::string_view content_view = content;
+    size_t start = 0;
+    while (start < content_view.size()) {
+        size_t end = content_view.find('\n', start);
+        std::string_view line = end == std::string_view::npos
+            ? content_view.substr(start)
+            : content_view.substr(start, end - start);
+        start = end == std::string_view::npos ? content_view.size() : end + 1;
+
+        // Remove trailing carriage return
         if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
+            line.remove_suffix(1);
         }
-        if (line.rfind("\xEF\xBB\xBF", 0) == 0) {
-            line.erase(0, 3);
-        }
-        if (line.empty() || line[0] == '#' || line[0] == ';') {
+
+        // Skip empty lines and comments
+        if (line.empty() || line.front() == '#' || line.front() == ';') {
             continue;
         }
 
-        const size_t eq = line.find('=');
-        if (eq == std::string::npos) {
+        // Split key and value
+        size_t eq_pos = line.find('=');
+        if (eq_pos == std::string_view::npos) {
             continue;
         }
 
-        std::string key = line.substr(0, eq);
-        std::string value = line.substr(eq + 1);
-        if (!key.empty()) {
-            translations[std::move(key)] = std::move(value);
+        std::string_view key = line.substr(0, eq_pos);
+        std::string_view value = line.substr(eq_pos + 1);
+
+        // Trim whitespace from key and value
+        auto trim = [](std::string_view sv) -> std::string_view {
+            size_t start = 0;
+            while (start < sv.size() && std::isspace(static_cast<unsigned char>(sv[start]))) {
+                ++start;
+            }
+            size_t end = sv.size();
+            while (end > start && std::isspace(static_cast<unsigned char>(sv[end - 1]))) {
+                --end;
+            }
+            return sv.substr(start, end - start);
+        };
+
+        std::string_view trimmed_key = trim(key);
+        std::string_view trimmed_value = trim(value);
+
+        if (!trimmed_key.empty()) {
+            translations[std::string(trimmed_key)] = std::string(trimmed_value);
         }
     }
 
     return translations;
+}
+void Application::LoadRecognizerConfigOnce() {
+    if (!ui_state_.recognizer_config_loaded) {
+        std::string error;
+        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
+            ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
+            ApplyLanguage(ui_state_.recognizer_config.language);
+            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
+            ui_state_.recognizer_config_loaded = true;
+            ui_state_.recognizer_config_dirty = false;
+            ui_state_.recognizer_config_message = Tr("config_loaded");
+        } else {
+            ui_state_.recognizer_config_message = DynFormat(Tr("config_load_failed"), error);
+        }
+    }
+    if (!ui_state_.camera_devices_loaded) {
+        RefreshCameraDeviceList();
+    }
 }
 
 std::string Application::ResolveInitialLanguage(std::string_view configured_language) const {
@@ -1232,22 +1286,7 @@ void Application::RenderRecognizerPanel() {
     BeginPanelCard("RecognizerPanel");
     RenderSectionHeader(Tr("section_service"), "FaceRecognizer", Tr("service_body"));
 
-    if (!ui_state_.recognizer_config_loaded) {
-        std::string error;
-        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
-            ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
-            ApplyLanguage(ui_state_.recognizer_config.language);
-            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
-            ui_state_.recognizer_config_loaded = true;
-            ui_state_.recognizer_config_dirty = false;
-            ui_state_.recognizer_config_message = Tr("config_loaded");
-        } else {
-            ui_state_.recognizer_config_message = DynFormat(Tr("config_load_failed"), error);
-        }
-    }
-    if (!ui_state_.camera_devices_loaded) {
-        RefreshCameraDeviceList();
-    }
+    LoadRecognizerConfigOnce();
 
     const bool recognition_running = backend_->IsRecognitionRunning();
     RenderInfoRow(Tr("recognition_process"), recognition_running ? Tr("running") : Tr("stopped"), recognition_running ? Nord14 : Nord3);
@@ -1278,22 +1317,7 @@ void Application::RenderConfigPanel() {
     BeginPanelCard("RecognizerConfigPanel");
     RenderSectionHeader(Tr("section_gui"), Tr("gui_title"), Tr("gui_body"));
 
-    if (!ui_state_.recognizer_config_loaded) {
-        std::string error;
-        if (backend_->GetRecognizerConfig(ui_state_.recognizer_config, error)) {
-            ui_state_.recognizer_config.language = ResolveInitialLanguage(ui_state_.recognizer_config.language);
-            ApplyLanguage(ui_state_.recognizer_config.language);
-            ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
-            ui_state_.recognizer_config_loaded = true;
-            ui_state_.recognizer_config_dirty = false;
-            ui_state_.recognizer_config_message = Tr("config_loaded");
-        } else {
-            ui_state_.recognizer_config_message = DynFormat(Tr("config_load_failed"), error);
-        }
-    }
-    if (!ui_state_.camera_devices_loaded) {
-        RefreshCameraDeviceList();
-    }
+    LoadRecognizerConfigOnce();
 
     auto mark_dirty = [this]() {
         ui_state_.recognizer_config_dirty =
@@ -1458,13 +1482,11 @@ void Application::RenderConfigPanel() {
             ui_state_.recognizer_saved_config = ui_state_.recognizer_config;
             ui_state_.recognizer_config_dirty = false;
             ui_state_.recognizer_config_message = Tr("config_saved");
-            ui_state_.status_message = ui_state_.recognizer_config_message;
-            ui_state_.status_message_timer = 3.0f;
         } else {
             ui_state_.recognizer_config_message = DynFormat(Tr("save_failed"), error);
-            ui_state_.status_message = ui_state_.recognizer_config_message;
-            ui_state_.status_message_timer = 3.0f;
         }
+        ui_state_.status_message = ui_state_.recognizer_config_message;
+        ui_state_.status_message_timer = 3.0f;
     }
 
     if (!ui_state_.recognizer_config_message.empty()) {
@@ -1701,7 +1723,9 @@ const char* Application::Tr(std::string_view key) const {
     if (const auto fallback_it = fallback_translations_.find(std::string(key)); fallback_it != fallback_translations_.end()) {
         return fallback_it->second.c_str();
     }
-    return key.data();
+        // Fallback to empty string instead of unsafe key.data()
+    static const std::string empty;
+    return empty.c_str();
 }
 
 } // namespace smile2unlock
