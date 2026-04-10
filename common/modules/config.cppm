@@ -30,13 +30,15 @@ public:
         float face_threshold;       ///< 人脸检测阈值
         float liveness_threshold;   ///< 活体检测阈值
         bool debug;                 ///< 调试模式开关
+        std::string language;       ///< UI language code, empty means auto-detect
 
         CoreConfig()
             : camera(0)
             , liveness(true)
             , face_threshold(0.62f)
             , liveness_threshold(0.8f)
-            , debug(false) {}
+            , debug(false)
+            , language() {}
     };
 
     /**
@@ -115,6 +117,7 @@ ConfigManager::ConfigManager(const std::string& filename)
     m_config.face_threshold = 0.62f;
     m_config.liveness_threshold = 0.8f;
     m_config.debug = false;
+    m_config.language.clear();
 }
 
 bool ConfigManager::loadConfig() {
@@ -179,6 +182,10 @@ bool ConfigManager::loadConfig() {
         }
     }
 
+    if (core_section.isKeyExist("language")) {
+        m_config.language = core_section.toString("language");
+    }
+
     return true;
 }
 
@@ -210,6 +217,9 @@ bool ConfigManager::createDefaultConfig() const {
     file << "face_threshold=" << m_config.face_threshold << "\n";
     file << "liveness_threshold=" << m_config.liveness_threshold << "\n";
     file << "debug=" << (m_config.debug ? "true" : "false") << "\n";
+    if (!m_config.language.empty()) {
+        file << "language=" << m_config.language << "\n";
+    }
 
     file.close();
     std::cout << "Default config created: " << m_filename << std::endl;
@@ -236,6 +246,9 @@ bool ConfigManager::saveConfig() const {
     file << "face_threshold=" << m_config.face_threshold << "\n";
     file << "liveness_threshold=" << m_config.liveness_threshold << "\n";
     file << "debug=" << (m_config.debug ? "true" : "false") << "\n";
+    if (!m_config.language.empty()) {
+        file << "language=" << m_config.language << "\n";
+    }
 
     file.close();
     return true;

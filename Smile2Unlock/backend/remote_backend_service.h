@@ -268,6 +268,7 @@ public:
         payload << "face_threshold=" << config.face_threshold << "\n";
         payload << "liveness_threshold=" << config.liveness_threshold << "\n";
         payload << "debug=" << (config.debug ? "1" : "0") << "\n";
+        payload << "language=" << config.language << "\n";
 
         auto response = std::make_unique<GuiIpcResponse>();
         if (!send_request(GuiIpcCommand::SAVE_RECOGNIZER_CONFIG, payload.str(), *response)) {
@@ -582,6 +583,7 @@ private:
             else if (key == "face_threshold") config.face_threshold = std::stof(val);
             else if (key == "liveness_threshold") config.liveness_threshold = std::stof(val);
             else if (key == "debug") config.debug = (val == "1");
+            else if (key == "language") config.language = val;
         }
 
         return config;
