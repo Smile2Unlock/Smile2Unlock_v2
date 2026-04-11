@@ -8,8 +8,9 @@
 
 <p align="center">
   <a href="#overview">Overview</a> •
+  <a href="#installation-usage">Installation & Usage</a> •
   <a href="#architecture">Architecture</a> •
-  <a href="#quick-start">Quick Start</a> •
+  <a href="#building-from-source">Building from Source</a> •
   <a href="#screenshots">Screenshots</a> •
   <a href="#security-notice">Security Notice</a> •
   <a href="README_zh.md">简体中文</a>
@@ -41,6 +42,35 @@ The current codebase already includes:
 - A Windows login integration path through Credential Provider
 - Local IPC between GUI / service / recognizer components
 - An installer script for packaging and registration
+
+## Installation & Usage
+
+For most users, the easiest way to get started is to download the pre-built installer from the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page.
+
+### Step 1: Download and Install
+1. Go to the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page
+2. Download the latest `Smile2Unlock-Setup.exe` installer
+3. Run the installer with administrator privileges (required for Credential Provider registration)
+4. Follow the installation wizard
+
+### Step 2: Set Up Your Face
+1. After installation, launch **Smile2Unlock** from the Start Menu or desktop shortcut
+2. Go to the **Enrollment** tab
+3. Click **"Add User"** to create a new user account
+4. Click **"Capture Face"** to enroll your facial features
+5. You can enroll multiple faces for different lighting conditions or angles
+
+### Step 3: Use Face Unlock
+1. Lock your Windows session (Win+L) or restart your computer
+2. At the Windows login screen, you should see the Smile2Unlock credential provider tile
+3. Look at your camera - the system will automatically detect your face and unlock
+4. If face recognition fails, you can still use your password by clicking "Sign-in options"
+
+### Troubleshooting
+- **Camera not detected**: Ensure your camera is properly connected and drivers are installed
+- **Face not recognized**: Try re-enrolling your face in better lighting conditions
+- **Password error**: Use your user password instead of PIN. If you use a Microsoft account, try entering your Microsoft account email as the username when registering in Smile2Unlock
+- **Credential Provider not appearing**: Try rebooting or re-running the installer as administrator
 
 ## Highlights
 
@@ -146,7 +176,9 @@ flowchart TD
 - xmake
 - clang + llvm-mingw
 
-## Quick Start
+## Building from Source
+
+*This section is for developers and users who want to build from source. Most users should use the pre-built installer from the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page.*
 
 ### Requirements
 
@@ -192,14 +224,19 @@ Inspect recognizer CLI help:
 .\build\mingw\x86_64\release\FaceRecognizer.exe --help
 ```
 
-### Installer
+### Creating an Installer
 
-The repository also includes an Inno Setup script at [`setup.iss`](setup.iss). It is intended to:
+The repository includes an Inno Setup script at [`setup.iss`](setup.iss) that can be used to create a distributable installer. This is useful for developers who want to package their own builds:
 
-- Copy the application files
-- Deploy `SampleV2CredentialProvider.dll` into `System32`
-- Register the Credential Provider CLSID
-- Install with administrator privileges
+- Build the project using the instructions above
+- Run Inno Setup with `setup.iss` to create `Smile2Unlock-Setup.exe`
+- The generated installer will:
+  - Copy the application files
+  - Deploy `SampleV2CredentialProvider.dll` into `System32`
+  - Register the Credential Provider CLSID
+  - Install with administrator privileges
+
+Most users should download the pre-built installer from the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page instead of building their own.
 
 ## Screenshots
 
@@ -218,6 +255,10 @@ This section highlights the Windows login side of the project:
 
 <p align="center">
   <img src="docs/images/windows-login.png" alt="Windows sign-in showcase" width="88%" />
+</p>
+
+<p align="center">
+  <img src="docs/images/windows--uac-credential-ui.png" alt="Windows UAC credential interface" width="88%" />
 </p>
 
 ## FaceRecognizer CLI
