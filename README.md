@@ -258,7 +258,7 @@ This section highlights the Windows login side of the project:
 </p>
 
 <p align="center">
-  <img src="docs/images/windows--uac-credential-ui.png" alt="Windows UAC credential interface" width="88%" />
+  <img src="docs/images/windows-uac-credential-ui.png" alt="Windows UAC credential interface" width="88%" />
 </p>
 
 ## FaceRecognizer CLI

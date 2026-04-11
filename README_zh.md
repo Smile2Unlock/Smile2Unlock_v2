@@ -258,7 +258,7 @@ xmake build
 </p>
 
 <p align="center">
-  <img src="docs/images/windows--uac-credential-ui.png" alt="Windows UAC 凭证界面" width="88%" />
+  <img src="docs/images/windows-uac-credential-ui.png" alt="Windows UAC 凭证界面" width="88%" />
 </p>
 
 ## FaceRecognizer 命令行能力
