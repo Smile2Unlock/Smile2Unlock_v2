@@ -154,8 +154,10 @@ private:
     void on_cp_request_received(AuthRequestType type, const std::string& username_hint, uint32_t session_id);
     void on_fr_status_received(RecognitionStatus status, const std::string& username, uint32_t session_id, const std::string& feature);
     bool capture_shared_payload(std::vector<unsigned char>& image_data, int& width, int& height, std::string* feature, std::string& error_message);
-    bool compare_features_with_fr(const std::string& feature1, const std::string& feature2, float& similarity);
-    std::string resolve_recognized_username(const std::string& probe_feature, std::string& error_message);
+    bool compare_features_on_su(const std::string& feature1, const std::string& feature2, float& similarity);
+    std::string resolve_recognized_username(const std::string& probe_feature,
+                                            const std::string& username_hint,
+                                            std::string& error_message);
 };
 
 } // namespace smile2unlock::managers
@@ -163,6 +165,52 @@ private:
 module :private;
 
 namespace smile2unlock::managers {
+namespace {
+
+int HexValue(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + (ch - 'a');
+    if (ch >= 'A' && ch <= 'F') return 10 + (ch - 'A');
+    return -1;
+}
+
+bool DecodeFeatureHex(const std::string& hex, std::vector<float>& feature) {
+    feature.clear();
+    if (hex.empty() || hex.size() % 2 != 0) {
+        return false;
+    }
+
+    std::vector<unsigned char> bytes;
+    bytes.reserve(hex.size() / 2);
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        const int high = HexValue(hex[i]);
+        const int low = HexValue(hex[i + 1]);
+        if (high < 0 || low < 0) {
+            return false;
+        }
+        bytes.push_back(static_cast<unsigned char>((high << 4) | low));
+    }
+
+    if (bytes.empty() || bytes.size() % sizeof(float) != 0) {
+        return false;
+    }
+
+    const size_t feature_size = bytes.size() / sizeof(float);
+    feature.resize(feature_size);
+
+    // 安全边界检查
+    if (bytes.size() > feature.size() * sizeof(float)) {
+        feature.clear();
+        return false;
+    }
+
+    // 使用std::copy替代memcpy，更安全
+    std::copy(bytes.begin(), bytes.end(),
+              reinterpret_cast<unsigned char*>(feature.data()));
+    return true;
+}
+
+} // namespace
 
 FaceRecognition::FaceRecognition()
     : initialized_(false), is_running_(false), fr_process_(nullptr), current_session_id_(0),
@@ -207,11 +255,19 @@ bool FaceRecognition::start_fr_process() {
     cmd << "\"" << fr_exe.string() << "\" -m recognize"
         << " --udp-port " << kFrStatusPort
         << " --camera " << config_.camera
-        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --liveness-detection=" << (config_.liveness ? "true" : "false")
         << " --threshold face=" << config_.face_threshold
         << " --threshold liveness=" << config_.liveness_threshold
-        << " --debug " << (config_.debug ? "true" : "false");
+        << " --debug=" << (config_.debug ? "true" : "false");
     std::string cmd_line = cmd.str();
+    std::cout << "[SU] Starting FR recognize process"
+              << " session=" << current_session_id_
+              << " camera=" << config_.camera
+              << " liveness=" << (config_.liveness ? 1 : 0)
+              << " face_threshold=" << config_.face_threshold
+              << " liveness_threshold=" << config_.liveness_threshold
+              << " debug=" << (config_.debug ? 1 : 0)
+              << std::endl;
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &fr_process_info_)) {
         CloseHandle(hStdoutWrite);
         CloseHandle(hStderrWrite);
@@ -241,15 +297,23 @@ bool FaceRecognition::start_fr_capture_process(const std::string& map_name, bool
     std::ostringstream cmd;
     cmd << "\"" << fr_exe.string() << "\" -m capture-image"
         << " --camera " << config_.camera
-        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --liveness-detection=" << (config_.liveness ? "true" : "false")
         << " --threshold face=" << config_.face_threshold
         << " --threshold liveness=" << config_.liveness_threshold
-        << " --debug " << (config_.debug ? "true" : "false")
+        << " --debug=" << (config_.debug ? "true" : "false")
         << " --frame-map \"" << map_name << "\"";
     std::string cmd_line = cmd.str();
     if (extract_feature) {
-        cmd_line += " --extract-feature true";
+        cmd_line += " --extract-feature=true";
     }
+    std::cout << "[SU] Starting FR capture process"
+              << " camera=" << config_.camera
+              << " liveness=" << (config_.liveness ? 1 : 0)
+              << " face_threshold=" << config_.face_threshold
+              << " liveness_threshold=" << config_.liveness_threshold
+              << " debug=" << (config_.debug ? 1 : 0)
+              << " extract_feature=" << (extract_feature ? 1 : 0)
+              << std::endl;
     if (!CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         error_message = "启动 FaceRecognizer 抓拍进程失败";
         return false;
@@ -288,10 +352,10 @@ bool FaceRecognition::start_fr_preview_process(const std::string& map_name, std:
     std::ostringstream cmd;
     cmd << "\"" << fr_exe.string() << "\" -m preview-stream"
         << " --camera " << config_.camera
-        << " --liveness-detection " << (config_.liveness ? "true" : "false")
+        << " --liveness-detection=" << (config_.liveness ? "true" : "false")
         << " --threshold face=" << config_.face_threshold
         << " --threshold liveness=" << config_.liveness_threshold
-        << " --debug " << (config_.debug ? "true" : "false")
+        << " --debug=" << (config_.debug ? "true" : "false")
         << " --frame-map \"" << map_name << "\"";
     std::string cmd_line = cmd.str();
     std::cout << "[SU] Starting FR preview process: " << cmd_line << std::endl;
@@ -413,6 +477,7 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status,
                                             uint32_t session_id,
                                             const std::string& feature) {
     NotifyServiceActivity();
+    const uint32_t fr_session_id = session_id;
     if (session_id != 0) {
         current_session_id_ = session_id;
     }
@@ -422,26 +487,33 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status,
         last_recognition_feature_.clear();
     }
 
-    std::cout << "[SU] FR状态回调"
-              << " session=" << current_session_id_
+    std::cout << "[SU] FR状态回调(原始)"
+              << " fr_session=" << fr_session_id
+              << " su_session=" << current_session_id_
               << " status=" << ToString(status)
               << "(" << static_cast<int>(status) << ")"
-              << " username=" << (username.empty() ? "(empty)" : username)
+              << " fr_username=" << (username.empty() ? "(empty)" : username)
               << " pending_hint=" << (pending_username_hint_.empty() ? "(empty)" : pending_username_hint_)
               << " feature_bytes=" << last_recognition_feature_.size()
               << std::endl;
 
     RecognitionStatus final_status = status;
-    last_result_.success = (status == RecognitionStatus::SUCCESS);
-    last_result_.username = username.empty() ? pending_username_hint_ : username;
+    last_result_.success = false;
+    last_result_.username.clear();
     last_result_.confidence = 0.0f;
     last_result_.error_message = (status == RecognitionStatus::SUCCESS) ? "" : "Recognition failed";
 
-    if (status == RecognitionStatus::SUCCESS && last_result_.username.empty()) {
+    if (status == RecognitionStatus::SUCCESS) {
         std::string match_error;
-        const std::string matched_username = resolve_recognized_username(last_recognition_feature_, match_error);
+        const std::string matched_username = resolve_recognized_username(
+            last_recognition_feature_,
+            pending_username_hint_,
+            match_error);
         if (!matched_username.empty()) {
+            final_status = RecognitionStatus::SUCCESS;
+            last_result_.success = true;
             last_result_.username = matched_username;
+            last_result_.error_message.clear();
             std::cout << "[SU] 人脸匹配成功"
                       << " session=" << current_session_id_
                       << " username=" << last_result_.username
@@ -450,12 +522,20 @@ void FaceRecognition::on_fr_status_received(RecognitionStatus status,
         } else if (!match_error.empty()) {
             final_status = RecognitionStatus::RECOGNITION_ERROR;
             last_result_.success = false;
+            last_result_.username.clear();
             last_result_.error_message = match_error;
             std::cout << "[SU] 人脸匹配失败"
                       << " session=" << current_session_id_
                       << " error=" << match_error
                       << std::endl;
+        } else {
+            final_status = RecognitionStatus::RECOGNITION_ERROR;
+            last_result_.success = false;
+            last_result_.username.clear();
+            last_result_.error_message = "未找到匹配的人脸用户";
         }
+    } else {
+        last_result_.username = username.empty() ? pending_username_hint_ : username;
     }
 
     if (final_status == RecognitionStatus::SUCCESS ||
@@ -738,81 +818,73 @@ bool FaceRecognition::CompareFaces(const std::string& feature1, const std::strin
         similarity = 0.0f;
         return false;
     }
-    return compare_features_with_fr(feature1, feature2, similarity);
+    return compare_features_on_su(feature1, feature2, similarity);
 }
 
-bool FaceRecognition::compare_features_with_fr(const std::string& feature1, const std::string& feature2, float& similarity) {
+bool FaceRecognition::compare_features_on_su(const std::string& feature1, const std::string& feature2, float& similarity) {
     similarity = 0.0f;
 
-    char exe_path[MAX_PATH];
-    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
-    fs::path fr_exe = fs::path(exe_path).parent_path() / "FaceRecognizer.exe";
-    if (!fs::exists(fr_exe)) {
+    std::vector<float> probe;
+    std::vector<float> enrolled;
+    if (!DecodeFeatureHex(feature1, probe) || !DecodeFeatureHex(feature2, enrolled)) {
         return false;
     }
 
-    SECURITY_ATTRIBUTES saAttr{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-    HANDLE stdout_read = nullptr;
-    HANDLE stdout_write = nullptr;
-    if (!CreatePipe(&stdout_read, &stdout_write, &saAttr, 0)) {
+    // 特征向量维度验证
+    constexpr size_t MIN_FEATURE_DIM = 128;
+    constexpr size_t MAX_FEATURE_DIM = 4096;
+    if (probe.empty() || enrolled.empty()) {
         return false;
     }
-    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    si.hStdOutput = stdout_write;
-    si.hStdError = stdout_write;
-    si.dwFlags |= STARTF_USESTDHANDLES;
-
-    PROCESS_INFORMATION pi{};
-    std::string cmd_line = "\"" + fr_exe.string() + "\" -m compare-features --feature-a \"" + feature1 + "\" --feature-b \"" + feature2 + "\"";
-    const BOOL created = CreateProcessA(nullptr, cmd_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-    CloseHandle(stdout_write);
-    if (!created) {
-        CloseHandle(stdout_read);
+    if (probe.size() != enrolled.size()) {
+        return false;
+    }
+    if (probe.size() < MIN_FEATURE_DIM || probe.size() > MAX_FEATURE_DIM) {
         return false;
     }
 
-    std::string output;
-    char buffer[512];
-    DWORD bytes_read = 0;
-    while (ReadFile(stdout_read, buffer, sizeof(buffer) - 1, &bytes_read, nullptr) && bytes_read > 0) {
-        buffer[bytes_read] = '\0';
-        output.append(buffer, bytes_read);
+    // 检查特征向量有效性（无NaN/Inf）
+    for (size_t i = 0; i < probe.size(); ++i) {
+        if (!std::isfinite(probe[i]) || !std::isfinite(enrolled[i])) {
+            return false;
+        }
     }
 
-    WaitForSingleObject(pi.hProcess, 10000);
-    DWORD exit_code = 1;
-    GetExitCodeProcess(pi.hProcess, &exit_code);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    CloseHandle(stdout_read);
-
-    if (exit_code != 0) {
+    double dot = 0.0;
+    double probe_norm = 0.0;
+    double enrolled_norm = 0.0;
+    for (size_t i = 0; i < probe.size(); ++i) {
+        dot += static_cast<double>(probe[i]) * static_cast<double>(enrolled[i]);
+        probe_norm += static_cast<double>(probe[i]) * static_cast<double>(probe[i]);
+        enrolled_norm += static_cast<double>(enrolled[i]) * static_cast<double>(enrolled[i]);
+    }
+    // 使用epsilon进行浮点数比较，防止精度问题
+    constexpr double EPSILON = 1e-10;
+    if (probe_norm <= EPSILON || enrolled_norm <= EPSILON) {
         return false;
     }
 
-    std::regex float_pattern(R"(([0-9]+(?:\.[0-9]+)?))");
-    std::sregex_iterator begin(output.begin(), output.end(), float_pattern);
-    std::sregex_iterator end;
-    if (begin == end) {
+    // 计算相似度，防止除零错误
+    const double sqrt_probe = std::sqrt(probe_norm);
+    const double sqrt_enrolled = std::sqrt(enrolled_norm);
+    if (sqrt_probe <= EPSILON || sqrt_enrolled <= EPSILON) {
         return false;
-    }
-    std::string last_match;
-    for (auto it = begin; it != end; ++it) {
-        last_match = (*it)[1].str();
     }
 
-    try {
-        similarity = std::stof(last_match);
-    } catch (const std::exception&) {
+    const double similarity_value = dot / (sqrt_probe * sqrt_enrolled);
+
+    // 确保相似度在有效范围内 [-1, 1]（考虑浮点误差）
+    if (similarity_value < -1.0 - EPSILON || similarity_value > 1.0 + EPSILON) {
         return false;
     }
+
+    similarity = static_cast<float>(similarity_value);
     return true;
 }
 
-std::string FaceRecognition::resolve_recognized_username(const std::string& probe_feature, std::string& error_message) {
+std::string FaceRecognition::resolve_recognized_username(const std::string& probe_feature,
+                                                         const std::string& username_hint,
+                                                         std::string& error_message) {
     error_message.clear();
     if (!database_) {
         error_message = "识别数据库未初始化";
@@ -824,18 +896,18 @@ std::string FaceRecognition::resolve_recognized_username(const std::string& prob
         return "";
     }
 
-    const auto users = database_->GetAllUsers();
     float best_similarity = 0.0f;
     std::string best_username;
+    const float threshold = config_.face_threshold > 0.0f ? config_.face_threshold : kRecognitionThreshold;
 
-    for (const auto& user : users) {
+    auto compare_user_faces = [&](const User& user) {
         for (const auto& face : user.faces) {
             if (face.feature.empty()) {
                 continue;
             }
 
             float similarity = 0.0f;
-            if (!compare_features_with_fr(probe_feature, face.feature, similarity)) {
+            if (!compare_features_on_su(probe_feature, face.feature, similarity)) {
                 continue;
             }
 
@@ -844,13 +916,63 @@ std::string FaceRecognition::resolve_recognized_username(const std::string& prob
                 best_username = user.username;
             }
         }
+    };
+
+    if (!username_hint.empty()) {
+        const auto hinted_user = database_->GetUserByUsername(username_hint);
+        if (!hinted_user.has_value()) {
+            // 用户不存在，但仍与所有用户比对以检测安全威胁
+            std::cout << "[SU] 安全警告: 指定用户不存在但进行全局特征比对"
+                      << " username_hint=" << username_hint
+                      << std::endl;
+            const auto users = database_->GetAllUsers();
+            for (const auto& user : users) {
+                compare_user_faces(user);
+            }
+            // 即使找到匹配，也拒绝认证（用户名不匹配）
+            if (!best_username.empty()) {
+                std::cout << "[SU] 安全警报: 无效用户名但找到人脸匹配"
+                          << " invalid_username=" << username_hint
+                          << " matched_username=" << best_username
+                          << std::endl;
+                error_message = "用户名无效但检测到人脸匹配 - 疑似攻击尝试";
+                return "";
+            }
+            // 没有找到任何匹配
+            error_message = "指定用户不存在";
+        } else {
+            // 用户存在，只与该用户比对
+            compare_user_faces(*hinted_user);
+            // 验证匹配结果与指定用户一致
+            if (!best_username.empty() && best_username != username_hint) {
+                std::cout << "[SU] 安全警报: 人脸匹配与指定用户不一致"
+                          << " specified=" << username_hint
+                          << " matched=" << best_username
+                          << std::endl;
+                error_message = "识别结果与指定用户不匹配";
+                return "";
+            }
+        }
+    } else {
+        // 无用户名提示，与所有用户比对
+        const auto users = database_->GetAllUsers();
+        for (const auto& user : users) {
+            compare_user_faces(user);
+        }
+    }
+
+    // 如果已经有错误消息，直接返回
+    if (!error_message.empty()) {
+        return "";
     }
 
     if (best_username.empty()) {
-        error_message = "未找到匹配的人脸用户";
+        error_message = username_hint.empty()
+            ? "未找到匹配的人脸用户"
+            : "指定用户没有匹配的人脸特征";
         return "";
     }
-    if (best_similarity < kRecognitionThreshold) {
+    if (best_similarity < threshold) {
         error_message = "匹配分数不足，拒绝识别";
         return "";
     }

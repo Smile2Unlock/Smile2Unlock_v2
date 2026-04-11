@@ -4,6 +4,7 @@
 module;
 
 #include "inicpp.hpp"
+#include "exceptions.h"
 
 export module config;
 
@@ -124,14 +125,28 @@ bool ConfigManager::loadConfig() {
     // 尝试加载文件
     std::ifstream file(m_filename);
     if (!file.is_open()) {
-        std::cerr << "Failed to load config file: " << m_filename << std::endl;
-        return false;
+        std::string error_msg = "Failed to load config file: " + m_filename;
+        std::cerr << error_msg << std::endl;
+        throw FaceRecognition::ConfigException(error_msg);
+    }
+    file.close();
+
+    m_config = CoreConfig{};
+
+    // 解析配置文件
+    try {
+        m_ini.parse();
+    } catch (const std::exception& e) {
+        std::string error_msg = "Failed to parse config file: " + m_filename + ", error: " + e.what();
+        std::cerr << error_msg << std::endl;
+        throw FaceRecognition::ConfigException(error_msg);
     }
 
     // Check if the [core] section exists
     if (!m_ini.isSectionExists("core")) {
-        std::cerr << "Warning: Section [core] not found in " << m_filename << ". Using defaults." << std::endl;
-        return false;
+        std::string error_msg = "Section [core] not found in " + m_filename;
+        std::cerr << error_msg << std::endl;
+        throw FaceRecognition::ConfigException(error_msg);
     }
 
     // Get the [core] section object
@@ -141,49 +156,74 @@ bool ConfigManager::loadConfig() {
     if (!core_section.isKeyExist("camera")) {
         std::cerr << "Warning: Key 'camera' not found in [core]. Using default value (" << m_config.camera << ")." << std::endl;
     } else {
-        m_config.camera = core_section.toInt("camera");
+        try {
+            m_config.camera = core_section.toInt("camera");
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'camera' value: " << e.what() << ". Using default value (" << m_config.camera << ")." << std::endl;
+        }
     }
 
     if (!core_section.isKeyExist("liveness")) {
         std::cerr << "Warning: Key 'liveness' not found in [core]. Using default value (" << m_config.liveness << ")." << std::endl;
     } else {
-        std::string liveness_str = core_section.toString("liveness");
-        if (liveness_str == "true" || liveness_str == "True" || liveness_str == "TRUE" || liveness_str == "1") {
-            m_config.liveness = true;
-        } else if (liveness_str == "false" || liveness_str == "False" || liveness_str == "FALSE" || liveness_str == "0") {
-            m_config.liveness = false;
-        } else {
-             std::cerr << "Warning: Invalid value for 'liveness' ('" << liveness_str << "'). Using default value (" << m_config.liveness << ")." << std::endl;
+        try {
+            std::string liveness_str = core_section.toString("liveness");
+            if (liveness_str == "true" || liveness_str == "True" || liveness_str == "TRUE" || liveness_str == "1") {
+                m_config.liveness = true;
+            } else if (liveness_str == "false" || liveness_str == "False" || liveness_str == "FALSE" || liveness_str == "0") {
+                m_config.liveness = false;
+            } else {
+                 std::cerr << "Warning: Invalid value for 'liveness' ('" << liveness_str << "'). Using default value (" << m_config.liveness << ")." << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'liveness' value: " << e.what() << ". Using default value (" << m_config.liveness << ")." << std::endl;
         }
     }
 
     if (!core_section.isKeyExist("face_threshold")) {
         std::cerr << "Warning: Key 'face_threshold' not found in [core]. Using default value (" << m_config.face_threshold << ")." << std::endl;
     } else {
-        m_config.face_threshold = static_cast<float>(core_section.toDouble("face_threshold"));
+        try {
+            m_config.face_threshold = static_cast<float>(core_section.toDouble("face_threshold"));
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'face_threshold' value: " << e.what() << ". Using default value (" << m_config.face_threshold << ")." << std::endl;
+        }
     }
 
     if (!core_section.isKeyExist("liveness_threshold")) {
         std::cerr << "Warning: Key 'liveness_threshold' not found in [core]. Using default value (" << m_config.liveness_threshold << ")." << std::endl;
     } else {
-        m_config.liveness_threshold = static_cast<float>(core_section.toDouble("liveness_threshold"));
+        try {
+            m_config.liveness_threshold = static_cast<float>(core_section.toDouble("liveness_threshold"));
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'liveness_threshold' value: " << e.what() << ". Using default value (" << m_config.liveness_threshold << ")." << std::endl;
+        }
     }
 
     if (!core_section.isKeyExist("debug")) {
         std::cerr << "Warning: Key 'debug' not found in [core]. Using default value (" << m_config.debug << ")." << std::endl;
     } else {
-        std::string debug_str = core_section.toString("debug");
-        if (debug_str == "true" || debug_str == "True" || debug_str == "TRUE" || debug_str == "1") {
-            m_config.debug = true;
-        } else if (debug_str == "false" || debug_str == "False" || debug_str == "FALSE" || debug_str == "0") {
-            m_config.debug = false;
-        } else {
-             std::cerr << "Warning: Invalid value for 'debug' ('" << debug_str << "'). Using default value (" << m_config.debug << ")." << std::endl;
+        try {
+            std::string debug_str = core_section.toString("debug");
+            if (debug_str == "true" || debug_str == "True" || debug_str == "TRUE" || debug_str == "1") {
+                m_config.debug = true;
+            } else if (debug_str == "false" || debug_str == "False" || debug_str == "FALSE" || debug_str == "0") {
+                m_config.debug = false;
+            } else {
+                 std::cerr << "Warning: Invalid value for 'debug' ('" << debug_str << "'). Using default value (" << m_config.debug << ")." << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'debug' value: " << e.what() << ". Using default value (" << m_config.debug << ")." << std::endl;
         }
     }
 
     if (core_section.isKeyExist("language")) {
-        m_config.language = core_section.toString("language");
+        try {
+            m_config.language = core_section.toString("language");
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'language' value: " << e.what() << ". Using empty string." << std::endl;
+            m_config.language.clear();
+        }
     }
 
     return true;

@@ -274,6 +274,11 @@ int recognizeFace(int camera_index, bool liveness_detection,
                   float liveness_threshold, bool debug) {
     
     std::cout << "[Recognize] 启动人脸识别模式" << std::endl;
+    std::cout << "[Recognize] 参数: camera=" << camera_index
+              << ", liveness=" << (liveness_detection ? 1 : 0)
+              << ", liveness_threshold=" << liveness_threshold
+              << ", debug=" << (debug ? 1 : 0)
+              << std::endl;
 
     // 识别结果标志
     bool recognition_success = false;
@@ -434,19 +439,25 @@ int mainOptimized(int argc, char* argv[]) {
     // 加载配置
     ConfigManager config_manager(smile2unlock::paths::GetConfigIniPath().string());
     // 1. 尝试加载现有配置
-        if (!config_manager.loadConfig()) {
-            std::cout << "无法加载配置文件，创建默认配置..." << std::endl;
-            // 2. 如果加载失败（例如文件不存在），创建默认配置
-            if (config_manager.createDefaultConfig()) {
-                std::cout << "默认配置文件创建成功，正在加载..." << std::endl;
-                // 再次尝试加载刚创建的默认配置
-                if (!config_manager.loadConfig()) {
-                    throw FaceRecognition::ConfigException("无法加载新创建的默认配置文件");
-                }
-            } else {
-                throw FaceRecognition::ConfigException("无法创建默认配置文件");
+    try {
+        config_manager.loadConfig();
+    } catch (const FaceRecognition::ConfigException& e) {
+        // 配置文件可能不存在或无效，尝试创建默认配置
+        std::cout << "无法加载配置文件，创建默认配置..." << std::endl;
+        std::cout << "错误信息: " << e.what() << std::endl;
+        // 2. 如果加载失败（例如文件不存在），创建默认配置
+        if (config_manager.createDefaultConfig()) {
+            std::cout << "默认配置文件创建成功，正在加载..." << std::endl;
+            // 再次尝试加载刚创建的默认配置
+            try {
+                config_manager.loadConfig();
+            } catch (const FaceRecognition::ConfigException& e2) {
+                throw FaceRecognition::ConfigException("无法加载新创建的默认配置文件: " + std::string(e2.what()));
             }
+        } else {
+            throw FaceRecognition::ConfigException("无法创建默认配置文件");
         }
+    }
     
     auto config = config_manager.getConfig();
 

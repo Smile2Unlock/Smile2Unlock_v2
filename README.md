@@ -31,7 +31,7 @@ Instead of being only a single app, the repository is organized as a small syste
 
 - `Smile2Unlock`: the desktop GUI and orchestration layer
 - `SampleV2CredentialProvider.dll`: the Windows Credential Provider integration
-- `FaceRecognizer`: the camera, liveness, feature extraction, and comparison worker
+- `FaceRecognizer`: the camera, optional liveness checks, and feature extraction worker
 - `common`: shared models, config, crypto, IPC, assets, and language resources
 
 The current codebase already includes:
@@ -48,7 +48,7 @@ The current codebase already includes:
 | --- | --- |
 | Windows login integration | Uses a custom Credential Provider DLL for Winlogon sign-in flow |
 | Split-process design | GUI, service, and recognition worker are separated for cleaner responsibilities |
-| Shared-memory + UDP IPC | Supports image sharing, preview streaming, and status messaging |
+| Shared-memory + UDP IPC | Supports image sharing, preview streaming, probe-feature delivery, and status messaging |
 | Local persistence | Uses SQLite plus config/runtime directories for local state |
 | Modern C++ toolchain | Built with `xmake`, `clang`, `llvm-mingw`, and C++26 modules |
 
@@ -79,9 +79,10 @@ sequenceDiagram
     User->>CP: Open sign-in screen
     CP->>Service: Request biometric authentication
     Service->>FR: Start capture / recognition task
-    FR->>FR: Detect face and run liveness checks
-    FR-->>Service: Return recognition result
-    Service-->>CP: Approve or reject sign-in step
+    FR->>FR: Detect face, optionally run liveness checks, and extract a probe feature
+    FR-->>Service: Return probe feature after capture / liveness gates pass
+    Service->>Service: Compare probe feature against enrolled local features
+    Service-->>CP: Approve or reject sign-in step from the service-owned match result
     GUI-->>Service: Configure device, profile, and runtime settings
 ```
 
@@ -90,7 +91,7 @@ sequenceDiagram
 - `SampleV2CredentialProvider.dll` plugs into the Windows authentication surface.
 - `Smile2Unlock.exe --service` acts as the privileged backend / IPC host.
 - `Smile2Unlock.exe` without `--service` launches the GUI and can connect to an already-running backend.
-- `FaceRecognizer.exe` handles recognition-oriented tasks such as one-shot capture, preview streaming, and feature comparison.
+- `FaceRecognizer.exe` handles camera-oriented recognition tasks such as one-shot capture, preview streaming, liveness checks, and feature extraction. The service owns login-time feature comparison and decides whether CP receives final success.
 
 <details>
 <summary>Why the project is split this way</summary>
@@ -233,6 +234,8 @@ Typical entry point:
 ```powershell
 .\FaceRecognizer.exe --mode recognize --camera 0 --liveness-detection=true
 ```
+
+For service-launched recognition, boolean options are passed with explicit values, for example `--liveness-detection=false`. In the sign-in flow, `recognize` emits a probe feature after capture and optional liveness checks; `Smile2Unlock.exe --service` compares that feature with enrolled local features before forwarding final success or failure to the Credential Provider.
 
 ## Status
 
