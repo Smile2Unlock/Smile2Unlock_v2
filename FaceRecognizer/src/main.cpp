@@ -274,6 +274,11 @@ int recognizeFace(int camera_index, bool liveness_detection,
                   float liveness_threshold, bool debug) {
     
     std::cout << "[Recognize] 启动人脸识别模式" << std::endl;
+    std::cout << "[Recognize] 参数: camera=" << camera_index
+              << ", liveness=" << (liveness_detection ? 1 : 0)
+              << ", liveness_threshold=" << liveness_threshold
+              << ", debug=" << (debug ? 1 : 0)
+              << std::endl;
 
     // 识别结果标志
     bool recognition_success = false;

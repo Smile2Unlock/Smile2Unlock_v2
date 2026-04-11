@@ -67,6 +67,13 @@ bool IsAckStatusForRequest(AuthRequestType request_type, RecognitionStatus statu
   }
 }
 
+bool IsTerminalFailureStatus(RecognitionStatus status) {
+  return status == RecognitionStatus::FAILED ||
+         status == RecognitionStatus::TIMEOUT ||
+         status == RecognitionStatus::RECOGNITION_ERROR ||
+         status == RecognitionStatus::PROCESS_ENDED;
+}
+
 bool Utf8ToWideString(const std::string& utf8_text, PWSTR* ppwszText) {
   *ppwszText = nullptr;
 
@@ -1079,6 +1086,10 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
     if (currentStatus == RecognitionStatus::SUCCESS) {
       LogDebugMessage(L"[INFO] 识别成功！耗时: %dms，最终状态码: %d", elapsed, static_cast<int>(currentStatus));
       return S_OK; // 识别成功
+    }
+    if (IsTerminalFailureStatus(currentStatus)) {
+      LogDebugMessage(L"[INFO] 识别已被SU拒绝或结束，耗时: %dms，最终状态码: %d", elapsed, static_cast<int>(currentStatus));
+      return E_FAIL;
     }
 
     // 每秒输出一次状态日志

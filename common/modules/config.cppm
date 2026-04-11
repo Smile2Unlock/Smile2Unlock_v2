@@ -127,6 +127,10 @@ bool ConfigManager::loadConfig() {
         std::cerr << "Failed to load config file: " << m_filename << std::endl;
         return false;
     }
+    file.close();
+
+    m_config = CoreConfig{};
+    m_ini.parse();
 
     // Check if the [core] section exists
     if (!m_ini.isSectionExists("core")) {
