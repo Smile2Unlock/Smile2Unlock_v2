@@ -182,7 +182,7 @@ bool DecodeFeatureHex(const std::string& hex, std::vector<float>& feature) {
 
     std::vector<unsigned char> bytes;
     bytes.reserve(hex.size() / 2);
-    for (size_t i = 0; i < hex.size(); i += 2) {
+    for (size_t i = 0; i + 1 < hex.size(); i += 2) {
         const int high = HexValue(hex[i]);
         const int low = HexValue(hex[i + 1]);
         if (high < 0 || low < 0) {
@@ -195,8 +195,18 @@ bool DecodeFeatureHex(const std::string& hex, std::vector<float>& feature) {
         return false;
     }
 
-    feature.resize(bytes.size() / sizeof(float));
-    memcpy(feature.data(), bytes.data(), bytes.size());
+    const size_t feature_size = bytes.size() / sizeof(float);
+    feature.resize(feature_size);
+
+    // 安全边界检查
+    if (bytes.size() > feature.size() * sizeof(float)) {
+        feature.clear();
+        return false;
+    }
+
+    // 使用std::copy替代memcpy，更安全
+    std::copy(bytes.begin(), bytes.end(),
+              reinterpret_cast<unsigned char*>(feature.data()));
     return true;
 }
 
@@ -819,8 +829,25 @@ bool FaceRecognition::compare_features_on_su(const std::string& feature1, const 
     if (!DecodeFeatureHex(feature1, probe) || !DecodeFeatureHex(feature2, enrolled)) {
         return false;
     }
-    if (probe.size() != enrolled.size() || probe.empty()) {
+
+    // 特征向量维度验证
+    constexpr size_t MIN_FEATURE_DIM = 128;
+    constexpr size_t MAX_FEATURE_DIM = 4096;
+    if (probe.empty() || enrolled.empty()) {
         return false;
+    }
+    if (probe.size() != enrolled.size()) {
+        return false;
+    }
+    if (probe.size() < MIN_FEATURE_DIM || probe.size() > MAX_FEATURE_DIM) {
+        return false;
+    }
+
+    // 检查特征向量有效性（无NaN/Inf）
+    for (size_t i = 0; i < probe.size(); ++i) {
+        if (!std::isfinite(probe[i]) || !std::isfinite(enrolled[i])) {
+            return false;
+        }
     }
 
     double dot = 0.0;
@@ -831,11 +858,27 @@ bool FaceRecognition::compare_features_on_su(const std::string& feature1, const 
         probe_norm += static_cast<double>(probe[i]) * static_cast<double>(probe[i]);
         enrolled_norm += static_cast<double>(enrolled[i]) * static_cast<double>(enrolled[i]);
     }
-    if (probe_norm <= 0.0 || enrolled_norm <= 0.0) {
+    // 使用epsilon进行浮点数比较，防止精度问题
+    constexpr double EPSILON = 1e-10;
+    if (probe_norm <= EPSILON || enrolled_norm <= EPSILON) {
         return false;
     }
 
-    similarity = static_cast<float>(dot / (std::sqrt(probe_norm) * std::sqrt(enrolled_norm)));
+    // 计算相似度，防止除零错误
+    const double sqrt_probe = std::sqrt(probe_norm);
+    const double sqrt_enrolled = std::sqrt(enrolled_norm);
+    if (sqrt_probe <= EPSILON || sqrt_enrolled <= EPSILON) {
+        return false;
+    }
+
+    const double similarity_value = dot / (sqrt_probe * sqrt_enrolled);
+
+    // 确保相似度在有效范围内 [-1, 1]（考虑浮点误差）
+    if (similarity_value < -1.0 - EPSILON || similarity_value > 1.0 + EPSILON) {
+        return false;
+    }
+
+    similarity = static_cast<float>(similarity_value);
     return true;
 }
 
@@ -878,15 +921,49 @@ std::string FaceRecognition::resolve_recognized_username(const std::string& prob
     if (!username_hint.empty()) {
         const auto hinted_user = database_->GetUserByUsername(username_hint);
         if (!hinted_user.has_value()) {
-            error_message = "指定用户不存在，拒绝识别";
-            return "";
+            // 用户不存在，但仍与所有用户比对以检测安全威胁
+            std::cout << "[SU] 安全警告: 指定用户不存在但进行全局特征比对"
+                      << " username_hint=" << username_hint
+                      << std::endl;
+            const auto users = database_->GetAllUsers();
+            for (const auto& user : users) {
+                compare_user_faces(user);
+            }
+            // 即使找到匹配，也拒绝认证（用户名不匹配）
+            if (!best_username.empty()) {
+                std::cout << "[SU] 安全警报: 无效用户名但找到人脸匹配"
+                          << " invalid_username=" << username_hint
+                          << " matched_username=" << best_username
+                          << std::endl;
+                error_message = "用户名无效但检测到人脸匹配 - 疑似攻击尝试";
+                return "";
+            }
+            // 没有找到任何匹配
+            error_message = "指定用户不存在";
+        } else {
+            // 用户存在，只与该用户比对
+            compare_user_faces(*hinted_user);
+            // 验证匹配结果与指定用户一致
+            if (!best_username.empty() && best_username != username_hint) {
+                std::cout << "[SU] 安全警报: 人脸匹配与指定用户不一致"
+                          << " specified=" << username_hint
+                          << " matched=" << best_username
+                          << std::endl;
+                error_message = "识别结果与指定用户不匹配";
+                return "";
+            }
         }
-        compare_user_faces(*hinted_user);
     } else {
+        // 无用户名提示，与所有用户比对
         const auto users = database_->GetAllUsers();
         for (const auto& user : users) {
             compare_user_faces(user);
         }
+    }
+
+    // 如果已经有错误消息，直接返回
+    if (!error_message.empty()) {
+        return "";
     }
 
     if (best_username.empty()) {

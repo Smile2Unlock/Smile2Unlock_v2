@@ -2,6 +2,7 @@ module;
 
 #include "models/gui_ipc_protocol.h"
 #include "backend/ibackend_service.h"
+#include "exceptions.h"
 
 export module smile2unlock.service;
 
@@ -291,11 +292,28 @@ bool BackendService::IsRecognitionRunning() const { return face_recognition_->Is
 RecognitionResult BackendService::GetRecognitionResult() { return face_recognition_->GetLastResult(); }
 
 bool BackendService::GetRecognizerConfig(FaceRecognizerConfig& config, std::string& error_message) {
-    if (!config_manager_->loadConfig()) {
-        if (!config_manager_->createDefaultConfig() || !config_manager_->loadConfig()) {
-            error_message = "加载识别配置失败";
+    try {
+        // loadConfig现在在失败时抛出异常而不是返回false
+        config_manager_->loadConfig();
+    } catch (const FaceRecognition::ConfigException& e) {
+        // 配置文件可能不存在或无效，尝试创建默认配置
+        std::cerr << "配置加载失败，尝试创建默认配置: " << e.what() << std::endl;
+        if (!config_manager_->createDefaultConfig()) {
+            error_message = std::string("创建默认配置失败: ") + e.what();
             return false;
         }
+        try {
+            config_manager_->loadConfig();
+        } catch (const FaceRecognition::ConfigException& e2) {
+            error_message = std::string("加载默认配置失败: ") + e2.what();
+            return false;
+        } catch (const std::exception& e2) {
+            error_message = std::string("加载默认配置时发生错误: ") + e2.what();
+            return false;
+        }
+    } catch (const std::exception& e) {
+        error_message = std::string("加载配置时发生错误: ") + e.what();
+        return false;
     }
 
     const auto& loaded = config_manager_->getConfig();
