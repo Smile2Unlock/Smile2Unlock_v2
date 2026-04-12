@@ -5,9 +5,9 @@
 #include "utils/windows_security.h"
 #include <string>
 #include <sstream>
-#include <iomanip>
 #include <iostream>
 #include <vector>
+#include <limits>
 #include <windows.h>
 
 namespace smile2unlock {
@@ -19,22 +19,24 @@ void NotifyServiceActivity();
  */
 class GuiIpcRequestHandler {
 public:
+    // Note: backend pointer lifetime is managed by the caller (GuiIpcServer).
+    // The caller must ensure backend remains valid throughout the handler's lifetime.
     explicit GuiIpcRequestHandler(IBackendService* backend) : backend_(backend) {}
-    
+
     void handle(const GuiIpcRequest& request, GuiIpcResponse& response) {
         response.clear();
         response.request_id = request.request_id;
         response.timestamp = request.timestamp;
         NotifyServiceActivity();
-        
+
         if (!backend_) {
             response.set_error("Backend not available");
             return;
         }
-        
+
         auto cmd = static_cast<GuiIpcCommand>(request.command);
         std::string payload(request.payload, request.payload_size);
-        
+
         try {
             handle_command(cmd, payload, response);
         } catch (const std::exception& e) {
@@ -44,6 +46,29 @@ public:
 
 private:
     IBackendService* backend_;
+
+    static std::optional<int> parse_int(const std::string& s) {
+        try {
+            size_t pos;
+            int value = std::stoi(s, &pos);
+            if (pos != s.size()) return std::nullopt;
+            return value;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    static std::optional<float> parse_float(const std::string& s) {
+        try {
+            size_t pos;
+            float value = std::stof(s, &pos);
+            if (pos != s.size()) return std::nullopt;
+            return value;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     HANDLE preview_transport_mapping_{nullptr};
     HANDLE capture_transport_mapping_{nullptr};
 
@@ -92,6 +117,12 @@ private:
         const std::string mapping_name =
             std::string("Local\\Smile2Unlock_GuiPreview_") +
             mapping_tag + "_" + std::to_string(GetCurrentProcessId());
+
+        // Validate size fits in DWORD to prevent truncation
+        if (image_data.size() > std::numeric_limits<DWORD>::max()) {
+            response.set_error("Image data too large for shared memory mapping");
+            return false;
+        }
         const DWORD mapping_size = static_cast<DWORD>(image_data.size());
         mapping_slot = CreateFileMappingA(
             INVALID_HANDLE_VALUE,
@@ -273,11 +304,16 @@ private:
             return;
         }
         
-        int user_id = std::stoi(payload.substr(0, p1));
+        auto user_id_opt = parse_int(payload.substr(0, p1));
+        if (!user_id_opt) {
+            response.set_error("Invalid user_id format");
+            return;
+        }
+        int user_id = *user_id_opt;
         std::string username = payload.substr(p1 + 1, p2 - p1 - 1);
         std::string password = payload.substr(p2 + 1, p3 - p2 - 1);
         std::string remark = payload.substr(p3 + 1);
-        
+
         std::string error;
         bool success = backend_->UpdateUser(user_id, username, password, remark, error);
 
@@ -288,8 +324,13 @@ private:
     }
     
     void handle_delete_user(const std::string& payload, GuiIpcResponse& response) {
-        int user_id = std::stoi(payload);
-        
+        auto user_id_opt = parse_int(payload);
+        if (!user_id_opt) {
+            response.set_error("Invalid user_id format");
+            return;
+        }
+        int user_id = *user_id_opt;
+
         std::string error;
         bool success = backend_->DeleteUser(user_id, error);
 
@@ -302,7 +343,12 @@ private:
     // ==================== 人脸管理 ====================
     
     void handle_get_user_faces(const std::string& payload, GuiIpcResponse& response) {
-        int user_id = std::stoi(payload);
+        auto user_id_opt = parse_int(payload);
+        if (!user_id_opt) {
+            response.set_error("Invalid user_id format");
+            return;
+        }
+        int user_id = *user_id_opt;
         auto faces = backend_->GetUserFaces(user_id);
         
         std::ostringstream ss;
@@ -320,10 +366,16 @@ private:
             response.set_error("Invalid payload format");
             return;
         }
-        
-        int user_id = std::stoi(payload.substr(0, p));
-        int face_id = std::stoi(payload.substr(p + 1));
-        
+
+        auto user_id_opt = parse_int(payload.substr(0, p));
+        auto face_id_opt = parse_int(payload.substr(p + 1));
+        if (!user_id_opt || !face_id_opt) {
+            response.set_error("Invalid ID format");
+            return;
+        }
+        int user_id = *user_id_opt;
+        int face_id = *face_id_opt;
+
         std::string error;
         bool success = backend_->DeleteFace(user_id, face_id, error);
 
@@ -339,10 +391,15 @@ private:
             response.set_error("Invalid payload format");
             return;
         }
-        
-        int user_id = std::stoi(payload.substr(0, p));
+
+        auto user_id_opt = parse_int(payload.substr(0, p));
+        if (!user_id_opt) {
+            response.set_error("Invalid user_id format");
+            return;
+        }
+        int user_id = *user_id_opt;
         std::string remark = payload.substr(p + 1);
-        
+
         std::string error;
         bool success = backend_->CaptureAndAddFace(user_id, remark, error);
 
@@ -515,13 +572,24 @@ private:
             const std::string key = line.substr(0, eq);
             const std::string value = line.substr(eq + 1);
 
-            if (key == "camera") config.camera = std::stoi(value);
-            else if (key == "liveness") config.liveness = (value == "1" || value == "true");
-            else if (key == "face_threshold") config.face_threshold = std::stof(value);
-            else if (key == "liveness_threshold") config.liveness_threshold = std::stof(value);
-            else if (key == "debug") config.debug = (value == "1" || value == "true");
-            else if (key == "language") config.language = value;
-            else if (key == "auto_update_check") config.auto_update_check = (value == "1" || value == "true");
+            if (key == "camera") {
+                auto v = parse_int(value);
+                if (v) config.camera = *v;
+            } else if (key == "liveness") {
+                config.liveness = (value == "1" || value == "true");
+            } else if (key == "face_threshold") {
+                auto v = parse_float(value);
+                if (v) config.face_threshold = *v;
+            } else if (key == "liveness_threshold") {
+                auto v = parse_float(value);
+                if (v) config.liveness_threshold = *v;
+            } else if (key == "debug") {
+                config.debug = (value == "1" || value == "true");
+            } else if (key == "language") {
+                config.language = value;
+            } else if (key == "auto_update_check") {
+                config.auto_update_check = (value == "1" || value == "true");
+            }
         }
 
         std::string error;

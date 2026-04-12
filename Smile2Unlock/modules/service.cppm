@@ -56,7 +56,7 @@ public:
 
 private:
     bool ApplyRecognizerConfigFromStorage(std::string& error_message);
-    bool initialized_;
+    std::atomic<bool> initialized_;
     std::unique_ptr<managers::DllInjector> dll_injector_;
     std::unique_ptr<managers::Database> database_;
     std::unique_ptr<managers::FaceRecognition> face_recognition_;
@@ -90,7 +90,7 @@ std::string EncryptPasswordForPersistence(const std::string& password, std::stri
 
 }
 
-BackendService::BackendService() : initialized_(false) {
+BackendService::BackendService() : initialized_(false), dll_injector_(nullptr), database_(nullptr), face_recognition_(nullptr), config_manager_(nullptr) {
     dll_injector_ = std::make_unique<managers::DllInjector>();
     database_ = std::make_unique<managers::Database>();
     face_recognition_ = std::make_unique<managers::FaceRecognition>();
