@@ -1,6 +1,11 @@
 ; Smile2Unlock Inno Setup Script
 #define MyAppName "Smile2Unlock"
-#define MyAppVersion "2.0"
+#define VersionFileHandle FileOpen(AddBackslash(SourcePath) + "version.txt")
+#if VersionFileHandle == 0
+  #error "Failed to open version.txt"
+#endif
+#define MyAppVersion Trim(FileRead(VersionFileHandle))
+#expr FileClose(VersionFileHandle)
 #define MyAppPublisher "Smile2Unlock Team"
 #define MyAppURL "https://github.com/Smile2Unlock/Smile2Unlock_v2"
 #define MyAppExeName "Smile2Unlock.exe"

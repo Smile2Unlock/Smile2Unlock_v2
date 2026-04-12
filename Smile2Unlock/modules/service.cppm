@@ -56,7 +56,7 @@ public:
 
 private:
     bool ApplyRecognizerConfigFromStorage(std::string& error_message);
-    bool initialized_;
+    std::atomic<bool> initialized_;
     std::unique_ptr<managers::DllInjector> dll_injector_;
     std::unique_ptr<managers::Database> database_;
     std::unique_ptr<managers::FaceRecognition> face_recognition_;
@@ -90,7 +90,7 @@ std::string EncryptPasswordForPersistence(const std::string& password, std::stri
 
 }
 
-BackendService::BackendService() : initialized_(false) {
+BackendService::BackendService() : initialized_(false), dll_injector_(nullptr), database_(nullptr), face_recognition_(nullptr), config_manager_(nullptr) {
     dll_injector_ = std::make_unique<managers::DllInjector>();
     database_ = std::make_unique<managers::Database>();
     face_recognition_ = std::make_unique<managers::FaceRecognition>();
@@ -323,6 +323,7 @@ bool BackendService::GetRecognizerConfig(FaceRecognizerConfig& config, std::stri
     config.liveness_threshold = loaded.liveness_threshold;
     config.debug = loaded.debug;
     config.language = loaded.language;
+    config.auto_update_check = loaded.auto_update_check;
     face_recognition_->SetConfig(config);
     error_message = "识别配置已加载";
     return true;
@@ -336,6 +337,7 @@ bool BackendService::SaveRecognizerConfig(const FaceRecognizerConfig& config, st
     core_config.liveness_threshold = config.liveness_threshold;
     core_config.debug = config.debug;
     core_config.language = config.language;
+    core_config.auto_update_check = config.auto_update_check;
 
     config_manager_->setConfig(core_config);
     if (!config_manager_->saveConfig()) {

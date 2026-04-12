@@ -1,6 +1,8 @@
 module;
 
 #include <windows.h>
+#include <winhttp.h>
+#include <shellapi.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #ifndef SECURITY_WIN32
@@ -31,6 +33,17 @@ export namespace smile2unlock {
 struct CameraDeviceOption {
     int index{};
     std::string label;
+};
+
+struct VersionCheckResult {
+    bool success{};
+    bool update_available{};
+    bool manual{};
+    std::string current_version;
+    std::string remote_version;
+    std::string release_url;
+    std::string published_at;
+    std::string error_message;
 };
 
 class Application {
@@ -89,6 +102,10 @@ private:
     float CalcButtonWidth(std::string_view label, float min_width) const;
     bool CanFitInline(std::initializer_list<float> widths, float spacing = 12.0f) const;
     void LoadRecognizerConfigOnce();
+    void StartVersionCheck(bool manual = false);
+    void PollVersionCheck();
+    void RenderVersionPanel();
+    void OpenLatestReleasePage() const;
 
     std::unique_ptr<IBackendService> backend_;
     GLFWwindow* window_;
@@ -126,6 +143,12 @@ private:
         std::vector<CameraDeviceOption> camera_devices;
         bool camera_devices_loaded{};
         std::string camera_devices_message;
+        VersionCheckResult version_check{};
+        std::future<VersionCheckResult> version_check_future;
+        bool version_check_in_progress{};
+        bool version_check_started{};
+        bool version_update_prompt_open{};
+        std::string version_last_checked_at;
         
         // 缓存的 DLL 状态
         DllStatus cached_dll_status;
@@ -189,6 +212,248 @@ enum class UiLanguage {
 
 constexpr GLint kGlClampToEdge = 0x812F;
 constexpr ImGuiWindowFlags kStaticChildFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+constexpr std::string_view kCurrentVersion = SMILE2UNLOCK_VERSION;
+constexpr std::string_view kLatestReleaseApiUrl = SMILE2UNLOCK_RELEASES_API;
+constexpr std::string_view kReleasesPageUrl = SMILE2UNLOCK_RELEASES_PAGE;
+
+std::wstring Utf8ToWide(std::string_view input) {
+    if (input.empty()) {
+        return {};
+    }
+    const int required_size = MultiByteToWideChar(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), nullptr, 0);
+    if (required_size <= 0) {
+        return {};
+    }
+    std::wstring output(static_cast<size_t>(required_size), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), output.data(), required_size);
+    return output;
+}
+
+std::string WideToUtf8(std::wstring_view input) {
+    if (input.empty()) {
+        return {};
+    }
+    const int required_size = WideCharToMultiByte(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), nullptr, 0, nullptr, nullptr);
+    if (required_size <= 0) {
+        return {};
+    }
+    std::string output(static_cast<size_t>(required_size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, input.data(), static_cast<int>(input.size()), output.data(), required_size, nullptr, nullptr);
+    return output;
+}
+
+std::string TrimCopy(std::string value) {
+    const auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+    value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+    return value;
+}
+
+std::string NormalizeVersion(std::string version) {
+    version = TrimCopy(std::move(version));
+    if (!version.empty() && (version.front() == 'v' || version.front() == 'V')) {
+        version.erase(version.begin());
+    }
+    return version;
+}
+
+std::vector<int> ParseVersionParts(std::string version) {
+    version = NormalizeVersion(std::move(version));
+    std::vector<int> parts;
+    std::string current;
+    for (const char ch : version) {
+        if (std::isdigit(static_cast<unsigned char>(ch))) {
+            current.push_back(ch);
+        } else {
+            if (!current.empty()) {
+                parts.push_back(std::stoi(current));
+                current.clear();
+            }
+            if (ch != '.') {
+                break;
+            }
+        }
+    }
+    if (!current.empty()) {
+        parts.push_back(std::stoi(current));
+    }
+    return parts;
+}
+
+int CompareVersions(std::string lhs, std::string rhs) {
+    const auto left_parts = ParseVersionParts(std::move(lhs));
+    const auto right_parts = ParseVersionParts(std::move(rhs));
+    const size_t count = std::max(left_parts.size(), right_parts.size());
+    for (size_t index = 0; index < count; ++index) {
+        const int left = index < left_parts.size() ? left_parts[index] : 0;
+        const int right = index < right_parts.size() ? right_parts[index] : 0;
+        if (left < right) {
+            return -1;
+        }
+        if (left > right) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+std::optional<std::string> ExtractJsonStringField(const std::string& json, const std::string& field_name) {
+    const std::regex pattern("\"" + field_name + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+    std::smatch match;
+    if (!std::regex_search(json, match, pattern) || match.size() < 2) {
+        return std::nullopt;
+    }
+
+    std::string value = match[1].str();
+    value = std::regex_replace(value, std::regex(R"(\\/)"), "/");
+    value = std::regex_replace(value, std::regex(R"(\\")"), "\"");
+    value = std::regex_replace(value, std::regex(R"(\\r)"), "\r");
+    value = std::regex_replace(value, std::regex(R"(\\n)"), "\n");
+    value = std::regex_replace(value, std::regex(R"(\\t)"), "\t");
+    value = std::regex_replace(value, std::regex(R"(\\\\)"), "\\");
+    return value;
+}
+
+std::string FormatIsoTimestamp(std::string timestamp) {
+    std::replace(timestamp.begin(), timestamp.end(), 'T', ' ');
+    if (!timestamp.empty() && timestamp.back() == 'Z') {
+        timestamp.pop_back();
+        timestamp += " UTC";
+    }
+    return timestamp;
+}
+
+std::string HttpGetUtf8(std::string_view url) {
+    URL_COMPONENTSW components{};
+    components.dwStructSize = sizeof(components);
+    components.dwSchemeLength = static_cast<DWORD>(-1);
+    components.dwHostNameLength = static_cast<DWORD>(-1);
+    components.dwUrlPathLength = static_cast<DWORD>(-1);
+    components.dwExtraInfoLength = static_cast<DWORD>(-1);
+
+    std::wstring wide_url = Utf8ToWide(url);
+    if (wide_url.empty() || !WinHttpCrackUrl(wide_url.c_str(), 0, 0, &components)) {
+        throw std::runtime_error("Failed to parse update URL.");
+    }
+
+    const std::wstring host(components.lpszHostName, components.dwHostNameLength);
+    std::wstring path(components.lpszUrlPath, components.dwUrlPathLength);
+    if (components.dwExtraInfoLength > 0) {
+        path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
+    }
+
+    const bool secure = components.nScheme == INTERNET_SCHEME_HTTPS;
+    const DWORD request_flags = secure ? WINHTTP_FLAG_SECURE : 0;
+
+    auto close_handle = [](HINTERNET handle) {
+        if (handle != nullptr) {
+            WinHttpCloseHandle(handle);
+        }
+    };
+
+    std::unique_ptr<void, decltype(close_handle)> session(
+        WinHttpOpen(L"Smile2Unlock/UpdateChecker", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0),
+        close_handle);
+    if (!session) {
+        throw std::runtime_error("Failed to open WinHTTP session.");
+    }
+
+    std::unique_ptr<void, decltype(close_handle)> connection(
+        WinHttpConnect(static_cast<HINTERNET>(session.get()), host.c_str(), components.nPort, 0),
+        close_handle);
+    if (!connection) {
+        throw std::runtime_error("Failed to connect to update server.");
+    }
+
+    std::unique_ptr<void, decltype(close_handle)> request(
+        WinHttpOpenRequest(static_cast<HINTERNET>(connection.get()), L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, request_flags),
+        close_handle);
+    if (!request) {
+        throw std::runtime_error("Failed to create update request.");
+    }
+
+    constexpr wchar_t kHeaders[] =
+        L"User-Agent: Smile2Unlock/2.0\r\n"
+        L"Accept: application/vnd.github+json\r\n";
+    if (!WinHttpSendRequest(static_cast<HINTERNET>(request.get()), kHeaders, static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(static_cast<HINTERNET>(request.get()), nullptr)) {
+        throw std::runtime_error("Failed to fetch latest release information.");
+    }
+
+    DWORD status_code = 0;
+    DWORD status_code_size = sizeof(status_code);
+    if (!WinHttpQueryHeaders(static_cast<HINTERNET>(request.get()),
+                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX,
+                             &status_code,
+                             &status_code_size,
+                             WINHTTP_NO_HEADER_INDEX)) {
+        throw std::runtime_error("Failed to read update server response.");
+    }
+    if (status_code != 200) {
+        throw std::runtime_error(std::format("Update server returned HTTP {}.", status_code));
+    }
+
+    std::string body;
+    DWORD available_size = 0;
+    do {
+        if (!WinHttpQueryDataAvailable(static_cast<HINTERNET>(request.get()), &available_size)) {
+            throw std::runtime_error("Failed while reading update response.");
+        }
+        if (available_size == 0) {
+            break;
+        }
+
+        std::string chunk(static_cast<size_t>(available_size), '\0');
+        DWORD bytes_read = 0;
+        if (!WinHttpReadData(static_cast<HINTERNET>(request.get()), chunk.data(), available_size, &bytes_read)) {
+            throw std::runtime_error("Failed while reading update response body.");
+        }
+        chunk.resize(bytes_read);
+        body += chunk;
+    } while (available_size > 0);
+
+    return body;
+}
+
+VersionCheckResult FetchLatestVersionInfo(bool manual) {
+    VersionCheckResult result;
+    result.manual = manual;
+    result.current_version = kCurrentVersion;
+    result.release_url = kReleasesPageUrl;
+
+    try {
+        const std::string response = HttpGetUtf8(kLatestReleaseApiUrl);
+        const auto tag_name = ExtractJsonStringField(response, "tag_name");
+        if (!tag_name.has_value() || tag_name->empty()) {
+            throw std::runtime_error("Release tag was missing from the update response.");
+        }
+
+        result.remote_version = *tag_name;
+        if (const auto html_url = ExtractJsonStringField(response, "html_url")) {
+            result.release_url = *html_url;
+        }
+        if (const auto published_at = ExtractJsonStringField(response, "published_at")) {
+            result.published_at = FormatIsoTimestamp(*published_at);
+        }
+
+        result.update_available = CompareVersions(result.current_version, result.remote_version) < 0;
+        result.success = true;
+    } catch (const std::exception& e) {
+        result.error_message = e.what();
+    }
+
+    return result;
+}
+
+std::string GetLocalTimeStampString() {
+    std::time_t now = std::time(nullptr);
+    std::tm local_time{};
+    localtime_s(&local_time, &now);
+    std::ostringstream stream;
+    stream << std::put_time(&local_time, "%Y-%m-%d %H:%M:%S");
+    return stream.str();
+}
 
 ImVec4 WithAlpha(const ImVec4& color, const float alpha) {
     return ImVec4(color.x, color.y, color.z, alpha);
@@ -649,6 +914,141 @@ void Application::LoadRecognizerConfigOnce() {
     }
 }
 
+void Application::StartVersionCheck(const bool manual) {
+    if (ui_state_.version_check_in_progress) {
+        return;
+    }
+
+    ui_state_.version_check_in_progress = true;
+    ui_state_.version_check_started = true;
+    ui_state_.version_check.manual = manual;
+    ui_state_.version_check.error_message.clear();
+    ui_state_.version_check.current_version = kCurrentVersion;
+    ui_state_.version_check_future = std::async(std::launch::async, [manual]() {
+        return FetchLatestVersionInfo(manual);
+    });
+}
+
+void Application::PollVersionCheck() {
+    if (!ui_state_.version_check_in_progress || !ui_state_.version_check_future.valid()) {
+        return;
+    }
+
+    if (ui_state_.version_check_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        return;
+    }
+
+    ui_state_.version_check = ui_state_.version_check_future.get();
+    ui_state_.version_check_in_progress = false;
+    ui_state_.version_last_checked_at = GetLocalTimeStampString();
+
+    if (ui_state_.version_check.success && ui_state_.version_check.update_available) {
+        ui_state_.version_update_prompt_open = true;
+        ui_state_.status_message = DynFormat(
+            Tr("update_available_status"),
+            ui_state_.version_check.remote_version,
+            ui_state_.version_check.current_version);
+        ui_state_.status_message_timer = 6.0f;
+    } else if (ui_state_.version_check.manual) {
+        ui_state_.status_message = ui_state_.version_check.success
+            ? Tr("already_latest")
+            : DynFormat(Tr("update_check_failed"), ui_state_.version_check.error_message);
+        ui_state_.status_message_timer = 4.0f;
+    }
+}
+
+void Application::OpenLatestReleasePage() const {
+    const std::string target_url = ui_state_.version_check.release_url.empty()
+        ? std::string(kReleasesPageUrl)
+        : ui_state_.version_check.release_url;
+    const std::wstring wide_url = Utf8ToWide(target_url);
+    if (!wide_url.empty()) {
+        ShellExecuteW(nullptr, L"open", wide_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
+void Application::RenderVersionPanel() {
+    RenderSectionHeader(Tr("section_update"), Tr("update_title"), Tr("update_body"));
+
+    RenderInfoRow(Tr("current_version"), ui_state_.version_check.current_version.empty()
+        ? std::string(kCurrentVersion)
+        : ui_state_.version_check.current_version, Nord8);
+
+    if (ui_state_.version_check_in_progress) {
+        RenderInfoRow(Tr("latest_version"), Tr("checking_update"), Nord13);
+    } else if (!ui_state_.version_check.remote_version.empty()) {
+        const ImVec4 remote_color = ui_state_.version_check.update_available ? Nord13 : Nord14;
+        RenderInfoRow(Tr("latest_version"), ui_state_.version_check.remote_version, remote_color);
+    } else {
+        RenderInfoRow(Tr("latest_version"), Tr("update_unknown"), Nord3);
+    }
+
+    if (!ui_state_.version_last_checked_at.empty()) {
+        RenderInfoRow(Tr("last_checked"), ui_state_.version_last_checked_at, Nord7);
+    }
+    if (!ui_state_.version_check.published_at.empty()) {
+        RenderInfoRow(Tr("release_published_at"), ui_state_.version_check.published_at, Nord7);
+    }
+
+    std::string update_state = Tr("update_not_checked");
+    ImVec4 update_state_color = Nord3;
+    if (ui_state_.version_check_in_progress) {
+        update_state = Tr("checking_update");
+        update_state_color = Nord13;
+    } else if (!ui_state_.version_check.success && ui_state_.version_check_started) {
+        update_state = DynFormat(Tr("update_check_failed"), ui_state_.version_check.error_message);
+        update_state_color = Nord11;
+    } else if (ui_state_.version_check.success && ui_state_.version_check.update_available) {
+        update_state = DynFormat(Tr("update_available_fmt"), ui_state_.version_check.remote_version);
+        update_state_color = Nord13;
+    } else if (ui_state_.version_check.success) {
+        update_state = Tr("already_latest");
+        update_state_color = Nord14;
+    }
+    RenderInfoRow(Tr("update_state"), update_state, update_state_color);
+
+    ImGui::Spacing();
+    const float check_width = CalcButtonWidth(Tr("check_update_now"), 190.0f);
+    const float open_width = CalcButtonWidth(Tr("open_release_page"), 210.0f);
+    if (ui_state_.version_check_in_progress) {
+        ImGui::BeginDisabled();
+    }
+    if (ImGui::Button(Tr("check_update_now"), ImVec2(check_width, 0))) {
+        StartVersionCheck(true);
+    }
+    if (ui_state_.version_check_in_progress) {
+        ImGui::EndDisabled();
+    }
+    if (CanFitInline({check_width, open_width})) {
+        ImGui::SameLine(0.0f, 12.0f);
+    }
+    if (ImGui::Button(Tr("open_release_page"), ImVec2(open_width, 0))) {
+        OpenLatestReleasePage();
+    }
+
+    const char* popup_name = "VersionUpdatePrompt";
+    if (ui_state_.version_update_prompt_open) {
+        ImGui::OpenPopup(popup_name);
+        ui_state_.version_update_prompt_open = false;
+    }
+    if (ImGui::BeginPopupModal(popup_name, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        RenderSectionHeader(Tr("section_update"), Tr("update_dialog_title"));
+        ImGui::TextWrapped("%s", DynFormat(
+            Tr("update_dialog_body"),
+            ui_state_.version_check.current_version,
+            ui_state_.version_check.remote_version).c_str());
+        ImGui::Spacing();
+        if (ImGui::Button(Tr("open_release_page"), ImVec2(CalcButtonWidth(Tr("open_release_page"), 210.0f), 0))) {
+            OpenLatestReleasePage();
+        }
+        ImGui::SameLine(0.0f, 12.0f);
+        if (ImGui::Button(Tr("close_button"), ImVec2(CalcButtonWidth(Tr("close_button"), 120.0f), 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+}
+
 std::string Application::ResolveInitialLanguage(std::string_view configured_language) const {
     if (!configured_language.empty()) {
         return std::string(NormalizeLanguageCode(configured_language));
@@ -747,6 +1147,10 @@ bool Application::Initialize() {
     ApplyNordStyle();
     ImGui_ImplGlfw_InitForOpenGL(window_, true);
     ImGui_ImplOpenGL3_Init("#version 330");
+    ui_state_.version_check.current_version = kCurrentVersion;
+    if (ui_state_.recognizer_config.auto_update_check) {
+        StartVersionCheck(false);
+    }
     initialized_ = true;
     return true;
 }
@@ -847,6 +1251,7 @@ void Application::PollPreviewStream() {
 
 void Application::RenderUI() {
     glfwSetWindowTitle(window_, Tr("window_title"));
+    PollVersionCheck();
     if (ui_state_.dll_status_refresh_timer < 0 || ui_state_.dll_status_refresh_timer > 2.0f) {
         ui_state_.cached_dll_status = backend_->GetDllStatus();
         ui_state_.dll_status_refresh_timer = 0.0f;
@@ -1326,7 +1731,8 @@ void Application::RenderConfigPanel() {
             std::abs(ui_state_.recognizer_config.face_threshold - ui_state_.recognizer_saved_config.face_threshold) > 0.0001f ||
             std::abs(ui_state_.recognizer_config.liveness_threshold - ui_state_.recognizer_saved_config.liveness_threshold) > 0.0001f ||
             ui_state_.recognizer_config.debug != ui_state_.recognizer_saved_config.debug ||
-            ui_state_.recognizer_config.language != ui_state_.recognizer_saved_config.language;
+            ui_state_.recognizer_config.language != ui_state_.recognizer_saved_config.language ||
+            ui_state_.recognizer_config.auto_update_check != ui_state_.recognizer_saved_config.auto_update_check;
     };
 
     ui_state_.recognizer_config.language = NormalizeLanguageCode(ui_state_.recognizer_config.language);
@@ -1356,6 +1762,15 @@ void Application::RenderConfigPanel() {
     ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
     ImGui::TextWrapped("%s", Tr("gui_language_help"));
     ImGui::PopStyleColor();
+    if (ImGui::Checkbox(Tr("auto_update_check"), &ui_state_.recognizer_config.auto_update_check)) {
+        mark_dirty();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, WithAlpha(Nord4, 0.72f));
+    ImGui::TextWrapped("%s", Tr("auto_update_check_help"));
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+    RenderVersionPanel();
 
     ImGui::Spacing();
     RenderSectionHeader(Tr("section_config"), Tr("config_title"), Tr("config_body"));
@@ -1469,6 +1884,7 @@ void Application::RenderConfigPanel() {
         ui_state_.recognizer_config.liveness_threshold = 0.8f;
         ui_state_.recognizer_config.debug = false;
         ui_state_.recognizer_config.language = ResolveInitialLanguage({});
+        ui_state_.recognizer_config.auto_update_check = true;
         ApplyLanguage(ui_state_.recognizer_config.language);
         ui_state_.recognizer_config_message = Tr("restored_defaults");
         mark_dirty();

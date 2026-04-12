@@ -49,6 +49,7 @@ struct FaceRecognizerConfig {
     float liveness_threshold{0.8f};
     bool debug{};
     std::string language{"zh-CN"};
+    bool auto_update_check{true};
 };
 
 } // namespace smile2unlock

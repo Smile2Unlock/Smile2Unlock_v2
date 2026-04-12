@@ -28,13 +28,18 @@ local function apply_common_module_binary_target()
     set_policy("build.c++.modules", true)
 end
 
-local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
+local app_version_tag = "v0.0.0"
+local releases_api_url = "https://api.github.com/repos/Smile2Unlock/Smile2Unlock_v2/releases/latest"
+local releases_page_url = "https://github.com/Smile2Unlock/Smile2Unlock_v2/releases"
+
+local function find_llvm_runtime_dll_paths(dll_names)
     if not is_plat("windows", "mingw") then
-        return
+        return {}
     end
 
     local search_dirs = {}
     local seen = {}
+    local resolved = {}
 
     local function add_search_dir(dir)
         if dir and os.isdir(dir) and not seen[dir] then
@@ -56,23 +61,29 @@ local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
     end
 
     for _, dll_name in ipairs(dll_names) do
-        local copied = false
         for _, dir in ipairs(search_dirs) do
             local dll_path = path.join(dir, dll_name)
             if os.isfile(dll_path) then
-                batchcmds:cp(dll_path, target:targetdir())
-                copied = true
+                resolved[dll_name] = dll_path
                 break
             end
         end
+    end
 
-        if not copied then
+    return resolved
+end
+
+local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
+    local resolved = find_llvm_runtime_dll_paths(dll_names)
+    for _, dll_name in ipairs(dll_names) do
+        local dll_path = resolved[dll_name]
+        if dll_path then
+            batchcmds:cp(dll_path, target:targetdir())
+        else
             print("警告: 找不到 LLVM 运行时 DLL: " .. dll_name)
         end
     end
 end
-
-
 
 target("FaceRecognizer")
     apply_common_module_binary_target()
@@ -173,7 +184,27 @@ target("Smile2Unlock")
     add_includedirs("Smile2Unlock", {public = true})
     apply_common_windows_settings("0x0602")
     add_packages("glfw", "imgui", "boost", "sqlite3", "mbedtls")
-    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32", "version", "secur32")
+    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32", "version", "secur32", "winhttp")
+    add_defines(
+        "SMILE2UNLOCK_VERSION=\"" .. app_version_tag .. "\"",
+        "SMILE2UNLOCK_RELEASES_API=\"" .. releases_api_url .. "\"",
+        "SMILE2UNLOCK_RELEASES_PAGE=\"" .. releases_page_url .. "\""
+    )
+
+    on_run(function()
+        local app_version = "0.0.0"
+        if os.isfile("version.txt") then
+            local version_text = io.readfile("version.txt")
+            if version_text then
+                app_version = version_text:match("%S+") or app_version
+            end
+        end
+        local app_version_tag = app_version
+        if app_version_tag:sub(1, 1) ~= "v" and app_version_tag:sub(1, 1) ~= "V" then
+            app_version_tag = "v" .. app_version_tag
+        end
+
+    end)
 
     after_buildcmd(function (target, batchcmds)
         copy_llvm_runtime_dlls(batchcmds, target, {
@@ -190,3 +221,26 @@ target("Smile2Unlock")
         os.cp(path.join(os.projectdir(), "common", "resources", "*"), output_resources)
     end)
 
+target("Smile2UnlockRuntimeFiles")
+    set_kind("phony")
+    set_default(true)
+    add_deps("Smile2Unlock")
+    on_build(function (target)
+        local app_target = target:dep("Smile2Unlock")
+        if app_target then
+            local dll_names = {
+                "libunwind.dll",
+                "libc++.dll",
+                "libomp.dll"
+            }
+            local resolved = find_llvm_runtime_dll_paths(dll_names)
+            for _, dll_name in ipairs(dll_names) do
+                local dll_path = resolved[dll_name]
+                if dll_path then
+                    os.cp(dll_path, app_target:targetdir())
+                else
+                    print("警告: 找不到 LLVM 运行时 DLL: " .. dll_name)
+                end
+            end
+        end
+    end)

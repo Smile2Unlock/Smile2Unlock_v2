@@ -32,6 +32,7 @@ public:
         float liveness_threshold;   ///< 活体检测阈值
         bool debug;                 ///< 调试模式开关
         std::string language;       ///< UI language code, empty means auto-detect
+        bool auto_update_check;     ///< check GitHub releases on startup
 
         CoreConfig()
             : camera(0)
@@ -39,7 +40,8 @@ public:
             , face_threshold(0.62f)
             , liveness_threshold(0.8f)
             , debug(false)
-            , language() {}
+            , language()
+            , auto_update_check(true) {}
     };
 
     /**
@@ -119,6 +121,7 @@ ConfigManager::ConfigManager(const std::string& filename)
     m_config.liveness_threshold = 0.8f;
     m_config.debug = false;
     m_config.language.clear();
+    m_config.auto_update_check = true;
 }
 
 bool ConfigManager::loadConfig() {
@@ -226,6 +229,23 @@ bool ConfigManager::loadConfig() {
         }
     }
 
+    if (!core_section.isKeyExist("auto_update_check")) {
+        std::cerr << "Warning: Key 'auto_update_check' not found in [core]. Using default value (" << m_config.auto_update_check << ")." << std::endl;
+    } else {
+        try {
+            std::string value = core_section.toString("auto_update_check");
+            if (value == "true" || value == "True" || value == "TRUE" || value == "1") {
+                m_config.auto_update_check = true;
+            } else if (value == "false" || value == "False" || value == "FALSE" || value == "0") {
+                m_config.auto_update_check = false;
+            } else {
+                std::cerr << "Warning: Invalid value for 'auto_update_check' ('" << value << "'). Using default value (" << m_config.auto_update_check << ")." << std::endl;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to parse 'auto_update_check' value: " << e.what() << ". Using default value (" << m_config.auto_update_check << ")." << std::endl;
+        }
+    }
+
     return true;
 }
 
@@ -260,6 +280,7 @@ bool ConfigManager::createDefaultConfig() const {
     if (!m_config.language.empty()) {
         file << "language=" << m_config.language << "\n";
     }
+    file << "auto_update_check=" << (m_config.auto_update_check ? "true" : "false") << "\n";
 
     file.close();
     std::cout << "Default config created: " << m_filename << std::endl;
@@ -289,6 +310,7 @@ bool ConfigManager::saveConfig() const {
     if (!m_config.language.empty()) {
         file << "language=" << m_config.language << "\n";
     }
+    file << "auto_update_check=" << (m_config.auto_update_check ? "true" : "false") << "\n";
 
     file.close();
     return true;
