@@ -15,3 +15,6 @@ vsxmake2022
 .claude
 
 CMakeLists.txt
+# 安装器文件
+installer-files
+Output

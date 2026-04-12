@@ -498,6 +498,7 @@ private:
         ss << "liveness_threshold=" << config.liveness_threshold << "\n";
         ss << "debug=" << (config.debug ? "1" : "0") << "\n";
         ss << "language=" << config.language << "\n";
+        ss << "auto_update_check=" << (config.auto_update_check ? "1" : "0") << "\n";
 
         set_response_text(response, GuiIpcStatus::SUCCESS, ss.str());
     }
@@ -520,6 +521,7 @@ private:
             else if (key == "liveness_threshold") config.liveness_threshold = std::stof(value);
             else if (key == "debug") config.debug = (value == "1" || value == "true");
             else if (key == "language") config.language = value;
+            else if (key == "auto_update_check") config.auto_update_check = (value == "1" || value == "true");
         }
 
         std::string error;
