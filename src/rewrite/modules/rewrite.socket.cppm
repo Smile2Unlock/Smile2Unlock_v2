@@ -106,6 +106,23 @@ public:
 #endif
     }
 
+    [[nodiscard]] std::expected<SocketHandle, std::string> accept() {
+#ifdef _WIN32
+        return std::unexpected("windows accept not implemented");
+#else
+        if (handle_ == kInvalidSocket) {
+            return std::unexpected("socket not bound");
+        }
+        sockaddr_un client_addr{};
+        socklen_t addr_len = sizeof(client_addr);
+        const auto client_fd = ::accept(handle_, reinterpret_cast<sockaddr*>(&client_addr), &addr_len);
+        if (client_fd == kInvalidSocket) {
+            return std::unexpected(std::format("accept() failed: {}", std::strerror(errno)));
+        }
+        return client_fd;
+#endif
+    }
+
     [[nodiscard]] SocketHandle native_handle() const noexcept {
         return handle_;
     }
@@ -197,6 +214,10 @@ public:
         return {};
     }
 
+    [[nodiscard]] SocketHandle native_handle() noexcept {
+        return handle_;
+    }
+
     void close() noexcept {
 #ifdef _WIN32
         if (handle_ != kInvalidSocket) {
@@ -209,6 +230,161 @@ public:
             handle_ = kInvalidSocket;
         }
 #endif
+    }
+
+private:
+    SocketHandle handle_{kInvalidSocket};
+};
+
+class SocketConnection {
+public:
+    SocketConnection() = default;
+
+    explicit SocketConnection(SocketHandle fd) : handle_(fd) {}
+
+    ~SocketConnection() {
+        close();
+    }
+
+    SocketConnection(const SocketConnection&) = delete;
+    SocketConnection& operator=(const SocketConnection&) = delete;
+
+    SocketConnection(SocketConnection&& other) noexcept
+        : handle_(std::exchange(other.handle_, kInvalidSocket)) {}
+
+    SocketConnection& operator=(SocketConnection&& other) noexcept {
+        if (this != &other) {
+            close();
+            handle_ = std::exchange(other.handle_, kInvalidSocket);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] std::expected<void, std::string> send_header(const ipc::FrameHeaderV1& header) const {
+        const auto bytes = ipc::serialize_header(header);
+        return send_bytes(std::as_bytes(std::span(bytes)));
+    }
+
+    [[nodiscard]] std::expected<void, std::string> send_bytes(std::span<const std::byte> bytes) const {
+        if (handle_ == kInvalidSocket) {
+            return std::unexpected("socket not connected");
+        }
+
+        std::size_t offset = 0;
+        while (offset < bytes.size()) {
+#ifdef _WIN32
+            const int sent = ::send(handle_,
+                                    reinterpret_cast<const char*>(bytes.data() + offset),
+                                    static_cast<int>(bytes.size() - offset),
+                                    0);
+            if (sent == SOCKET_ERROR) {
+                return std::unexpected("send() failed");
+            }
+#else
+            const auto sent = ::send(handle_, bytes.data() + offset, bytes.size() - offset, 0);
+            if (sent <= 0) {
+                return std::unexpected(std::format("send() failed: {}", std::strerror(errno)));
+            }
+#endif
+            offset += static_cast<std::size_t>(sent);
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::expected<std::vector<std::byte>, std::string> receive_bytes(std::size_t count) const {
+        if (handle_ == kInvalidSocket) {
+            return std::unexpected("socket not connected");
+        }
+
+        std::vector<std::byte> buffer(count);
+        std::size_t received = 0;
+
+        while (received < count) {
+#ifdef _WIN32
+            const int n = ::recv(handle_,
+                                 reinterpret_cast<char*>(buffer.data() + received),
+                                 static_cast<int>(count - received),
+                                 0);
+            if (n == SOCKET_ERROR) {
+                return std::unexpected("recv() failed");
+            }
+            if (n == 0) {
+                break;
+            }
+#else
+            const auto n = ::recv(handle_, buffer.data() + received, count - received, 0);
+            if (n <= 0) {
+                if (n < 0) {
+                    return std::unexpected(std::format("recv() failed: {}", std::strerror(errno)));
+                }
+                break;
+            }
+#endif
+            received += static_cast<std::size_t>(n);
+        }
+
+        buffer.resize(received);
+        return buffer;
+    }
+
+    [[nodiscard]] std::expected<std::vector<std::byte>, std::string> receive_all(std::size_t count) const {
+        if (handle_ == kInvalidSocket) {
+            return std::unexpected("socket not connected");
+        }
+
+        std::vector<std::byte> buffer;
+        buffer.reserve(count);
+        std::size_t received = 0;
+
+        while (received < count) {
+#ifdef _WIN32
+            std::byte temp[4096];
+            const int n = ::recv(handle_, reinterpret_cast<char*>(temp), sizeof(temp), 0);
+            if (n == SOCKET_ERROR) {
+                return std::unexpected("recv() failed");
+            }
+            if (n == 0) {
+                break;
+            }
+            buffer.insert(buffer.end(), temp, temp + n);
+            received += static_cast<std::size_t>(n);
+#else
+            std::byte temp[4096];
+            const auto n = ::recv(handle_, temp, sizeof(temp), 0);
+            if (n <= 0) {
+                if (n < 0) {
+                    return std::unexpected(std::format("recv() failed: {}", std::strerror(errno)));
+                }
+                break;
+            }
+            buffer.insert(buffer.end(), temp, temp + n);
+            received += static_cast<std::size_t>(n);
+#endif
+        }
+
+        return buffer;
+    }
+
+    void close() noexcept {
+#ifdef _WIN32
+        if (handle_ != kInvalidSocket) {
+            closesocket(handle_);
+            handle_ = kInvalidSocket;
+        }
+#else
+        if (handle_ != kInvalidSocket) {
+            ::close(handle_);
+            handle_ = kInvalidSocket;
+        }
+#endif
+    }
+
+    [[nodiscard]] SocketHandle native_handle() const noexcept {
+        return handle_;
+    }
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return handle_ != kInvalidSocket;
     }
 
 private:

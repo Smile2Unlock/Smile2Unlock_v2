@@ -5,16 +5,19 @@ add_repositories("myrepo local-repo")
 
 add_requires("tbox", {
     configs = {
-        sqlite3 = false,
+        sqlite3 = true,
         mbedtls = false,
-        database = false,
+        database = true,
         coroutine = true,
         hash = true,
         shared = false,
         cflags = "-Wno-error=uninitialized-const-pointer",
         cxflags = "-Wno-error=uninitialized-const-pointer"
-    }
+    },
+    system = false
 })
+add_requires("mbedtls", {configs = {shared = true}, system = false})
+add_requires("libyuv")
 add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
 
 set_encodings("utf-8")
@@ -44,12 +47,14 @@ target("su_backendd")
     apply_cpp26_target("binary")
     add_deps("su_backend_core", {public = true})
     add_files("src/rewrite/backendd/main.cpp")
+    add_files("src/rewrite/modules/*.cppm")
 
 target("su_gui")
     apply_cpp26_target("binary")
     add_deps("su_backend_core", {public = true})
     add_packages("glfw", "imgui")
     add_files("src/rewrite/gui/main.cpp")
+    add_files("src/rewrite/modules/*.cppm")
     if is_plat("linux") then
         add_syslinks("GL", "X11", "Xi", "Xrandr", "Xxf86vm", "Xinerama", "Xcursor")
     elseif is_plat("windows", "mingw") then
@@ -59,7 +64,9 @@ target("su_gui")
 target("su_facerecognizer")
     apply_cpp26_target("binary")
     add_deps("su_backend_core", {public = true})
+    add_packages("seetaface6open", "libyuv")
     add_files("src/rewrite/facerecognizer/main.cpp")
+    add_files("src/rewrite/modules/*.cppm")
 
 if is_plat("linux") then
     target("pam_smile2unlock")
@@ -68,6 +75,7 @@ if is_plat("linux") then
         set_prefixname("")
         add_deps("su_backend_core", {public = true})
         add_files("src/rewrite/pam/pam_smile2unlock.cpp")
+        add_files("src/rewrite/modules/*.cppm")
         add_syslinks("pam")
 end
 
@@ -78,6 +86,7 @@ if is_plat("windows", "mingw") then
         set_prefixname("")
         add_deps("su_backend_core", {public = true})
         add_files("src/rewrite/windows/credential_provider_placeholder.cpp")
+        add_files("src/rewrite/modules/*.cppm")
         add_defines("UNICODE", "_UNICODE")
         add_syslinks("user32")
 end
