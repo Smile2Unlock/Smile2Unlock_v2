@@ -19,6 +19,7 @@ add_requires("tbox", {
 add_requires("mbedtls", {configs = {shared = true}, system = false})
 add_requires("libyuv")
 add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
+add_requires("seetaface6open", {system = false})
 
 set_encodings("utf-8")
 set_languages("c++26")
@@ -30,63 +31,9 @@ local function apply_cpp26_target(kind)
     set_policy("build.c++.modules.std", true)
     set_warnings("all")
     add_includedirs("src/rewrite/include", {public = true})
-    add_packages("tbox")
+    add_packages("tbox", "seetaface6open")
     if is_plat("linux") then
         add_cxflags("-fPIC", {force = true})
         add_syslinks("pthread", "dl")
     end
-end
-
-target("su_backend_core")
-    apply_cpp26_target("static")
-    add_files("src/rewrite/modules/**.cppm")
-    add_files("src/rewrite/backend/backend_core.cpp")
-    add_headerfiles("src/rewrite/include/(rewrite/**.hpp)")
-
-target("su_backendd")
-    apply_cpp26_target("binary")
-    add_deps("su_backend_core", {public = true})
-    add_files("src/rewrite/backendd/main.cpp")
-    add_files("src/rewrite/modules/*.cppm")
-
-target("su_gui")
-    apply_cpp26_target("binary")
-    add_deps("su_backend_core", {public = true})
-    add_packages("glfw", "imgui")
-    add_files("src/rewrite/gui/main.cpp")
-    add_files("src/rewrite/modules/*.cppm")
-    if is_plat("linux") then
-        add_syslinks("GL", "X11", "Xi", "Xrandr", "Xxf86vm", "Xinerama", "Xcursor")
-    elseif is_plat("windows", "mingw") then
-        add_syslinks("opengl32", "gdi32", "user32", "shell32")
-    end
-
-target("su_facerecognizer")
-    apply_cpp26_target("binary")
-    add_deps("su_backend_core", {public = true})
-    add_packages("seetaface6open", "libyuv")
-    add_files("src/rewrite/facerecognizer/main.cpp")
-    add_files("src/rewrite/modules/*.cppm")
-
-if is_plat("linux") then
-    target("pam_smile2unlock")
-        apply_cpp26_target("shared")
-        set_filename("pam_smile2unlock.so")
-        set_prefixname("")
-        add_deps("su_backend_core", {public = true})
-        add_files("src/rewrite/pam/pam_smile2unlock.cpp")
-        add_files("src/rewrite/modules/*.cppm")
-        add_syslinks("pam")
-end
-
-if is_plat("windows", "mingw") then
-    target("SampleV2CredentialProvider")
-        apply_cpp26_target("shared")
-        set_filename("SampleV2CredentialProvider.dll")
-        set_prefixname("")
-        add_deps("su_backend_core", {public = true})
-        add_files("src/rewrite/windows/credential_provider_placeholder.cpp")
-        add_files("src/rewrite/modules/*.cppm")
-        add_defines("UNICODE", "_UNICODE")
-        add_syslinks("user32")
 end
