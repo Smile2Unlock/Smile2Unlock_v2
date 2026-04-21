@@ -18,8 +18,10 @@ add_requires("tbox", {
 })
 add_requires("mbedtls", {configs = {shared = true}, system = false})
 add_requires("libyuv")
-add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
+add_requires("eui")
 add_requires("seetaface6open", {system = false})
+add_requires("papiliocharontis", {system = false})
+add_requires("reflect-cpp")
 
 set_encodings("utf-8")
 set_languages("c++26")
