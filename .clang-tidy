@@ -1,3 +1,7 @@
-Checks: '-*,
+Checks: >-
+  -*,
   google-*,
-  cppcoreguidelines-*'
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers
+HeaderFilterRegex: '^(src|tests)/'
+SystemHeaders: false
