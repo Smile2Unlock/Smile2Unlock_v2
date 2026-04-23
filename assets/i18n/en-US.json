@@ -1,0 +1,33 @@
+{
+  "locale": "en-US",
+  "display_name": "English",
+  "messages": {
+    "app.title": "Smile2Unlock",
+    "header.subtitle": "Current UI language: {0}",
+    "header.locale_button": "Language: {0}",
+    "sidebar.title": "Navigation",
+    "sidebar.subtitle": "Build the page shells first, then fill in the workflow details.",
+    "nav.dashboard": "Dashboard",
+    "nav.enrollment": "Enrollment",
+    "nav.recognition": "Recognition",
+    "nav.settings": "Settings",
+    "nav.status": "Status",
+    "page.dashboard.title": "Dashboard",
+    "page.dashboard.description": "Overview page layout skeleton.",
+    "page.enrollment.title": "Enrollment",
+    "page.enrollment.description": "User and face enrollment layout skeleton.",
+    "page.recognition.title": "Recognition",
+    "page.recognition.description": "Recognition runtime layout skeleton.",
+    "page.settings.title": "Settings",
+    "page.settings.description": "Configuration layout skeleton.",
+    "page.status.title": "Status",
+    "page.status.description": "Health and diagnostics layout skeleton.",
+    "content.card.primary.title": "Primary region",
+    "content.card.primary.body": "This is where the main widget group for the active page will live.",
+    "content.card.secondary.title": "Secondary region",
+    "content.card.secondary.body": "Use this area for summaries, quick actions, or contextual notes.",
+    "content.stage.title": "Page canvas",
+    "content.stage.body": "Components were reset. We can now rebuild the “{0}” page step by step without overflow.",
+    "content.diagnostics.body": "i18n load state: {0}"
+  }
+}

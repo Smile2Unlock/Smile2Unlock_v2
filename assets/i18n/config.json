@@ -1,0 +1,15 @@
+{
+  "default_locale": "zh-CN",
+  "locales": [
+    {
+      "id": "zh-CN",
+      "display_name": "简体中文",
+      "file": "zh-CN.json"
+    },
+    {
+      "id": "en-US",
+      "display_name": "English",
+      "file": "en-US.json"
+    }
+  ]
+}

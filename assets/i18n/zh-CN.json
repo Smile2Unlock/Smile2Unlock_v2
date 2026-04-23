@@ -1,0 +1,33 @@
+{
+  "locale": "zh-CN",
+  "display_name": "简体中文",
+  "messages": {
+    "app.title": "Smile2Unlock",
+    "header.subtitle": "当前界面语言：{0}",
+    "header.locale_button": "语言：{0}",
+    "sidebar.title": "导航",
+    "sidebar.subtitle": "先搭页面骨架，再补业务细节。",
+    "nav.dashboard": "仪表盘",
+    "nav.enrollment": "录入",
+    "nav.recognition": "识别",
+    "nav.settings": "设置",
+    "nav.status": "状态",
+    "page.dashboard.title": "仪表盘",
+    "page.dashboard.description": "总览页布局骨架。",
+    "page.enrollment.title": "录入",
+    "page.enrollment.description": "用户与人脸录入布局骨架。",
+    "page.recognition.title": "识别",
+    "page.recognition.description": "识别运行态布局骨架。",
+    "page.settings.title": "设置",
+    "page.settings.description": "配置页布局骨架。",
+    "page.status.title": "状态",
+    "page.status.description": "健康检查与诊断布局骨架。",
+    "content.card.primary.title": "主区域",
+    "content.card.primary.body": "这里承载当前页面的主要组件。",
+    "content.card.secondary.title": "辅助区域",
+    "content.card.secondary.body": "这里放摘要、操作入口或上下文提示。",
+    "content.stage.title": "页面画布",
+    "content.stage.body": "组件已经重置完成，现在可以围绕“{0}”页面逐步重建，而不会再溢出。",
+    "content.diagnostics.body": "i18n 载入状态：{0}"
+  }
+}

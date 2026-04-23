@@ -63,6 +63,18 @@ target("su_app")
         add_syslinks("opengl32")
     end
     after_build(function (target)
+        if os.isdir("assets/i18n") then
+            os.mkdir(path.join(target:targetdir(), "assets"))
+            os.cp("assets/i18n", path.join(target:targetdir(), "assets"))
+        end
+        for _, pkg in ipairs(target:orderpkgs()) do
+            if pkg:name() == "eui" then
+                local fontdir = path.join(pkg:installdir(), "include", "eui", "font")
+                if os.isdir(fontdir) then
+                    os.cp(fontdir, path.join(target:targetdir(), "font"))
+                end
+            end
+        end
         if os.isfile("tools/sync_clangd_modules.py") then
             os.vrunv("python3", {"tools/sync_clangd_modules.py"})
         end
