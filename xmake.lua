@@ -76,7 +76,4 @@ target("su_app")
                 end
             end
         end
-        if os.isfile("tools/sync_clangd_modules.py") then
-            os.vrunv("python3", {"tools/sync_clangd_modules.py"})
-        end
     end)
