@@ -65,7 +65,6 @@ std::vector<NavItemViewModel> make_nav_items(const AppState& state, const i18n::
         std::pair{PageId::Enrollment, "nav.enrollment"},
         std::pair{PageId::Recognition, "nav.recognition"},
         std::pair{PageId::Settings, "nav.settings"},
-        std::pair{PageId::Status, "nav.status"},
     };
 
     auto items = std::vector<NavItemViewModel>{};

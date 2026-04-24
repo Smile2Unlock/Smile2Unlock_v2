@@ -1,5 +1,5 @@
 add_rules("mode.debug", "mode.release")
-add_rules("plugin.compile_commands.autoupdate", {outputdir = ".vscode"})
+-- add_rules("plugin.compile_commands.autoupdate", {outputdir = ".vscode"})
 
 add_repositories("myrepo local-repo")
 
@@ -70,6 +70,7 @@ target("su_app")
         add_syslinks("opengl32")
     end
     after_build(function (target)
+        -- os.run("xmake project -k compile_commands --lsp=clangd .vscode")
         if os.isdir("assets") then
             os.cp("assets", target:targetdir())
         end

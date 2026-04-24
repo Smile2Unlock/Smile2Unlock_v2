@@ -10,7 +10,6 @@ enum class PageId {
     Enrollment,
     Recognition,
     Settings,
-    Status,
 };
 
 struct AppState {
@@ -43,7 +42,7 @@ inline AppState make_initial_state() {
     return AppState{
         .active_page = PageId::Dashboard,
         .active_locale = i18n::default_locale(i18n::app_i18n()),
-        .sidebar_collapsed = false,
+        .sidebar_collapsed = true,
     };
 }
 
@@ -84,8 +83,6 @@ inline std::string page_name(PageId page) {
             return "recognition";
         case PageId::Settings:
             return "settings";
-        case PageId::Status:
-            return "status";
     }
     return "dashboard";
 }
@@ -100,8 +97,6 @@ inline std::string page_icon(PageId page) {
             return "\xEF\x80\xB0";  // fa-camera
         case PageId::Settings:
             return "\xEF\x80\x93";  // fa-cog
-        case PageId::Status:
-            return "\xEF\x88\x81";  // fa-line-chart
     }
     return "\xEF\x83\x9B";
 }
@@ -113,7 +108,6 @@ inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
         std::pair{PageId::Enrollment, "nav.enrollment"},
         std::pair{PageId::Recognition, "nav.recognition"},
         std::pair{PageId::Settings, "nav.settings"},
-        std::pair{PageId::Status, "nav.status"},
     };
 
     auto items = std::vector<NavItem>{};

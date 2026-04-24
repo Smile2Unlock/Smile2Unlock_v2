@@ -47,7 +47,6 @@ void render_dashboard_interactive(UIContext& ui, const RectFrame& area, std::str
 void render_enrollment_interactive(UIContext& ui, const RectFrame& area, std::string_view locale);
 void render_recognition_interactive(UIContext& ui, const RectFrame& area, std::string_view locale);
 void render_settings_interactive(UIContext& ui, const RectFrame& area, std::string_view locale);
-void render_status_interactive(UIContext& ui, const RectFrame& area, std::string_view locale);
 
 constexpr std::string_view kIconSidebarToggle = "\xEF\x83\x89";      // fa-bars
 constexpr std::string_view kWindowIconMinimizePath = "assets/icons/window_controls/minimize.svg";
@@ -193,14 +192,17 @@ void render_title_bar_impl(UIContext& ui, const RectFrame& frame, const AppState
 }
 
 void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& state) {
+    constexpr float kSidebarHeaderPadding = 12.0f;
+    constexpr float kCollapsedNavButtonSize = 34.0f;
+
     ui.panel("sidebar")
         .position(frame.x, frame.y)
         .size(frame.width, frame.height)
         .background(sidebar_color())
         .build();
 
-    const auto toggle_x = frame.x + (frame.width - kSidebarToggleSize) / 2.0f;
-    const auto toggle_y = frame.y + 12.0f;
+    const auto toggle_x = frame.x + kSidebarHeaderPadding;
+    const auto toggle_y = frame.y + kSidebarHeaderPadding;
     ui.button("sidebar.toggle")
         .position(toggle_x, toggle_y)
         .size(kSidebarToggleSize, kSidebarToggleSize)
@@ -214,7 +216,7 @@ void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& 
         })
         .build();
 
-    auto nav_y = frame.y + 60.0f;
+    auto nav_y = toggle_y + kSidebarToggleSize + 14.0f;
     auto items = make_sidebar_nav_items(state);
     std::ranges::for_each(items, [&](const auto& item) {
         const auto item_width = frame.width - 16.0f;
@@ -223,8 +225,8 @@ void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& 
 
         if (state.sidebar_collapsed) {
             ui.button(item.id)
-                .position(frame.x + (frame.width - 36.0f) / 2.0f, nav_y)
-                .size(36.0f, 36.0f)
+                .position(frame.x + (frame.width - kCollapsedNavButtonSize) * 0.5f, nav_y)
+                .size(kCollapsedNavButtonSize, kCollapsedNavButtonSize)
                 .icon(item.icon)
                 .fontSize(15.0f)
                 .style(is_active ? EUINEO::ButtonStyle::Primary : EUINEO::ButtonStyle::Default)
@@ -296,7 +298,6 @@ void render_page_interactive(UIContext& ui, const RectFrame& area, const AppStat
         [](UIContext& u, const RectFrame& a, std::string_view l) { render_enrollment_interactive(u, a, l); },
         [](UIContext& u, const RectFrame& a, std::string_view l) { render_recognition_interactive(u, a, l); },
         [](UIContext& u, const RectFrame& a, std::string_view l) { render_settings_interactive(u, a, l); },
-        [](UIContext& u, const RectFrame& a, std::string_view l) { render_status_interactive(u, a, l); },
     };
 
     const auto idx = static_cast<std::size_t>(state.active_page);
@@ -391,24 +392,6 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, std::stri
             .background(card_bg_color())
             .rounding(10.0f)
             .build();
-    }
-}
-
-void render_status_interactive(UIContext& ui, const RectFrame& area, std::string_view) {
-    const auto half_w = (area.width - kCardGap) * 0.5f;
-    const auto half_h = (area.height - kCardGap) * 0.5f;
-
-    for (int row = 0; row < 2; ++row) {
-        for (int col = 0; col < 2; ++col) {
-            const auto x = area.x + col * (half_w + kCardGap);
-            const auto y = area.y + row * (half_h + kCardGap);
-            ui.panel(std::format("status.card.{}.{}", row, col))
-                .position(x, y)
-                .size(half_w, half_h)
-                .background(card_bg_color())
-                .rounding(12.0f)
-                .build();
-        }
     }
 }
 

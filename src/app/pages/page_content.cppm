@@ -68,8 +68,6 @@ PageContent make_page_content(const i18n::I18nStore& store, std::string_view loc
             return make_page(PageId::Recognition, store, locale, "page.recognition.title", "page.recognition.description");
         case PageId::Settings:
             return make_page(PageId::Settings, store, locale, "page.settings.title", "page.settings.description");
-        case PageId::Status:
-            return make_page(PageId::Status, store, locale, "page.status.title", "page.status.description");
     }
     return make_page(PageId::Dashboard, store, locale, "page.dashboard.title", "page.dashboard.description");
 }
