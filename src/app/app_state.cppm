@@ -22,6 +22,7 @@ struct AppState {
 struct NavItem {
     PageId page;
     std::string id;
+    std::string icon;
     std::string label;
 };
 
@@ -89,6 +90,22 @@ inline std::string page_name(PageId page) {
     return "dashboard";
 }
 
+inline std::string page_icon(PageId page) {
+    switch (page) {
+        case PageId::Dashboard:
+            return "\xEF\x83\x9B";  // fa-columns
+        case PageId::Enrollment:
+            return "\xEF\x88\xB4";  // fa-user-plus
+        case PageId::Recognition:
+            return "\xEF\x80\xB0";  // fa-camera
+        case PageId::Settings:
+            return "\xEF\x80\x93";  // fa-cog
+        case PageId::Status:
+            return "\xEF\x88\x81";  // fa-line-chart
+    }
+    return "\xEF\x83\x9B";
+}
+
 inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
     const auto& store = i18n::app_i18n();
     static constexpr std::array nav_items{
@@ -105,6 +122,7 @@ inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
         return NavItem{
             .page = item.first,
             .id = std::format("nav.{}", page_name(item.first)),
+            .icon = page_icon(item.first),
             .label = i18n::text(store, state.active_locale, item.second),
         };
     });

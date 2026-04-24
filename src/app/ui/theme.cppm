@@ -19,8 +19,9 @@ constexpr float kSidebarCollapsedWidth = 64.0f;
 constexpr float kContentPadding = 20.0f;
 constexpr float kCardGap = 16.0f;
 constexpr float kCardMinWidth = 280.0f;
-constexpr float kWindowButtonSize = 12.0f;
+constexpr float kWindowButtonSize = 28.0f;
 constexpr float kWindowButtonGap = 8.0f;
+constexpr float kSidebarToggleSize = 36.0f;
 constexpr float kNavItemHeight = 44.0f;
 constexpr float kNavItemGap = 4.0f;
 
@@ -44,8 +45,8 @@ Color accent_danger_color();
 Color border_light_color();
 
 RectFrame make_title_bar_frame(const RectFrame& window);
-RectFrame make_sidebar_frame(const RectFrame& window);
-RectFrame make_content_frame(const RectFrame& window);
+RectFrame make_sidebar_frame(const RectFrame& window, bool sidebar_collapsed);
+RectFrame make_content_frame(const RectFrame& window, bool sidebar_collapsed);
 
 }  // namespace su::app::ui
 
@@ -127,12 +128,14 @@ RectFrame make_title_bar_frame(const RectFrame& window) {
     return RectFrame{0.0f, 0.0f, window.width, kTitleBarHeight};
 }
 
-RectFrame make_sidebar_frame(const RectFrame& window) {
-    return RectFrame{0.0f, kTitleBarHeight, kSidebarWidth, window.height - kTitleBarHeight};
+RectFrame make_sidebar_frame(const RectFrame& window, bool sidebar_collapsed) {
+    const auto sidebar_width = sidebar_collapsed ? kSidebarCollapsedWidth : kSidebarWidth;
+    return RectFrame{0.0f, kTitleBarHeight, sidebar_width, window.height - kTitleBarHeight};
 }
 
-RectFrame make_content_frame(const RectFrame& window) {
-    return RectFrame{kSidebarWidth, kTitleBarHeight, window.width - kSidebarWidth, window.height - kTitleBarHeight};
+RectFrame make_content_frame(const RectFrame& window, bool sidebar_collapsed) {
+    const auto sidebar_width = sidebar_collapsed ? kSidebarCollapsedWidth : kSidebarWidth;
+    return RectFrame{sidebar_width, kTitleBarHeight, window.width - sidebar_width, window.height - kTitleBarHeight};
 }
 
 }  // namespace su::app::ui

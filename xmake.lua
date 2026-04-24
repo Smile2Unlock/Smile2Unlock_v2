@@ -56,6 +56,12 @@ target("su_backend_core")
 target("su_app")
     apply_cpp26_target("binary")
     add_files("src/app/**.cpp", "src/app/**.cppm")
+    -- add_files("src/app/i18n/**.cppm",
+    --     "src/app/pages/**.cppm",
+    --     "src/app/widgets/**.cppm",
+    --     "src/app/ui/**.cppm",
+    --     "src/app/presenters/**.cppm",
+    --     "src/app/runtime/**.cppm")
     add_packages("eui", "glad", "glfw", "curl")
     add_links("curl")
     if is_plat("linux") then
@@ -64,9 +70,8 @@ target("su_app")
         add_syslinks("opengl32")
     end
     after_build(function (target)
-        if os.isdir("assets/i18n") then
-            os.mkdir(path.join(target:targetdir(), "assets"))
-            os.cp("assets/i18n", path.join(target:targetdir(), "assets"))
+        if os.isdir("assets") then
+            os.cp("assets", target:targetdir())
         end
         for _, pkg in ipairs(target:orderpkgs()) do
             if pkg:name() == "eui" then
