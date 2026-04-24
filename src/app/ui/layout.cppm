@@ -133,9 +133,12 @@ void render_title_bar_impl(UIContext& ui, const RectFrame& frame, const AppState
         .background(title_bar_color())
         .build();
 
-    constexpr float title_font = 15.0f;
+    constexpr float title_font = 18.0f;
+    const auto title_bounds = EUINEO::Renderer::MeasureTextBounds(tr(state.active_locale, "titlebar.title"), title_font / 24.0f);
+    const auto title_center_y = btn_y + kWindowButtonSize * 0.5f;
+    const auto title_y = title_center_y - (title_bounds.y + title_bounds.height * 0.5f);
     ui.label("titlebar.title")
-        .position(frame.x + 16.0f, frame.y + (frame.height - title_font) * 0.5f)
+        .position(frame.x + 16.0f, title_y)
         .fontSize(title_font)
         .color(text_secondary_color())
         .text(tr(state.active_locale, "titlebar.title"))
@@ -256,6 +259,11 @@ void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& 
 }
 
 void render_content_area_impl(UIContext& ui, const RectFrame& frame, const AppState& state) {
+    constexpr float kContentTitleFont = 34.0f;
+    constexpr float kContentDescriptionFont = 16.0f;
+    constexpr float kContentHeaderTop = 12.0f;
+    constexpr float kContentHeaderGap = 10.0f;
+
     ui.panel("content")
         .position(frame.x, frame.y)
         .size(frame.width, frame.height)
@@ -264,26 +272,34 @@ void render_content_area_impl(UIContext& ui, const RectFrame& frame, const AppSt
 
     const auto& locale = state.active_locale;
     const auto page_str = page_name(state.active_page);
-    auto current_y = frame.y + kContentPadding;
+    auto current_y = frame.y + kContentHeaderTop;
 
     const auto title_key = std::format("page.{}.title", page_str);
     const auto desc_key = std::format("page.{}.description", page_str);
+    const auto title_text = tr(locale, title_key);
+    const auto desc_text = tr(locale, desc_key);
+    const auto title_bounds = EUINEO::Renderer::MeasureTextBounds(title_text, kContentTitleFont / 24.0f);
+    const auto desc_bounds = EUINEO::Renderer::MeasureTextBounds(desc_text, kContentDescriptionFont / 24.0f);
+    const auto title_top = frame.y + kContentHeaderTop;
+    const auto title_y = title_top - title_bounds.y;
 
     ui.label("content.page.title")
-        .position(frame.x + kContentPadding, current_y)
-        .fontSize(22.0f)
+        .position(frame.x + kContentPadding, title_y)
+        .fontSize(kContentTitleFont)
         .color(text_primary_color())
-        .text(tr(locale, title_key))
+        .text(title_text)
         .build();
-    current_y += 30.0f;
+    const auto title_bottom = title_y + title_bounds.y + title_bounds.height;
+    const auto desc_top = title_bottom + kContentHeaderGap;
+    const auto desc_y = desc_top - desc_bounds.y;
 
     ui.label("content.page.description")
-        .position(frame.x + kContentPadding, current_y)
-        .fontSize(14.0f)
+        .position(frame.x + kContentPadding, desc_y)
+        .fontSize(kContentDescriptionFont)
         .color(text_secondary_color())
-        .text(tr(locale, desc_key))
+        .text(desc_text)
         .build();
-    current_y += 50.0f;
+    current_y = desc_y + desc_bounds.y + desc_bounds.height + 24.0f;
 
     const auto interactive_h = frame.y + frame.height - current_y - kContentPadding;
     const RectFrame interactive_area{frame.x + kContentPadding, current_y, frame.width - kContentPadding * 2.0f, interactive_h};
