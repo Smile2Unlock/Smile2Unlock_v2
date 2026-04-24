@@ -8,7 +8,6 @@ export module su.app.widgets.content;
 import std;
 import su.app.pages;
 import su.app.presenters;
-import su.app.ui.text;
 import su.app.ui.theme;
 import su.app.widgets.panel;
 
@@ -21,6 +20,9 @@ void render_content(EUINEO::UIContext& ui, const EUINEO::RectFrame& frame, const
 namespace su::app::widgets {
 namespace {
 
+using EUINEO::RectFrame;
+using EUINEO::UIContext;
+
 void render_card(
     EUINEO::UIContext& ui,
     const std::string& id,
@@ -29,81 +31,75 @@ void render_card(
 ) {
     render_panel(ui, id, frame);
 
-    const auto inner = ui::inset_frame(frame, ui::kPanelPadding);
+    const float padding = 16.0f;
     ui.label(id + ".title")
-        .position(inner.x, inner.y + 6.0f)
-        .fontSize(18.0f)
-        .text(ui::fit_text(card.title, inner.width, 20.0f))
+        .position(frame.x + padding, frame.y + padding)
+        .fontSize(16.0f)
+        .color(ui::text_primary_color())
+        .text(card.title)
         .build();
     ui.label(id + ".body")
-        .position(inner.x, inner.y + 34.0f)
-        .fontSize(16.0f)
-        .color(ui::muted_color())
-        .text(ui::fit_text(card.body, inner.width, 17.0f))
+        .position(frame.x + padding, frame.y + padding + 28.0f)
+        .fontSize(13.0f)
+        .color(ui::text_secondary_color())
+        .text(card.body)
         .build();
 }
 
 }  // namespace
 
-void render_content(EUINEO::UIContext& ui, const EUINEO::RectFrame& frame, const presenters::ContentViewModel& content) {
+void render_content(UIContext& ui, const RectFrame& frame, const presenters::ContentViewModel& content) {
     render_panel(ui, "content.panel", frame);
 
-    const auto inner = ui::inset_frame(frame, ui::kPanelPadding);
+    const float padding = 20.0f;
     ui.label("content.title")
-        .position(inner.x, inner.y + 10.0f)
+        .position(frame.x + padding, frame.y + padding)
         .fontSize(24.0f)
-        .text(ui::fit_text(content.title, inner.width, 24.0f))
+        .color(ui::text_primary_color())
+        .text(content.title)
         .build();
     ui.label("content.subtitle")
-        .position(inner.x, inner.y + 42.0f)
-        .fontSize(16.0f)
-        .color(ui::muted_color())
-        .text(ui::fit_text(content.description, inner.width, 16.0f))
+        .position(frame.x + padding, frame.y + padding + 32.0f)
+        .fontSize(14.0f)
+        .color(ui::text_secondary_color())
+        .text(content.description)
         .build();
 
-    const float cards_y = inner.y + 76.0f;
-    const bool use_two_columns = inner.width >= ui::kMinCardWidthForTwoColumns;
-    const float cards_gap = ui::kSectionGap;
-    const auto stage_y = [&] {
-        if (use_two_columns) {
-            const float cards_width = (inner.width - cards_gap) * 0.5f;
-            render_card(ui, "content.card.primary", EUINEO::RectFrame{inner.x, cards_y, cards_width, ui::kCardHeight}, content.primary_card);
-            render_card(ui, "content.card.secondary", EUINEO::RectFrame{inner.x + cards_width + cards_gap, cards_y, cards_width, ui::kCardHeight}, content.secondary_card);
-            return cards_y + ui::kCardHeight + ui::kSectionGap;
-        }
+    const float cards_y = frame.y + padding + 72.0f;
+    const float card_width = (frame.width - padding * 2.0f - ui::kCardGap) / 2.0f;
+    const float card_height = 100.0f;
 
-        render_card(ui, "content.card.primary", EUINEO::RectFrame{inner.x, cards_y, inner.width, ui::kCardHeight}, content.primary_card);
-        render_card(ui, "content.card.secondary", EUINEO::RectFrame{inner.x, cards_y + ui::kCardHeight + cards_gap, inner.width, ui::kCardHeight}, content.secondary_card);
-        return cards_y + (ui::kCardHeight * 2.0f) + (ui::kSectionGap * 2.0f);
-    }();
+    render_card(ui, "content.card.primary", RectFrame{frame.x + padding, cards_y, card_width, card_height}, content.primary_card);
+    render_card(ui, "content.card.secondary", RectFrame{frame.x + padding + card_width + ui::kCardGap, cards_y, card_width, card_height}, content.secondary_card);
 
-    const float stage_height = std::max(120.0f, inner.height - (stage_y - inner.y));
-    const EUINEO::RectFrame stage{inner.x, stage_y, inner.width, stage_height};
+    const float stage_y = cards_y + card_height + ui::kCardGap;
+    const float stage_height = std::max(120.0f, frame.height - (stage_y - frame.y) - padding);
+    const RectFrame stage{frame.x + padding, stage_y, frame.width - padding * 2.0f, stage_height};
+
     ui.panel("content.stage")
         .position(stage.x, stage.y)
         .size(stage.width, stage.height)
-        .background(ui::panel_color())
-        .gradient(EUINEO::RectGradient::Corners(ui::stage_glow(), ui::panel_alt_color(), ui::panel_color(), ui::panel_alt_color()))
-        .border(1.0f, ui::border_color())
-        .rounding(16.0f)
+        .background(ui::card_bg_color())
+        .rounding(12.0f)
+        .border(1.0f, ui::border_light_color())
         .build();
     ui.label("content.stage.title")
-        .position(stage.x + 22.0f, stage.y + 30.0f)
-        .fontSize(21.0f)
-        .color(ui::accent_color())
-        .text(ui::fit_text(content.stage_title, stage.width - 44.0f, 21.0f))
+        .position(stage.x + 16.0f, stage.y + 16.0f)
+        .fontSize(18.0f)
+        .color(ui::accent_primary_color())
+        .text(content.stage_title)
         .build();
     ui.label("content.stage.body")
-        .position(stage.x + 22.0f, stage.y + 60.0f)
-        .fontSize(16.0f)
-        .color(ui::muted_color())
-        .text(ui::fit_text(content.stage_body, stage.width - 44.0f, 16.0f))
+        .position(stage.x + 16.0f, stage.y + 44.0f)
+        .fontSize(14.0f)
+        .color(ui::text_secondary_color())
+        .text(content.stage_body)
         .build();
     ui.label("content.stage.diagnostics")
-        .position(stage.x + 22.0f, stage.y + 90.0f)
-        .fontSize(14.0f)
-        .color(ui::muted_color())
-        .text(ui::fit_text(content.diagnostics, stage.width - 44.0f, 14.0f))
+        .position(stage.x + 16.0f, stage.y + 72.0f)
+        .fontSize(12.0f)
+        .color(ui::text_muted_color())
+        .text(content.diagnostics)
         .build();
 }
 

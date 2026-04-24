@@ -11,67 +11,128 @@ export namespace su::app::ui {
 using EUINEO::Color;
 using EUINEO::RectFrame;
 
-constexpr int kWindowWidth = 1360;
-constexpr int kWindowHeight = 860;
-constexpr float kOuterMargin = 14.0f;
-constexpr float kSectionGap = 12.0f;
-constexpr float kHeaderHeight = 86.0f;
-constexpr float kSidebarWidth = 228.0f;
-constexpr float kPanelRadius = 18.0f;
-constexpr float kPanelPadding = 14.0f;
-constexpr float kNavHeight = 42.0f;
-constexpr float kNavGap = 8.0f;
-constexpr float kCardHeight = 108.0f;
-constexpr float kMinCardWidthForTwoColumns = 760.0f;
+constexpr int kWindowWidth = 1280;
+constexpr int kWindowHeight = 800;
+constexpr float kTitleBarHeight = 40.0f;
+constexpr float kSidebarWidth = 240.0f;
+constexpr float kSidebarCollapsedWidth = 64.0f;
+constexpr float kContentPadding = 20.0f;
+constexpr float kCardGap = 16.0f;
+constexpr float kCardMinWidth = 280.0f;
+constexpr float kWindowButtonSize = 12.0f;
+constexpr float kWindowButtonGap = 8.0f;
+constexpr float kNavItemHeight = 44.0f;
+constexpr float kNavItemGap = 4.0f;
 
-Color stage_color();
-Color stage_glow();
-Color panel_color();
-Color panel_alt_color();
-Color border_color();
-Color accent_color();
-Color muted_color();
-RectFrame inset_frame(const RectFrame& frame, float inset);
+Color title_bar_color();
+Color title_bar_hover_color();
+Color window_button_close_hover();
+Color window_button_hover();
+Color sidebar_color();
+Color sidebar_hover_color();
+Color sidebar_active_color();
+Color content_bg_color();
+Color card_bg_color();
+Color card_hover_color();
+Color text_primary_color();
+Color text_secondary_color();
+Color text_muted_color();
+Color accent_primary_color();
+Color accent_success_color();
+Color accent_warning_color();
+Color accent_danger_color();
+Color border_light_color();
+
+RectFrame make_title_bar_frame(const RectFrame& window);
+RectFrame make_sidebar_frame(const RectFrame& window);
+RectFrame make_content_frame(const RectFrame& window);
 
 }  // namespace su::app::ui
 
 namespace su::app::ui {
 
-Color stage_color() {
-    return Color(0.08f, 0.10f, 0.14f, 1.0f);
+Color title_bar_color() {
+    return Color(0.15f, 0.15f, 0.18f, 1.0f);
 }
 
-Color stage_glow() {
-    return Color(0.14f, 0.19f, 0.28f, 1.0f);
+Color title_bar_hover_color() {
+    return Color(0.20f, 0.20f, 0.24f, 1.0f);
 }
 
-Color panel_color() {
-    return Color(0.14f, 0.17f, 0.22f, 0.98f);
+Color window_button_close_hover() {
+    return Color(0.85f, 0.23f, 0.23f, 1.0f);
 }
 
-Color panel_alt_color() {
-    return Color(0.17f, 0.20f, 0.26f, 0.98f);
+Color window_button_hover() {
+    return Color(0.35f, 0.35f, 0.38f, 1.0f);
 }
 
-Color border_color() {
-    return Color(0.33f, 0.41f, 0.54f, 0.55f);
+Color sidebar_color() {
+    return Color(0.18f, 0.18f, 0.22f, 1.0f);
 }
 
-Color accent_color() {
-    return Color(0.53f, 0.76f, 0.95f, 1.0f);
+Color sidebar_hover_color() {
+    return Color(0.22f, 0.22f, 0.26f, 1.0f);
 }
 
-Color muted_color() {
-    return Color(0.73f, 0.79f, 0.87f, 0.88f);
+Color sidebar_active_color() {
+    return Color(0.25f, 0.45f, 0.75f, 1.0f);
 }
 
-RectFrame inset_frame(const RectFrame& frame, float inset) {
-    return RectFrame{
-        frame.x + inset,
-        frame.y + inset,
-        std::max(0.0f, frame.width - inset * 2.0f),
-        std::max(0.0f, frame.height - inset * 2.0f),
-    };
+Color content_bg_color() {
+    return Color(0.12f, 0.12f, 0.14f, 1.0f);
+}
+
+Color card_bg_color() {
+    return Color(0.20f, 0.20f, 0.24f, 1.0f);
+}
+
+Color card_hover_color() {
+    return Color(0.24f, 0.24f, 0.28f, 1.0f);
+}
+
+Color text_primary_color() {
+    return Color(0.95f, 0.95f, 0.97f, 1.0f);
+}
+
+Color text_secondary_color() {
+    return Color(0.70f, 0.72f, 0.75f, 1.0f);
+}
+
+Color text_muted_color() {
+    return Color(0.50f, 0.52f, 0.55f, 1.0f);
+}
+
+Color accent_primary_color() {
+    return Color(0.30f, 0.55f, 0.95f, 1.0f);
+}
+
+Color accent_success_color() {
+    return Color(0.20f, 0.75f, 0.45f, 1.0f);
+}
+
+Color accent_warning_color() {
+    return Color(0.90f, 0.65f, 0.20f, 1.0f);
+}
+
+Color accent_danger_color() {
+    return Color(0.85f, 0.25f, 0.30f, 1.0f);
+}
+
+Color border_light_color() {
+    return Color(0.35f, 0.36f, 0.40f, 0.60f);
+}
+
+RectFrame make_title_bar_frame(const RectFrame& window) {
+    return RectFrame{0.0f, 0.0f, window.width, kTitleBarHeight};
+}
+
+RectFrame make_sidebar_frame(const RectFrame& window) {
+    return RectFrame{0.0f, kTitleBarHeight, kSidebarWidth, window.height - kTitleBarHeight};
+}
+
+RectFrame make_content_frame(const RectFrame& window) {
+    return RectFrame{kSidebarWidth, kTitleBarHeight, window.width - kSidebarWidth, window.height - kTitleBarHeight};
 }
 
 }  // namespace su::app::ui
