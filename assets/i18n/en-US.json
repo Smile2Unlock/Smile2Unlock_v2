@@ -27,7 +27,17 @@
     "content.card.secondary.title": "Secondary region",
     "content.card.secondary.body": "Use this area for summaries, quick actions, or contextual notes.",
     "content.stage.title": "Page canvas",
-    "content.stage.body": "Components were reset. We can now rebuild the “{0}” page step by step without overflow.",
-    "content.diagnostics.body": "i18n load state: {0}"
+    "content.stage.body": "Components were reset. We can now rebuild the "{0}" page step by step without overflow.",
+    "content.diagnostics.body": "i18n load state: {0}",
+    "titlebar.title": "Smile2Unlock",
+    "card.dashboard.title": "Dashboard",
+    "card.dashboard.body": "System overview and quick actions",
+    "card.enrollment.title": "Enrollment",
+    "card.enrollment.body": "Manage users and face data",
+    "card.recognition.title": "Recognition",
+    "card.recognition.body": "Start face recognition",
+    "card.settings.title": "Settings",
+    "card.settings.body": "Configure application settings"
   }
+}
 }

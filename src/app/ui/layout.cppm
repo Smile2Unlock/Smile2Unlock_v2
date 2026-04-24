@@ -7,6 +7,7 @@ module;
 export module su.app.ui.layout;
 
 import std;
+import su.app.i18n;
 import su.app.presenters;
 import su.app.state;
 import su.app.ui.theme;
@@ -35,10 +36,14 @@ GLFWwindow* get_glfw_window() {
     return EUINEO::ActiveDslWindowState().window;
 }
 
-void render_title_bar_impl(UIContext& ui, const RectFrame& frame);
+std::string tr(std::string_view locale, std::string_view key) {
+    return i18n::text(i18n::app_i18n(), locale, key);
+}
+
+void render_title_bar_impl(UIContext& ui, const RectFrame& frame, const AppState& state);
 void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& state);
 void render_content_area_impl(UIContext& ui, const RectFrame& frame, const AppState& state);
-void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float card_width, float card_height, float start_y);
+void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float card_width, float card_height, float start_y, const AppState& state);
 
 }  // namespace
 
@@ -58,14 +63,14 @@ void render_app_layout(UIContext& ui, const RectFrame& window, const AppState& s
         .build();
 
     const auto frames = compute_shell_frames(window);
-    render_title_bar_impl(ui, frames.title_bar);
+    render_title_bar_impl(ui, frames.title_bar, state);
     render_sidebar_impl(ui, frames.sidebar, state);
     render_content_area_impl(ui, frames.content, state);
 }
 
 namespace {
 
-void render_title_bar_impl(UIContext& ui, const RectFrame& frame) {
+void render_title_bar_impl(UIContext& ui, const RectFrame& frame, const AppState& state) {
     ui.panel("titlebar")
         .position(frame.x, frame.y)
         .size(frame.width, frame.height)
@@ -84,7 +89,7 @@ void render_title_bar_impl(UIContext& ui, const RectFrame& frame) {
         .position(frame.x + 16.0f, frame.y + (frame.height - 20.0f) / 2.0f)
         .fontSize(13.0f)
         .color(text_secondary_color())
-        .text("Smile2Unlock")
+        .text(tr(state.active_locale, "titlebar.title"))
         .build();
 
     ui.button("titlebar.minimize")
@@ -191,11 +196,12 @@ void render_content_area_impl(UIContext& ui, const RectFrame& frame, const AppSt
     const auto card_width = (frame.width - kContentPadding * 2.0f - kCardGap) / 2.0f;
     const auto card_height = 120.0f;
 
-    render_page_cards_impl(ui, frame, card_width, card_height, content_y);
+    render_page_cards_impl(ui, frame, card_width, card_height, content_y, state);
 }
 
-void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float card_width, float card_height, float start_y) {
+void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float card_width, float card_height, float start_y, const AppState& state) {
     const auto card_x = window_frame.x + kContentPadding;
+    const auto& locale = state.active_locale;
 
     ui.panel("card.dashboard")
         .position(card_x, start_y)
@@ -208,13 +214,13 @@ void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float 
         .position(card_x + 16.0f, start_y + 16.0f)
         .fontSize(16.0f)
         .color(text_primary_color())
-        .text("Dashboard")
+        .text(tr(locale, "card.dashboard.title"))
         .build();
     ui.label("card.dashboard.body")
         .position(card_x + 16.0f, start_y + 44.0f)
         .fontSize(13.0f)
         .color(text_secondary_color())
-        .text("System overview and quick actions")
+        .text(tr(locale, "card.dashboard.body"))
         .build();
 
     const auto card2_x = card_x + card_width + kCardGap;
@@ -229,13 +235,13 @@ void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float 
         .position(card2_x + 16.0f, start_y + 16.0f)
         .fontSize(16.0f)
         .color(text_primary_color())
-        .text("Enrollment")
+        .text(tr(locale, "card.enrollment.title"))
         .build();
     ui.label("card.enrollment.body")
         .position(card2_x + 16.0f, start_y + 44.0f)
         .fontSize(13.0f)
         .color(text_secondary_color())
-        .text("Manage users and face data")
+        .text(tr(locale, "card.enrollment.body"))
         .build();
 
     const auto card3_y = start_y + card_height + kCardGap;
@@ -250,13 +256,13 @@ void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float 
         .position(card_x + 16.0f, card3_y + 16.0f)
         .fontSize(16.0f)
         .color(text_primary_color())
-        .text("Recognition")
+        .text(tr(locale, "card.recognition.title"))
         .build();
     ui.label("card.recognition.body")
         .position(card_x + 16.0f, card3_y + 44.0f)
         .fontSize(13.0f)
         .color(text_secondary_color())
-        .text("Start face recognition")
+        .text(tr(locale, "card.recognition.body"))
         .build();
 
     ui.panel("card.settings")
@@ -270,13 +276,13 @@ void render_page_cards_impl(UIContext& ui, const RectFrame& window_frame, float 
         .position(card2_x + 16.0f, card3_y + 16.0f)
         .fontSize(16.0f)
         .color(text_primary_color())
-        .text("Settings")
+        .text(tr(locale, "card.settings.title"))
         .build();
     ui.label("card.settings.body")
         .position(card2_x + 16.0f, card3_y + 44.0f)
         .fontSize(13.0f)
         .color(text_secondary_color())
-        .text("Configure application settings")
+        .text(tr(locale, "card.settings.body"))
         .build();
 }
 
