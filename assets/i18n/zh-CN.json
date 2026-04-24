@@ -27,7 +27,7 @@
     "content.card.secondary.title": "辅助区域",
     "content.card.secondary.body": "这里放摘要、操作入口或上下文提示。",
     "content.stage.title": "页面画布",
-    "content.stage.body": "组件已经重置完成，现在可以围绕"{0}"页面逐步重建，而不会再溢出。",
+    "content.stage.body": "组件已经重置完成，现在可以围绕\u201c{0}\u201d页面逐步重建，而不会再溢出。",
     "content.diagnostics.body": "i18n 载入状态：{0}",
     "titlebar.title": "Smile2Unlock",
     "card.dashboard.title": "仪表盘",
@@ -39,5 +39,4 @@
     "card.settings.title": "设置",
     "card.settings.body": "配置应用程序设置"
   }
-}
 }

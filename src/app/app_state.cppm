@@ -90,6 +90,7 @@ inline std::string page_name(PageId page) {
 }
 
 inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
+    const auto& store = i18n::app_i18n();
     static constexpr std::array nav_items{
         std::pair{PageId::Dashboard, "nav.dashboard"},
         std::pair{PageId::Enrollment, "nav.enrollment"},
@@ -104,7 +105,7 @@ inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
         return NavItem{
             .page = item.first,
             .id = std::format("nav.{}", page_name(item.first)),
-            .label = item.second,
+            .label = i18n::text(store, state.active_locale, item.second),
         };
     });
     return items;

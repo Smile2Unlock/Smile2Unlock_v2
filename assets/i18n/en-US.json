@@ -27,7 +27,7 @@
     "content.card.secondary.title": "Secondary region",
     "content.card.secondary.body": "Use this area for summaries, quick actions, or contextual notes.",
     "content.stage.title": "Page canvas",
-    "content.stage.body": "Components were reset. We can now rebuild the "{0}" page step by step without overflow.",
+    "content.stage.body": "Components were reset. We can now rebuild the \u201c{0}\u201d page step by step without overflow.",
     "content.diagnostics.body": "i18n load state: {0}",
     "titlebar.title": "Smile2Unlock",
     "card.dashboard.title": "Dashboard",
@@ -39,5 +39,4 @@
     "card.settings.title": "Settings",
     "card.settings.body": "Configure application settings"
   }
-}
 }

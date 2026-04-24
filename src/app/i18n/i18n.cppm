@@ -101,87 +101,12 @@ I18nConfig builtin_config() {
     };
 }
 
-I18nCatalog builtin_zh_catalog() {
-    return I18nCatalog{
-        .locale = "zh-CN",
-        .display_name = "简体中文",
-        .messages = {
-            {"app.title", "Smile2Unlock"},
-            {"header.subtitle", "当前界面语言：{0}"},
-            {"header.locale_button", "语言：{0}"},
-            {"sidebar.title", "导航"},
-            {"sidebar.subtitle", "先搭页面骨架，再补业务细节。"},
-            {"nav.dashboard", "仪表盘"},
-            {"nav.enrollment", "录入"},
-            {"nav.recognition", "识别"},
-            {"nav.settings", "设置"},
-            {"nav.status", "状态"},
-            {"page.dashboard.title", "仪表盘"},
-            {"page.dashboard.description", "总览页布局骨架。"},
-            {"page.enrollment.title", "录入"},
-            {"page.enrollment.description", "用户与人脸录入布局骨架。"},
-            {"page.recognition.title", "识别"},
-            {"page.recognition.description", "识别运行态布局骨架。"},
-            {"page.settings.title", "设置"},
-            {"page.settings.description", "配置页布局骨架。"},
-            {"page.status.title", "状态"},
-            {"page.status.description", "健康检查与诊断布局骨架。"},
-            {"content.card.primary.title", "主区域"},
-            {"content.card.primary.body", "这里承载当前页面的主要组件。"},
-            {"content.card.secondary.title", "辅助区域"},
-            {"content.card.secondary.body", "这里放摘要、操作入口或上下文提示。"},
-            {"content.stage.title", "页面画布"},
-            {"content.stage.body", "组件已经重置完成，现在可以围绕“{0}”页面逐步重建，而不会再溢出。"},
-            {"content.diagnostics.body", "i18n 载入状态：{0}"},
-        },
-    };
-}
-
-I18nCatalog builtin_en_catalog() {
-    return I18nCatalog{
-        .locale = "en-US",
-        .display_name = "English",
-        .messages = {
-            {"app.title", "Smile2Unlock"},
-            {"header.subtitle", "Current UI language: {0}"},
-            {"header.locale_button", "Language: {0}"},
-            {"sidebar.title", "Navigation"},
-            {"sidebar.subtitle", "Build the page shells first, then fill in the workflow details."},
-            {"nav.dashboard", "Dashboard"},
-            {"nav.enrollment", "Enrollment"},
-            {"nav.recognition", "Recognition"},
-            {"nav.settings", "Settings"},
-            {"nav.status", "Status"},
-            {"page.dashboard.title", "Dashboard"},
-            {"page.dashboard.description", "Overview page layout skeleton."},
-            {"page.enrollment.title", "Enrollment"},
-            {"page.enrollment.description", "User and face enrollment layout skeleton."},
-            {"page.recognition.title", "Recognition"},
-            {"page.recognition.description", "Recognition runtime layout skeleton."},
-            {"page.settings.title", "Settings"},
-            {"page.settings.description", "Configuration layout skeleton."},
-            {"page.status.title", "Status"},
-            {"page.status.description", "Health and diagnostics layout skeleton."},
-            {"content.card.primary.title", "Primary region"},
-            {"content.card.primary.body", "This is where the main widget group for the active page will live."},
-            {"content.card.secondary.title", "Secondary region"},
-            {"content.card.secondary.body", "Use this area for summaries, quick actions, or contextual notes."},
-            {"content.stage.title", "Page canvas"},
-            {"content.stage.body", "Components were reset. We can now rebuild the “{0}” page step by step without overflow."},
-            {"content.diagnostics.body", "i18n load state: {0}"},
-        },
-    };
-}
-
-I18nStore builtin_store() {
-    auto store = I18nStore{
+I18nStore empty_store() {
+    return I18nStore{
         .config = builtin_config(),
         .catalogs = {},
-        .diagnostics = "builtin fallback",
+        .diagnostics = "assets/i18n/config.json not found; no translations loaded",
     };
-    store.catalogs.emplace("zh-CN", builtin_zh_catalog());
-    store.catalogs.emplace("en-US", builtin_en_catalog());
-    return store;
 }
 
 template <typename T>
@@ -197,8 +122,8 @@ I18nStore load_store_from_disk() {
     auto errors = std::vector<std::string>{};
     const auto i18n_dir = find_i18n_dir();
     if (!i18n_dir) {
-        auto store = builtin_store();
-        store.diagnostics = "assets/i18n/config.json not found; using builtin fallback";
+        auto store = empty_store();
+        store.diagnostics = "assets/i18n/config.json not found";
         return store;
     }
 
@@ -211,19 +136,11 @@ I18nStore load_store_from_disk() {
     const auto descriptors = store.config.locales;
     const auto load_catalog = [&](const LocaleDescriptor& descriptor) {
         const auto catalog_path = *i18n_dir / descriptor.file;
-        const auto fallback = [&]() {
-            if (descriptor.id == "zh-CN") {
-                return builtin_zh_catalog();
-            }
-            if (descriptor.id == "en-US") {
-                return builtin_en_catalog();
-            }
-            return I18nCatalog{
-                .locale = descriptor.id,
-                .display_name = descriptor.display_name,
-                .messages = {},
-            };
-        }();
+        const auto fallback = I18nCatalog{
+            .locale = descriptor.id,
+            .display_name = descriptor.display_name,
+            .messages = {},
+        };
 
         auto catalog = value_or(fallback, rfl::json::load<I18nCatalog>(catalog_path.string()), descriptor.file, errors);
         if (catalog.locale.empty()) {
@@ -241,8 +158,8 @@ I18nStore load_store_from_disk() {
     });
 
     if (store.catalogs.empty()) {
-        store = builtin_store();
-        errors.push_back("no catalogs loaded; using builtin fallback");
+        store = empty_store();
+        errors.push_back("no catalogs loaded");
     }
 
     const auto fallback_locale = store.config.default_locale.empty() ? std::string("zh-CN") : store.config.default_locale;
