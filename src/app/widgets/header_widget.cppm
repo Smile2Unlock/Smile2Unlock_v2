@@ -26,7 +26,6 @@ void render_header(EUINEO::UIContext& ui, const EUINEO::RectFrame& frame, const 
     const float padding = 16.0f;
     const auto inner = EUINEO::RectFrame{frame.x + padding, frame.y + padding, frame.width - padding * 2.0f, frame.height - padding * 2.0f};
 
-    const float brand_width = header.show_locale_switch ? frame.width - 240.0f - padding * 3.0f : inner.width;
     ui.label("header.brand")
         .position(inner.x, inner.y + 8.0f)
         .fontSize(20.0f)
