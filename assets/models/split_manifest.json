@@ -1,0 +1,51 @@
+{
+  "chunk_size": 20971520,
+  "models": [
+    {
+      "file_name": "face_detector.csta",
+      "size": 4054932,
+      "sha256": "b57171c55f76f343f6f579e1ea1e165d1d4fc0321b7395f6abde155d18fe0082",
+      "parts": [
+        "face_detector.csta.part000"
+      ]
+    },
+    {
+      "file_name": "face_landmarker_pts5.csta",
+      "size": 421988,
+      "sha256": "3458dd3c52ae85c4132bcfdd864c86c3b5ba5bd2337a0d8dcb7cb25aa4bff5ac",
+      "parts": [
+        "face_landmarker_pts5.csta.part000"
+      ]
+    },
+    {
+      "file_name": "face_recognizer.csta",
+      "size": 102551956,
+      "sha256": "3cefce29d2ceb6fd95153d67c11f24ce08746e1877478bacaa5ae5d333a0a670",
+      "parts": [
+        "face_recognizer.csta.part000",
+        "face_recognizer.csta.part001",
+        "face_recognizer.csta.part002",
+        "face_recognizer.csta.part003",
+        "face_recognizer.csta.part004"
+      ]
+    },
+    {
+      "file_name": "fas_first.csta",
+      "size": 44729700,
+      "sha256": "57390540d712ab4a53145c16189f4a2bd3894d37414f782a523ddd2678cb09f7",
+      "parts": [
+        "fas_first.csta.part000",
+        "fas_first.csta.part001",
+        "fas_first.csta.part002"
+      ]
+    },
+    {
+      "file_name": "fas_second.csta",
+      "size": 19102340,
+      "sha256": "f14e946137fabdbe1a1122f3814f905a473c8760d7475efeb5ba82170f41a4c1",
+      "parts": [
+        "fas_second.csta.part000"
+      ]
+    }
+  ]
+}
