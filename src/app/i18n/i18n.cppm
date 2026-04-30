@@ -383,19 +383,18 @@ std::string default_locale(const I18nStore& store) {
  * @brief 循环切换语言环境
  */
 std::string cycle_locale(const I18nStore& store, std::string_view current_locale) {
-    auto ordered = std::vector<std::string>{};
-    std::ranges::transform(store.config.locales, std::back_inserter(ordered), [](const LocaleDescriptor& descriptor) {
-        return descriptor.id;
-    });
-    if (ordered.empty()) {
+    const auto& locales = store.config.locales;
+    if (locales.empty()) {
         return default_locale(store);
     }
 
-    const auto current = std::ranges::find(ordered, current_locale);
-    if (current == ordered.end() || std::next(current) == ordered.end()) {
-        return ordered.front();
+    const auto current = std::ranges::find_if(locales, [&](const LocaleDescriptor& desc) {
+        return desc.id == current_locale;
+    });
+    if (current == locales.end() || std::next(current) == locales.end()) {
+        return locales.front().id;
     }
-    return *std::next(current);
+    return std::next(current)->id;
 }
 
 /**

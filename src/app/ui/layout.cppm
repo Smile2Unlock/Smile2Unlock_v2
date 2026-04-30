@@ -1029,11 +1029,11 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, const App
     const float control_w = std::max(200.0f, area.width - label_w - kCardGap * 3.0f);
     float current_y = area.y;
 
-    // Helper: render a labeled settings row
-    auto render_row = [&](const std::string& id, std::string_view label_text,
+    // Helper: render a labeled settings row (pure: takes y, returns next y)
+    auto render_row = [&](const std::string& id, std::string_view label_text, float y,
                           auto render_control) {
         ui.panel(std::format("settings.{}.bg", id))
-            .position(area.x, current_y)
+            .position(area.x, y)
             .size(area.width, row_h)
             .background(card_bg_color())
             .rounding(10.0f)
@@ -1041,19 +1041,19 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, const App
             .build();
 
         ui.label(std::format("settings.{}.label", id))
-            .position(area.x + 18.0f, baseline_for_center(label_text, kFontBodyStrong, current_y + row_h * 0.5f))
+            .position(area.x + 18.0f, baseline_for_center(label_text, kFontBodyStrong, y + row_h * 0.5f))
             .fontSize(kFontBodyStrong)
             .color(text_primary_color())
             .text(std::string(label_text))
             .build();
 
-        render_control(area.x + label_w, current_y);
+        render_control(area.x + label_w, y);
 
-        current_y += row_h + kCardGap;
+        return y + row_h + kCardGap;
     };
 
     // Row 0: Camera selection
-    render_row("camera", tr(locale, "settings.select_camera"),
+    current_y = render_row("camera", tr(locale, "settings.select_camera"), current_y,
         [&](float cx, float cy) {
             auto cameras = services::backend().enumerate_cameras();
             auto items = std::vector<std::string>{};
@@ -1077,7 +1077,7 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, const App
         });
 
     // Row 1: Recognition threshold
-    render_row("threshold", tr(locale, "settings.recognition_threshold"),
+    current_y = render_row("threshold", tr(locale, "settings.recognition_threshold"), current_y,
         [&](float cx, float cy) {
             ui.slider("settings.threshold.slider")
                 .position(cx, cy + (row_h - 20.0f) * 0.5f)
@@ -1101,7 +1101,7 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, const App
         });
 
     // Row 2: Liveness detection toggle
-    render_row("liveness", tr(locale, "settings.liveness_detection"),
+    current_y = render_row("liveness", tr(locale, "settings.liveness_detection"), current_y,
         [&](float cx, float cy) {
             ui.switcher("settings.liveness.switch")
                 .position(cx, cy + (row_h - 24.0f) * 0.5f)
@@ -1120,7 +1120,7 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, const App
         });
 
     // Row 3: Language selection
-    render_row("language", tr(locale, "settings.language"),
+    current_y = render_row("language", tr(locale, "settings.language"), current_y,
         [&](float cx, float cy) {
             const auto& store = i18n::app_i18n();
             auto lang_items = std::vector<std::string>{};
@@ -1153,7 +1153,7 @@ void render_settings_interactive(UIContext& ui, const RectFrame& area, const App
         });
 
     // Row 4: Show diagnostics
-    render_row("diagnostics", tr(locale, "settings.show_diagnostics"),
+    current_y = render_row("diagnostics", tr(locale, "settings.show_diagnostics"), current_y,
         [&](float cx, float cy) {
             ui.switcher("settings.diag.switch")
                 .position(cx, cy + (row_h - 24.0f) * 0.5f)

@@ -1,7 +1,7 @@
 module;
 
+#include <expected>
 #include <seeta/Common/CStruct.h>
-#include <tbox/coroutine/channel.h>
 
 #include "../protocol/messages.h"
 #include "../seetaface.h"
@@ -11,72 +11,59 @@ export module su.facerecognizer.pipeline;
 import std;
 import su.facerecognizer.camera;
 
+namespace su::facerecognizer {
+
+struct ImageGuard {
+    SeetaImageData& img;
+    ~ImageGuard() { delete[] img.data; }
+    ImageGuard(SeetaImageData& image) : img(image) {}
+    ImageGuard(const ImageGuard&) = delete;
+    ImageGuard& operator=(const ImageGuard&) = delete;
+};
+
+}  // namespace su::facerecognizer
+
 export namespace su::facerecognizer {
 
-/**
- * @brief 人脸识别流水线
- * 
- * 负责从摄像头捕获图像、检测人脸、活体检测、提取特征等完整流程。
- */
+enum class PipelineError { kCaptureFailed, kNoFaceDetected, kSpoofRejected };
+
 class RecognitionPipeline {
 public:
-    /**
-     * @brief 预览帧数据结构
-     */
     struct PreviewFrame {
-        int width = 0;                         ///< 图像宽度
-        int height = 0;                        ///< 图像高度
-        int channels = 0;                      ///< 通道数
-        std::vector<std::byte> image_bytes;    ///< 图像字节数据
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        std::vector<std::byte> image_bytes;
     };
 
-    /**
-     * @brief 识别事件数据结构
-     */
     struct RecognitionEvent {
-        bool matched = false;                              ///< 是否匹配成功
-        float similarity = 0.0f;                           ///< 相似度得分
-        std::vector<float> feature;                        ///< 特征向量
-        std::optional<protocol::BoundingBox> face_box;    ///< 人脸位置框
+        bool matched = false;
+        float similarity = 0.0f;
+        std::vector<float> feature;
+        std::optional<protocol::BoundingBox> face_box;
     };
 
-    /**
-     * @brief 构造函数
-     * @param capture_device 图像捕获设备
-     * @param engine 人脸识别引擎
-     */
     RecognitionPipeline(ICaptureDevice& capture_device, SeetaFaceEngine& engine)
         : capture_device_(capture_device), engine_(engine) {}
 
-    /**
-     * @brief 请求停止流水线
-     */
     void stop() {
         stop_requested_.store(true, std::memory_order_relaxed);
     }
 
-    /**
-     * @brief 检查是否已请求停止
-     * @return bool 是否已请求停止
-     */
     bool stopped() const {
         return stop_requested_.load(std::memory_order_relaxed);
     }
 
-    /**
-     * @brief 捕获一帧预览图像
-     * 
-     * 从捕获设备获取一帧图像并转换为 PreviewFrame 格式。
-     * 
-     * @return std::optional<PreviewFrame> 预览帧，捕获失败则返回 nullopt
-     */
-    std::optional<PreviewFrame> capture_preview_frame() {
-        SeetaImageData image{};
-        if (!capture_device_.capture_frame(image) || image.data == nullptr) {
-            return std::nullopt;
+    std::expected<PreviewFrame, PipelineError> capture_preview_frame() {
+        auto result = capture_device_.capture_frame();
+        if (!result) {
+            return std::unexpected(PipelineError::kCaptureFailed);
         }
 
-        PreviewFrame frame{
+        SeetaImageData image = std::move(*result);
+        ImageGuard guard{image};
+
+        return PreviewFrame{
             .width = image.width,
             .height = image.height,
             .channels = image.channels,
@@ -85,50 +72,42 @@ public:
                 reinterpret_cast<std::byte*>(image.data) +
                     static_cast<std::size_t>(image.width * image.height * image.channels)),
         };
-        delete[] image.data;
-        return frame;
     }
 
-    /**
-     * @brief 执行一次人脸识别
-     * 
-     * 完整流程：捕获图像 -> 检测人脸 -> 活体检测（可选）-> 提取特征
-     * 
-     * @param liveness_detection 是否启用活体检测
-     * @param liveness_threshold 活体检测阈值
-     * @return std::optional<RecognitionEvent> 识别事件，失败则返回 nullopt
-     */
-    std::optional<RecognitionEvent> recognize_once(bool liveness_detection, float liveness_threshold) {
-        SeetaImageData image{};
-        if (!capture_device_.capture_frame(image) || image.data == nullptr) {
-            return std::nullopt;
+    std::expected<RecognitionEvent, PipelineError> recognize_once(
+        bool liveness_detection, float liveness_threshold) {
+        auto captured = capture_device_.capture_frame();
+        if (!captured) {
+            return std::unexpected(PipelineError::kCaptureFailed);
         }
 
-        const SeetaRect face = engine_.detect(image);
-        if (face.width <= 0 || face.height <= 0) {
-            delete[] image.data;
-            return std::nullopt;
+        SeetaImageData image = std::move(*captured);
+        ImageGuard guard{image};
+
+        const auto face = engine_.detect(image);
+        if (!face) {
+            return std::unexpected(PipelineError::kNoFaceDetected);
         }
 
-        if (liveness_detection && !engine_.anti_spoof(image, liveness_threshold)) {
-            delete[] image.data;
-            return std::nullopt;
+        if (liveness_detection) {
+            auto spoof = engine_.anti_spoof(image, liveness_threshold);
+            if (!spoof || !*spoof) {
+                return std::unexpected(PipelineError::kSpoofRejected);
+            }
         }
 
-        auto feature = engine_.image_to_features(image);
-        RecognitionEvent event{
+        auto feature = engine_.extract(image, engine_.mark(image, *face));
+        return RecognitionEvent{
             .matched = !feature.empty(),
             .similarity = 0.0f,
             .feature = std::move(feature),
             .face_box = protocol::BoundingBox{
-                .x = face.x,
-                .y = face.y,
-                .width = face.width,
-                .height = face.height,
+                .x = face->x,
+                .y = face->y,
+                .width = face->width,
+                .height = face->height,
             },
         };
-        delete[] image.data;
-        return event;
     }
 
 private:

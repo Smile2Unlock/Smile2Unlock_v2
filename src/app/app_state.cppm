@@ -80,7 +80,7 @@ AppState make_initial_state();
  * @brief 获取全局应用程序状态单例
  * @return AppState& 全局应用状态的引用
  */
-AppState& app_state();
+const AppState& app_state();
 
 /**
  * @brief 使用转换函数更新应用程序状态
@@ -278,17 +278,25 @@ inline AppState make_initial_state() {
     };
 }
 
+
 /**
- * @brief 获取全局应用程序状态单例
- * @return AppState& 全局应用状态的引用
+ * @brief 内部可变状态访问器
  */
-inline AppState& app_state() {
+inline AppState& mutable_state() {
     static AppState state = make_initial_state();
     return state;
 }
 
+/**
+ * @brief 获取全局应用程序状态（只读）
+ * @return const AppState& 全局应用状态的常量引用
+ */
+inline const AppState& app_state() {
+    return mutable_state();
+}
+
 inline void update_state(const std::function<AppState(const AppState&)>& transform) {
-    app_state() = transform(app_state());
+    mutable_state() = transform(mutable_state());
 }
 
 // Shell
@@ -399,7 +407,6 @@ inline std::string page_name(PageId page) {
         case PageId::Settings:
             return "settings";
     }
-    return "dashboard";
 }
 
 inline std::string page_icon(PageId page) {
@@ -413,7 +420,6 @@ inline std::string page_icon(PageId page) {
         case PageId::Settings:
             return "\xEF\x80\x93";  // fa-cog
     }
-    return "\xEF\x83\x9B";
 }
 
 inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
@@ -425,17 +431,16 @@ inline std::vector<NavItem> make_sidebar_nav_items(const AppState& state) {
         std::pair{PageId::Settings, "nav.settings"},
     };
 
-    auto items = std::vector<NavItem>{};
-    items.reserve(nav_items.size());
-    std::ranges::transform(nav_items, std::back_inserter(items), [&](const auto& item) {
-        return NavItem{
-            .page = item.first,
-            .id = std::format("nav.{}", page_name(item.first)),
-            .icon = page_icon(item.first),
-            .label = i18n::text(store, state.active_locale, item.second),
-        };
-    });
-    return items;
+    return nav_items
+        | std::views::transform([&](const auto& item) {
+            return NavItem{
+                .page = item.first,
+                .id = std::format("nav.{}", page_name(item.first)),
+                .icon = page_icon(item.first),
+                .label = i18n::text(store, state.active_locale, item.second),
+            };
+        })
+        | std::ranges::to<std::vector>();
 }
 
 }  // namespace su::app
