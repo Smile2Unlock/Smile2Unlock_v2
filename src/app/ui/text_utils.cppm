@@ -8,6 +8,16 @@ import std;
 
 export namespace su::app::ui {
 
+/**
+ * @brief 文本适配函数
+ * 
+ * 将文本截断到指定宽度，超出部分用省略号代替。
+ * 
+ * @param text 原始文本
+ * @param max_width 最大宽度（像素）
+ * @param font_size 字体大小
+ * @return std::string 适配后的文本
+ */
 std::string fit_text(std::string text, float max_width, float font_size);
 
 }  // namespace su::app::ui

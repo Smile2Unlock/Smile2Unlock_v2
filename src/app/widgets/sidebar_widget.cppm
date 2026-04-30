@@ -13,6 +13,15 @@ import su.app.widgets.panel;
 
 export namespace su::app::widgets {
 
+/**
+ * @brief 渲染侧边栏组件
+ * 
+ * 渲染侧边栏，包括标题、副标题和导航项列表。
+ * 
+ * @param ui UI上下文
+ * @param frame 侧边栏区域矩形
+ * @param sidebar 侧边栏视图模型
+ */
 void render_sidebar(EUINEO::UIContext& ui, const EUINEO::RectFrame& frame, const presenters::SidebarViewModel& sidebar);
 
 }  // namespace su::app::widgets

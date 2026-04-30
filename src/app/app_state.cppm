@@ -70,48 +70,181 @@ struct AppState {
 
 // --- Immutable state transformers ---
 
+/**
+ * @brief 创建初始应用程序状态
+ * @return AppState 初始化后的应用状态
+ */
 AppState make_initial_state();
+
+/**
+ * @brief 获取全局应用程序状态单例
+ * @return AppState& 全局应用状态的引用
+ */
 AppState& app_state();
+
+/**
+ * @brief 使用转换函数更新应用程序状态
+ * @param transform 状态转换函数，接收当前状态并返回新状态
+ */
 void update_state(const std::function<AppState(const AppState&)>& transform);
 
 // Shell
+/**
+ * @brief 设置当前活动页面
+ * @param state 当前状态
+ * @param page 目标页面ID
+ * @return AppState 更新后的状态
+ */
 AppState with_active_page(const AppState& state, PageId page);
+
+/**
+ * @brief 设置活动语言环境
+ * @param state 当前状态
+ * @param locale 语言环境标识（如 "zh-CN", "en-US"）
+ * @return AppState 更新后的状态
+ */
 AppState with_active_locale(const AppState& state, std::string locale);
+
+/**
+ * @brief 设置侧边栏折叠状态
+ * @param state 当前状态
+ * @param collapsed 是否折叠
+ * @return AppState 更新后的状态
+ */
 AppState with_sidebar_collapsed(const AppState& state, bool collapsed);
 
 // User management
+/**
+ * @brief 更新用户列表
+ * @param state 当前状态
+ * @param users 新的用户列表
+ * @return AppState 更新后的状态（会自动更新 total_users）
+ */
 AppState with_users(const AppState& state, std::vector<UserEntry> users);
+
+/**
+ * @brief 设置选中的用户ID
+ * @param state 当前状态
+ * @param user_id 用户ID，-1表示未选中
+ * @return AppState 更新后的状态
+ */
 AppState with_selected_user(const AppState& state, int user_id);
+
+/**
+ * @brief 设置是否显示添加用户对话框
+ * @param state 当前状态
+ * @param show 是否显示
+ * @return AppState 更新后的状态
+ */
 AppState with_show_add_user(const AppState& state, bool show);
+
+/**
+ * @brief 设置是否正在采集人脸
+ * @param state 当前状态
+ * @param capturing 是否正在采集
+ * @return AppState 更新后的状态
+ */
 AppState with_capturing_face(const AppState& state, bool capturing);
 
 // Recognition
+/**
+ * @brief 设置识别运行状态
+ * @param state 当前状态
+ * @param running 是否正在运行
+ * @return AppState 更新后的状态
+ */
 AppState with_recognition_running(const AppState& state, bool running);
+
+/**
+ * @brief 设置识别状态文本
+ * @param state 当前状态
+ * @param status 状态文本（如 "idle", "running", "error"）
+ * @return AppState 更新后的状态
+ */
 AppState with_recognition_status(const AppState& state, std::string status);
+
+/**
+ * @brief 设置识别结果
+ * @param state 当前状态
+ * @param result 识别结果（包含成功状态、用户名、相似度、消息）
+ * @return AppState 更新后的状态
+ */
 AppState with_recognition_result(const AppState& state, RecognitionResult result);
 
 // Config
+/**
+ * @brief 更新完整的应用配置
+ * @param state 当前状态
+ * @param config 新的应用配置
+ * @return AppState 更新后的状态（会同步 active_locale）
+ */
 AppState with_config(const AppState& state, AppConfig config);
+
+/**
+ * @brief 设置选中的摄像头索引
+ * @param state 当前状态
+ * @param camera_index 摄像头索引
+ * @return AppState 更新后的状态
+ */
 AppState with_selected_camera(const AppState& state, int camera_index);
+
+/**
+ * @brief 设置识别阈值
+ * @param state 当前状态
+ * @param threshold 识别阈值（0.0-1.0）
+ * @return AppState 更新后的状态
+ */
 AppState with_threshold(const AppState& state, float threshold);
+
+/**
+ * @brief 设置活体检测开关
+ * @param state 当前状态
+ * @param enabled 是否启用活体检测
+ * @return AppState 更新后的状态
+ */
 AppState with_liveness(const AppState& state, bool enabled);
+
+/**
+ * @brief 设置是否显示诊断信息
+ * @param state 当前状态
+ * @param show 是否显示
+ * @return AppState 更新后的状态
+ */
 AppState with_show_diagnostics(const AppState& state, bool show);
 
 // Helpers
+/**
+ * @brief 导航项结构，用于侧边栏导航
+ */
 struct NavItem {
-    PageId page;
-    std::string id;
-    std::string icon;
-    std::string label;
+    PageId page;          ///< 页ID
+    std::string id;       ///< 导航项ID
+    std::string icon;     ///< 图标（Unicode字符）
+    std::string label;    ///< 显示标签
 };
 
+/**
+ * @brief 获取页面的英文名称
+ * @param page 页面ID
+ * @return std::string 页面英文名称
+ */
 std::string page_name(PageId page);
+
+/**
+ * @brief 创建侧边栏导航项列表
+ * @param state 当前应用状态（用于获取当前语言）
+ * @return std::vector<NavItem> 导航项列表
+ */
 std::vector<NavItem> make_sidebar_nav_items(const AppState& state);
 
 }  // namespace su::app
 
 namespace su::app {
 
+/**
+ * @brief 创建初始应用程序状态
+ * @return AppState 初始化后的应用状态
+ */
 inline AppState make_initial_state() {
     return AppState{
         .active_page = PageId::Dashboard,
@@ -145,6 +278,10 @@ inline AppState make_initial_state() {
     };
 }
 
+/**
+ * @brief 获取全局应用程序状态单例
+ * @return AppState& 全局应用状态的引用
+ */
 inline AppState& app_state() {
     static AppState state = make_initial_state();
     return state;

@@ -14,6 +14,15 @@ import su.app.widgets.panel;
 
 export namespace su::app::widgets {
 
+/**
+ * @brief 渲染头部组件
+ * 
+ * 渲染应用头部，包括品牌标题、副标题和语言切换按钮。
+ * 
+ * @param ui UI上下文
+ * @param frame 头部区域矩形
+ * @param header 头部视图模型
+ */
 void render_header(EUINEO::UIContext& ui, const EUINEO::RectFrame& frame, const presenters::HeaderViewModel& header);
 
 }  // namespace su::app::widgets

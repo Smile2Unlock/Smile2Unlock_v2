@@ -17,13 +17,35 @@ export namespace su::app::ui {
 using EUINEO::RectFrame;
 using EUINEO::UIContext;
 
+/**
+ * @brief 外壳布局框架
+ */
 struct ShellFrames {
-    RectFrame title_bar;
-    RectFrame sidebar;
-    RectFrame content;
+    RectFrame title_bar;   ///< 标题栏区域
+    RectFrame sidebar;     ///< 侧边栏区域
+    RectFrame content;     ///< 内容区区域
 };
 
+/**
+ * @brief 计算外壳布局框架
+ * 
+ * 根据窗口大小和侧边栏状态，计算各个区域的矩形框架。
+ * 
+ * @param window 窗口矩形
+ * @param state 应用状态
+ * @return ShellFrames 布局框架
+ */
 ShellFrames compute_shell_frames(const RectFrame& window, const AppState& state);
+
+/**
+ * @brief 渲染应用布局
+ * 
+ * 渲染整个应用的布局，包括标题栏、侧边栏和内容区。
+ * 
+ * @param ui UI上下文
+ * @param window 窗口矩形
+ * @param state 应用状态
+ */
 void render_app_layout(UIContext& ui, const RectFrame& window, const AppState& state);
 
 }  // namespace su::app::ui

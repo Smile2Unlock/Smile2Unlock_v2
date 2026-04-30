@@ -13,6 +13,15 @@ import su.app.widgets.panel;
 
 export namespace su::app::widgets {
 
+/**
+ * @brief 渲染内容区组件
+ * 
+ * 渲染主内容区，包括页标题、描述、卡片和舞台区。
+ * 
+ * @param ui UI上下文
+ * @param frame 内容区矩形
+ * @param content 内容区视图模型
+ */
 void render_content(EUINEO::UIContext& ui, const EUINEO::RectFrame& frame, const presenters::ContentViewModel& content);
 
 }  // namespace su::app::widgets
@@ -23,6 +32,14 @@ namespace {
 using EUINEO::RectFrame;
 using EUINEO::UIContext;
 
+/**
+ * @brief 渲染卡片组件
+ * 
+ * @param ui UI上下文
+ * @param id 组件ID
+ * @param frame 卡片区域矩形
+ * @param card 卡片内容
+ */
 void render_card(
     EUINEO::UIContext& ui,
     const std::string& id,

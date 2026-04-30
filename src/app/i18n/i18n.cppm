@@ -10,36 +10,103 @@ import su.app.runtime;
 
 export namespace su::app::i18n {
 
+/**
+ * @brief 语言环境描述符
+ */
 struct LocaleDescriptor {
-    std::string id;
-    std::string display_name;
-    std::string file;
+    std::string id;           ///< 语言环境ID（如 "zh-CN"）
+    std::string display_name; ///< 显示名称（如 "简体中文"）
+    std::string file;         ///< 对应的JSON文件名
 };
 
+/**
+ * @brief 国际化配置
+ */
 struct I18nConfig {
-    std::string default_locale;
-    std::vector<LocaleDescriptor> locales;
+    std::string default_locale;                    ///< 默认语言环境
+    std::vector<LocaleDescriptor> locales;         ///< 支持的语言环境列表
 };
 
+/**
+ * @brief 国际化目录
+ */
 struct I18nCatalog {
-    std::string locale;
-    std::string display_name;
-    std::unordered_map<std::string, std::string> messages;
+    std::string locale;                                        ///< 语言环境ID
+    std::string display_name;                                  ///< 显示名称
+    std::unordered_map<std::string, std::string> messages;     ///< 翻译消息映射
 };
 
+/**
+ * @brief 国际化存储
+ */
 struct I18nStore {
-    I18nConfig config;
-    std::unordered_map<std::string, I18nCatalog> catalogs;
-    std::string diagnostics;
+    I18nConfig config;                                         ///< 配置信息
+    std::unordered_map<std::string, I18nCatalog> catalogs;     ///< 所有语言目录
+    std::string diagnostics;                                   ///< 诊断信息
 };
 
+/**
+ * @brief 获取全局国际化存储单例
+ * @return const I18nStore& 国际化存储引用
+ */
 const I18nStore& app_i18n();
+
+/**
+ * @brief 获取默认语言环境
+ * @param store 国际化存储
+ * @return std::string 默认语言环境ID
+ */
 std::string default_locale(const I18nStore& store);
+
+/**
+ * @brief 循环切换语言环境
+ * 
+ * 在配置的语言环境列表中循环切换，到达末尾后回到第一个。
+ * 
+ * @param store 国际化存储
+ * @param current_locale 当前语言环境
+ * @return std::string 下一个语言环境ID
+ */
 std::string cycle_locale(const I18nStore& store, std::string_view current_locale);
+
+/**
+ * @brief 获取语言环境的显示名称
+ * 
+ * @param store 国际化存储
+ * @param locale 语言环境ID
+ * @return std::string 显示名称
+ */
 std::string locale_display_name(const I18nStore& store, std::string_view locale);
+
+/**
+ * @brief 获取翻译文本
+ * 
+ * 查找指定语言环境的翻译，如果找不到则回退到默认语言环境。
+ * 
+ * @param store 国际化存储
+ * @param locale 语言环境ID
+ * @param key 翻译键
+ * @return std::string 翻译文本，未找到则返回键本身
+ */
 std::string text(const I18nStore& store, std::string_view locale, std::string_view key);
+
+/**
+ * @brief 获取诊断信息文本
+ * 
+ * @param store 国际化存储
+ * @return std::string 诊断信息
+ */
 std::string diagnostics_text(const I18nStore& store);
 
+/**
+ * @brief 格式化模式字符串
+ * 
+ * 使用 papilio 库进行字符串格式化，支持位置参数。
+ * 
+ * @param pattern 格式模式
+ * @param args 格式化参数
+ * @return std::string 格式化后的字符串
+ */
 template <typename... Args>
 std::string format_pattern(std::string_view pattern, Args&&... args) {
     using context_type = papilio::basic_format_context<std::back_insert_iterator<std::string>, char>;
@@ -51,6 +118,17 @@ std::string format_pattern(std::string_view pattern, Args&&... args) {
     return formatted;
 }
 
+/**
+ * @brief 获取翻译并格式化
+ * 
+ * 先获取翻译文本，然后使用提供的参数进行格式化。
+ * 
+ * @param store 国际化存储
+ * @param locale 语言环境ID
+ * @param key 翻译键
+ * @param args 格式化参数
+ * @return std::string 格式化后的翻译文本
+ */
 template <typename... Args>
 std::string format(const I18nStore& store, std::string_view locale, std::string_view key, Args&&... args) {
     return format_pattern(text(store, locale, key), std::forward<Args>(args)...);
@@ -63,10 +141,24 @@ namespace {
 
 using std::filesystem::path;
 
+/**
+ * @brief 获取源代码根目录
+ * 
+ * 通过当前文件路径向上推导得到源代码根目录。
+ * 
+ * @return path 源代码根目录路径
+ */
 path source_root() {
     return path(__FILE__).parent_path().parent_path().parent_path().parent_path();
 }
 
+/**
+ * @brief 获取所有可能的资源根目录候选列表
+ * 
+ * 包括当前工作目录、可执行文件目录及其父目录、源代码根目录。
+ * 
+ * @return std::vector<path> 去重排序后的候选根目录列表
+ */
 std::vector<path> candidate_roots() {
     auto roots = std::vector<path>{
         std::filesystem::current_path(),
@@ -80,6 +172,13 @@ std::vector<path> candidate_roots() {
     return roots;
 }
 
+/**
+ * @brief 查找国际化资源目录
+ * 
+ * 在候选根目录中搜索包含 assets/i18n/config.json 的目录。
+ * 
+ * @return std::optional<path> 国际化目录路径，未找到则返回 nullopt
+ */
 std::optional<path> find_i18n_dir() {
     const auto roots = candidate_roots();
     const auto match = std::ranges::find_if(roots, [](const path& root) {
@@ -91,6 +190,13 @@ std::optional<path> find_i18n_dir() {
     return *match / "assets" / "i18n";
 }
 
+/**
+ * @brief 获取内置配置
+ * 
+ * 返回硬编码的默认国际化配置，包含中文和英文。
+ * 
+ * @return I18nConfig 内置配置
+ */
 I18nConfig builtin_config() {
     return I18nConfig{
         .default_locale = "zh-CN",
@@ -101,6 +207,13 @@ I18nConfig builtin_config() {
     };
 }
 
+/**
+ * @brief 创建空存储
+ * 
+ * 返回使用内置配置但无翻译数据的空存储。
+ * 
+ * @return I18nStore 空存储
+ */
 I18nStore empty_store() {
     return I18nStore{
         .config = builtin_config(),
@@ -109,6 +222,17 @@ I18nStore empty_store() {
     };
 }
 
+/**
+ * @brief 安全加载值或返回回退值
+ * 
+ * 尝试从 rfl::Result 中获取值，失败则记录错误并返回回退值。
+ * 
+ * @param fallback 回退值
+ * @param result 加载结果
+ * @param context 上下文描述
+ * @param errors 错误收集列表
+ * @return T 加载的值或回退值
+ */
 template <typename T>
 T value_or(T fallback, rfl::Result<T> result, std::string_view context, std::vector<std::string>& errors) {
     if (result) {
@@ -118,6 +242,18 @@ T value_or(T fallback, rfl::Result<T> result, std::string_view context, std::vec
     return fallback;
 }
 
+/**
+ * @brief 从磁盘加载国际化存储
+ * 
+ * 加载流程：
+ * 1. 查找国际化目录
+ * 2. 加载 config.json 配置
+ * 3. 加载各语言的翻译文件
+ * 4. 验证并修复默认语言环境
+ * 5. 收集诊断信息
+ * 
+ * @return I18nStore 加载的国际化存储
+ */
 I18nStore load_store_from_disk() {
     auto errors = std::vector<std::string>{};
     const auto i18n_dir = find_i18n_dir();
@@ -181,6 +317,15 @@ I18nStore load_store_from_disk() {
     return store;
 }
 
+/**
+ * @brief 查找语言目录
+ * 
+ * 按优先级查找：指定语言 -> 默认语言 -> 第一个可用语言。
+ * 
+ * @param store 国际化存储
+ * @param locale 目标语言环境
+ * @return const I18nCatalog* 语言目录指针，未找到则返回 nullptr
+ */
 const I18nCatalog* find_catalog(const I18nStore& store, std::string_view locale) {
     if (const auto it = store.catalogs.find(std::string(locale)); it != store.catalogs.end()) {
         return &it->second;
@@ -194,6 +339,13 @@ const I18nCatalog* find_catalog(const I18nStore& store, std::string_view locale)
     return nullptr;
 }
 
+/**
+ * @brief 查找翻译消息
+ * 
+ * @param catalog 语言目录
+ * @param key 翻译键
+ * @return std::string 翻译值，未找到则返回键本身
+ */
 std::string find_message(const I18nCatalog* catalog, std::string_view key) {
     if (catalog == nullptr) {
         return std::string(key);
@@ -206,11 +358,17 @@ std::string find_message(const I18nCatalog* catalog, std::string_view key) {
 
 }  // namespace
 
+/**
+ * @brief 获取全局国际化存储单例
+ */
 const I18nStore& app_i18n() {
     static const I18nStore store = load_store_from_disk();
     return store;
 }
 
+/**
+ * @brief 获取默认语言环境
+ */
 std::string default_locale(const I18nStore& store) {
     if (!store.config.default_locale.empty()) {
         return store.config.default_locale;
@@ -221,6 +379,9 @@ std::string default_locale(const I18nStore& store) {
     return "zh-CN";
 }
 
+/**
+ * @brief 循环切换语言环境
+ */
 std::string cycle_locale(const I18nStore& store, std::string_view current_locale) {
     auto ordered = std::vector<std::string>{};
     std::ranges::transform(store.config.locales, std::back_inserter(ordered), [](const LocaleDescriptor& descriptor) {
@@ -237,6 +398,9 @@ std::string cycle_locale(const I18nStore& store, std::string_view current_locale
     return *std::next(current);
 }
 
+/**
+ * @brief 获取语言环境的显示名称
+ */
 std::string locale_display_name(const I18nStore& store, std::string_view locale) {
     if (const auto catalog = find_catalog(store, locale)) {
         if (!catalog->display_name.empty()) {
@@ -253,6 +417,9 @@ std::string locale_display_name(const I18nStore& store, std::string_view locale)
     return std::string(locale);
 }
 
+/**
+ * @brief 获取翻译文本
+ */
 std::string text(const I18nStore& store, std::string_view locale, std::string_view key) {
     const auto requested = find_catalog(store, locale);
     const auto requested_value = find_message(requested, key);
@@ -268,6 +435,9 @@ std::string text(const I18nStore& store, std::string_view locale, std::string_vi
     return std::string(key);
 }
 
+/**
+ * @brief 获取诊断信息文本
+ */
 std::string diagnostics_text(const I18nStore& store) {
     return store.diagnostics.empty() ? "ready" : store.diagnostics;
 }

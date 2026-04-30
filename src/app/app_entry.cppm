@@ -18,6 +18,14 @@ int run_app();
 
 namespace su::app {
 
+/**
+ * @brief 启动应用程序主循环
+ * 
+ * 初始化运行时工作目录，配置应用程序参数（标题、尺寸、页面ID、帧率等），
+ * 并运行 DSL 应用程序框架。渲染回调函数会调用 UI 布局渲染器来绘制界面。
+ * 
+ * @return int 应用程序退出码
+ */
 int run_app() {
     runtime::prepare_runtime_working_directory();
 
