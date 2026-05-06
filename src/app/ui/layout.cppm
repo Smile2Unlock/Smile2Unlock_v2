@@ -1,7 +1,7 @@
 module;
 
-#include <eui/EUINEO.h>
-#include <eui/app/DslAppRuntime.h>
+#include <core/dsl.h>
+#include <components/components.h>
 #include <GLFW/glfw3.h>
 
 export module su.app.ui.layout;
@@ -9,1224 +9,845 @@ export module su.app.ui.layout;
 import std;
 import su.app.i18n;
 import su.app.state;
+import su.app.pages;
 import su.app.ui.theme;
 import su.app.services.backend;
 
-export namespace su::app::ui {
-
-using EUINEO::RectFrame;
-using EUINEO::UIContext;
-
-/**
- * @brief 外壳布局框架
- */
-struct ShellFrames {
-    RectFrame title_bar;   ///< 标题栏区域
-    RectFrame sidebar;     ///< 侧边栏区域
-    RectFrame content;     ///< 内容区区域
-};
-
-/**
- * @brief 计算外壳布局框架
- * 
- * 根据窗口大小和侧边栏状态，计算各个区域的矩形框架。
- * 
- * @param window 窗口矩形
- * @param state 应用状态
- * @return ShellFrames 布局框架
- */
-ShellFrames compute_shell_frames(const RectFrame& window, const AppState& state);
-
-/**
- * @brief 渲染应用布局
- * 
- * 渲染整个应用的布局，包括标题栏、侧边栏和内容区。
- * 
- * @param ui UI上下文
- * @param window 窗口矩形
- * @param state 应用状态
- */
-void render_app_layout(UIContext& ui, const RectFrame& window, const AppState& state);
-
-}  // namespace su::app::ui
-
-namespace su::app::ui {
-
 namespace {
 
-using EUINEO::Color;
-using EUINEO::ButtonStyle;
+using su::app::app_state;
+using su::app::update_state;
+using su::app::PageId;
+using su::app::AppState;
+using su::app::with_active_page;
+using su::app::with_sidebar_collapsed;
+using su::app::i18n::text;
+using su::app::i18n::app_i18n;
+using components::theme::withAlpha;
+using components::theme::withOpacity;
 
-GLFWwindow* get_glfw_window() {
-    return EUINEO::ActiveDslWindowState().window;
+// ---- UI state (file-scope) ----
+float pageScroll[4] = {};
+bool dialogOpen = false;
+std::string feedbackText = "Ready";
+bool toastVisible = false;
+int settingsSegment = 0;
+
+// ---- helpers ----
+constexpr float kSidebarWidth = 272.0f;
+constexpr float kNavHeight = 50.0f;
+constexpr float kNavGap = 14.0f;
+
+core::Color borderColor(float a = 1.0f) {
+    return withOpacity(components::theme::DarkThemeColors().border, a);
 }
 
-std::string tr(std::string_view locale, std::string_view key) {
-    return i18n::text(i18n::app_i18n(), locale, key);
+core::Color shadowColor(float alpha = 0.28f) {
+    return core::Color{0.0f, 0.0f, 0.0f, alpha};
 }
 
-std::string trf(std::string_view locale, std::string_view key, auto&&... args) {
-    return i18n::format(i18n::app_i18n(), locale, key, std::forward<decltype(args)>(args)...);
+core::Color accent() {
+    return components::theme::DarkThemeColors().primary;
 }
 
-float baseline_for_top(std::string_view text, float font_size, float top_y) {
-    const auto bounds = EUINEO::Renderer::MeasureTextBounds(std::string(text), font_size / 24.0f);
-    return top_y - bounds.y;
+static auto themeColors = components::theme::DarkThemeColors;
+static auto pageVisuals = [](const auto& tokens) { return components::theme::pageVisuals(tokens); };
+
+core::Color textPrimary() {
+    return core::Color{0.94f, 0.97f, 1.0f, 1.0f};
 }
 
-float baseline_for_center(std::string_view text, float font_size, float center_y) {
-    const auto bounds = EUINEO::Renderer::MeasureTextBounds(std::string(text), font_size / 24.0f);
-    return center_y - (bounds.y + bounds.height * 0.5f);
+core::Color textMuted() {
+    return core::Color{0.56f, 0.62f, 0.72f, 1.0f};
 }
 
-// --- Forward declarations ---
-void render_title_bar_impl(UIContext& ui, const RectFrame& frame, const AppState& state);
-void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& state);
-void render_content_area_impl(UIContext& ui, const RectFrame& frame, const AppState& state);
-void render_page_interactive(UIContext& ui, const RectFrame& area, const AppState& state);
-void render_dashboard_interactive(UIContext& ui, const RectFrame& area, const AppState& state);
-void render_enrollment_interactive(UIContext& ui, const RectFrame& area, const AppState& state);
-void render_recognition_interactive(UIContext& ui, const RectFrame& area, const AppState& state);
-void render_settings_interactive(UIContext& ui, const RectFrame& area, const AppState& state);
-
-constexpr std::string_view kIconSidebarToggle = "\xEF\x83\x89";      // fa-bars
-constexpr std::string_view kWindowIconMinimizePath = "assets/icons/window_controls/minimize.svg";
-constexpr std::string_view kWindowIconMaximizePath = "assets/icons/window_controls/maximize.svg";
-constexpr std::string_view kWindowIconClosePath = "assets/icons/window_controls/close.svg";
-constexpr float kWindowIconSize = 18.0f;
-constexpr float kFontPageTitle = 34.0f;
-constexpr float kFontPageSubtitle = 16.0f;
-constexpr float kFontSectionTitle = 18.0f;
-constexpr float kFontBodyStrong = 16.0f;
-constexpr float kFontBody = 15.0f;
-constexpr float kFontMeta = 14.0f;
-constexpr float kFontButton = 15.0f;
-constexpr float kFontCardValue = 40.0f;
-
-Color inverted_color(const Color& color, float alpha = 1.0f) {
-    return Color(1.0f - color.r, 1.0f - color.g, 1.0f - color.b, alpha);
+core::Color surface() {
+    return components::theme::DarkThemeColors().surface;
 }
 
-void render_window_control_icon(UIContext& ui,
-                                std::string_view id,
-                                float button_x,
-                                float button_y,
-                                std::string_view icon_path,
-                                const Color& button_bg,
-                                const Color& button_border,
-                                const std::function<void()>& on_click) {
-    const auto icon_x = button_x + (kWindowButtonSize - kWindowIconSize) * 0.5f;
-    const auto icon_y = button_y + (kWindowButtonSize - kWindowIconSize) * 0.5f;
-
-    ui.panel(std::format("{}.bg", id))
-        .position(button_x, button_y)
-        .size(kWindowButtonSize, kWindowButtonSize)
-        .background(button_bg)
-        .rounding(8.0f)
-        .border(1.0f, button_border)
-        .build();
-
-    ui.image(std::format("{}.icon", id))
-        .position(icon_x, icon_y)
-        .size(kWindowIconSize, kWindowIconSize)
-        .path(std::string(icon_path))
-        .build();
-
-    ui.button(std::string(id))
-        .position(button_x, button_y)
-        .size(kWindowButtonSize, kWindowButtonSize)
-        .opacity(0.0f)
-        .onClick(on_click)
-        .build();
+core::Color surfaceSoft() {
+    return components::theme::DarkThemeColors().surfaceHover;
 }
 
-// --- Stat card widget ---
-// Compact card with icon + value on the same area, title below value.
-// Uses MeasureTextBounds for proper vertical centering.
-void render_stat_card(UIContext& ui,
-                      const std::string& id,
-                      float x, float y, float w, float h,
-                      std::string_view title,
-                      std::string_view value,
-                      std::string_view icon,
-                      const Color& accent_color) {
-    ui.panel(std::format("{}.bg", id))
-        .position(x, y)
-        .size(w, h)
-        .background(card_bg_color())
-        .rounding(12.0f)
-        .border(1.0f, border_light_color())
-        .build();
+core::Color surfaceActive() {
+    return components::theme::DarkThemeColors().surfaceActive;
+}
 
-    constexpr float kIconFontSize = 22.0f;
-    constexpr float kIconBadgeSize = 34.0f;
-    constexpr float kContentInset = 24.0f;
-    const auto icon_badge_x = x + kContentInset;
-    const auto icon_badge_y = y + 18.0f;
-    ui.panel(std::format("{}.icon_badge", id))
-        .position(icon_badge_x, icon_badge_y)
-        .size(kIconBadgeSize, kIconBadgeSize)
-        .background(Color(accent_color.r, accent_color.g, accent_color.b, 0.14f))
-        .rounding(10.0f)
-        .build();
+core::Color appBg() {
+    return core::Color{0.07f, 0.08f, 0.10f, 1.0f};
+}
 
-    const auto icon_x = icon_badge_x + (kIconBadgeSize - kIconFontSize) * 0.5f;
-    const auto icon_y = baseline_for_center(icon, kIconFontSize, icon_badge_y + kIconBadgeSize * 0.5f);
-    ui.label(std::format("{}.icon", id))
-        .position(icon_x, icon_y)
-        .fontSize(kIconFontSize)
-        .color(accent_color)
-        .text(std::string(icon))
-        .build();
+core::Color mixTheme(core::Color from, core::Color to, float amount) {
+    return core::mixColor(from, to, amount);
+}
 
-    const float value_font_size = value.size() > 5 ? 30.0f : kFontCardValue;
-    const auto val_value = std::string(value);
-    const float val_y = baseline_for_top(val_value, value_font_size, y + h - 86.0f);
-    ui.label(std::format("{}.value", id))
-        .position(x + kContentInset, val_y)
-        .fontSize(value_font_size)
-        .color(text_primary_color())
-        .text(val_value)
-        .build();
+core::Color buttonHover(const core::Color& base) {
+    return mixTheme(base, core::Color{1.0f, 1.0f, 1.0f, base.a}, 0.16f);
+}
 
-    constexpr float kTitleFontSize = kFontBodyStrong;
-    const auto title_str = std::string(title);
-    const float title_y = baseline_for_top(title_str, kTitleFontSize, y + h - 38.0f);
-    ui.label(std::format("{}.title", id))
-        .position(x + kContentInset, title_y)
-        .fontSize(kTitleFontSize)
-        .color(text_secondary_color())
-        .text(title_str)
+core::Color buttonPressed(const core::Color& base) {
+    return mixTheme(base, core::Color{0.0f, 0.0f, 0.0f, base.a}, 0.34f);
+}
+
+core::Transition pageTransition() {
+    return core::Transition::make(0.28f, core::Ease::OutCubic);
+}
+
+// ---- nav item ----
+void navItem(core::dsl::Ui& ui, const std::string& id, const std::string& label, unsigned int icon, PageId page) {
+    const bool active = su::app::app_state().active_page == page;
+    const core::Color activeAccent = accent();
+    const core::Color normal = active ? activeAccent : surface();
+    const core::Color hover = active ? buttonHover(activeAccent) : surfaceSoft();
+    const core::Color pressed = active ? buttonPressed(activeAccent) : surfaceActive();
+
+    components::button(ui, id)
+        .size(212.0f, kNavHeight)
+        .icon(icon)
+        .iconSize(16.0f)
+        .fontSize(17.0f)
+        .text(label)
+        .colors(normal, hover, pressed)
+        .textColor(textPrimary())
+        .iconColor(textPrimary())
+        .radius(12.0f)
+        .border(1.0f, active ? withAlpha(activeAccent, 0.58f) : borderColor(0.60f))
+        .shadow(12.0f, 0.0f, 4.0f, shadowColor(0.18f))
+        .transition(pageTransition())
+        .onClick([page] {
+            update_state([page](const AppState& s) { return with_active_page(s, page); });
+        })
         .build();
 }
 
-}  // namespace (anonymous)
+// ---- sidebar ----
+void composeSidebar(core::dsl::Ui& ui, float height) {
+    const core::Color sidebarBg = mixTheme(appBg(), core::Color{0.0f, 0.0f, 0.0f, 1.0f}, 0.24f);
 
-// ============================================================================
-// Shell frame computation
-// ============================================================================
+    ui.stack("sidebar")
+        .size(kSidebarWidth, height)
+        .content([&] {
+            ui.rect("sidebar.bg")
+                .size(kSidebarWidth, height)
+                .color(sidebarBg)
+                .build();
 
-ShellFrames compute_shell_frames(const RectFrame& window, const AppState& state) {
-    return ShellFrames{
-        .title_bar = make_title_bar_frame(window),
-        .sidebar = make_sidebar_frame(window, state.sidebar_collapsed),
-        .content = make_content_frame(window, state.sidebar_collapsed),
-    };
+            ui.column("sidebar.content")
+                .size(kSidebarWidth, std::max(0.0f, height - 42.0f))
+                .margin(0.0f, 30.0f, 0.0f, 0.0f)
+                .gap(kNavGap)
+                .alignItems(core::Align::CENTER)
+                .content([&] {
+                    // brand
+                    ui.text("brand.icon")
+                        .size(212.0f, 34.0f)
+                        .icon(0xF5FD)
+                        .fontSize(27.0f)
+                        .lineHeight(32.0f)
+                        .color(accent())
+                        .horizontalAlign(core::HorizontalAlign::Center)
+                        .build();
+
+                    ui.text("brand.title")
+                        .size(212.0f, 36.0f)
+                        .text("Smile2Unlock")
+                        .fontSize(26.0f)
+                        .lineHeight(32.0f)
+                        .color(textPrimary())
+                        .horizontalAlign(core::HorizontalAlign::Center)
+                        .build();
+
+                    navItem(ui, "nav.dashboard", "Dashboard",   0xF0DB, PageId::Dashboard);
+                    navItem(ui, "nav.enrollment", "Enrollment", 0xF234, PageId::Enrollment);
+                    navItem(ui, "nav.recognition", "Recognition", 0xF030, PageId::Recognition);
+                    navItem(ui, "nav.settings",   "Settings",   0xF013, PageId::Settings);
+                });
+
+            // theme toggle at bottom
+            ui.stack("sidebar.theme")
+                .x(30.0f)
+                .y(std::max(0.0f, height - 82.0f))
+                .size(212.0f, 50.0f)
+                .content([&] {
+                    components::button(ui, "nav.theme")
+                        .size(212.0f, 50.0f)
+                        .icon(0xF185)
+                        .iconSize(16.0f)
+                        .fontSize(17.0f)
+                        .text("Theme")
+                        .colors(surface(), surfaceSoft(), surfaceActive())
+                        .textColor(textPrimary())
+                        .radius(12.0f)
+                        .border(1.0f, borderColor(0.80f))
+                        .shadow(12.0f, 0.0f, 4.0f, shadowColor(0.18f))
+                        .transition(pageTransition())
+                        .build();
+                });
+        });
 }
 
-// ============================================================================
-// Main app layout
-// ============================================================================
+// ============================================================
+// Pages
+// ============================================================
 
-void render_app_layout(UIContext& ui, const RectFrame& window, const AppState& state) {
-    ui.panel("app.background")
-        .position(0.0f, 0.0f)
-        .size(window.width, window.height)
-        .background(content_bg_color())
-        .build();
+// ---- stat card (dashboard) ----
+void statCard(core::dsl::Ui& ui, const std::string& id,
+              const std::string& title, const std::string& value,
+              unsigned int icon, const core::Color& accentColor,
+              float width, float height) {
+    ui.stack(id)
+        .size(width, height)
+        .content([&] {
+            ui.rect(id + ".bg")
+                .size(width, height)
+                .color(surface())
+                .radius(18.0f)
+                .border(1.0f, borderColor())
+                .build();
 
-    const auto frames = compute_shell_frames(window, state);
-    render_title_bar_impl(ui, frames.title_bar, state);
-    render_sidebar_impl(ui, frames.sidebar, state);
-    render_content_area_impl(ui, frames.content, state);
+            ui.text(id + ".icon")
+                .x(18.0f)
+                .y(18.0f)
+                .size(36.0f, 36.0f)
+                .icon(icon)
+                .fontSize(24.0f)
+                .lineHeight(34.0f)
+                .color(accentColor)
+                .build();
+
+            ui.text(id + ".value")
+                .x(width - 18.0f)
+                .y(18.0f)
+                .size(std::max(0.0f, width - 48.0f), 36.0f)
+                .text(value)
+                .fontSize(28.0f)
+                .lineHeight(34.0f)
+                .color(textPrimary())
+                .horizontalAlign(core::HorizontalAlign::Right)
+                .build();
+
+            ui.text(id + ".title")
+                .x(18.0f)
+                .y(height - 34.0f)
+                .size(std::max(0.0f, width - 36.0f), 24.0f)
+                .text(title)
+                .fontSize(16.0f)
+                .lineHeight(22.0f)
+                .color(textMuted())
+                .build();
+        });
 }
 
-// ============================================================================
-// Title bar
-// ============================================================================
+void composeDashboardPage(core::dsl::Ui& ui, float width, float height) {
+    (void)height;
+    const auto& state = su::app::app_state();
+    const float cardWidth = std::max(160.0f, std::min(240.0f, (width - 36.0f) / 3.0f));
+    const float cardHeight = 128.0f;
 
-namespace {
+    ui.row("dash.stats")
+        .size(cardWidth * 3.0f + 36.0f, cardHeight)
+        .gap(18.0f)
+        .content([&] {
+            statCard(ui, "dash.users", "Total Users",
+                     std::to_string(state.total_users), 0xF0C0,
+                     accent(), cardWidth, cardHeight);
+            statCard(ui, "dash.faces", "Total Faces",
+                     std::to_string(state.total_faces), 0xF2C0,
+                     core::Color{0.20f, 0.75f, 0.45f, 1.0f}, cardWidth, cardHeight);
+            statCard(ui, "dash.camera", "Camera",
+                     state.camera_connected ? "Online" : "Offline", 0xF030,
+                     state.camera_connected ? core::Color{0.30f, 0.55f, 0.95f, 1.0f}
+                                            : core::Color{0.85f, 0.25f, 0.30f, 1.0f},
+                     cardWidth, cardHeight);
+        });
 
-void render_title_bar_impl(UIContext& ui, const RectFrame& frame, const AppState& state) {
-    (void)state;
-    ui.panel("titlebar")
-        .position(frame.x, frame.y)
-        .size(frame.width, frame.height)
-        .background(title_bar_color())
+    ui.text("dash.section.recent")
+        .size(width, 30.0f)
+        .text("Recent Activity")
+        .fontSize(24.0f)
+        .lineHeight(30.0f)
+        .color(textPrimary())
         .build();
 
-    const auto close_btn_x = frame.x + frame.width - kWindowButtonSize - kWindowButtonGap;
-    const auto btn_y = frame.y + (frame.height - kWindowButtonSize) / 2.0f;
+    // user list
+    ui.column("dash.user.list")
+        .size(width, std::min(height * 0.5f, 320.0f))
+        .gap(10.0f)
+        .content([&] {
+            for (const auto& user : state.users) {
+                const std::string uid = "dash.user." + std::to_string(user.user_id);
+                ui.stack(uid)
+                    .size(width, 56.0f)
+                    .content([&, user] {
+                        ui.rect(uid + ".bg")
+                            .size(width, 56.0f)
+                            .color(surface())
+                            .radius(14.0f)
+                            .border(1.0f, borderColor())
+                            .build();
 
-    ui.panel("titlebar.drag")
-        .position(frame.x, frame.y)
-        .size(frame.width - 120.0f, frame.height)
-        .background(title_bar_color())
-        .build();
+                        ui.text(uid + ".name")
+                            .x(18.0f)
+                            .y(8.0f)
+                            .size(width - 170.0f, 26.0f)
+                            .text(user.username)
+                            .fontSize(20.0f)
+                            .lineHeight(24.0f)
+                            .color(textPrimary())
+                            .build();
 
-    constexpr float title_font = kFontSectionTitle;
-    const auto title_bounds = EUINEO::Renderer::MeasureTextBounds(
-        tr(state.active_locale, "titlebar.title"), title_font / 24.0f);
-    const auto title_center_y = btn_y + kWindowButtonSize * 0.5f;
-    const auto title_y = title_center_y - (title_bounds.y + title_bounds.height * 0.5f);
-    ui.label("titlebar.title")
-        .position(frame.x + 16.0f, title_y)
-        .fontSize(title_font)
-        .color(text_secondary_color())
-        .text(tr(state.active_locale, "titlebar.title"))
-        .build();
+                        ui.text(uid + ".faces")
+                            .x(18.0f)
+                            .y(34.0f)
+                            .size(width - 170.0f, 20.0f)
+                            .text(std::to_string(user.face_count) + " faces")
+                            .fontSize(14.0f)
+                            .lineHeight(18.0f)
+                            .color(textMuted())
+                            .build();
 
-    const auto neutral_button_bg = inverted_color(title_bar_color(), 0.22f);
-    const auto neutral_button_border = inverted_color(title_bar_color(), 0.34f);
-    const auto close_button_bg = Color(0.34f, 0.36f, 0.40f, 0.92f);
-    const auto close_button_border = Color(1.0f, 1.0f, 1.0f, 0.14f);
-    const auto minimize_x = close_btn_x - kWindowButtonSize * 2.0f - kWindowButtonGap * 2.0f;
-    render_window_control_icon(ui,
-                               "titlebar.minimize",
-                               minimize_x,
-                               btn_y,
-                               kWindowIconMinimizePath,
-                               neutral_button_bg,
-                               neutral_button_border,
-                               []() {
-        if (GLFWwindow* win = get_glfw_window()) {
-            glfwIconifyWindow(win);
-        }
-    });
-
-    const auto maximize_x = close_btn_x - kWindowButtonSize - kWindowButtonGap;
-    render_window_control_icon(ui,
-                               "titlebar.maximize",
-                               maximize_x,
-                               btn_y,
-                               kWindowIconMaximizePath,
-                               neutral_button_bg,
-                               neutral_button_border,
-                               []() {
-        if (GLFWwindow* win = get_glfw_window()) {
-            if (glfwGetWindowAttrib(win, GLFW_MAXIMIZED) == GLFW_TRUE) {
-                glfwRestoreWindow(win);
-            } else {
-                glfwMaximizeWindow(win);
+                        ui.text(uid + ".remark")
+                            .x(width - 120.0f)
+                            .y(16.0f)
+                            .size(100.0f, 24.0f)
+                            .text(user.remark)
+                            .fontSize(14.0f)
+                            .lineHeight(20.0f)
+                            .color(textMuted())
+                            .horizontalAlign(core::HorizontalAlign::Right)
+                            .build();
+                    });
             }
-        }
-    });
-
-    render_window_control_icon(ui,
-                               "titlebar.close",
-                               close_btn_x,
-                               btn_y,
-                               kWindowIconClosePath,
-                               close_button_bg,
-                               close_button_border,
-                               []() {
-        if (GLFWwindow* win = get_glfw_window()) {
-            glfwSetWindowShouldClose(win, 1);
-        }
-    });
-}
-
-}  // namespace (anonymous)
-
-// ============================================================================
-// Sidebar
-// ============================================================================
-
-namespace {
-
-void render_sidebar_impl(UIContext& ui, const RectFrame& frame, const AppState& state) {
-    constexpr float kSidebarHeaderPadding = 12.0f;
-    constexpr float kCollapsedNavButtonSize = 34.0f;
-
-    ui.panel("sidebar")
-        .position(frame.x, frame.y)
-        .size(frame.width, frame.height)
-        .background(sidebar_color())
-        .build();
-
-    const auto toggle_x = frame.x + kSidebarHeaderPadding;
-    const auto toggle_y = frame.y + kSidebarHeaderPadding;
-    ui.button("sidebar.toggle")
-        .position(toggle_x, toggle_y)
-        .size(kSidebarToggleSize, kSidebarToggleSize)
-        .style(EUINEO::ButtonStyle::Default)
-        .icon(std::string(kIconSidebarToggle))
-        .fontSize(kFontBody)
-        .onClick([]() {
-            update_state([](const AppState& s) {
-                return with_sidebar_collapsed(s, !s.sidebar_collapsed);
-            });
-        })
-        .build();
-
-    auto nav_y = toggle_y + kSidebarToggleSize + 14.0f;
-    auto items = make_sidebar_nav_items(state);
-    std::ranges::for_each(items, [&](const auto& item) {
-        const auto item_width = frame.width - 16.0f;
-        const auto item_x = frame.x + 8.0f;
-        const bool is_active = state.active_page == item.page;
-
-        if (state.sidebar_collapsed) {
-            ui.button(item.id)
-                .position(frame.x + (frame.width - kCollapsedNavButtonSize) * 0.5f, nav_y)
-                .size(kCollapsedNavButtonSize, kCollapsedNavButtonSize)
-                .icon(item.icon)
-                .fontSize(kFontBody)
-                .style(is_active ? EUINEO::ButtonStyle::Primary : EUINEO::ButtonStyle::Default)
-                .onClick([page = item.page]() {
-                    update_state([page](const AppState& s) {
-                        return with_active_page(s, page);
-                    });
-                })
-                .build();
-        } else {
-            ui.button(item.id)
-                .position(item_x, nav_y)
-                .size(item_width, kNavItemHeight)
-                .icon(item.icon)
-                .fontSize(kFontBody)
-                .text(item.label)
-                .style(is_active ? EUINEO::ButtonStyle::Primary : EUINEO::ButtonStyle::Default)
-                .onClick([page = item.page]() {
-                    update_state([page](const AppState& s) {
-                        return with_active_page(s, page);
-                    });
-                })
-                .build();
-        }
-        nav_y += kNavItemHeight + kNavItemGap;
-    });
-}
-
-}  // namespace (anonymous)
-
-// ============================================================================
-// Content area shell
-// ============================================================================
-
-namespace {
-
-void render_content_area_impl(UIContext& ui, const RectFrame& frame, const AppState& state) {
-    constexpr float kContentTitleFont = kFontPageTitle;
-    constexpr float kContentDescriptionFont = kFontPageSubtitle;
-    constexpr float kContentHeaderTop = 12.0f;
-    constexpr float kContentHeaderGap = 10.0f;
-
-    ui.panel("content")
-        .position(frame.x, frame.y)
-        .size(frame.width, frame.height)
-        .background(content_bg_color())
-        .build();
-
-    const auto& locale = state.active_locale;
-    const auto page_str = page_name(state.active_page);
-    auto current_y = frame.y + kContentHeaderTop;
-
-    const auto title_key = std::format("page.{}.title", page_str);
-    const auto desc_key = std::format("page.{}.description", page_str);
-    const auto title_text = tr(locale, title_key);
-    const auto desc_text = tr(locale, desc_key);
-    const auto title_bounds = EUINEO::Renderer::MeasureTextBounds(title_text, kContentTitleFont / 24.0f);
-    const auto desc_bounds = EUINEO::Renderer::MeasureTextBounds(desc_text, kContentDescriptionFont / 24.0f);
-    const auto title_top = frame.y + kContentHeaderTop;
-    const auto title_y = title_top - title_bounds.y;
-
-    ui.label("content.page.title")
-        .position(frame.x + kContentPadding, title_y)
-        .fontSize(kContentTitleFont)
-        .color(text_primary_color())
-        .text(title_text)
-        .build();
-    const auto title_bottom = title_y + title_bounds.y + title_bounds.height;
-    const auto desc_top = title_bottom + kContentHeaderGap;
-    const auto desc_y = desc_top - desc_bounds.y;
-
-    ui.label("content.page.description")
-        .position(frame.x + kContentPadding, desc_y)
-        .fontSize(kContentDescriptionFont)
-        .color(text_secondary_color())
-        .text(desc_text)
-        .build();
-    current_y = desc_y + desc_bounds.y + desc_bounds.height + 24.0f;
-
-    const auto interactive_h = frame.y + frame.height - current_y - kContentPadding;
-    const RectFrame interactive_area{
-        frame.x + kContentPadding, current_y,
-        frame.width - kContentPadding * 2.0f, interactive_h};
-
-    render_page_interactive(ui, interactive_area, state);
-}
-
-}  // namespace (anonymous)
-
-// ============================================================================
-// Page dispatcher
-// ============================================================================
-
-namespace {
-
-void render_page_interactive(UIContext& ui, const RectFrame& area, const AppState& state) {
-    switch (state.active_page) {
-        case PageId::Dashboard:
-            render_dashboard_interactive(ui, area, state);
-            break;
-        case PageId::Enrollment:
-            render_enrollment_interactive(ui, area, state);
-            break;
-        case PageId::Recognition:
-            render_recognition_interactive(ui, area, state);
-            break;
-        case PageId::Settings:
-            render_settings_interactive(ui, area, state);
-            break;
-    }
-}
-
-}  // namespace (anonymous)
-
-// ============================================================================
-// DASHBOARD PAGE — Status overview with metric cards + quick actions
-// ============================================================================
-
-namespace {
-
-void render_dashboard_interactive(UIContext& ui, const RectFrame& area, const AppState& state) {
-    const auto card_w = (area.width - kCardGap) * 0.5f;
-    constexpr float kDashboardActionBarHeight = 78.0f;
-    const auto card_h = (area.height - kDashboardActionBarHeight - kCardGap * 2.0f) * 0.5f;
-
-    // Row 0: System Status + Users
-    const auto status_color = state.camera_connected ? accent_success_color() : accent_warning_color();
-    render_stat_card(ui, "dash.status", area.x, area.y, card_w, card_h,
-                     tr(state.active_locale, "card.dashboard.status_title"),
-                     tr(state.active_locale, state.camera_connected
-                         ? "card.dashboard.status_ok" : "card.dashboard.status_warn"),
-                     "\xEF\x84\x9F", status_color);  // fa-check-circle
-
-    const auto users_value = std::format("{}", state.total_users);
-    render_stat_card(ui, "dash.users", area.x + card_w + kCardGap, area.y, card_w, card_h,
-                     tr(state.active_locale, "card.dashboard.users_title"),
-                     users_value,
-                     "\xEF\x80\x87", accent_primary_color());  // fa-users
-
-    // Row 1: Faces + Camera
-    const auto faces_value = std::format("{}", state.total_faces);
-    render_stat_card(ui, "dash.faces", area.x, area.y + card_h + kCardGap, card_w, card_h,
-                     tr(state.active_locale, "card.dashboard.faces_title"),
-                     faces_value,
-                     "\xEF\x80\xB0", accent_success_color());  // fa-camera
-
-    const auto cam_status = state.camera_connected
-        ? tr(state.active_locale, "card.dashboard.camera_connected")
-        : tr(state.active_locale, "card.dashboard.camera_disconnected");
-    render_stat_card(ui, "dash.camera", area.x + card_w + kCardGap, area.y + card_h + kCardGap, card_w, card_h,
-                     tr(state.active_locale, "card.dashboard.camera_title"),
-                     cam_status,
-                     "\xEF\x81\xA0", accent_primary_color());  // fa-video
-
-    // Bottom row: Recognition status + quick action buttons
-    const auto bottom_y = area.y + (card_h + kCardGap) * 2.0f;
-    const auto bottom_h = kDashboardActionBarHeight;
-
-    ui.panel("dash.actions.bg")
-        .position(area.x, bottom_y)
-        .size(area.width, bottom_h)
-        .background(card_bg_color())
-        .rounding(12.0f)
-        .border(1.0f, border_light_color())
-        .build();
-
-    constexpr float kActionGap = 12.0f;
-    constexpr float kActionBtnW = 124.0f;
-    constexpr float kActionBtnH = 32.0f;
-    const float action_center_y = bottom_y + bottom_h * 0.5f;
-    const float btn_y = action_center_y - kActionBtnH * 0.5f;
-
-    // Recognition status badge (left side)
-    const auto rec_value = state.recognition_running
-        ? tr(state.active_locale, "card.dashboard.rec_running")
-        : tr(state.active_locale, "card.dashboard.rec_idle");
-    const auto rec_color = state.recognition_running ? accent_success_color() : text_muted_color();
-    constexpr float kStatusFontSize = 15.0f;
-    const auto status_text = std::format("{}  {}",
-        state.recognition_running ? "\xEF\x82\xB1" : "\xEF\x81\xB3", rec_value);
-    const float status_y = baseline_for_center(status_text, kStatusFontSize, action_center_y);
-    ui.label("dash.rec_status")
-        .position(area.x + 18.0f, status_y)
-        .fontSize(kStatusFontSize)
-        .color(rec_color)
-        .text(status_text)
-        .build();
-
-    // Action buttons (right side)
-    const float btns_right = area.x + area.width - 18.0f;
-    const float btn3_x = btns_right - kActionBtnW;
-    const float btn2_x = btn3_x - kActionBtnW - kActionGap;
-    const float btn1_x = btn2_x - kActionBtnW - kActionGap;
-
-    // Enrollment button
-    ui.button("dash.action.enroll")
-        .position(btn1_x, btn_y)
-        .size(kActionBtnW, kActionBtnH)
-        .style(ButtonStyle::Primary)
-        .text(tr(state.active_locale, "card.dashboard.btn_enroll"))
-        .fontSize(kFontMeta)
-        .onClick([]() {
-            update_state([](const AppState& s) {
-                return with_active_page(s, PageId::Enrollment);
-            });
-        })
-        .build();
-
-    // Recognition button
-    ui.button("dash.action.recognize")
-        .position(btn2_x, btn_y)
-        .size(kActionBtnW, kActionBtnH)
-        .style(ButtonStyle::Outline)
-        .text(tr(state.active_locale, "card.dashboard.btn_recognize"))
-        .fontSize(kFontMeta)
-        .onClick([]() {
-            update_state([](const AppState& s) {
-                return with_active_page(s, PageId::Recognition);
-            });
-        })
-        .build();
-
-    // Settings button
-    ui.button("dash.action.settings")
-        .position(btn3_x, btn_y)
-        .size(kActionBtnW, kActionBtnH)
-        .style(ButtonStyle::Default)
-        .text(tr(state.active_locale, "card.dashboard.btn_settings"))
-        .fontSize(kFontMeta)
-        .onClick([]() {
-            update_state([](const AppState& s) {
-                return with_active_page(s, PageId::Settings);
-            });
-        })
-        .build();
-}
-
-}  // namespace (anonymous)
-
-// ============================================================================
-// ENROLLMENT PAGE — User list + add/edit + face enrollment
-// ============================================================================
-
-namespace {
-
-void render_enrollment_interactive(UIContext& ui, const RectFrame& area, const AppState& state) {
-    const auto& locale = state.active_locale;
-    const auto left_w = area.width * 0.38f;
-    const auto right_w = area.width - left_w - kCardGap;
-    constexpr float kEnrollPanelTitleFont = kFontSectionTitle;
-    constexpr float kEnrollItemTitleFont = kFontBodyStrong;
-    constexpr float kEnrollItemMetaFont = kFontMeta;
-
-    // ====== Left panel: User list ======
-    ui.panel("enroll.list.bg")
-        .position(area.x, area.y)
-        .size(left_w, area.height)
-        .background(card_bg_color())
-        .rounding(12.0f)
-        .border(1.0f, border_light_color())
-        .build();
-
-    ui.label("enroll.list.title")
-        .position(area.x + 16.0f, area.y + 14.0f)
-        .fontSize(kEnrollPanelTitleFont)
-        .color(text_primary_color())
-        .text(tr(locale, "enrollment.user_list"))
-        .build();
-
-    // User list items (scrollable via clipping)
-    const auto list_top = area.y + 74.0f;
-    const auto list_bottom = area.y + area.height - 66.0f;
-    const auto list_h = list_bottom - list_top;
-    const auto list_item_h = 52.0f;
-
-    // Clip user list rendering
-    const int max_visible = static_cast<int>(list_h / list_item_h);
-    const auto& users = state.users;
-
-    std::ranges::for_each(
-        std::views::iota(0, std::min(max_visible, static_cast<int>(users.size()))),
-        [&](int i) {
-            const auto& user = users[i];
-            const auto item_y = list_top + i * list_item_h;
-            const bool selected = user.user_id == state.selected_user_id;
-            const auto item_bg = selected ? sidebar_active_color() : Color(0.0f, 0.0f, 0.0f, 0.0f);
-
-            ui.panel(std::format("enroll.list.item.{}", user.user_id))
-                .position(area.x + 8.0f, item_y)
-                .size(left_w - 16.0f, list_item_h - 4.0f)
-                .background(item_bg)
-                .rounding(8.0f)
-                .build();
-
-            ui.label(std::format("enroll.list.name.{}", user.user_id))
-                .position(area.x + 18.0f, item_y + 10.0f)
-                .fontSize(kEnrollItemTitleFont)
-                .color(text_primary_color())
-                .text(user.username)
-                .build();
-
-            const auto face_info = std::format("{} {}", user.face_count,
-                tr(locale, "enrollment.faces_count"));
-            ui.label(std::format("enroll.list.detail.{}", user.user_id))
-                .position(area.x + 18.0f, item_y + 31.0f)
-                .fontSize(kEnrollItemMetaFont)
-                .color(text_muted_color())
-                .text(face_info)
-                .build();
-
-            // Clickable overlay
-            ui.button(std::format("enroll.list.btn.{}", user.user_id))
-                .position(area.x + 8.0f, item_y)
-                .size(left_w - 16.0f, list_item_h - 4.0f)
-                .opacity(0.0f)
-                .onClick([uid = user.user_id]() {
-                    update_state([uid](const AppState& s) {
-                        return with_selected_user(s, uid);
-                    });
-                })
-                .build();
         });
-
-    // Add user button
-    ui.button("enroll.add_user")
-        .position(area.x + 8.0f, list_bottom + 4.0f)
-        .size(left_w - 16.0f, 40.0f)
-        .style(ButtonStyle::Primary)
-        .icon("\xEF\x81\xA7")  // fa-plus
-        .text(tr(locale, "enrollment.add_user"))
-        .fontSize(kFontButton)
-        .onClick([]() {
-            update_state([](const AppState& s) {
-                return with_show_add_user(s, !s.show_add_user);
-            });
-        })
-        .build();
-
-    // ====== Right panel: User detail / Add form / Face enrollment ======
-    const auto right_x = area.x + left_w + kCardGap;
-    const auto right_inner_w = right_w - 32.0f;
-
-    ui.panel("enroll.detail.bg")
-        .position(right_x, area.y)
-        .size(right_w, area.height)
-        .background(card_bg_color())
-        .rounding(12.0f)
-        .border(1.0f, border_light_color())
-        .build();
-
-    if (state.show_add_user) {
-        // Add user form
-        ui.label("enroll.form.title")
-            .position(right_x + 16.0f, area.y + 16.0f)
-            .fontSize(kFontSectionTitle)
-            .color(text_primary_color())
-            .text(tr(locale, "enrollment.add_user_title"))
-            .build();
-
-        ui.input("enroll.form.username")
-            .position(right_x + 16.0f, area.y + 52.0f)
-            .size(right_inner_w, 36.0f)
-            .placeholder(tr(locale, "enrollment.username_placeholder"))
-            .fontSize(kFontBody)
-            .build();
-
-        ui.input("enroll.form.remark")
-            .position(right_x + 16.0f, area.y + 96.0f)
-            .size(right_inner_w, 36.0f)
-            .placeholder(tr(locale, "enrollment.remark_placeholder"))
-            .fontSize(kFontBody)
-            .build();
-
-        ui.button("enroll.form.save")
-            .position(right_x + 16.0f, area.y + 148.0f)
-            .size((right_inner_w - 8.0f) * 0.5f, 36.0f)
-            .style(ButtonStyle::Primary)
-            .text(tr(locale, "enrollment.save"))
-            .fontSize(kFontButton)
-            .onClick([]() {
-                update_state([](const AppState& s) {
-                    return with_show_add_user(s, false);
-                });
-            })
-            .build();
-
-        ui.button("enroll.form.cancel")
-            .position(right_x + 16.0f + (right_inner_w - 8.0f) * 0.5f + 16.0f, area.y + 148.0f)
-            .size((right_inner_w - 8.0f) * 0.5f, 36.0f)
-            .style(ButtonStyle::Default)
-            .text(tr(locale, "enrollment.cancel"))
-            .fontSize(kFontButton)
-            .onClick([]() {
-                update_state([](const AppState& s) {
-                    return with_show_add_user(s, false);
-                });
-            })
-            .build();
-    } else if (state.selected_user_id > 0) {
-        // Selected user detail
-        const auto sel = std::ranges::find_if(users, [&](const auto& u) {
-            return u.user_id == state.selected_user_id;
-        });
-
-        if (sel != users.end()) {
-            ui.label("enroll.detail.title")
-                .position(right_x + 16.0f, area.y + 16.0f)
-                .fontSize(22.0f)
-                .color(text_primary_color())
-                .text(sel->username)
-                .build();
-
-            ui.label("enroll.detail.remark")
-                .position(right_x + 16.0f, area.y + 46.0f)
-                .fontSize(kFontMeta)
-                .color(text_secondary_color())
-                .text(std::format("{}: {}", tr(locale, "enrollment.remark"), sel->remark))
-                .build();
-
-            ui.label("enroll.detail.faces")
-                .position(right_x + 16.0f, area.y + 68.0f)
-                .fontSize(kFontMeta)
-                .color(text_secondary_color())
-                .text(std::format("{}: {} {}",
-                    tr(locale, "enrollment.faces"),
-                    sel->face_count,
-                    tr(locale, "enrollment.faces_count")))
-                .build();
-
-            // Face enrollment controls
-            ui.panel("enroll.face.preview")
-                .position(right_x + 16.0f, area.y + 100.0f)
-                .size(right_inner_w, 200.0f)
-                .background(content_bg_color())
-                .rounding(10.0f)
-                .border(1.0f, border_light_color())
-                .build();
-
-            ui.label("enroll.face.placeholder")
-                .position(right_x + 16.0f + (right_inner_w - 120.0f) * 0.5f, area.y + 100.0f + 100.0f - 8.0f)
-                .fontSize(kFontBody)
-                .color(text_muted_color())
-                .text(state.is_capturing_face
-                    ? tr(locale, "enrollment.capturing")
-                    : tr(locale, "enrollment.no_face"))
-                .build();
-
-            const auto btn_y = area.y + 320.0f;
-
-            ui.button("enroll.face.capture")
-                .position(right_x + 16.0f, btn_y)
-                .size((right_inner_w - 8.0f) * 0.5f, 36.0f)
-                .style(ButtonStyle::Primary)
-                .text(tr(locale, "enrollment.capture_face"))
-                .fontSize(kFontButton)
-                .icon("\xEF\x80\xB0")
-                .onClick([uid = sel->user_id]() {
-                    update_state([uid](const AppState& s) {
-                        auto next = with_capturing_face(s, true);
-                        services::backend().capture_and_add_face(uid);
-                        return with_capturing_face(next, false);
-                    });
-                })
-                .build();
-
-            ui.button("enroll.face.delete_user")
-                .position(right_x + 16.0f + (right_inner_w - 8.0f) * 0.5f + 16.0f, btn_y)
-                .size((right_inner_w - 8.0f) * 0.5f, 36.0f)
-                .style(ButtonStyle::Default)
-                .text(tr(locale, "enrollment.delete_user"))
-                .fontSize(kFontButton)
-                .onClick([uid = sel->user_id]() {
-                    services::backend().delete_user(uid);
-                    update_state([](const AppState& s) {
-                        auto remaining = s.users;
-                        std::erase_if(remaining, [&](const auto& u) {
-                            return u.user_id == s.selected_user_id;
-                        });
-                        return with_users(with_selected_user(s, -1), std::move(remaining));
-                    });
-                })
-                .build();
-        }
-    } else {
-        // No user selected
-        ui.label("enroll.no_selection")
-            .position(right_x + 20.0f, area.y + 32.0f)
-            .fontSize(kFontSectionTitle)
-            .color(text_muted_color())
-            .text(tr(locale, "enrollment.select_user_hint"))
-            .build();
-    }
 }
 
-}  // namespace (anonymous)
+void composeEnrollmentPage(core::dsl::Ui& ui, float width, float height) {
+    (void)height;
+    const auto& state = su::app::app_state();
+    const float listWidth = std::max(260.0f, std::min(480.0f, width * 0.55f));
+    const float sectionWidth = std::max(0.0f, width - listWidth - 20.0f);
 
-// ============================================================================
-// RECOGNITION PAGE — Camera viewport + controls + result display
-// ============================================================================
+    ui.row("enroll.row")
+        .size(width, std::max(300.0f, height - 40.0f))
+        .gap(20.0f)
+        .content([&] {
+            // user list
+            ui.column("enroll.list")
+                .size(listWidth, 400.0f)
+                .gap(8.0f)
+                .content([&] {
+                    ui.text("enroll.list.title")
+                        .size(listWidth, 30.0f)
+                        .text("Users")
+                        .fontSize(22.0f)
+                        .lineHeight(28.0f)
+                        .color(textPrimary())
+                        .build();
 
-namespace {
-
-void render_recognition_interactive(UIContext& ui, const RectFrame& area, const AppState& state) {
-    const auto& locale = state.active_locale;
-    const auto ctrl_h = 48.0f;
-
-    // ====== Viewport area (camera preview placeholder) ======
-    const auto view_h = area.height - ctrl_h - kCardGap;
-    ui.panel("recog.viewport.bg")
-        .position(area.x, area.y)
-        .size(area.width, view_h)
-        .background(card_bg_color())
-        .rounding(12.0f)
-        .border(1.0f, border_light_color())
-        .build();
-
-    // Viewport center status
-    const auto view_center_x = area.x + area.width * 0.5f;
-    const auto view_center_y = area.y + view_h * 0.5f;
-
-    if (state.recognition_running) {
-        // Running indicator
-        ui.label("recog.viewport.status")
-            .position(view_center_x - 90.0f, view_center_y - 28.0f)
-            .fontSize(kFontSectionTitle)
-            .color(accent_success_color())
-            .text(std::format("\xEF\x80\xB0  {}", tr(locale, "recognition.running")))
-            .build();
-
-        ui.label("recog.viewport.fps")
-            .position(view_center_x - 80.0f, view_center_y - 10.0f)
-            .fontSize(kFontMeta)
-            .color(text_secondary_color())
-            .text(std::format("{}", tr(locale, "recognition.fps_placeholder")))
-            .build();
-    } else {
-        ui.label("recog.viewport.idle")
-            .position(view_center_x - 84.0f, view_center_y - 8.0f)
-            .fontSize(kFontBodyStrong)
-            .color(text_muted_color())
-            .text(std::format("\xEF\x81\xB3  {}", tr(locale, "recognition.idle")))
-            .build();
-    }
-
-    // Camera index indicator
-    ui.label("recog.viewport.camera_info")
-        .position(area.x + 14.0f, area.y + 14.0f)
-        .fontSize(kFontBody)
-        .color(text_muted_color())
-        .text(std::format("{}: #{}", tr(locale, "recognition.camera_label"),
-            state.config.selected_camera))
-        .build();
-
-    // ====== Last result overlay ======
-    if (state.last_result.success) {
-        const auto result_y = area.y + view_h - 48.0f;
-        ui.panel("recog.result.banner")
-            .position(area.x + 4.0f, result_y)
-            .size(area.width - 8.0f, 44.0f)
-            .background(state.last_result.success
-                ? Color(0.20f, 0.55f, 0.30f, 0.85f)
-                : Color(0.55f, 0.20f, 0.25f, 0.85f))
-            .rounding(8.0f)
-            .build();
-
-        ui.label("recog.result.text")
-            .position(area.x + 16.0f, result_y + 10.0f)
-            .fontSize(kFontMeta)
-            .color(text_primary_color())
-            .text(std::format("{}{}: {:.1f}%",
-                state.last_result.username,
-                tr(locale, "recognition.matched"),
-                state.last_result.similarity * 100.0f))
-            .build();
-    }
-
-    // ====== Controls bar ======
-    const auto ctrl_y = area.y + view_h + kCardGap;
-    ui.panel("recog.controls.bg")
-        .position(area.x, ctrl_y)
-        .size(area.width, ctrl_h)
-        .background(card_bg_color())
-        .rounding(12.0f)
-        .border(1.0f, border_light_color())
-        .build();
-
-    const float btn_w = 126.0f;
-    const float btn_h = 32.0f;
-    const float ctrl_center_y = ctrl_y + (ctrl_h - btn_h) * 0.5f;
-
-    // Start/Stop toggle
-    if (state.recognition_running) {
-        ui.button("recog.ctrl.stop")
-            .position(area.x + 14.0f, ctrl_center_y)
-            .size(btn_w, btn_h)
-            .style(ButtonStyle::Default)
-            .text(tr(locale, "recognition.stop"))
-            .fontSize(kFontButton)
-            .icon("\xEF\x81\xB3")  // fa-pause
-            .textColor(accent_danger_color())
-            .onClick([]() {
-                services::backend().stop_recognition();
-                update_state([](const AppState& s) {
-                    return with_recognition_running(
-                        with_recognition_status(s, "stopped"), false);
-                });
-            })
-            .build();
-    } else {
-        ui.button("recog.ctrl.start")
-            .position(area.x + 14.0f, ctrl_center_y)
-            .size(btn_w, btn_h)
-            .style(ButtonStyle::Primary)
-            .text(tr(locale, "recognition.start"))
-            .fontSize(kFontButton)
-            .icon("\xEF\x81\xA5")  // fa-play
-            .onClick([]() {
-                int cam = app_state().config.selected_camera;
-                services::backend().start_recognition(cam);
-                update_state([](const AppState& s) {
-                    return with_recognition_running(
-                        with_recognition_status(s, "running"), true);
-                });
-            })
-            .build();
-    }
-
-    // Capture frame button
-    ui.button("recog.ctrl.capture")
-        .position(area.x + 14.0f + btn_w + 12.0f, ctrl_center_y)
-        .size(btn_w, btn_h)
-        .style(ButtonStyle::Outline)
-        .text(tr(locale, "recognition.capture"))
-        .fontSize(kFontButton)
-        .icon("\xEF\x80\xB0")  // fa-camera
-        .build();
-
-    // Status indicator on the right
-    const auto status_x = area.x + area.width - 170.0f;
-    const auto status_color = state.recognition_running ? accent_success_color() : text_muted_color();
-    const auto status_icon = state.recognition_running ? "\xEF\x84\x9F" : "\xEF\x81\xB3";
-    const auto status_text = std::format("{} {}",
-        status_icon,
-        state.recognition_running
-            ? tr(locale, "recognition.status_active")
-            : tr(locale, "recognition.status_idle"));
-    ui.label("recog.ctrl.status")
-        .position(status_x, baseline_for_center(status_text, 14.0f, ctrl_y + ctrl_h * 0.5f))
-        .fontSize(kFontMeta)
-        .color(status_color)
-        .text(status_text)
-        .build();
-}
-
-}  // namespace (anonymous)
-
-// ============================================================================
-// SETTINGS PAGE — Configuration rows
-// ============================================================================
-
-namespace {
-
-void render_settings_interactive(UIContext& ui, const RectFrame& area, const AppState& state) {
-    const auto& locale = state.active_locale;
-    const float row_h = 56.0f;
-    const float label_w = 240.0f;
-    const float control_w = std::max(200.0f, area.width - label_w - kCardGap * 3.0f);
-    float current_y = area.y;
-
-    // Helper: render a labeled settings row (pure: takes y, returns next y)
-    auto render_row = [&](const std::string& id, std::string_view label_text, float y,
-                          auto render_control) {
-        ui.panel(std::format("settings.{}.bg", id))
-            .position(area.x, y)
-            .size(area.width, row_h)
-            .background(card_bg_color())
-            .rounding(10.0f)
-            .border(1.0f, border_light_color())
-            .build();
-
-        ui.label(std::format("settings.{}.label", id))
-            .position(area.x + 18.0f, baseline_for_center(label_text, kFontBodyStrong, y + row_h * 0.5f))
-            .fontSize(kFontBodyStrong)
-            .color(text_primary_color())
-            .text(std::string(label_text))
-            .build();
-
-        render_control(area.x + label_w, y);
-
-        return y + row_h + kCardGap;
-    };
-
-    // Row 0: Camera selection
-    current_y = render_row("camera", tr(locale, "settings.select_camera"), current_y,
-        [&](float cx, float cy) {
-            auto cameras = services::backend().enumerate_cameras();
-            auto items = std::vector<std::string>{};
-            std::ranges::transform(cameras, std::back_inserter(items),
-                [](const CameraInfo& cam) {
-                    return std::format("#{} - {}", cam.index, cam.name);
+                    for (const auto& user : state.users) {
+                        const bool selected = state.selected_user_id == user.user_id;
+                        const std::string uid = "enroll.user." + std::to_string(user.user_id);
+                        const auto bg = selected ? accent() : surface();
+                        const auto bgH = selected ? buttonHover(accent()) : surfaceSoft();
+                        const auto bgP = selected ? buttonPressed(accent()) : surfaceActive();
+                        components::button(ui, uid)
+                            .size(listWidth, 48.0f)
+                            .text(user.username + " (" + std::to_string(user.face_count) + ")")
+                            .fontSize(16.0f)
+                            .colors(bg, bgH, bgP)
+                            .textColor(selected ? core::Color{1.0f, 1.0f, 1.0f, 1.0f} : textPrimary())
+                            .radius(12.0f)
+                            .border(1.0f, borderColor(0.50f))
+                            .transition(pageTransition())
+                            .onClick([id = user.user_id] {
+                                update_state([id](const AppState& s) {
+                                    return with_selected_user(s, s.selected_user_id == id ? -1 : id);
+                                });
+                            })
+                            .build();
+                    }
                 });
 
-            ui.combo("settings.camera.combo")
-                .position(cx, cy + (row_h - 36.0f) * 0.5f)
-                .size(control_w, 38.0f)
-                .items(items)
-                .selected(state.config.selected_camera)
-                .fontSize(kFontBody)
-                .onChange([](int index) {
-                    update_state([index](const AppState& s) {
-                        return with_selected_camera(s, index);
-                    });
+            // detail panel
+            ui.stack("enroll.detail")
+                .size(sectionWidth, 300.0f)
+                .content([&] {
+                    if (state.selected_user_id > 0) {
+                        ui.rect("enroll.detail.bg")
+                            .size(sectionWidth, 260.0f)
+                            .color(surface())
+                            .radius(18.0f)
+                            .border(1.0f, borderColor())
+                            .build();
+
+                        ui.text("enroll.detail.hint")
+                            .x(20.0f)
+                            .y(100.0f)
+                            .size(sectionWidth - 40.0f, 30.0f)
+                            .text("Selected user detail panel")
+                            .fontSize(18.0f)
+                            .lineHeight(26.0f)
+                            .color(textMuted())
+                            .horizontalAlign(core::HorizontalAlign::Center)
+                            .build();
+                    } else {
+                        ui.text("enroll.detail.empty")
+                            .x(0.0f)
+                            .y(100.0f)
+                            .size(sectionWidth, 30.0f)
+                            .text("Select a user to view details")
+                            .fontSize(18.0f)
+                            .lineHeight(26.0f)
+                            .color(textMuted())
+                            .horizontalAlign(core::HorizontalAlign::Center)
+                            .build();
+                    }
+                });
+        });
+}
+
+void composeRecognitionPage(core::dsl::Ui& ui, float width, float height) {
+    const auto& state = su::app::app_state();
+    const float stageWidth = std::max(280.0f, std::min(width * 0.6f, 640.0f));
+    const float sideWidth = std::max(0.0f, width - stageWidth - 24.0f);
+    const float stageH = std::min(height, 480.0f);
+
+    ui.row("recog.row")
+        .size(width, height)
+        .gap(24.0f)
+        .content([&] {
+            // left: camera stage
+            ui.stack("recog.stage")
+                .size(stageWidth, stageH)
+                .content([&] {
+                    ui.rect("recog.stage.bg")
+                        .size(stageWidth, stageH)
+                        .color(surface())
+                        .radius(22.0f)
+                        .border(1.0f, borderColor())
+                        .build();
+
+                    ui.text("recog.stage.placeholder")
+                        .size(stageWidth, stageH - 80.0f)
+                        .text(state.recognition_running ? "Camera feed active" : "Camera idle")
+                        .fontSize(22.0f)
+                        .lineHeight(30.0f)
+                        .color(textMuted())
+                        .horizontalAlign(core::HorizontalAlign::Center)
+                        .build();
+
+                    const float btnY = stageH - 80.0f;
+                    ui.stack("recog.btn.wrap")
+                        .x((stageWidth - 200.0f) * 0.5f)
+                        .y(btnY)
+                        .size(200.0f, 52.0f)
+                        .content([&] {
+                            if (!state.recognition_running) {
+                                components::button(ui, "recog.start")
+                                    .size(200.0f, 52.0f)
+                                    .icon(0xF04B)
+                                    .fontSize(18.0f)
+                                    .text("Start")
+                                    .colors(accent(), buttonHover(accent()), buttonPressed(accent()))
+                                    .textColor(core::Color{1.0f, 1.0f, 1.0f, 1.0f})
+                                    .radius(14.0f)
+                                    .shadow(16.0f, 0.0f, 6.0f, shadowColor(0.24f))
+                                    .transition(pageTransition())
+                                    .onClick([] {
+                                        update_state([](const AppState& s) {
+                                            return with_recognition_running(s, true);
+                                        });
+                                    })
+                                    .build();
+                            } else {
+                                components::button(ui, "recog.stop")
+                                    .size(200.0f, 52.0f)
+                                    .icon(0xF04D)
+                                    .fontSize(18.0f)
+                                    .text("Stop")
+                                    .colors(core::Color{0.85f, 0.25f, 0.30f, 1.0f},
+                                            buttonHover(core::Color{0.85f, 0.25f, 0.30f, 1.0f}),
+                                            buttonPressed(core::Color{0.85f, 0.25f, 0.30f, 1.0f}))
+                                    .textColor(core::Color{1.0f, 1.0f, 1.0f, 1.0f})
+                                    .radius(14.0f)
+                                    .shadow(16.0f, 0.0f, 6.0f, shadowColor(0.24f))
+                                    .transition(pageTransition())
+                                    .onClick([] {
+                                        update_state([](const AppState& s) {
+                                            return with_recognition_running(s, false);
+                                        });
+                                    })
+                                    .build();
+                            }
+                        })
+                        .build();
                 })
                 .build();
-        });
 
-    // Row 1: Recognition threshold
-    current_y = render_row("threshold", tr(locale, "settings.recognition_threshold"), current_y,
-        [&](float cx, float cy) {
-            ui.slider("settings.threshold.slider")
-                .position(cx, cy + (row_h - 20.0f) * 0.5f)
-                .size(control_w * 0.6f, 20.0f)
-                .value(state.config.recognition_threshold)
-                .onChange([](float val) {
-                    update_state([val](const AppState& s) {
-                        return with_threshold(s, val);
-                    });
-                })
-                .build();
+            // right: info panel
+            ui.column("recog.info")
+                .size(sideWidth, stageH)
+                .gap(14.0f)
+                .content([&] {
+                    ui.rect("recog.info.bg")
+                        .size(sideWidth, stageH)
+                        .color(surface())
+                        .radius(18.0f)
+                        .border(1.0f, borderColor())
+                        .build();
 
-            ui.label("settings.threshold.value")
-                .position(cx + control_w * 0.6f + 16.0f,
-                          baseline_for_center(std::format("{:.0f}%", state.config.recognition_threshold * 100.0f),
-                                              kFontBody, cy + row_h * 0.5f))
-                .fontSize(kFontBody)
-                .color(text_secondary_color())
-                .text(std::format("{:.0f}%", state.config.recognition_threshold * 100.0f))
-                .build();
-        });
+                    ui.text("recog.info.status.title")
+                        .x(16.0f)
+                        .y(16.0f)
+                        .size(sideWidth - 32.0f, 24.0f)
+                        .text("Status")
+                        .fontSize(18.0f)
+                        .lineHeight(24.0f)
+                        .color(textPrimary())
+                        .build();
 
-    // Row 2: Liveness detection toggle
-    current_y = render_row("liveness", tr(locale, "settings.liveness_detection"), current_y,
-        [&](float cx, float cy) {
-            ui.switcher("settings.liveness.switch")
-                .position(cx, cy + (row_h - 24.0f) * 0.5f)
-                .size(46.0f, 24.0f)
-                .checked(state.config.liveness_detection)
-                .label(state.config.liveness_detection
-                    ? tr(locale, "settings.enabled")
-                    : tr(locale, "settings.disabled"))
-                .fontSize(kFontBody)
-                .onChange([](bool val) {
-                    update_state([val](const AppState& s) {
-                        return with_liveness(s, val);
-                    });
-                })
-                .build();
-        });
+                    ui.text("recog.info.status.val")
+                        .x(16.0f)
+                        .y(44.0f)
+                        .size(sideWidth - 32.0f, 22.0f)
+                        .text(state.recognition_status)
+                        .fontSize(15.0f)
+                        .lineHeight(20.0f)
+                        .color(textMuted())
+                        .build();
 
-    // Row 3: Language selection
-    current_y = render_row("language", tr(locale, "settings.language"), current_y,
-        [&](float cx, float cy) {
-            const auto& store = i18n::app_i18n();
-            auto lang_items = std::vector<std::string>{};
-            std::ranges::transform(store.config.locales, std::back_inserter(lang_items),
-                [](const auto& desc) { return desc.display_name; });
+                    if (state.last_result.success) {
+                        ui.text("recog.info.result.title")
+                            .x(16.0f)
+                            .y(80.0f)
+                            .size(sideWidth - 32.0f, 24.0f)
+                            .text("Last Match")
+                            .fontSize(18.0f)
+                            .lineHeight(24.0f)
+                            .color(textPrimary())
+                            .build();
 
-            int current_lang = 0;
-            for (size_t i = 0; i < store.config.locales.size(); ++i) {
-                if (store.config.locales[i].id == state.active_locale) {
-                    current_lang = static_cast<int>(i);
-                    break;
-                }
-            }
+                        ui.text("recog.info.result.name")
+                            .x(16.0f)
+                            .y(108.0f)
+                            .size(sideWidth - 32.0f, 22.0f)
+                            .text(state.last_result.username)
+                            .fontSize(16.0f)
+                            .lineHeight(20.0f)
+                            .color(accent())
+                            .build();
 
-            ui.combo("settings.lang.combo")
-                .position(cx, cy + (row_h - 36.0f) * 0.5f)
-                .size(control_w, 38.0f)
-                .items(lang_items)
-                .selected(current_lang)
-                .fontSize(kFontBody)
-                .onChange([&store](int index) {
-                    if (index >= 0 && index < static_cast<int>(store.config.locales.size())) {
-                        const auto& new_locale = store.config.locales[index].id;
-                        update_state([&new_locale](const AppState& s) {
-                            return with_active_locale(s, new_locale);
-                        });
+                        char simBuf[32];
+                        std::snprintf(simBuf, sizeof(simBuf), "%.1f%%", state.last_result.similarity * 100.0f);
+                        ui.text("recog.info.result.sim")
+                            .x(16.0f)
+                            .y(132.0f)
+                            .size(sideWidth - 32.0f, 22.0f)
+                            .text(simBuf)
+                            .fontSize(15.0f)
+                            .lineHeight(20.0f)
+                            .color(textMuted())
+                            .build();
                     }
                 })
                 .build();
         });
+}
 
-    // Row 4: Show diagnostics
-    current_y = render_row("diagnostics", tr(locale, "settings.show_diagnostics"), current_y,
-        [&](float cx, float cy) {
-            ui.switcher("settings.diag.switch")
-                .position(cx, cy + (row_h - 24.0f) * 0.5f)
-                .size(46.0f, 24.0f)
-                .checked(state.show_diagnostics)
-                .label(state.show_diagnostics
-                    ? tr(locale, "settings.diag_on")
-                    : tr(locale, "settings.diag_off"))
-                .fontSize(kFontBody)
-                .onChange([](bool val) {
-                    update_state([val](const AppState& s) {
-                        return with_show_diagnostics(s, val);
+void composeSettingsPage(core::dsl::Ui& ui, float width, float height) {
+    (void)height;
+    const auto& state = su::app::app_state();
+    const float fieldWidth = std::max(260.0f, std::min(width, 600.0f));
+
+    ui.column("settings.list")
+        .size(fieldWidth, std::min(height, 440.0f))
+        .gap(16.0f)
+        .content([&] {
+            ui.text("settings.general.title")
+                .size(fieldWidth, 30.0f)
+                .text("General")
+                .fontSize(24.0f)
+                .lineHeight(30.0f)
+                .color(textPrimary())
+                .build();
+
+            // threshold slider
+            ui.text("settings.threshold.label")
+                .size(fieldWidth, 24.0f)
+                .text("Recognition Threshold: " + std::to_string(static_cast<int>(state.config.recognition_threshold * 100.0f)) + "%")
+                .fontSize(16.0f)
+                .lineHeight(22.0f)
+                .color(textPrimary())
+                .build();
+
+            components::slider(ui, "settings.threshold")
+                .theme(components::theme::DarkThemeColors())
+                .size(fieldWidth, 32.0f)
+                .value(state.config.recognition_threshold)
+                .transition(pageTransition())
+                .onChange([](float value) {
+                    update_state([value](const AppState& s) {
+                        return with_threshold(s, value);
                     });
                 })
                 .build();
+
+            // liveness toggle
+            components::toggleSwitch(ui, "settings.liveness")
+                .theme(components::theme::DarkThemeColors())
+                .size(fieldWidth, 36.0f)
+                .checked(state.config.liveness_detection)
+                .label("Liveness Detection")
+                .onChange([](bool value) {
+                    update_state([value](const AppState& s) {
+                        return with_liveness(s, value);
+                    });
+                })
+                .build();
+
+            // camera selection
+            ui.text("settings.camera.label")
+                .size(fieldWidth, 24.0f)
+                .text("Camera")
+                .fontSize(16.0f)
+                .lineHeight(22.0f)
+                .color(textPrimary())
+                .build();
+
+            auto cameras = su::app::services::backend().enumerate_cameras();
+            std::vector<std::string> camNames;
+            for (const auto& cam : cameras) {
+                camNames.push_back(cam.name);
+            }
+            if (!camNames.empty()) {
+                components::segmented(ui, "settings.camera")
+                    .theme(components::theme::DarkThemeColors())
+                    .size(fieldWidth, 38.0f)
+                    .items(camNames)
+                    .selected(state.config.selected_camera)
+                    .transition(pageTransition())
+                    .onChange([](int index) {
+                        update_state([index](const AppState& s) {
+                            return with_selected_camera(s, index);
+                        });
+                    })
+                    .build();
+            }
+
+            ui.text("settings.diag.title")
+                .size(fieldWidth, 30.0f)
+                .margin(0.0f, 16.0f, 0.0f, 0.0f)
+                .text("Diagnostics")
+                .fontSize(24.0f)
+                .lineHeight(30.0f)
+                .color(textPrimary())
+                .build();
+
+            components::button(ui, "settings.diag.toggle")
+                .size(200.0f, 48.0f)
+                .icon(0xF129)
+                .fontSize(16.0f)
+                .text(state.show_diagnostics ? "Hide" : "Show")
+                .colors(surface(), surfaceSoft(), surfaceActive())
+                .textColor(textPrimary())
+                .radius(12.0f)
+                .border(1.0f, borderColor(0.70f))
+                .transition(pageTransition())
+                .onClick([] {
+                    update_state([](const AppState& s) {
+                        return with_show_diagnostics(s, !s.show_diagnostics);
+                    });
+                })
+                .build();
+
+            if (state.show_diagnostics) {
+                ui.rect("settings.diag.bg")
+                    .size(fieldWidth, 120.0f)
+                    .color(surface())
+                    .radius(12.0f)
+                    .border(1.0f, borderColor())
+                    .build();
+
+                ui.text("settings.diag.text")
+                    .x(16.0f)
+                    .y(16.0f)
+                    .size(fieldWidth - 32.0f, 90.0f)
+                    .text("Diagnostics info")
+                    .fontSize(13.0f)
+                    .lineHeight(18.0f)
+                    .color(textMuted())
+                    .wrap(true)
+                    .build();
+            }
+        });
+}
+
+void composePageBody(core::dsl::Ui& ui, float width, float height) {
+    switch (su::app::app_state().active_page) {
+        case PageId::Dashboard:  composeDashboardPage(ui, width, height); break;
+        case PageId::Enrollment: composeEnrollmentPage(ui, width, height); break;
+        case PageId::Recognition: composeRecognitionPage(ui, width, height); break;
+        case PageId::Settings:   composeSettingsPage(ui, width, height); break;
+    }
+}
+
+// ---- page body content height ----
+float pageBodyContentHeight(float viewportHeight) {
+    const auto& state = su::app::app_state();
+    switch (state.active_page) {
+        case PageId::Dashboard:
+            return std::max(viewportHeight, 600.0f);
+        case PageId::Enrollment:
+            return std::max(viewportHeight, 500.0f);
+        case PageId::Recognition:
+            return std::max(viewportHeight, 520.0f);
+        case PageId::Settings:
+            return std::max(viewportHeight, 460.0f);
+    }
+    return viewportHeight;
+}
+
+// ---- content shell ----
+void composeContent(core::dsl::Ui& ui, float width, float height) {
+    const auto& state = su::app::app_state();
+    const auto locale = su::app::i18n::text(su::app::i18n::app_i18n(), state.active_locale, "app.title");
+    const auto pageName = su::app::page_name(state.active_page);
+    const auto& store = su::app::i18n::app_i18n();
+
+    const float shellWidth = std::max(0.0f, width - 72.0f);
+    const float innerWidth = std::max(0.0f, shellWidth - 64.0f);
+    const float shellHeight = std::max(0.0f, height - 72.0f);
+    const float innerHeight = std::max(0.0f, shellHeight - 64.0f);
+    const float headerGap = 26.0f;
+    const float bodyHeight = std::max(0.0f, innerHeight - 46.0f - 30.0f - headerGap * 2.0f);
+    const float contentHeight = pageBodyContentHeight(bodyHeight);
+    const float maxScroll = std::max(0.0f, contentHeight - bodyHeight);
+    const bool scrollable = maxScroll > 0.0f;
+    const int page = static_cast<int>(state.active_page);
+    pageScroll[page] = std::clamp(pageScroll[page], 0.0f, maxScroll);
+    const float scrollOffset = pageScroll[page];
+    const float scrollWidth = scrollable ? 8.0f : 0.0f;
+    const float scrollGap = scrollable ? 16.0f : 0.0f;
+    const float bodyContentWidth = std::max(0.0f, innerWidth - scrollWidth - scrollGap);
+
+    const auto titleText = su::app::i18n::text(store, state.active_locale,
+        "page." + pageName + ".title");
+    const auto descText = su::app::i18n::text(store, state.active_locale,
+        "page." + pageName + ".description");
+
+    ui.stack("content.area")
+        .size(width, height)
+        .content([&] {
+            ui.rect("content.bg")
+                .size(width, height)
+                .color(appBg())
+                .build();
+
+            ui.rect("page.shell")
+                .size(shellWidth, shellHeight)
+                .margin(36.0f)
+                .color(surface())
+                .radius(26.0f)
+                .border(1.0f, borderColor())
+                .shadow(30.0f, 0.0f, 16.0f, shadowColor(0.28f))
+                .transition(pageTransition())
+                .build();
+
+            ui.column("page.content")
+                .size(innerWidth, innerHeight)
+                .margin(68.0f)
+                .gap(headerGap)
+                .content([&] {
+                    ui.text("page.title")
+                        .size(innerWidth, 46.0f)
+                        .text(titleText)
+                        .fontSize(38.0f)
+                        .lineHeight(44.0f)
+                        .color(accent())
+                        .build();
+
+                    ui.text("page.subtitle")
+                        .size(innerWidth, 30.0f)
+                        .text(descText)
+                        .fontSize(20.0f)
+                        .lineHeight(28.0f)
+                        .color(textMuted())
+                        .build();
+
+                    auto body = ui.stack("page.body")
+                        .size(innerWidth, bodyHeight);
+                    if (scrollable) {
+                        body.onScroll([page](const core::ScrollEvent& event) {
+                            pageScroll[page] = std::clamp(
+                                pageScroll[page] - static_cast<float>(event.y) * 48.0f,
+                                0.0f,
+                                pageBodyContentHeight(0.0f) - (0.0f));
+                        });
+                    }
+                    body.content([&] {
+                        ui.column("page.body.content")
+                            .y(-scrollOffset)
+                            .size(bodyContentWidth, contentHeight)
+                            .gap(headerGap)
+                            .content([&] {
+                                composePageBody(ui, bodyContentWidth, contentHeight);
+                            })
+                            .build();
+
+                        if (scrollable) {
+                            components::scroll(ui, "page.body.scroll")
+                                .theme(components::theme::DarkThemeColors())
+                                .x(std::max(0.0f, innerWidth - scrollWidth))
+                                .size(scrollWidth, bodyHeight)
+                                .viewport(bodyHeight)
+                                .content(contentHeight)
+                                .offset(scrollOffset)
+                                .zIndex(10)
+                                .onChange([page](float value) {
+                                    pageScroll[page] = value;
+                                })
+                                .build();
+                        }
+                    });
+                });
+        });
+}
+
+} // anonymous namespace
+
+// ============================================================
+// Exported entry point
+// ============================================================
+
+namespace su::app::ui {
+
+export void render_app_layout(core::dsl::Ui& ui, const core::dsl::Screen& screen) {
+    const float contentWidth = std::max(0.0f, screen.width - kSidebarWidth);
+
+    ui.row("root")
+        .size(screen.width, screen.height)
+        .content([&] {
+            composeSidebar(ui, screen.height);
+            composeContent(ui, contentWidth, screen.height);
         });
 
-    // Diagnostics panel (collapsible)
-    if (state.show_diagnostics) {
-        ui.panel("settings.diag.panel")
-            .position(area.x, current_y)
-            .size(area.width, 90.0f)
-            .background(card_bg_color())
-            .rounding(10.0f)
-            .border(1.0f, border_light_color())
-            .build();
-
-        const auto diag_text = std::format("i18n: {}\nCamera: Connected (#{})\nThreshold: {:.0f}%\nUsers: {} / Faces: {}",
-            i18n::diagnostics_text(i18n::app_i18n()),
-            state.config.selected_camera,
-            state.config.recognition_threshold * 100.0f,
-            state.total_users, state.total_faces);
-
-        ui.label("settings.diag.content")
-            .position(area.x + 16.0f, current_y + 12.0f)
-            .fontSize(kFontMeta)
-            .color(text_muted_color())
-            .text(diag_text)
-            .build();
-
-        current_y += 90.0f + kCardGap;
-    }
-
-    // Footer: save and reset buttons
-    current_y += 8.0f;
-    ui.button("settings.save")
-        .position(area.x, current_y)
-        .size(136.0f, 36.0f)
-        .style(ButtonStyle::Primary)
-        .text(tr(locale, "settings.save"))
-        .fontSize(kFontButton)
-        .onClick([]() {
-            const auto& s = app_state();
-            services::backend().save_config(s.config);
+    // Feedback toast
+    components::toast(ui, "feedback.toast")
+        .theme(components::theme::DarkThemeColors())
+        .screen(screen.width, screen.height)
+        .visible(toastVisible)
+        .duration(3.0f)
+        .title("Smile2Unlock")
+        .message(feedbackText)
+        .onAutoDismiss([] {
+            toastVisible = false;
+            feedbackText = "Ready";
         })
-        .build();
-
-    ui.button("settings.reset")
-        .position(area.x + 160.0f, current_y)
-        .size(136.0f, 36.0f)
-        .style(ButtonStyle::Default)
-        .text(tr(locale, "settings.reset"))
-        .fontSize(kFontButton)
-        .onClick([]() {
-            update_state([](const AppState& s) {
-                return with_threshold(
-                    with_selected_camera(
-                        with_liveness(s, true), 0), 0.65f);
-            });
+        .onDismiss([] {
+            toastVisible = false;
+            feedbackText = "Dismissed";
         })
         .build();
 }
 
-}  // namespace (anonymous)
-
-}  // namespace su::app::ui
+} // namespace su::app::ui
