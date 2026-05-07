@@ -42,47 +42,64 @@ def stage_lock(destination_dir: Path):
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
-def clear_directory(directory: Path) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    for child in directory.iterdir():
+def sync_regular_file(src: Path, dst: Path) -> bool:
+    """Copy regular file if missing or sha256 differs. Returns True if copied."""
+    if dst.is_file() and sha256_file(dst) == sha256_file(src):
+        return False
+    shutil.copy2(src, dst)
+    return True
+
+
+def sync_merged_file(output_path: Path, parts: list[Path], expected_sha256: str | None) -> bool:
+    """Merge parts into file if missing or sha256 differs. Returns True if merged."""
+    if expected_sha256 and output_path.is_file():
         try:
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        except FileNotFoundError:
+            if sha256_file(output_path) == expected_sha256:
+                return False
+        except OSError:
+            pass
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as merged:
+        for part_path in parts:
+            if not part_path.is_file():
+                raise FileNotFoundError(f"missing model part: {part_path}")
+            with part_path.open("rb") as handle:
+                shutil.copyfileobj(handle, merged)
+
+    if expected_sha256 and sha256_file(output_path) != expected_sha256:
+        raise ValueError(f"sha256 mismatch for restored model: {output_path}")
+    return True
+
+
+def collect_regular_source_files(models_dir: Path) -> set[str]:
+    """Names of non-part, non-json files in the source models dir."""
+    names: set[str] = set()
+    for entry in models_dir.iterdir():
+        if not entry.is_file():
             continue
-
-
-def copy_regular_models(models_dir: Path, destination_dir: Path) -> None:
-    for file_path in sorted(models_dir.iterdir()):
-        if not file_path.is_file():
+        if entry.name.endswith(".json") or ".part" in entry.name:
             continue
-        if file_path.name.endswith(".json") or ".part" in file_path.name:
-            continue
-        shutil.copy2(file_path, destination_dir / file_path.name)
+        names.add(entry.name)
+    return names
 
 
-def restore_from_manifest(models_dir: Path, destination_dir: Path, manifest_path: Path) -> None:
+def collect_manifest_targets(manifest_path: Path) -> set[str]:
+    """File names that the manifest will produce."""
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    for model in manifest.get("models", []):
-        output_path = destination_dir / model["file_name"]
-        with output_path.open("wb") as merged:
-            for part_name in model["parts"]:
-                part_path = models_dir / part_name
-                if not part_path.is_file():
-                    raise FileNotFoundError(f"missing model part: {part_path}")
-                with part_path.open("rb") as handle:
-                    shutil.copyfileobj(handle, merged)
+    return {m["file_name"] for m in manifest.get("models", [])}
 
-        expected_sha256 = model.get("sha256")
-        if expected_sha256 and sha256_file(output_path) != expected_sha256:
-            raise ValueError(f"sha256 mismatch for restored model: {output_path}")
+
+def prune_stale(destination_dir: Path, keep: set[str]) -> None:
+    """Remove files in destination that are not in the keep set."""
+    for entry in list(destination_dir.iterdir()):
+        if entry.is_file() and entry.name not in keep:
+            entry.unlink()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Copy and restore models into a build output directory."
+        description="Incrementally sync model files, only copying when missing or changed."
     )
     parser.add_argument(
         "--models-dir",
@@ -108,12 +125,39 @@ def main() -> int:
     if not models_dir.is_dir():
         raise SystemExit(f"models directory does not exist: {models_dir}")
 
-    with stage_lock(destination_dir):
-        clear_directory(destination_dir)
-        copy_regular_models(models_dir, destination_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    keep: set[str] = set()
 
+    with stage_lock(destination_dir):
+        # 1. Sync regular (non-split) files
+        for src in sorted(models_dir.iterdir()):
+            if not src.is_file():
+                continue
+            if src.name.endswith(".json") or ".part" in src.name:
+                continue
+            dst = destination_dir / src.name
+            if sync_regular_file(src, dst):
+                print(f"  copied: {src.name}")
+            keep.add(src.name)
+
+        # 2. Sync split-merged files from manifest
         if manifest_path.is_file():
-            restore_from_manifest(models_dir, destination_dir, manifest_path)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for model in manifest.get("models", []):
+                name = model["file_name"]
+                parts = [models_dir / p for p in model["parts"]]
+                dst = destination_dir / name
+                if sync_merged_file(dst, parts, model.get("sha256")):
+                    print(f"  merged: {name}")
+                keep.add(name)
+
+        # 3. Remove stale files
+        before = {e.name for e in destination_dir.iterdir() if e.is_file()}
+        stale = before - keep
+        if stale:
+            for name in sorted(stale):
+                (destination_dir / name).unlink()
+                print(f"  removed: {name}")
 
     print(f"staged models to: {destination_dir}")
     return 0
