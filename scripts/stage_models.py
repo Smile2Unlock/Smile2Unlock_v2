@@ -127,6 +127,7 @@ def main() -> int:
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     keep: set[str] = set()
+    changed = False
 
     with stage_lock(destination_dir):
         # 1. Sync regular (non-split) files
@@ -137,7 +138,7 @@ def main() -> int:
                 continue
             dst = destination_dir / src.name
             if sync_regular_file(src, dst):
-                print(f"  copied: {src.name}")
+                changed = True
             keep.add(src.name)
 
         # 2. Sync split-merged files from manifest
@@ -148,7 +149,7 @@ def main() -> int:
                 parts = [models_dir / p for p in model["parts"]]
                 dst = destination_dir / name
                 if sync_merged_file(dst, parts, model.get("sha256")):
-                    print(f"  merged: {name}")
+                    changed = True
                 keep.add(name)
 
         # 3. Remove stale files
@@ -157,9 +158,10 @@ def main() -> int:
         if stale:
             for name in sorted(stale):
                 (destination_dir / name).unlink()
-                print(f"  removed: {name}")
+            changed = True
 
-    print(f"staged models to: {destination_dir}")
+    if changed:
+        print(f"staged models to: {destination_dir}")
     return 0
 
 
