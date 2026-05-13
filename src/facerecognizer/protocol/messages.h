@@ -8,7 +8,7 @@
 
 namespace su::facerecognizer::protocol {
 
-enum class CommandType : std::uint16_t {
+enum class CommandType : std::uint8_t {
     kUnknown = 0,
     kStartCameraPreview = 1,
     kStopCameraPreview = 2,
@@ -18,7 +18,7 @@ enum class CommandType : std::uint16_t {
     kCompareFeatures = 6,
 };
 
-enum class MessageType : std::uint16_t {
+enum class MessageType : std::uint8_t {
     kError = 0,
     kPreviewFrame = 1,
     kCaptureResult = 2,
@@ -39,8 +39,8 @@ struct CommandMessage {
     int preview_fps = 15;
     bool extract_feature = false;
     bool liveness_detection = false;
-    float face_threshold = 0.62f;
-    float liveness_threshold = 0.80f;
+    float face_threshold = 0.62F;
+    float liveness_threshold = 0.80F;
     std::string username_hint;
     std::vector<float> feature_a;
     std::vector<float> feature_b;
@@ -66,14 +66,14 @@ struct CaptureResultMessage {
 struct RecognitionResultMessage {
     bool matched = false;
     std::string username;
-    float similarity = 0.0f;
+    float similarity = 0.0F;
     std::optional<BoundingBox> face_box;
     std::vector<float> feature;
 };
 
 struct CompareResultMessage {
     bool ok = false;
-    float similarity = 0.0f;
+    float similarity = 0.0F;
     std::string error_message;
 };
 

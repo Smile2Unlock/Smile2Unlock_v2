@@ -10,7 +10,7 @@ import std;
 
 export namespace su::facerecognizer {
 
-enum class SocketError { kConnectionRefused, kDisconnected, kSendFailed };
+enum class SocketError : std::uint8_t { kConnectionRefused, kDisconnected, kSendFailed };
 
 class SocketSender {
 public:
@@ -32,7 +32,7 @@ public:
         return {};
     }
 
-    const std::optional<protocol::OutboundMessage>& last_message() const {
+    [[nodiscard]] const std::optional<protocol::OutboundMessage>& last_message() const {
         return last_message_;
     }
 

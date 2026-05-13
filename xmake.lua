@@ -25,6 +25,9 @@ add_requires("eui")
 add_requires("seetaface6open", {system = false})
 add_requires("papiliocharontis", {system = false})
 add_requires("reflect-cpp")
+if is_plat("linux") then
+    add_requires("libpipewire-0.3", {system = true})
+end
 
 set_encodings("utf-8")
 set_languages("c++26")
@@ -75,6 +78,7 @@ target("su_facerecognizer")
     if is_plat("linux") then
         add_rpathdirs("$ORIGIN")
         add_syslinks("m")
+        add_packages("libpipewire-0.3")
     elseif is_plat("windows") then
         add_syslinks("ws2_32")
     end
@@ -140,12 +144,26 @@ target("su_app")
                 })
             end
         end
+
+        -- 复制 eui 包中的字体文件到 assets/
         for _, pkg in ipairs(target:orderpkgs()) do
             if pkg:name() == "eui" then
-                local fontdir = path.join(pkg:installdir(), "include", "eui", "font")
-                if os.isdir(fontdir) then
-                    os.cp(fontdir, path.join(target:targetdir(), "font"))
+                local font_src = path.join(pkg:installdir(), "assets")
+                if os.isdir(font_src) then
+                    local target_assets_dir = path.join(target:targetdir(), "assets")
+                    os.mkdir(target_assets_dir)
+                    for _, ext in ipairs({"*.ttf", "*.otf"}) do
+                        for _, font_file in ipairs(os.files(path.join(font_src, ext))) do
+                            os.cp(font_file, target_assets_dir)
+                        end
+                    end
                 end
             end
+        end
+
+        -- 清理旧的 font/ 目录（v0.2.9 遗留）
+        local old_font_dir = path.join(target:targetdir(), "font")
+        if os.isdir(old_font_dir) then
+            os.rm(old_font_dir)
         end
     end)

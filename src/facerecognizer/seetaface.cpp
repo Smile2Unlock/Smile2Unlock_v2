@@ -10,22 +10,20 @@ namespace fs = std::filesystem;
 
 seeta::ModelSetting MakeSetting(std::initializer_list<std::string> models) {
   seeta::ModelSetting setting;
-  for (const auto &model : models) {
-    setting.append(model.c_str());
+  for (const auto& model : models) {
+    setting.append(model.c_str());  // NOLINT: SeetaFace C API needs const char*
   }
   return setting;
 }
 
-std::string ResolveModelRoot(const std::string &explicit_root) {
+auto ResolveModelRoot(const std::string& explicit_root) -> std::string {
   if (!explicit_root.empty()) {
     return explicit_root;
   }
-
-  const fs::path default_root = fs::current_path() / "assets" / "models";
-  return default_root.string();
+  return (fs::current_path() / "assets" / "models").string();
 }
 
-std::string RequireModel(const std::string &root, std::string_view filename) {
+auto RequireModel(const std::string& root, std::string_view filename) -> std::string {
   const fs::path model_path = fs::path(root) / filename;
   if (!fs::exists(model_path)) {
     throw std::runtime_error("Missing model: " + model_path.string());
@@ -33,9 +31,9 @@ std::string RequireModel(const std::string &root, std::string_view filename) {
   return model_path.string();
 }
 
-} // namespace
+}  // namespace
 
-SeetaFaceEngine::SeetaFaceEngine(std::string model_root)
+SeetaFaceEngine::SeetaFaceEngine(const std::string& model_root)
     : model_root_(ResolveModelRoot(model_root)) {
   const auto detector_model = RequireModel(model_root_, "face_detector.csta");
   const auto landmarker_model =
@@ -116,7 +114,7 @@ SeetaFaceEngine::anti_spoof(const SeetaImageData &image,
   }
 
   const auto points = mark(image, *face);
-  anti_spoofing_->SetThreshold(0.3f, liveness_threshold);
+  anti_spoofing_->SetThreshold(0.3F, liveness_threshold);
   const auto status = anti_spoofing_->Predict(image, *face, points.data());
   return status == seeta::FaceAntiSpoofing::REAL;
 }

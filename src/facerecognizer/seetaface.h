@@ -15,24 +15,26 @@
 
 namespace su::facerecognizer {
 
-enum class SpoofError { kUninitialized, kNoFace };
-enum class CompareError { kMismatchedDimensions, kEmptyFeature };
+enum class SpoofError : std::uint8_t { kUninitialized, kNoFace };
+enum class CompareError : std::uint8_t { kMismatchedDimensions, kEmptyFeature };
 
 class SeetaFaceEngine {
 public:
-    explicit SeetaFaceEngine(std::string model_root = {});
+    explicit SeetaFaceEngine(const std::string& model_root = {});
     ~SeetaFaceEngine();
 
     SeetaFaceEngine(const SeetaFaceEngine&) = delete;
     SeetaFaceEngine& operator=(const SeetaFaceEngine&) = delete;
+    SeetaFaceEngine(SeetaFaceEngine&&) = default;
+    SeetaFaceEngine& operator=(SeetaFaceEngine&&) = default;
 
-    std::optional<SeetaRect> detect(const SeetaImageData& image) const;
-    std::vector<SeetaPointF> mark(const SeetaImageData& image, const SeetaRect& face) const;
-    std::vector<float> extract(const SeetaImageData& image, std::span<const SeetaPointF> points) const;
-    std::vector<float> image_to_features(const SeetaImageData& image) const;
-    std::expected<float, CompareError> compare(std::span<const float> lhs, std::span<const float> rhs) const;
-    std::expected<bool, SpoofError> anti_spoof(const SeetaImageData& image, float liveness_threshold) const;
-    int feature_size() const;
+    [[nodiscard]] std::optional<SeetaRect> detect(const SeetaImageData& image) const;
+    [[nodiscard]] std::vector<SeetaPointF> mark(const SeetaImageData& image, const SeetaRect& face) const;
+    [[nodiscard]] std::vector<float> extract(const SeetaImageData& image, std::span<const SeetaPointF> points) const;
+    [[nodiscard]] std::vector<float> image_to_features(const SeetaImageData& image) const;
+    [[nodiscard]] std::expected<float, CompareError> compare(std::span<const float> lhs, std::span<const float> rhs) const;
+    [[nodiscard]] std::expected<bool, SpoofError> anti_spoof(const SeetaImageData& image, float liveness_threshold) const;
+    [[nodiscard]] int feature_size() const;
 
 private:
     struct Deleter {

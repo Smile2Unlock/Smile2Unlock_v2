@@ -36,9 +36,9 @@ int run(std::span<char*> args) {
     sender.send(make_boot_message());
 
     try {
-        CameraCapture camera(0);
+        auto camera = create_capture_device(0);
         SeetaFaceEngine engine;
-        RecognitionPipeline pipeline(camera, engine);
+        RecognitionPipeline pipeline(*camera, engine);
         (void)pipeline;
     } catch (const std::exception& exception) {
         std::cerr << "su_facerecognizer init failed: " << exception.what() << '\n';
@@ -50,6 +50,4 @@ int run(std::span<char*> args) {
 
 }  // namespace su::facerecognizer
 
-int main(int argc, char** argv) {
-    return su::facerecognizer::run(std::span(argv, static_cast<std::size_t>(argc)));
-}
+int main(int argc, char** argv) { return su::facerecognizer::run(std::span(argv, static_cast<std::size_t>(argc))); }

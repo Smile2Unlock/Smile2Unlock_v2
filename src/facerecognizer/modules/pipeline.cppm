@@ -15,17 +15,20 @@ namespace su::facerecognizer {
 
 struct ImageGuard {
     SeetaImageData& img;
+    explicit ImageGuard(SeetaImageData& image) : img(image) {}
     ~ImageGuard() { delete[] img.data; }
-    ImageGuard(SeetaImageData& image) : img(image) {}
+
     ImageGuard(const ImageGuard&) = delete;
-    ImageGuard& operator=(const ImageGuard&) = delete;
+    auto operator=(const ImageGuard&) -> ImageGuard& = delete;
+    ImageGuard(ImageGuard&&) = delete;
+    auto operator=(ImageGuard&&) -> ImageGuard& = delete;
 };
 
 }  // namespace su::facerecognizer
 
 export namespace su::facerecognizer {
 
-enum class PipelineError { kCaptureFailed, kNoFaceDetected, kSpoofRejected };
+enum class PipelineError : std::uint8_t { kCaptureFailed, kNoFaceDetected, kSpoofRejected };
 
 class RecognitionPipeline {
 public:
@@ -38,7 +41,7 @@ public:
 
     struct RecognitionEvent {
         bool matched = false;
-        float similarity = 0.0f;
+        float similarity = 0.0F;
         std::vector<float> feature;
         std::optional<protocol::BoundingBox> face_box;
     };
@@ -60,7 +63,7 @@ public:
             return std::unexpected(PipelineError::kCaptureFailed);
         }
 
-        SeetaImageData image = std::move(*result);
+        SeetaImageData image = *result;
         ImageGuard guard{image};
 
         return PreviewFrame{
@@ -81,7 +84,7 @@ public:
             return std::unexpected(PipelineError::kCaptureFailed);
         }
 
-        SeetaImageData image = std::move(*captured);
+        SeetaImageData image = *captured;
         ImageGuard guard{image};
 
         const auto face = engine_.detect(image);
@@ -99,7 +102,7 @@ public:
         auto feature = engine_.extract(image, engine_.mark(image, *face));
         return RecognitionEvent{
             .matched = !feature.empty(),
-            .similarity = 0.0f,
+            .similarity = 0.0F,
             .feature = std::move(feature),
             .face_box = protocol::BoundingBox{
                 .x = face->x,
