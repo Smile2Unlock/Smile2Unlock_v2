@@ -9,9 +9,9 @@ set_languages("c++26")
 set_toolchains("gcc")
 
 option("with_slint")
-    set_default(false)
+    set_default(true)
     set_showmenu(true)
-    set_description("Enable the real Slint UI once a pinned local Slint package is available")
+    set_description("Enable the Slint UI")
 option_end()
 
 option("with_zig")
@@ -40,7 +40,7 @@ end
 
 target("su_core")
     set_kind("phony")
-    on_build(function (target)
+    on_build(function ()
         local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
         os.mkdir(outdir)
         os.execv("rustc", {
@@ -71,7 +71,7 @@ target("su_recognizer")
 
 target("su_app")
     apply_cpp_target("binary")
-    add_files("src/app/*.cpp")
+    add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     add_headerfiles("src/app/*.h")
     add_deps("su_core", "su_recognizer")
     if has_config("with_zig") then
@@ -83,8 +83,34 @@ target("su_app")
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
+        add_files("src/app/slint_main.cpp")
+        add_files(path.join("build", "generated", "slint", "app_window.cpp"), {always_added = true})
+        add_includedirs(path.join("build", "generated", "slint"))
+        on_load(function (target)
+            local slint = target:pkg("slint")
+            if slint then
+                target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
+                if is_plat("linux") then
+                    target:add("rpathdirs", path.join(slint:installdir(), "lib"))
+                end
+            end
+        end)
+        before_build(function (target)
+            local slint = assert(target:pkg("slint"), "slint package is required when with_slint=y")
+            local compiler = path.join(slint:installdir(), "bin", "slint-compiler")
+            local outputdir = path.join(os.projectdir(), "build", "generated", "slint")
+            os.mkdir(outputdir)
+            os.execv(compiler, {
+                "-f", "cpp",
+                "--cpp-namespace", "su::app::ui",
+                "-o", path.join(outputdir, "app_window.h"),
+                "--cpp-file", path.join(outputdir, "app_window.cpp"),
+                path.join(os.projectdir(), "src", "app", "ui", "app.slint")
+            })
+        end)
     else
         add_defines("SU_HAS_SLINT=0")
+        add_files("src/app/console_main.cpp")
     end
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")

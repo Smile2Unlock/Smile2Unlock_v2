@@ -1,25 +1,57 @@
+import { Button } from "std-widgets.slint";
+
 export component AppWindow inherits Window {
     in property <string> title_text: "Smile2Unlock";
-    in property <string> status_text: "Core skeleton ready";
+    in property <string> core_version: "Core v0";
+    in property <string> threshold_text: "0.65";
+    in property <string> camera_text: "No cameras";
+    in-out property <string> auth_text: "Not checked";
+
+    callback demo_auth_requested();
 
     title: title_text;
     width: 960px;
     height: 640px;
 
     VerticalLayout {
-        padding: 24px;
-        spacing: 12px;
+        padding: 28px;
+        spacing: 18px;
 
         Text {
             text: title_text;
-            font-size: 24px;
+            font-size: 28px;
             font-weight: 700;
         }
 
         Text {
-            text: status_text;
-            font-size: 14px;
+            text: core_version;
+            font-size: 16px;
+        }
+
+        GridLayout {
+            spacing: 8px;
+
+            Row {
+                Text { text: "Threshold"; font-weight: 700; }
+                Text { text: threshold_text; }
+            }
+
+            Row {
+                Text { text: "Camera"; font-weight: 700; }
+                Text { text: camera_text; }
+            }
+
+            Row {
+                Text { text: "Auth"; font-weight: 700; }
+                Text { text: auth_text; }
+            }
+        }
+
+        Button {
+            text: "Run Demo Auth";
+            clicked => {
+                root.demo_auth_requested();
+            }
         }
     }
 }
-
