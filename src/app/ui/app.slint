@@ -1,0 +1,25 @@
+export component AppWindow inherits Window {
+    in property <string> title_text: "Smile2Unlock";
+    in property <string> status_text: "Core skeleton ready";
+
+    title: title_text;
+    width: 960px;
+    height: 640px;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: title_text;
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        Text {
+            text: status_text;
+            font-size: 14px;
+        }
+    }
+}
+

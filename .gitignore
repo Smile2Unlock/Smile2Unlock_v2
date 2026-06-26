@@ -1,4 +1,9 @@
 *.bin
+compile_commands.json
+.codex
+Cargo.lock
+zig-cache/
+.zig-cache/
 
 # vscode
 .history/
