@@ -35,9 +35,14 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
     if (const auto saved = save_config(path, *loaded_config); !saved) {
         return std::unexpected(std::format("failed to save config through Rust core: {}", path));
     }
-    const auto profiles = list_face_profiles_json(profile_store_path());
+    const auto store_path = profile_store_path();
+    const auto profiles = list_face_profile_summaries(store_path);
     if (!profiles) {
         return std::unexpected(std::format("failed to list face profiles: {}", profile_store_path()));
+    }
+    const auto profiles_json = list_face_profiles_json(store_path);
+    if (!profiles_json) {
+        return std::unexpected(std::format("failed to list face profiles json: {}", store_path));
     }
 
     return AppSnapshot{
@@ -45,8 +50,9 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         .cameras = recognizer_.enumerate_cameras(),
         .config = *loaded_config,
         .config_path = path,
-        .profile_store_path = profile_store_path(),
-        .profiles_json = *profiles,
+        .profile_store_path = store_path,
+        .profiles = *profiles,
+        .profiles_json = *profiles_json,
         .slint_enabled = SU_HAS_SLINT != 0,
     };
 }
@@ -142,11 +148,24 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     if (!profiles) {
         return std::unexpected(std::format("failed to list face profiles: {}", store_path));
     }
+    const auto profile_rows = list_face_profile_summaries(store_path);
+    if (!profile_rows) {
+        return std::unexpected(std::format("failed to list face profile summaries: {}", store_path));
+    }
+    const auto auth_report = authenticate_face_sample_report(
+        store_path,
+        sample_seed,
+        config->recognition_threshold);
+    if (!auth_report) {
+        return std::unexpected(std::format("failed to build structured face auth report: {}", store_path));
+    }
 
     return FaceDemoSnapshot{
+        .profiles = *profile_rows,
         .profiles_json = *profiles,
         .auth_report_json = *report,
         .decision = *decision,
+        .report = *auth_report,
     };
 }
 
@@ -155,6 +174,15 @@ std::expected<std::string, std::string> AppController::list_face_profiles() {
     const auto profiles = list_face_profiles_json(store_path);
     if (!profiles) {
         return std::unexpected(std::format("failed to list face profiles: {}", store_path));
+    }
+    return *profiles;
+}
+
+std::expected<std::vector<FaceProfileSummary>, std::string> AppController::list_face_profile_rows() {
+    const auto store_path = profile_store_path();
+    const auto profiles = list_face_profile_summaries(store_path);
+    if (!profiles) {
+        return std::unexpected(std::format("failed to list face profile summaries: {}", store_path));
     }
     return *profiles;
 }

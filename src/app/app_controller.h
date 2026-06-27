@@ -15,14 +15,17 @@ struct AppSnapshot {
     CoreConfig config;
     std::string config_path;
     std::string profile_store_path;
+    std::vector<FaceProfileSummary> profiles;
     std::string profiles_json;
     bool slint_enabled = false;
 };
 
 struct FaceDemoSnapshot {
+    std::vector<FaceProfileSummary> profiles;
     std::string profiles_json;
     std::string auth_report_json;
     FaceAuthDecision decision;
+    FaceAuthReport report;
 };
 
 class AppController {
@@ -41,6 +44,7 @@ public:
     std::expected<FaceDemoSnapshot, std::string> authenticate_face_sample_from_seed(
         std::string_view sample_seed);
     std::expected<std::string, std::string> list_face_profiles();
+    std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
 
 private:

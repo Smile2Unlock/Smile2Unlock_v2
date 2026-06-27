@@ -10,15 +10,20 @@ export component AppWindow inherits Window {
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "No cameras";
     in property <string> profile_text: "";
+    in-out property <string> delete_profile_id_text: "";
     in-out property <string> enroll_label_text: "Demo Face";
     in-out property <string> enroll_sample_text: "face:demo:front";
     in-out property <string> probe_sample_text: "face:demo:front";
     in-out property <string> auth_text: "Not checked";
-    in-out property <string> face_auth_report_text: "";
+    in-out property <string> auth_score_text: "-";
+    in-out property <string> auth_best_profile_text: "-";
+    in-out property <string> auth_reason_text: "-";
+    in-out property <string> debug_json_text: "";
 
     callback demo_auth_requested();
     callback enroll_requested(string, string);
     callback face_auth_requested(string);
+    callback delete_profile_requested(string);
     callback refresh_profiles_requested();
 
     title: title_text;
@@ -96,6 +101,11 @@ export component AppWindow inherits Window {
                 Text { text: "Probe Sample"; font-weight: 700; }
                 LineEdit { text <=> root.probe_sample_text; }
             }
+
+            Row {
+                Text { text: "Delete ID"; font-weight: 700; }
+                LineEdit { text <=> root.delete_profile_id_text; }
+            }
         }
 
         HorizontalLayout {
@@ -123,6 +133,13 @@ export component AppWindow inherits Window {
             }
 
             Button {
+                text: "Delete";
+                clicked => {
+                    root.delete_profile_requested(root.delete_profile_id_text);
+                }
+            }
+
+            Button {
                 text: "Run Demo Auth";
                 clicked => {
                     root.demo_auth_requested();
@@ -130,18 +147,33 @@ export component AppWindow inherits Window {
             }
         }
 
-        HorizontalLayout {
-            spacing: 16px;
+        GridLayout {
+            spacing: 8px;
 
-            Text {
-                text: profile_text;
-                font-size: 12px;
+            Row {
+                Text { text: "Score"; font-weight: 700; }
+                Text { text: auth_score_text; }
             }
 
-            Text {
-                text: face_auth_report_text;
-                font-size: 12px;
+            Row {
+                Text { text: "Best Profile"; font-weight: 700; }
+                Text { text: auth_best_profile_text; }
             }
+
+            Row {
+                Text { text: "Reason"; font-weight: 700; }
+                Text { text: auth_reason_text; }
+            }
+        }
+
+        Text {
+            text: profile_text;
+            font-size: 12px;
+        }
+
+        Text {
+            text: debug_json_text;
+            font-size: 12px;
         }
     }
 }

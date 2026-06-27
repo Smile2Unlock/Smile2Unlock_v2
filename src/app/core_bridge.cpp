@@ -2,6 +2,8 @@
 
 #include "su_core.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <vector>
 
 namespace su::app {
@@ -69,6 +71,32 @@ std::expected<std::string, CoreError> read_json_from_core(
         return std::unexpected(map_status(status));
     }
     return std::string(reinterpret_cast<const char*>(buffer.data()));
+}
+
+std::string fixed_string(const std::uint8_t* data, std::size_t capacity) {
+    const auto* begin = reinterpret_cast<const char*>(data);
+    const auto* end = std::find(begin, begin + capacity, '\0');
+    return std::string(begin, end);
+}
+
+FaceProfileSummary map_profile_summary(const SuFaceProfileSummary& profile) {
+    return FaceProfileSummary{
+        .id = fixed_string(profile.id, SuFaceProfileIdCap),
+        .label = fixed_string(profile.label, SuFaceProfileLabelCap),
+        .created_at_unix = profile.created_at_unix,
+    };
+}
+
+FaceAuthReport map_auth_report(const SuFaceAuthReport& report) {
+    return FaceAuthReport{
+        .accepted = report.accepted,
+        .score = report.score,
+        .threshold = report.threshold,
+        .profile_count = report.profile_count,
+        .best_profile_id = fixed_string(report.best_profile_id, SuFaceProfileIdCap),
+        .best_profile_label = fixed_string(report.best_profile_label, SuFaceProfileLabelCap),
+        .reason = fixed_string(report.reason, SuFaceAuthReasonCap),
+    };
 }
 
 }  // namespace
@@ -166,6 +194,39 @@ std::expected<std::string, CoreError> list_face_profiles_json(const std::string&
     });
 }
 
+std::expected<std::vector<FaceProfileSummary>, CoreError> list_face_profile_summaries(
+    const std::string& store_path) {
+    std::uintptr_t count = 0;
+    auto status = su_core_list_face_profile_summaries(
+        store_path.c_str(),
+        nullptr,
+        0,
+        &count);
+    if (status != SuStatus_BufferTooSmall && status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    if (count == 0) {
+        return std::vector<FaceProfileSummary>{};
+    }
+
+    std::vector<SuFaceProfileSummary> ffi_profiles(count);
+    status = su_core_list_face_profile_summaries(
+        store_path.c_str(),
+        ffi_profiles.data(),
+        ffi_profiles.size(),
+        &count);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+
+    std::vector<FaceProfileSummary> profiles;
+    profiles.reserve(count);
+    for (std::uintptr_t index = 0; index < count; ++index) {
+        profiles.push_back(map_profile_summary(ffi_profiles[index]));
+    }
+    return profiles;
+}
+
 std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     const std::string& store_path,
     std::string_view sample_seed,
@@ -202,6 +263,21 @@ std::expected<std::string, CoreError> authenticate_face_sample_report_json(
             buffer_len,
             required_len);
     });
+}
+
+std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
+    const std::string& store_path,
+    std::string_view sample_seed,
+    float threshold) {
+    const auto owned_sample_seed = std::string(sample_seed);
+    const auto report = su_core_authenticate_face_sample_report(
+        store_path.c_str(),
+        owned_sample_seed.c_str(),
+        threshold);
+    if (report.status != SuStatus_Ok) {
+        return std::unexpected(map_status(report.status));
+    }
+    return map_auth_report(report);
 }
 
 }  // namespace su::app

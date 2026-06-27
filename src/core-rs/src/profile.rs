@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use crate::SuStatus;
 use crate::embedding::{FaceEmbedding, mock_embedding_from_sample};
 
+pub const PROFILE_ID_CAP: usize = 64;
+pub const PROFILE_LABEL_CAP: usize = 128;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaceProfile {
     pub id: String,
@@ -117,10 +120,25 @@ pub fn list_profiles_json(path: &Path) -> Result<String, SuStatus> {
     serde_json::to_string_pretty(&store).map_err(|_| SuStatus::WriteError)
 }
 
+pub fn list_profiles(path: &Path) -> Result<Vec<FaceProfile>, SuStatus> {
+    Ok(load_store(path)?.profiles)
+}
+
 fn stable_profile_id(label: &str) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     label.trim().to_lowercase().hash(&mut hasher);
     format!("{:016x}", hasher.finish())
+}
+
+pub fn copy_str_to_fixed<const N: usize>(value: &str, out: &mut [u8; N]) {
+    out.fill(0);
+    if N == 0 {
+        return;
+    }
+
+    let bytes = value.as_bytes();
+    let len = bytes.len().min(N - 1);
+    out[..len].copy_from_slice(&bytes[..len]);
 }
 
 fn now_unix() -> u64 {

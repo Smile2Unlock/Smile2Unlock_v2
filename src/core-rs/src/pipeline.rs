@@ -5,7 +5,9 @@ use serde::Serialize;
 
 use crate::SuStatus;
 use crate::embedding::{cosine_similarity, mock_embedding_from_sample};
-use crate::profile::{FaceProfile, load_store};
+use crate::profile::{
+    FaceProfile, PROFILE_ID_CAP, PROFILE_LABEL_CAP, copy_str_to_fixed, load_store,
+};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +16,19 @@ pub struct SuFaceAuthDecision {
     pub accepted: bool,
     pub score: f32,
     pub profile_count: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SuFaceAuthReport {
+    pub status: SuStatus,
+    pub accepted: bool,
+    pub score: f32,
+    pub threshold: f32,
+    pub profile_count: u32,
+    pub best_profile_id: [u8; PROFILE_ID_CAP],
+    pub best_profile_label: [u8; PROFILE_LABEL_CAP],
+    pub reason: [u8; 128],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +40,33 @@ pub struct FaceAuthReport {
     pub best_profile_id: Option<String>,
     pub best_profile_label: Option<String>,
     pub reason: String,
+}
+
+impl FaceAuthReport {
+    pub(crate) fn to_ffi(&self, status: SuStatus) -> SuFaceAuthReport {
+        let mut best_profile_id = [0; PROFILE_ID_CAP];
+        let mut best_profile_label = [0; PROFILE_LABEL_CAP];
+        let mut reason = [0; 128];
+
+        if let Some(id) = &self.best_profile_id {
+            copy_str_to_fixed(id, &mut best_profile_id);
+        }
+        if let Some(label) = &self.best_profile_label {
+            copy_str_to_fixed(label, &mut best_profile_label);
+        }
+        copy_str_to_fixed(&self.reason, &mut reason);
+
+        SuFaceAuthReport {
+            status,
+            accepted: self.accepted,
+            score: self.score,
+            threshold: self.threshold,
+            profile_count: self.profile_count as u32,
+            best_profile_id,
+            best_profile_label,
+            reason,
+        }
+    }
 }
 
 pub fn authenticate_sample(
@@ -98,6 +140,26 @@ pub fn authenticate_sample_report_json(
 ) -> Result<String, SuStatus> {
     let report = authenticate_sample(store_path, sample_seed, threshold)?;
     serde_json::to_string_pretty(&report).map_err(|_| SuStatus::WriteError)
+}
+
+pub fn authenticate_sample_report_ffi(
+    store_path: &Path,
+    sample_seed: &str,
+    threshold: f32,
+) -> SuFaceAuthReport {
+    match authenticate_sample(store_path, sample_seed, threshold) {
+        Ok(report) => report.to_ffi(SuStatus::Ok),
+        Err(status) => FaceAuthReport {
+            accepted: false,
+            score: 0.0,
+            threshold,
+            profile_count: 0,
+            best_profile_id: None,
+            best_profile_label: None,
+            reason: "face authentication failed".to_owned(),
+        }
+        .to_ffi(status),
+    }
 }
 
 fn report_for_match(

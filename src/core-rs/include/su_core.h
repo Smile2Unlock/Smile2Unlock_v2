@@ -7,6 +7,12 @@
 extern "C" {
 #endif
 
+enum {
+    SuFaceProfileIdCap = 64,
+    SuFaceProfileLabelCap = 128,
+    SuFaceAuthReasonCap = 128,
+};
+
 typedef enum SuStatus {
     SuStatus_Ok = 0,
     SuStatus_NullArgument = 1,
@@ -39,6 +45,23 @@ typedef struct SuFaceAuthDecision {
     uint32_t profile_count;
 } SuFaceAuthDecision;
 
+typedef struct SuFaceProfileSummary {
+    uint8_t id[SuFaceProfileIdCap];
+    uint8_t label[SuFaceProfileLabelCap];
+    uint64_t created_at_unix;
+} SuFaceProfileSummary;
+
+typedef struct SuFaceAuthReport {
+    SuStatus status;
+    bool accepted;
+    float score;
+    float threshold;
+    uint32_t profile_count;
+    uint8_t best_profile_id[SuFaceProfileIdCap];
+    uint8_t best_profile_label[SuFaceProfileLabelCap];
+    uint8_t reason[SuFaceAuthReasonCap];
+} SuFaceAuthReport;
+
 uint32_t su_core_version_major(void);
 SuAuthDecision su_core_evaluate_auth(
     const char* username,
@@ -62,6 +85,11 @@ SuStatus su_core_list_face_profiles_json(
     uint8_t* out_buffer,
     uintptr_t buffer_len,
     uintptr_t* out_required_len);
+SuStatus su_core_list_face_profile_summaries(
+    const char* store_path,
+    SuFaceProfileSummary* out_profiles,
+    uintptr_t profile_capacity,
+    uintptr_t* out_profile_count);
 SuFaceAuthDecision su_core_authenticate_face_sample(
     const char* store_path,
     const char* sample_seed,
@@ -73,6 +101,10 @@ SuStatus su_core_authenticate_face_sample_report_json(
     uint8_t* out_buffer,
     uintptr_t buffer_len,
     uintptr_t* out_required_len);
+SuFaceAuthReport su_core_authenticate_face_sample_report(
+    const char* store_path,
+    const char* sample_seed,
+    float threshold);
 
 #ifdef __cplusplus
 }

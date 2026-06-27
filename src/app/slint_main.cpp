@@ -28,6 +28,22 @@ slint::SharedString demo_auth_text(su::app::AppController& controller) {
     return slint::SharedString(*demo_auth ? "Accepted" : "Rejected");
 }
 
+std::string profile_rows_text(const std::vector<su::app::FaceProfileSummary>& profiles) {
+    if (profiles.empty()) {
+        return "No enrolled face profiles";
+    }
+
+    std::string text;
+    for (const auto& profile : profiles) {
+        text += std::format(
+            "{} / {} / created_at={}\n",
+            profile.id,
+            profile.label,
+            profile.created_at_unix);
+    }
+    return text;
+}
+
 su::app::FaceDemoSnapshot run_face_demo_or_empty(su::app::AppController& controller) {
     const auto face_demo = controller.run_face_demo(
         "Demo Face",
@@ -40,11 +56,11 @@ su::app::FaceDemoSnapshot run_face_demo_or_empty(su::app::AppController& control
 }
 
 slint::SharedString profiles_or_error(su::app::AppController& controller) {
-    const auto profiles = controller.list_face_profiles();
+    const auto profiles = controller.list_face_profile_rows();
     if (!profiles) {
         return slint::SharedString(profiles.error());
     }
-    return slint::SharedString(*profiles);
+    return slint::SharedString(profile_rows_text(*profiles));
 }
 
 slint::SharedString enroll_or_error(
@@ -57,7 +73,29 @@ slint::SharedString enroll_or_error(
     if (!profiles) {
         return slint::SharedString(profiles.error());
     }
-    return slint::SharedString(*profiles);
+    const auto rows = controller.list_face_profile_rows();
+    if (!rows) {
+        return slint::SharedString(rows.error());
+    }
+    return slint::SharedString(profile_rows_text(*rows));
+}
+
+slint::SharedString delete_or_error(
+    su::app::AppController& controller,
+    const slint::SharedString& profile_id) {
+    const auto deleted = controller.delete_face_profile_by_id(std::string(profile_id));
+    if (!deleted) {
+        return slint::SharedString(deleted.error());
+    }
+    const auto profiles = controller.list_face_profile_rows();
+    if (!profiles) {
+        return slint::SharedString(profiles.error());
+    }
+    auto text = profile_rows_text(*profiles);
+    if (!*deleted) {
+        text = "No profile deleted\n" + text;
+    }
+    return slint::SharedString(text);
 }
 
 su::app::FaceDemoSnapshot authenticate_or_empty(
@@ -88,25 +126,37 @@ int main() {
     window->set_liveness_text(slint::SharedString(snapshot->config.liveness_detection ? "Enabled" : "Disabled"));
     window->set_config_path_text(slint::SharedString(snapshot->config_path));
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
-    window->set_profile_text(slint::SharedString(snapshot->profiles_json));
+    window->set_profile_text(slint::SharedString(profile_rows_text(snapshot->profiles)));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_auth_text(demo_auth_text(controller));
     const auto face_demo = run_face_demo_or_empty(controller);
-    window->set_face_auth_report_text(slint::SharedString(face_demo.auth_report_json));
+    window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
+    window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
+    window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
+    window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
     window->on_demo_auth_requested([window, &controller] {
         window->set_auth_text(demo_auth_text(controller));
         const auto face_demo = run_face_demo_or_empty(controller);
-        window->set_profile_text(slint::SharedString(face_demo.profiles_json));
-        window->set_face_auth_report_text(slint::SharedString(face_demo.auth_report_json));
+        window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
+        window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
+        window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
+        window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
+        window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
     });
     window->on_enroll_requested([window, &controller](slint::SharedString label, slint::SharedString sample_seed) {
         window->set_profile_text(enroll_or_error(controller, label, sample_seed));
     });
     window->on_face_auth_requested([window, &controller](slint::SharedString sample_seed) {
         const auto face_demo = authenticate_or_empty(controller, sample_seed);
-        window->set_profile_text(slint::SharedString(face_demo.profiles_json));
-        window->set_face_auth_report_text(slint::SharedString(face_demo.auth_report_json));
+        window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
+        window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
+        window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
+        window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
+        window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
         window->set_auth_text(slint::SharedString(face_demo.decision.accepted ? "Accepted" : "Rejected"));
+    });
+    window->on_delete_profile_requested([window, &controller](slint::SharedString profile_id) {
+        window->set_profile_text(delete_or_error(controller, profile_id));
     });
     window->on_refresh_profiles_requested([window, &controller] {
         window->set_profile_text(profiles_or_error(controller));

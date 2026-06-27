@@ -38,7 +38,16 @@ pub struct SuCoreConfig {
     pub preview_fps: u32,
 }
 
-pub use pipeline::SuFaceAuthDecision;
+pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};
+use profile::{PROFILE_ID_CAP, PROFILE_LABEL_CAP};
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SuFaceProfileSummary {
+    pub id: [u8; PROFILE_ID_CAP],
+    pub label: [u8; PROFILE_LABEL_CAP],
+    pub created_at_unix: u64,
+}
 
 fn write_string_to_buffer(
     value: &str,
@@ -192,6 +201,52 @@ pub extern "C" fn su_core_list_face_profiles_json(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn su_core_list_face_profile_summaries(
+    store_path: *const c_char,
+    out_profiles: *mut SuFaceProfileSummary,
+    profile_capacity: usize,
+    out_profile_count: *mut usize,
+) -> SuStatus {
+    if out_profile_count.is_null() {
+        return SuStatus::NullArgument;
+    }
+
+    let store_path = match profile::path_from_ptr(store_path) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
+    let profiles = match profile::list_profiles(&store_path) {
+        Ok(profiles) => profiles,
+        Err(status) => return status,
+    };
+
+    unsafe {
+        out_profile_count.write(profiles.len());
+    }
+    if profiles.is_empty() {
+        return SuStatus::Ok;
+    }
+    if out_profiles.is_null() || profile_capacity < profiles.len() {
+        return SuStatus::BufferTooSmall;
+    }
+
+    let out = unsafe { slice::from_raw_parts_mut(out_profiles, profile_capacity) };
+    for (index, profile) in profiles.iter().enumerate() {
+        let mut id = [0; PROFILE_ID_CAP];
+        let mut label = [0; PROFILE_LABEL_CAP];
+        profile::copy_str_to_fixed(&profile.id, &mut id);
+        profile::copy_str_to_fixed(&profile.label, &mut label);
+        out[index] = SuFaceProfileSummary {
+            id,
+            label,
+            created_at_unix: profile.created_at_unix,
+        };
+    }
+
+    SuStatus::Ok
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn su_core_authenticate_face_sample(
     store_path: *const c_char,
     sample_seed: *const c_char,
@@ -245,4 +300,44 @@ pub extern "C" fn su_core_authenticate_face_sample_report_json(
         Ok(json) => write_string_to_buffer(&json, out_buffer, buffer_len, out_required_len),
         Err(status) => status,
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_authenticate_face_sample_report(
+    store_path: *const c_char,
+    sample_seed: *const c_char,
+    threshold: f32,
+) -> SuFaceAuthReport {
+    let store_path = match profile::path_from_ptr(store_path) {
+        Ok(path) => path,
+        Err(status) => {
+            return pipeline::FaceAuthReport {
+                accepted: false,
+                score: 0.0,
+                threshold,
+                profile_count: 0,
+                best_profile_id: None,
+                best_profile_label: None,
+                reason: "invalid profile store path".to_owned(),
+            }
+            .to_ffi(status);
+        }
+    };
+    let sample_seed = match profile::string_from_ptr(sample_seed) {
+        Ok(value) => value,
+        Err(status) => {
+            return pipeline::FaceAuthReport {
+                accepted: false,
+                score: 0.0,
+                threshold,
+                profile_count: 0,
+                best_profile_id: None,
+                best_profile_label: None,
+                reason: "invalid face sample".to_owned(),
+            }
+            .to_ffi(status);
+        }
+    };
+
+    pipeline::authenticate_sample_report_ffi(&store_path, &sample_seed, threshold)
 }
