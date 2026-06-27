@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <exception>
+#include <utility>
 #include <vector>
 
 #if SU_HAS_SEETAFACE
+#include <seeta/FaceAntiSpoofing.h>
 #include <seeta/FaceDetector.h>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceRecognizer.h>
@@ -19,6 +21,8 @@ constexpr auto kModelFiles = std::array{
     "face_detector.csta",
     "face_landmarker_pts5.csta",
     "face_recognizer.csta",
+    "fas_first.csta",
+    "fas_second.csta",
 };
 
 }  // namespace
@@ -50,10 +54,14 @@ std::expected<SeetaFaceModelPaths, RecognizerError> seetaface_model_paths(
         .detector = model_dir / kModelFiles[0],
         .landmarker = model_dir / kModelFiles[1],
         .recognizer = model_dir / kModelFiles[2],
+        .anti_spoofing_first = model_dir / kModelFiles[3],
+        .anti_spoofing_second = model_dir / kModelFiles[4],
     };
     if (!std::filesystem::is_regular_file(paths.detector)
         || !std::filesystem::is_regular_file(paths.landmarker)
-        || !std::filesystem::is_regular_file(paths.recognizer)) {
+        || !std::filesystem::is_regular_file(paths.recognizer)
+        || !std::filesystem::is_regular_file(paths.anti_spoofing_first)
+        || !std::filesystem::is_regular_file(paths.anti_spoofing_second)) {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
     return paths;
@@ -70,6 +78,22 @@ bool valid_image(const ImageView image) {
         && !image.bytes.empty();
 }
 
+float liveness_score_from(
+    const seeta::FaceAntiSpoofing::Status status,
+    const std::pair<float, float> scores) {
+    const auto reality = std::clamp(scores.second, 0.0F, 1.0F);
+    switch (status) {
+    case seeta::FaceAntiSpoofing::REAL:
+        return reality;
+    case seeta::FaceAntiSpoofing::SPOOF:
+        return 0.0F;
+    case seeta::FaceAntiSpoofing::FUZZY:
+    case seeta::FaceAntiSpoofing::DETECTING:
+        return reality * 0.5F;
+    }
+    return 0.0F;
+}
+
 }  // namespace
 
 class SeetaFaceBackend::Impl {
@@ -84,6 +108,19 @@ public:
             detector_.reset();
             landmarker_.reset();
             recognizer_.reset();
+        } catch (...) {
+            detector_.reset();
+            landmarker_.reset();
+            recognizer_.reset();
+        }
+
+        try {
+            anti_spoofing_ = std::make_unique<seeta::FaceAntiSpoofing>(anti_spoofing_setting_for(paths_));
+            anti_spoofing_->SetThreshold(0.3F, 0.8F);
+        } catch (const std::exception& error) {
+            anti_spoofing_.reset();
+        } catch (...) {
+            anti_spoofing_.reset();
         }
     }
 
@@ -121,6 +158,15 @@ public:
             return std::unexpected(RecognizerError::kModelUnavailable);
         }
 
+        auto liveness_score = 0.0F;
+        if (anti_spoofing_) {
+            const auto liveness_status = anti_spoofing_->Predict(seeta_image, face, points.data());
+            auto clarity = 0.0F;
+            auto reality = 0.0F;
+            anti_spoofing_->GetPreFrameScore(&clarity, &reality);
+            liveness_score = liveness_score_from(liveness_status, {clarity, reality});
+        }
+
         return RecognitionResult{
             .has_face = true,
             .face_box = FaceBox{
@@ -130,12 +176,16 @@ public:
                 .height = face.height,
             },
             .feature = std::move(feature),
-            .liveness_score = 1.0F,
+            .liveness_score = liveness_score,
         };
     }
 
     bool available() const {
         return detector_ && landmarker_ && recognizer_;
+    }
+
+    bool liveness_available() const {
+        return static_cast<bool>(anti_spoofing_);
     }
 
 private:
@@ -145,10 +195,18 @@ private:
         return setting;
     }
 
+    static seeta::ModelSetting anti_spoofing_setting_for(const SeetaFaceModelPaths& paths) {
+        auto setting = seeta::ModelSetting{};
+        setting.append(paths.anti_spoofing_first.string());
+        setting.append(paths.anti_spoofing_second.string());
+        return setting;
+    }
+
     SeetaFaceModelPaths paths_;
     std::unique_ptr<seeta::FaceDetector> detector_;
     std::unique_ptr<seeta::FaceLandmarker> landmarker_;
     std::unique_ptr<seeta::FaceRecognizer> recognizer_;
+    std::unique_ptr<seeta::FaceAntiSpoofing> anti_spoofing_;
 };
 
 #else
@@ -162,6 +220,10 @@ public:
     }
 
     bool available() const {
+        return false;
+    }
+
+    bool liveness_available() const {
         return false;
     }
 };
@@ -184,6 +246,10 @@ std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::extract(
 
 bool SeetaFaceBackend::available() const {
     return impl_->available();
+}
+
+bool SeetaFaceBackend::liveness_available() const {
+    return impl_->liveness_available();
 }
 
 }  // namespace su::recognizer

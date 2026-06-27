@@ -114,11 +114,16 @@ It must be able to:
 - Add face detection and alignment.
 - Add embedding model inference.
 - Preserve the Rust pipeline API by passing embeddings or normalized face samples across the boundary.
+- Current C++ SeetaFace smoke can extract embeddings from staged model assets and feed the
+  precomputed embedding into the Rust profile/authentication pipeline.
 
 ### Liveness
 
 - Add liveness result as an explicit pipeline input.
 - Keep liveness failure distinct from similarity failure.
+- The SeetaFace backend loads anti-spoofing models, reports a normalized liveness score,
+  and exposes whether the FAS backend is available. The smoke test now requires FAS to load;
+  production threshold policy still needs to be defined separately.
 
 ### Secure Storage
 
@@ -143,3 +148,5 @@ It must be able to:
 - C++ bridge compiles against the stable C ABI header.
 - Console demo can run the full profile loop.
 - Slint demo can display profile/authentication state.
+- With `--with_seetaface=y`, Xmake stages SeetaFace models, prepares tiny local smoke images
+  under `build/test-data`, and runs the image-to-embedding-to-authentication smoke test.

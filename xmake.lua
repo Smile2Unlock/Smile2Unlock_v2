@@ -32,36 +32,17 @@ option("with_seetaface")
     set_description("Enable the optional SeetaFace recognizer backend")
 option_end()
 
-local seetaface_links = {
-    "SeetaFaceAntiSpoofingX600",
-    "SeetaFaceDetector600",
-    "SeetaFaceLandmarker600",
-    "SeetaFaceRecognizer610",
-    "SeetaAuthorize",
-    "tennis"
-}
-
-local function has_seetaface_libraries(libdir)
-    if not libdir or not os.isdir(libdir) then
-        return false
-    end
-    for _, link in ipairs(seetaface_links) do
-        if not os.isfile(path.join(libdir, "lib" .. link .. ".so"))
-            and not os.isfile(path.join(libdir, "lib" .. link .. ".a"))
-            and not os.isfile(path.join(libdir, link .. ".lib")) then
-            return false
-        end
-    end
-    return true
+if has_config("with_seetaface") then
+    add_requires("seetaface6open", {system = false})
 end
 
 local function seetaface_libdir(root)
     local lib64 = path.join(root, "lib64")
-    if has_seetaface_libraries(lib64) then
+    if os.isdir(lib64) then
         return lib64
     end
     local lib = path.join(root, "lib")
-    if has_seetaface_libraries(lib) then
+    if os.isdir(lib) then
         return lib
     end
 end
@@ -76,48 +57,35 @@ local function seetaface_runtime_dirs(root)
     return dirs
 end
 
-local function find_seetaface_root()
-    local candidates = {}
-    local explicit_root = os.getenv("SU_SEETAFACE_ROOT")
-    if explicit_root and explicit_root ~= "" then
-        table.insert(candidates, explicit_root)
-    end
-    local home = os.getenv("HOME")
-    if home then
-        for _, candidate in ipairs(os.dirs(path.join(home, ".xmake", "packages", "s", "seetaface6open", "latest", "*"))) do
-            table.insert(candidates, candidate)
-        end
-    end
-
-    for _, candidate in ipairs(candidates) do
-        local include_marker = path.join(candidate, "include", "seeta", "FaceRecognizer.h")
-        local libdir = seetaface_libdir(candidate)
-        if os.isfile(include_marker) and libdir then
-            return candidate, libdir
-        end
-    end
+local function seetaface_test_data_dir()
+    return path.join(os.projectdir(), "build", "test-data", "seetaface")
 end
 
 local function add_seetaface_backend()
-    local root, libdir = find_seetaface_root()
-    if not root or not libdir then
-        raise("SeetaFace6Open not found; set SU_SEETAFACE_ROOT or install local-repo package seetaface6open")
-    end
-    add_includedirs(path.join(root, "include"), {public = true})
-    for _, dir in ipairs(seetaface_runtime_dirs(root)) do
-        add_linkdirs(dir, {public = true})
-    end
-    for _, link in ipairs(seetaface_links) do
-        add_links(link, {public = true})
-    end
+    add_packages("seetaface6open", {public = true})
     if is_plat("linux") then
         add_cxxflags("-fopenmp", {force = true, public = true})
         add_ldflags("-fopenmp", {force = true, public = true})
         add_ldflags("-Wl,--disable-new-dtags", {force = true, public = true})
-        for _, dir in ipairs(seetaface_runtime_dirs(root)) do
-            add_rpathdirs(dir, {public = true})
-        end
     end
+    on_load(function (target)
+        local seetaface = target:pkg("seetaface6open")
+        if seetaface then
+            local root = seetaface:installdir()
+            target:add("sysincludedirs", path.join(root, "include"), {public = true})
+            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
+                target:add("rpathdirs", dir, {public = true})
+            end
+        end
+    end)
+end
+
+local function seetaface_root_from_target(target)
+    local seetaface = target:pkg("seetaface6open")
+    if seetaface then
+        return seetaface:installdir()
+    end
+    return ""
 end
 
 local function model_stage_dir()
@@ -252,3 +220,42 @@ target("su_protocol_smoke_test")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
     add_tests("default")
+
+if has_config("with_seetaface") then
+    target("su_seetaface_pipeline_smoke_test")
+        apply_cpp_target("binary")
+        add_files("tests/seetaface/*.cpp")
+        add_deps("su_core", "su_recognizer")
+        add_packages("seetaface6open")
+        add_files("src/app/core_bridge.cpp")
+        add_includedirs("src/core-rs/include")
+        add_defines("SU_SEETAFACE_TEST_DATA_DIR=\"" .. path.unix(seetaface_test_data_dir()) .. "\"")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        on_load(function (target)
+            local root = seetaface_root_from_target(target)
+            target:add("sysincludedirs", path.join(root, "include"))
+            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
+                target:add("rpathdirs", dir)
+            end
+        end)
+        before_build(function (target)
+            local root = seetaface_root_from_target(target)
+            local recognizer_samples = path.join(root, "src", "FaceRecognizer6", "example")
+            local fas_samples = path.join(root, "src", "FaceAntiSpoofingX6", "example")
+            local dstdir = seetaface_test_data_dir()
+            os.mkdir(dstdir)
+            os.execv("magick", {
+                path.join(recognizer_samples, "1.png"),
+                "-colorspace", "RGB",
+                "-alpha", "off",
+                path.join(dstdir, "official_face_1.ppm")
+            })
+            os.execv("magick", {
+                path.join(fas_samples, "hu.ge.jpg"),
+                "-colorspace", "RGB",
+                path.join(dstdir, "official_face_2.ppm")
+            })
+        end)
+        add_tests("default")
+end

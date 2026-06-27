@@ -20,6 +20,8 @@ struct SeetaFaceModelPaths {
     std::filesystem::path detector;
     std::filesystem::path landmarker;
     std::filesystem::path recognizer;
+    std::filesystem::path anti_spoofing_first;
+    std::filesystem::path anti_spoofing_second;
 };
 
 std::filesystem::path default_seetaface_model_dir();
@@ -38,6 +40,7 @@ public:
 
     std::expected<RecognitionResult, RecognizerError> extract(ImageView image) const;
     bool available() const;
+    bool liveness_available() const;
 
 private:
     class Impl;
