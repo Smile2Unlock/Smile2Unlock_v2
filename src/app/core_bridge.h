@@ -14,6 +14,8 @@ enum class CoreError {
     kIoError,
     kParseError,
     kWriteError,
+    kInvalidArgument,
+    kBufferTooSmall,
     kUnknown,
 };
 
@@ -29,6 +31,12 @@ struct AuthDecision {
     bool accepted = false;
 };
 
+struct FaceAuthDecision {
+    bool accepted = false;
+    float score = 0.0F;
+    std::uint32_t profile_count = 0;
+};
+
 std::uint32_t core_version_major();
 std::expected<float, CoreError> default_threshold();
 CoreConfig default_config();
@@ -39,5 +47,21 @@ std::expected<AuthDecision, CoreError> evaluate_auth(
     float similarity,
     float threshold,
     bool liveness_ok);
+std::expected<void, CoreError> enroll_face_profile(
+    const std::string& store_path,
+    std::string_view label,
+    std::string_view sample_seed);
+std::expected<bool, CoreError> delete_face_profile(
+    const std::string& store_path,
+    std::string_view profile_id);
+std::expected<std::string, CoreError> list_face_profiles_json(const std::string& store_path);
+std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
+    const std::string& store_path,
+    std::string_view sample_seed,
+    float threshold);
+std::expected<std::string, CoreError> authenticate_face_sample_report_json(
+    const std::string& store_path,
+    std::string_view sample_seed,
+    float threshold);
 
 }  // namespace su::app

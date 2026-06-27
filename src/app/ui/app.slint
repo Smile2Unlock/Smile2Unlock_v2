@@ -7,8 +7,11 @@ export component AppWindow inherits Window {
     in property <string> preview_fps_text: "15";
     in property <string> liveness_text: "Enabled";
     in property <string> config_path_text: "";
+    in property <string> profile_store_path_text: "";
     in property <string> camera_text: "No cameras";
+    in property <string> profile_text: "";
     in-out property <string> auth_text: "Not checked";
+    in-out property <string> face_auth_report_text: "";
 
     callback demo_auth_requested();
 
@@ -60,9 +63,24 @@ export component AppWindow inherits Window {
             }
 
             Row {
+                Text { text: "Profiles"; font-weight: 700; }
+                Text { text: profile_store_path_text; }
+            }
+
+            Row {
                 Text { text: "Auth"; font-weight: 700; }
                 Text { text: auth_text; }
             }
+        }
+
+        Text {
+            text: profile_text;
+            font-size: 12px;
+        }
+
+        Text {
+            text: face_auth_report_text;
+            font-size: 12px;
         }
 
         Button {

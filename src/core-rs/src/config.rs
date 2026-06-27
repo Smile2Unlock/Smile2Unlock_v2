@@ -1,4 +1,4 @@
-use std::ffi::{c_char, CStr};
+use std::ffi::{CStr, c_char};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -46,7 +46,11 @@ impl From<SuCoreConfig> for AppConfig {
             selected_camera: value.selected_camera,
             recognition_threshold: value.recognition_threshold,
             liveness_detection: value.liveness_detection,
-            preview_fps: if value.preview_fps == 0 { 15 } else { value.preview_fps },
+            preview_fps: if value.preview_fps == 0 {
+                15
+            } else {
+                value.preview_fps
+            },
         }
     }
 }
@@ -139,4 +143,3 @@ mod tests {
         assert_eq!(config.preview_fps, 15);
     }
 }
-

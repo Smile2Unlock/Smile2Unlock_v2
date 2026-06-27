@@ -1,0 +1,160 @@
+use std::cmp::Ordering;
+use std::path::Path;
+
+use serde::Serialize;
+
+use crate::SuStatus;
+use crate::embedding::{cosine_similarity, mock_embedding_from_sample};
+use crate::profile::{FaceProfile, load_store};
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SuFaceAuthDecision {
+    pub status: SuStatus,
+    pub accepted: bool,
+    pub score: f32,
+    pub profile_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FaceAuthReport {
+    pub accepted: bool,
+    pub score: f32,
+    pub threshold: f32,
+    pub profile_count: usize,
+    pub best_profile_id: Option<String>,
+    pub best_profile_label: Option<String>,
+    pub reason: String,
+}
+
+pub fn authenticate_sample(
+    store_path: &Path,
+    sample_seed: &str,
+    threshold: f32,
+) -> Result<FaceAuthReport, SuStatus> {
+    if sample_seed.trim().is_empty() {
+        return Err(SuStatus::InvalidArgument);
+    }
+
+    let store = load_store(store_path)?;
+    if store.profiles.is_empty() {
+        return Ok(FaceAuthReport {
+            accepted: false,
+            score: 0.0,
+            threshold,
+            profile_count: 0,
+            best_profile_id: None,
+            best_profile_label: None,
+            reason: "no enrolled profiles".to_owned(),
+        });
+    }
+
+    let probe = mock_embedding_from_sample(sample_seed);
+    let best = store
+        .profiles
+        .iter()
+        .map(|profile| (profile, cosine_similarity(&probe, &profile.embedding)))
+        .max_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(Ordering::Equal));
+
+    Ok(match best {
+        Some((profile, score)) => report_for_match(profile, score, threshold, store.profiles.len()),
+        None => FaceAuthReport {
+            accepted: false,
+            score: 0.0,
+            threshold,
+            profile_count: store.profiles.len(),
+            best_profile_id: None,
+            best_profile_label: None,
+            reason: "no comparable profiles".to_owned(),
+        },
+    })
+}
+
+pub fn authenticate_sample_ffi(
+    store_path: &Path,
+    sample_seed: &str,
+    threshold: f32,
+) -> SuFaceAuthDecision {
+    match authenticate_sample(store_path, sample_seed, threshold) {
+        Ok(report) => SuFaceAuthDecision {
+            status: SuStatus::Ok,
+            accepted: report.accepted,
+            score: report.score,
+            profile_count: report.profile_count as u32,
+        },
+        Err(status) => SuFaceAuthDecision {
+            status,
+            accepted: false,
+            score: 0.0,
+            profile_count: 0,
+        },
+    }
+}
+
+pub fn authenticate_sample_report_json(
+    store_path: &Path,
+    sample_seed: &str,
+    threshold: f32,
+) -> Result<String, SuStatus> {
+    let report = authenticate_sample(store_path, sample_seed, threshold)?;
+    serde_json::to_string_pretty(&report).map_err(|_| SuStatus::WriteError)
+}
+
+fn report_for_match(
+    profile: &FaceProfile,
+    score: f32,
+    threshold: f32,
+    profile_count: usize,
+) -> FaceAuthReport {
+    let accepted = score >= threshold;
+    FaceAuthReport {
+        accepted,
+        score,
+        threshold,
+        profile_count,
+        best_profile_id: Some(profile.id.clone()),
+        best_profile_label: Some(profile.label.clone()),
+        reason: if accepted {
+            "best face match passed threshold".to_owned()
+        } else {
+            "best face match below threshold".to_owned()
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::profile::enroll_profile;
+
+    fn test_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("su_auth_pipeline_{name}.json"))
+    }
+
+    #[test]
+    fn authenticates_best_face_match() {
+        let path = test_path("best_match");
+        let _ = fs::remove_file(&path);
+        enroll_profile(&path, "Alice", "face:alice:front").unwrap();
+        enroll_profile(&path, "Bob", "face:bob:front").unwrap();
+
+        let report = authenticate_sample(&path, "face:alice:front", 0.80).unwrap();
+        assert!(report.accepted);
+        assert_eq!(report.best_profile_label.as_deref(), Some("Alice"));
+        assert!(report.score > 0.99);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_when_store_is_empty() {
+        let path = test_path("empty");
+        let _ = fs::remove_file(&path);
+
+        let report = authenticate_sample(&path, "face:alice:front", 0.80).unwrap();
+        assert!(!report.accepted);
+        assert_eq!(report.profile_count, 0);
+    }
+}
