@@ -199,10 +199,10 @@ mod tests {
     fn authenticates_best_face_match() {
         let path = test_path("best_match");
         let _ = fs::remove_file(&path);
-        enroll_profile(&path, "Alice", "face:alice:front").unwrap();
-        enroll_profile(&path, "Bob", "face:bob:front").unwrap();
+        enroll_profile(&path, "Alice", "mock:face:alice:front").unwrap();
+        enroll_profile(&path, "Bob", "mock:face:bob:front").unwrap();
 
-        let report = authenticate_sample(&path, "face:alice:front", 0.80).unwrap();
+        let report = authenticate_sample(&path, "mock:face:alice:front", 0.80).unwrap();
         assert!(report.accepted);
         assert_eq!(report.best_profile_label.as_deref(), Some("Alice"));
         assert!(report.score > 0.99);
@@ -214,7 +214,7 @@ mod tests {
         let path = test_path("empty");
         let _ = fs::remove_file(&path);
 
-        let report = authenticate_sample(&path, "face:alice:front", 0.80).unwrap();
+        let report = authenticate_sample(&path, "mock:face:alice:front", 0.80).unwrap();
         assert!(!report.accepted);
         assert_eq!(report.profile_count, 0);
     }

@@ -31,6 +31,11 @@ Profile names are labels only. They must not become the authentication mechanism
   - delete profile
   - run face authentication
 - Demo embedding: generated deterministically from a mock face sample source.
+- Demo sample source syntax:
+  - `mock:<id>` for deterministic mock samples
+  - `image:<path>` reserved for file-based enrollment/probing
+  - `camera:<descriptor>` reserved for captured frames
+  - `embedding:<source>` reserved for imported or precomputed embeddings
 - Demo matching: cosine similarity against all enrolled profiles, returning the best match.
 
 ## First Core Slice

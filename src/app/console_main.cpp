@@ -32,8 +32,8 @@ int main() {
 
     const auto face_demo = controller.run_face_demo(
         "Demo Face",
-        "face:demo:front",
-        "face:demo:front");
+        "mock:face:demo:front",
+        "mock:face:demo:front");
     if (!face_demo) {
         std::cerr << "face demo failed: " << face_demo.error() << '\n';
         return 1;

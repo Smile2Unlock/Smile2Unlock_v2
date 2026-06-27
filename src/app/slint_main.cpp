@@ -47,8 +47,8 @@ std::string profile_rows_text(const std::vector<su::app::FaceProfileSummary>& pr
 su::app::FaceDemoSnapshot run_face_demo_or_empty(su::app::AppController& controller) {
     const auto face_demo = controller.run_face_demo(
         "Demo Face",
-        "face:demo:front",
-        "face:demo:front");
+        "mock:face:demo:front",
+        "mock:face:demo:front");
     if (!face_demo) {
         return {};
     }

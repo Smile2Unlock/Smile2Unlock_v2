@@ -164,7 +164,7 @@ mod tests {
         let path = test_path("enroll_list_delete");
         let _ = fs::remove_file(&path);
 
-        let profile = enroll_profile(&path, "Alice", "face:alice:front").unwrap();
+        let profile = enroll_profile(&path, "Alice", "mock:face:alice:front").unwrap();
         let store = load_store(&path).unwrap();
         assert_eq!(store.profiles.len(), 1);
         assert_eq!(store.profiles[0].id, profile.id);
