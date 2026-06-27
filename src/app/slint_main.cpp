@@ -41,7 +41,10 @@ int main() {
     auto window = su::app::ui::AppWindow::create();
     window->set_title_text(slint::SharedString(snapshot->title));
     window->set_core_version(slint::SharedString(std::format("Rust core v{}", su::app::core_version_major())));
-    window->set_threshold_text(slint::SharedString(std::format("{:.2f}", snapshot->recognition_threshold)));
+    window->set_threshold_text(slint::SharedString(std::format("{:.2f}", snapshot->config.recognition_threshold)));
+    window->set_preview_fps_text(slint::SharedString(std::format("{}", snapshot->config.preview_fps)));
+    window->set_liveness_text(slint::SharedString(snapshot->config.liveness_detection ? "Enabled" : "Disabled"));
+    window->set_config_path_text(slint::SharedString(snapshot->config_path));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_auth_text(demo_auth_text(controller));
     window->on_demo_auth_requested([window, &controller] {

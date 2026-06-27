@@ -1,30 +1,6 @@
 #include "app/core_bridge.h"
 
-#include <string>
-
-extern "C" {
-
-enum SuStatus {
-    SuStatus_Ok = 0,
-    SuStatus_NullArgument = 1,
-    SuStatus_InvalidUtf8 = 2,
-    SuStatus_UserDenied = 3,
-};
-
-struct SuAuthDecision {
-    SuStatus status;
-    bool accepted;
-};
-
-std::uint32_t su_core_version_major();
-SuAuthDecision su_core_evaluate_auth(
-    const char* username,
-    float similarity,
-    float threshold,
-    bool liveness_ok);
-SuStatus su_core_default_threshold(float* out_threshold);
-
-}  // extern "C"
+#include "su_core.h"
 
 namespace su::app {
 
@@ -40,8 +16,34 @@ CoreError map_status(SuStatus status) {
         return CoreError::kInvalidUtf8;
     case SuStatus_UserDenied:
         return CoreError::kUserDenied;
+    case SuStatus_IoError:
+        return CoreError::kIoError;
+    case SuStatus_ParseError:
+        return CoreError::kParseError;
+    case SuStatus_WriteError:
+        return CoreError::kWriteError;
     }
     return CoreError::kUnknown;
+}
+
+CoreConfig map_config(const SuCoreConfig& config) {
+    return CoreConfig{
+        .version = config.version,
+        .selected_camera = config.selected_camera,
+        .recognition_threshold = config.recognition_threshold,
+        .liveness_detection = config.liveness_detection,
+        .preview_fps = config.preview_fps,
+    };
+}
+
+SuCoreConfig map_config(const CoreConfig& config) {
+    return SuCoreConfig{
+        .version = config.version,
+        .selected_camera = config.selected_camera,
+        .recognition_threshold = config.recognition_threshold,
+        .liveness_detection = config.liveness_detection,
+        .preview_fps = config.preview_fps,
+    };
 }
 
 }  // namespace
@@ -57,6 +59,28 @@ std::expected<float, CoreError> default_threshold() {
         return std::unexpected(map_status(status));
     }
     return threshold;
+}
+
+CoreConfig default_config() {
+    return map_config(su_core_default_config());
+}
+
+std::expected<CoreConfig, CoreError> load_config(const std::string& path) {
+    SuCoreConfig config{};
+    const auto status = su_core_load_config(path.c_str(), &config);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    return map_config(config);
+}
+
+std::expected<void, CoreError> save_config(const std::string& path, const CoreConfig& config) {
+    const auto ffi_config = map_config(config);
+    const auto status = su_core_save_config(path.c_str(), &ffi_config);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    return {};
 }
 
 std::expected<AuthDecision, CoreError> evaluate_auth(
@@ -77,4 +101,3 @@ std::expected<AuthDecision, CoreError> evaluate_auth(
 }
 
 }  // namespace su::app
-

@@ -12,7 +12,11 @@ int main() {
 
     std::cout << snapshot->title << '\n';
     std::cout << "Slint enabled: " << (snapshot->slint_enabled ? "yes" : "no") << '\n';
-    std::cout << "Default threshold: " << snapshot->recognition_threshold << '\n';
+    std::cout << "Config path: " << snapshot->config_path << '\n';
+    std::cout << "Threshold: " << snapshot->config.recognition_threshold << '\n';
+    std::cout << "Selected camera: " << snapshot->config.selected_camera << '\n';
+    std::cout << "Preview FPS: " << snapshot->config.preview_fps << '\n';
+    std::cout << "Liveness: " << (snapshot->config.liveness_detection ? "yes" : "no") << '\n';
     std::cout << "Detected cameras: " << snapshot->cameras.size() << '\n';
     for (const auto& camera : snapshot->cameras) {
         std::cout << "  [" << camera.index << "] " << camera.name << '\n';
@@ -26,4 +30,3 @@ int main() {
     std::cout << "Demo auth accepted: " << (*demo_auth ? "yes" : "no") << '\n';
     return 0;
 }
-

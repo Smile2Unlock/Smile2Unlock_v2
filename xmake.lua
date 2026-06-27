@@ -42,15 +42,19 @@ target("su_core")
     set_kind("phony")
     on_build(function ()
         local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
+        local manifest = path.join(os.projectdir(), "src", "core-rs", "Cargo.toml")
+        local cargo_mode = is_mode("release") and "release" or "debug"
+        local cargo_args = {
+            "build",
+            "--manifest-path", manifest,
+            "--target-dir", path.join(os.projectdir(), "build", "cargo")
+        }
+        if is_mode("release") then
+            table.insert(cargo_args, "--release")
+        end
         os.mkdir(outdir)
-        os.execv("rustc", {
-            "--edition=2024",
-            "--crate-type=staticlib",
-            "-C", "debuginfo=2",
-            "-C", "opt-level=0",
-            "-o", path.join(outdir, "libsu_core.a"),
-            path.join(os.projectdir(), "src", "core-rs", "src", "lib.rs")
-        })
+        os.execv("cargo", cargo_args)
+        os.cp(path.join(os.projectdir(), "build", "cargo", cargo_mode, "libsu_core.a"), path.join(outdir, "libsu_core.a"))
     end)
 
 target("su_platform_zig")
@@ -73,6 +77,7 @@ target("su_app")
     apply_cpp_target("binary")
     add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     add_headerfiles("src/app/*.h")
+    add_includedirs("src/core-rs/include", {public = true})
     add_deps("su_core", "su_recognizer")
     if has_config("with_zig") then
         add_deps("su_platform_zig")
@@ -130,6 +135,7 @@ target("su_protocol_smoke_test")
     add_files("tests/protocol/*.cpp")
     add_deps("su_core")
     add_files("src/app/core_bridge.cpp")
+    add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
     add_tests("default")

@@ -1,4 +1,7 @@
-use std::ffi::{c_char, CStr};
+mod auth;
+mod config;
+
+use std::ffi::c_char;
 use std::ptr;
 
 #[repr(C)]
@@ -8,6 +11,9 @@ pub enum SuStatus {
     NullArgument = 1,
     InvalidUtf8 = 2,
     UserDenied = 3,
+    IoError = 4,
+    ParseError = 5,
+    WriteError = 6,
 }
 
 #[repr(C)]
@@ -17,20 +23,14 @@ pub struct SuAuthDecision {
     pub accepted: bool,
 }
 
-fn username_from_ptr(username: *const c_char) -> Result<String, SuStatus> {
-    if username.is_null() {
-        return Err(SuStatus::NullArgument);
-    }
-
-    let raw = unsafe { CStr::from_ptr(username) };
-    match raw.to_str() {
-        Ok(name) => Ok(name.trim().to_owned()),
-        Err(_) => Err(SuStatus::InvalidUtf8),
-    }
-}
-
-fn evaluate_auth(username: &str, similarity: f32, threshold: f32, liveness_ok: bool) -> bool {
-    !username.is_empty() && liveness_ok && similarity >= threshold
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SuCoreConfig {
+    pub version: u32,
+    pub selected_camera: i32,
+    pub recognition_threshold: f32,
+    pub liveness_detection: bool,
+    pub preview_fps: u32,
 }
 
 #[unsafe(no_mangle)]
@@ -45,16 +45,7 @@ pub extern "C" fn su_core_evaluate_auth(
     threshold: f32,
     liveness_ok: bool,
 ) -> SuAuthDecision {
-    match username_from_ptr(username) {
-        Ok(name) => SuAuthDecision {
-            status: SuStatus::Ok,
-            accepted: evaluate_auth(&name, similarity, threshold, liveness_ok),
-        },
-        Err(status) => SuAuthDecision {
-            status,
-            accepted: false,
-        },
-    }
+    auth::evaluate_auth_ffi(username, similarity, threshold, liveness_ok)
 }
 
 #[unsafe(no_mangle)]
@@ -64,31 +55,22 @@ pub extern "C" fn su_core_default_threshold(out_threshold: *mut f32) -> SuStatus
     }
 
     unsafe {
-        ptr::write(out_threshold, 0.65);
+        ptr::write(out_threshold, config::default_config_ffi().recognition_threshold);
     }
     SuStatus::Ok
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::CString;
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_default_config() -> SuCoreConfig {
+    config::default_config_ffi()
+}
 
-    #[test]
-    fn accepts_valid_user_above_threshold() {
-        let name = CString::new("alice").unwrap();
-        let decision = su_core_evaluate_auth(name.as_ptr(), 0.72, 0.65, true);
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_load_config(path: *const c_char, out_config: *mut SuCoreConfig) -> SuStatus {
+    config::load_config_ffi(path, out_config)
+}
 
-        assert_eq!(decision.status, SuStatus::Ok);
-        assert!(decision.accepted);
-    }
-
-    #[test]
-    fn rejects_without_liveness() {
-        let name = CString::new("alice").unwrap();
-        let decision = su_core_evaluate_auth(name.as_ptr(), 0.72, 0.65, false);
-
-        assert_eq!(decision.status, SuStatus::Ok);
-        assert!(!decision.accepted);
-    }
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_save_config(path: *const c_char, config: *const SuCoreConfig) -> SuStatus {
+    config::save_config_ffi(path, config)
 }
