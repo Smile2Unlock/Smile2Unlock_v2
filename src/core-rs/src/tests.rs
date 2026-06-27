@@ -9,6 +9,7 @@ use crate::embedding::{
     EMBEDDING_DIM, EmbeddingBackendConfig, EmbeddingBackendKind, FaceEmbeddingError, FaceSample,
     cosine_similarity, default_embedding_backend_config, embedding_from_face_sample, normalize,
     parse_face_sample_source, try_embedding_from_face_sample,
+    try_embedding_from_face_sample_with_config,
 };
 use crate::pipeline::authenticate_sample;
 use crate::profile::{delete_profile, enroll_profile, load_store};
@@ -90,6 +91,18 @@ fn default_embedding_backend_config_uses_mock_backend() {
         EmbeddingBackendConfig {
             kind: EmbeddingBackendKind::Mock
         }
+    );
+}
+
+#[test]
+fn model_embedding_backend_is_explicitly_unsupported_until_implemented() {
+    let config = EmbeddingBackendConfig {
+        kind: EmbeddingBackendKind::Model,
+    };
+
+    assert_eq!(
+        try_embedding_from_face_sample_with_config("mock:face:alice:front", &config),
+        Err(FaceEmbeddingError::UnsupportedBackend)
     );
 }
 

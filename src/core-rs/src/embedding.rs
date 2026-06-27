@@ -7,8 +7,10 @@ pub const EMBEDDING_DIM: usize = 32;
 pub type FaceEmbedding = [f32; EMBEDDING_DIM];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum EmbeddingBackendKind {
     Mock,
+    Model,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +32,7 @@ pub enum FaceEmbeddingError {
     InvalidEmbeddingLength { expected: usize, actual: usize },
     InvalidEmbeddingValue,
     InvalidImageSource,
+    UnsupportedBackend,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +119,15 @@ pub fn default_embedding_backend() -> MockEmbeddingBackend {
     MockEmbeddingBackend
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ModelEmbeddingBackend;
+
+impl EmbeddingBackend for ModelEmbeddingBackend {
+    fn embed(&self, _sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError> {
+        Err(FaceEmbeddingError::UnsupportedBackend)
+    }
+}
+
 pub fn default_embedding_backend_config() -> EmbeddingBackendConfig {
     EmbeddingBackendConfig::default()
 }
@@ -138,6 +150,7 @@ pub fn try_embedding_from_face_sample_with_config(
     sample.validate_source()?;
     match config.kind {
         EmbeddingBackendKind::Mock => default_embedding_backend().embed(&sample),
+        EmbeddingBackendKind::Model => ModelEmbeddingBackend.embed(&sample),
     }
 }
 

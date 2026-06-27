@@ -18,6 +18,9 @@ Profile names are labels only. They must not become the authentication mechanism
 
 - First target: application demo and debugging tool.
 - Recognition backend: pluggable backend, with a deterministic mock backend as the default.
+- Backend kinds:
+  - `mock`: deterministic local backend used by the current demo
+  - `model`: real inference backend slot; currently returns an explicit unsupported-backend error
 - Core boundary:
   - Rust owns pure domain models, config/storage formats, matching logic, and authentication decisions.
   - C++ owns device/UI/platform orchestration.
@@ -106,6 +109,7 @@ It must be able to:
 
 ### Real Face Backend
 
+- Implement the `model` embedding backend.
 - Replace mock face sample source/image-path mock embedding with real camera frames or image decoding.
 - Add face detection and alignment.
 - Add embedding model inference.
