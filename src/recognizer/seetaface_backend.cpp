@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <exception>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,25 @@ constexpr auto kModelFiles = std::array{
     "fas_second.csta",
 };
 
+std::optional<std::filesystem::path> find_model_dir_from(const std::filesystem::path& start) {
+    auto path = start;
+    while (true) {
+        for (const auto& candidate : {
+                 path / "assets" / "models" / "seeta",
+                 path / "FaceRecognizer" / "resources" / "models",
+             }) {
+            if (std::filesystem::is_directory(candidate)) {
+                return candidate;
+            }
+        }
+        if (!path.has_parent_path() || path == path.parent_path()) {
+            break;
+        }
+        path = path.parent_path();
+    }
+    return std::nullopt;
+}
+
 }  // namespace
 
 std::filesystem::path default_seetaface_model_dir() {
@@ -34,18 +54,10 @@ std::filesystem::path default_seetaface_model_dir() {
     }
 #endif
 
-    auto path = std::filesystem::current_path();
-    while (true) {
-        const auto candidate = path / "FaceRecognizer" / "resources" / "models";
-        if (std::filesystem::is_directory(candidate)) {
-            return candidate;
-        }
-        if (!path.has_parent_path() || path == path.parent_path()) {
-            break;
-        }
-        path = path.parent_path();
+    if (const auto model_dir = find_model_dir_from(std::filesystem::current_path())) {
+        return *model_dir;
     }
-    return std::filesystem::current_path() / "FaceRecognizer" / "resources" / "models";
+    return std::filesystem::current_path() / "assets" / "models" / "seeta";
 }
 
 std::expected<SeetaFaceModelPaths, RecognizerError> seetaface_model_paths(

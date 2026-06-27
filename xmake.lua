@@ -2,7 +2,7 @@ add_rules("mode.debug", "mode.release")
 
 add_repositories("local-repo local-repo")
 
-add_requires("slint v1.17.0", {system = false, optional = true})
+add_requires("slint v1.17.0", { system = false, optional = true })
 
 set_encodings("utf-8")
 set_languages("c++26")
@@ -33,7 +33,7 @@ option("with_seetaface")
 option_end()
 
 if has_config("with_seetaface") then
-    add_requires("seetaface6open", {system = false})
+    add_requires("seetaface6open", { system = false })
 end
 
 local function seetaface_libdir(root)
@@ -48,8 +48,8 @@ local function seetaface_libdir(root)
 end
 
 local function seetaface_runtime_dirs(root)
-    local dirs = {}
-    for _, dir in ipairs({path.join(root, "lib64"), path.join(root, "lib")}) do
+    local dirs = { }
+    for _, dir in ipairs({ path.join(root, "lib64"), path.join(root, "lib") }) do
         if os.isdir(dir) then
             table.insert(dirs, dir)
         end
@@ -62,19 +62,19 @@ local function seetaface_test_data_dir()
 end
 
 local function add_seetaface_backend()
-    add_packages("seetaface6open", {public = true})
+    add_packages("seetaface6open", { public = true })
     if is_plat("linux") then
-        add_cxxflags("-fopenmp", {force = true, public = true})
-        add_ldflags("-fopenmp", {force = true, public = true})
-        add_ldflags("-Wl,--disable-new-dtags", {force = true, public = true})
+        add_cxxflags("-fopenmp", { force = true, public = true })
+        add_ldflags("-fopenmp", { force = true, public = true })
+        add_ldflags("-Wl,--disable-new-dtags", { force = true, public = true })
     end
-    on_load(function (target)
+    on_load( function (target)
         local seetaface = target:pkg("seetaface6open")
         if seetaface then
             local root = seetaface:installdir()
-            target:add("sysincludedirs", path.join(root, "include"), {public = true})
+            target:add("sysincludedirs", path.join(root, "include"), { public = true })
             for _, dir in ipairs(seetaface_runtime_dirs(root)) do
-                target:add("rpathdirs", dir, {public = true})
+                target:add("rpathdirs", dir, { public = true })
             end
         end
     end)
@@ -89,13 +89,13 @@ local function seetaface_root_from_target(target)
 end
 
 local function model_stage_dir()
-    return path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seta")
+    return path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
 end
 
 local function apply_cpp_target(kind)
     set_kind(kind)
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
-    add_includedirs("src", {public = true})
+    add_includedirs("src", { public = true })
     if is_plat("linux") then
         add_syslinks("pthread", "dl")
     elseif is_plat("windows", "mingw") then
@@ -106,7 +106,7 @@ end
 
 target("su_core")
     set_kind("phony")
-    on_build(function ()
+    on_build( function ()
         local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
         local manifest = path.join(os.projectdir(), "src", "core-rs", "Cargo.toml")
         local cargo_mode = is_mode("release") and "release" or "debug"
@@ -128,7 +128,7 @@ target("su_platform_zig")
     set_toolchains("zig")
     set_default(has_config("with_zig"))
     add_files("src/platform-zig/src/lib.zig")
-    before_build(function ()
+    before_build( function ()
         local cache_dir = path.join(os.projectdir(), "build", ".zig-cache")
         os.mkdir(cache_dir)
         os.setenv("ZIG_GLOBAL_CACHE_DIR", cache_dir)
@@ -139,19 +139,19 @@ target("su_recognizer")
     add_files("src/recognizer/*.cpp")
     add_headerfiles("src/recognizer/*.h")
     if has_config("with_seetaface") then
-        add_defines("SU_HAS_SEETAFACE=1", {public = true})
-        add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", {public = true})
+        add_defines("SU_HAS_SEETAFACE=1", { public = true })
+        add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
         add_seetaface_backend()
-        before_build(function ()
+        before_build( function ()
             local srcdir = path.join(os.projectdir(), "FaceRecognizer", "resources", "models")
-            local dstdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seta")
+            local dstdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
             os.mkdir(dstdir)
             for _, file in ipairs(os.files(path.join(srcdir, "*.csta"))) do
                 os.cp(file, dstdir)
             end
         end)
     else
-        add_defines("SU_HAS_SEETAFACE=0", {public = true})
+        add_defines("SU_HAS_SEETAFACE=0", { public = true })
     end
 
 target("su_app")
@@ -170,9 +170,9 @@ target("su_app")
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
         add_files("src/app/slint_main.cpp")
-        add_files(path.join("build", "generated", "slint", "app_window.cpp"), {always_added = true})
+        add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
-        on_load(function (target)
+        on_load( function (target)
             local slint = target:pkg("slint")
             if slint then
                 target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
@@ -181,7 +181,7 @@ target("su_app")
                 end
             end
         end)
-        before_build(function (target)
+        before_build( function (target)
             local slint = assert(target:pkg("slint"), "slint package is required when with_slint=y")
             local compiler = path.join(slint:installdir(), "bin", "slint-compiler")
             local outputdir = path.join(os.projectdir(), "build", "generated", "slint")
@@ -232,14 +232,14 @@ if has_config("with_seetaface") then
         add_defines("SU_SEETAFACE_TEST_DATA_DIR=\"" .. path.unix(seetaface_test_data_dir()) .. "\"")
         add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
-        on_load(function (target)
+        on_load( function (target)
             local root = seetaface_root_from_target(target)
             target:add("sysincludedirs", path.join(root, "include"))
             for _, dir in ipairs(seetaface_runtime_dirs(root)) do
                 target:add("rpathdirs", dir)
             end
         end)
-        before_build(function (target)
+        before_build( function (target)
             local root = seetaface_root_from_target(target)
             local recognizer_samples = path.join(root, "src", "FaceRecognizer6", "example")
             local fas_samples = path.join(root, "src", "FaceAntiSpoofingX6", "example")
