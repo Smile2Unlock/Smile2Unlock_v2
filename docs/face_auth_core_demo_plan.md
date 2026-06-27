@@ -35,7 +35,7 @@ Profile names are labels only. They must not become the authentication mechanism
   - `mock:<id>` for deterministic mock samples
   - `image:<path>` for file-based enrollment/probing boundary validation, currently embedded by the mock backend
   - `camera:<descriptor>` reserved for captured frames
-  - `embedding:<source>` reserved for imported or precomputed embeddings
+  - `embedding:<32 comma-separated floats>` for imported or precomputed embeddings
 - Demo matching: cosine similarity against all enrolled profiles, returning the best match.
 
 ## First Core Slice
@@ -133,6 +133,8 @@ It must be able to:
   - cosine similarity
   - enroll/list/delete persistence
   - best-match authentication
+  - image source validation
+  - precomputed embedding parsing and matching
 - Xmake builds the Rust static library through Cargo.
 - C++ bridge compiles against the stable C ABI header.
 - Console demo can run the full profile loop.

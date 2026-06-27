@@ -35,27 +35,3 @@ pub fn evaluate_auth_ffi(
         },
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::ffi::CString;
-
-    #[test]
-    fn accepts_valid_user_above_threshold() {
-        let name = CString::new("alice").unwrap();
-        let decision = evaluate_auth_ffi(name.as_ptr(), 0.72, 0.65, true);
-
-        assert_eq!(decision.status, SuStatus::Ok);
-        assert!(decision.accepted);
-    }
-
-    #[test]
-    fn rejects_without_liveness() {
-        let name = CString::new("alice").unwrap();
-        let decision = evaluate_auth_ffi(name.as_ptr(), 0.72, 0.65, false);
-
-        assert_eq!(decision.status, SuStatus::Ok);
-        assert!(!decision.accepted);
-    }
-}

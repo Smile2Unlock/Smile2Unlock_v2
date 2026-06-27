@@ -18,7 +18,7 @@ export component AppWindow inherits Window {
     in-out property <string> auth_score_text: "-";
     in-out property <string> auth_best_profile_text: "-";
     in-out property <string> auth_reason_text: "-";
-    in-out property <string> debug_json_text: "Sample sources: mock:<id> or image:<path>";
+    in-out property <string> debug_json_text: "Sample sources: mock:<id>, image:<path>, embedding:<32 comma-separated floats>";
 
     callback demo_auth_requested();
     callback enroll_requested(string, string);

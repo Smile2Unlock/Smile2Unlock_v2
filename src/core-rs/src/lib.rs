@@ -4,6 +4,9 @@ mod embedding;
 mod pipeline;
 mod profile;
 
+#[cfg(test)]
+mod tests;
+
 use std::ffi::c_char;
 use std::{ptr, slice};
 

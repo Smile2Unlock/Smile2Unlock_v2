@@ -66,7 +66,7 @@ fn path_from_ptr(path: *const c_char) -> Result<PathBuf, SuStatus> {
         .map_err(|_| SuStatus::InvalidUtf8)
 }
 
-fn load_config(path: &Path) -> Result<AppConfig, SuStatus> {
+pub(crate) fn load_config(path: &Path) -> Result<AppConfig, SuStatus> {
     if !path.exists() {
         return Ok(AppConfig::default());
     }
@@ -126,20 +126,5 @@ pub fn save_config_ffi(path: *const c_char, config: *const SuCoreConfig) -> SuSt
     match save_config(&path, &config) {
         Ok(()) => SuStatus::Ok,
         Err(status) => status,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_file_returns_default() {
-        let path = PathBuf::from("/tmp/su_missing_config_for_test.toml");
-        let _ = fs::remove_file(&path);
-
-        let config = load_config(&path).unwrap();
-        assert_eq!(config.version, 1);
-        assert_eq!(config.preview_fps, 15);
     }
 }

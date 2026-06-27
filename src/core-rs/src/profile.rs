@@ -150,27 +150,3 @@ fn now_unix() -> u64 {
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("su_profile_store_{name}.json"))
-    }
-
-    #[test]
-    fn enroll_list_delete_profile() {
-        let path = test_path("enroll_list_delete");
-        let _ = fs::remove_file(&path);
-
-        let profile = enroll_profile(&path, "Alice", "mock:face:alice:front").unwrap();
-        let store = load_store(&path).unwrap();
-        assert_eq!(store.profiles.len(), 1);
-        assert_eq!(store.profiles[0].id, profile.id);
-
-        assert!(delete_profile(&path, &profile.id).unwrap());
-        assert!(load_store(&path).unwrap().profiles.is_empty());
-        let _ = fs::remove_file(path);
-    }
-}

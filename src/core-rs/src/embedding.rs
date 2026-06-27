@@ -6,12 +6,12 @@ pub const EMBEDDING_DIM: usize = 32;
 
 pub type FaceEmbedding = [f32; EMBEDDING_DIM];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FaceSample {
     Mock { id: String },
     ImageFile { path: PathBuf },
     CameraFrame { descriptor: String },
-    PrecomputedEmbedding { source: String },
+    PrecomputedEmbedding { embedding: FaceEmbedding },
 }
 
 impl FaceSample {
@@ -33,7 +33,8 @@ impl FaceSample {
             return non_empty(value).map(|descriptor| Self::CameraFrame { descriptor });
         }
         if let Some(value) = source.strip_prefix("embedding:") {
-            return non_empty(value).map(|source| Self::PrecomputedEmbedding { source });
+            return parse_embedding_csv(value)
+                .map(|embedding| Self::PrecomputedEmbedding { embedding });
         }
 
         Some(Self::Mock {
@@ -55,7 +56,7 @@ impl FaceSample {
             Self::Mock { id } => format!("mock:{id}"),
             Self::ImageFile { path } => format!("image:{}", path.display()),
             Self::CameraFrame { descriptor } => format!("camera:{descriptor}"),
-            Self::PrecomputedEmbedding { source } => format!("embedding:{source}"),
+            Self::PrecomputedEmbedding { embedding } => format!("embedding:{:.6?}", embedding),
         }
     }
 }
@@ -69,7 +70,10 @@ pub struct MockEmbeddingBackend;
 
 impl EmbeddingBackend for MockEmbeddingBackend {
     fn embed(&self, sample: &FaceSample) -> FaceEmbedding {
-        mock_embedding_from_source(&sample.stable_mock_key())
+        match sample {
+            FaceSample::PrecomputedEmbedding { embedding } => *embedding,
+            _ => mock_embedding_from_source(&sample.stable_mock_key()),
+        }
     }
 }
 
@@ -117,6 +121,21 @@ fn has_supported_image_extension(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+fn parse_embedding_csv(value: &str) -> Option<FaceEmbedding> {
+    let values = value
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<f32>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if values.len() != EMBEDDING_DIM {
+        return None;
+    }
+
+    let embedding: FaceEmbedding = values.try_into().ok()?;
+    Some(normalize(embedding))
+}
+
 pub fn cosine_similarity(left: &FaceEmbedding, right: &FaceEmbedding) -> f32 {
     left.iter()
         .zip(right.iter())
@@ -125,7 +144,7 @@ pub fn cosine_similarity(left: &FaceEmbedding, right: &FaceEmbedding) -> f32 {
         .clamp(-1.0, 1.0)
 }
 
-fn normalize(mut embedding: FaceEmbedding) -> FaceEmbedding {
+pub(crate) fn normalize(mut embedding: FaceEmbedding) -> FaceEmbedding {
     let norm = embedding
         .iter()
         .map(|value| value * value)
@@ -139,79 +158,4 @@ fn normalize(mut embedding: FaceEmbedding) -> FaceEmbedding {
         *value /= norm;
     }
     embedding
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mock_embeddings_are_deterministic() {
-        assert_eq!(
-            embedding_from_face_sample("mock:face:alice:front"),
-            embedding_from_face_sample("mock:face:alice:front")
-        );
-    }
-
-    #[test]
-    fn cosine_similarity_is_one_for_same_embedding() {
-        let embedding = embedding_from_face_sample("mock:face:alice:front").unwrap();
-        assert!((cosine_similarity(&embedding, &embedding) - 1.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn rejects_empty_face_sample_source() {
-        assert!(embedding_from_face_sample(" ").is_none());
-    }
-
-    #[test]
-    fn parses_explicit_sample_sources() {
-        assert_eq!(
-            FaceSample::from_source("mock:alice"),
-            Some(FaceSample::Mock {
-                id: "alice".to_owned()
-            })
-        );
-        assert_eq!(
-            FaceSample::from_source("image:/tmp/alice.png"),
-            Some(FaceSample::ImageFile {
-                path: PathBuf::from("/tmp/alice.png")
-            })
-        );
-        assert_eq!(
-            FaceSample::from_source("camera:0:frame42"),
-            Some(FaceSample::CameraFrame {
-                descriptor: "0:frame42".to_owned()
-            })
-        );
-    }
-
-    #[test]
-    fn validates_image_file_sources() {
-        let path = std::env::temp_dir().join("su_face_sample_source_test.png");
-        std::fs::write(&path, b"placeholder").unwrap();
-
-        let source = format!("image:{}", path.display());
-        assert!(embedding_from_face_sample(&source).is_some());
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn rejects_missing_image_file_sources() {
-        let path = std::env::temp_dir().join("su_missing_face_sample_source_test.png");
-        let source = format!("image:{}", path.display());
-        assert!(embedding_from_face_sample(&source).is_none());
-    }
-
-    #[test]
-    fn rejects_unsupported_image_extensions() {
-        let path = std::env::temp_dir().join("su_face_sample_source_test.txt");
-        std::fs::write(&path, b"placeholder").unwrap();
-
-        let source = format!("image:{}", path.display());
-        assert!(embedding_from_face_sample(&source).is_none());
-
-        let _ = std::fs::remove_file(path);
-    }
 }
