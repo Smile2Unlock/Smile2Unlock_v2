@@ -41,8 +41,11 @@ public:
     std::expected<std::string, std::string> enroll_face_profile_from_sample(
         std::string_view label,
         std::string_view face_sample_source);
+    std::expected<std::string, std::string> enroll_face_profile_from_current_frame(
+        std::string_view label);
     std::expected<FaceDemoSnapshot, std::string> authenticate_face_sample_from_source(
         std::string_view face_sample_source);
+    std::expected<FaceDemoSnapshot, std::string> authenticate_current_frame();
     std::expected<std::string, std::string> list_face_profiles();
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);

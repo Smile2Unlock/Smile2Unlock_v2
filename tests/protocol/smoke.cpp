@@ -1,6 +1,10 @@
 #include "app/core_bridge.h"
+#include "recognizer/recognizer_service.h"
+#include "recognizer/seetaface_backend.h"
 
 #include <cassert>
+#include <array>
+#include <filesystem>
 
 int main() {
     const auto threshold = su::app::default_threshold();
@@ -10,5 +14,33 @@ int main() {
     const auto decision = su::app::evaluate_auth("demo", 0.72F, *threshold, true);
     assert(decision.has_value());
     assert(decision->accepted);
+
+    const auto store_path = (
+        std::filesystem::temp_directory_path() / "su_protocol_smoke_profiles.json"
+    ).string();
+    std::filesystem::remove(store_path);
+
+    const auto feature = std::array{1.0F, 0.0F, 0.0F, 0.0F};
+    const auto sample = su::recognizer::embedding_sample_source(feature);
+    const auto enrolled = su::app::enroll_face_profile(store_path, "Smoke Face", sample);
+    assert(enrolled.has_value());
+
+    const auto face_decision = su::app::authenticate_face_sample(store_path, sample, 0.95F);
+    assert(face_decision.has_value());
+    assert(face_decision->accepted);
+
+#if SU_HAS_SEETAFACE
+    const auto model_paths = su::recognizer::seetaface_model_paths(
+        su::recognizer::default_seetaface_model_dir());
+    assert(model_paths.has_value());
+    auto backend = su::recognizer::SeetaFaceBackend(*model_paths);
+    const auto empty_extract = backend.extract(su::recognizer::ImageView{});
+    assert(!empty_extract.has_value());
+    if (!backend.available()) {
+        assert(empty_extract.error() == su::recognizer::RecognizerError::kModelUnavailable);
+    }
+#endif
+
+    std::filesystem::remove(store_path);
     return 0;
 }

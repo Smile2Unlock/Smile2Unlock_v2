@@ -46,7 +46,7 @@ public:
     std::expected<void, RecognizerError> open_camera(int camera_index);
     std::expected<PreviewFrame, RecognizerError> capture_preview_frame() const;
     std::expected<RecognitionResult, RecognizerError> extract_features() const;
-    std::expected<float, RecognizerError> compare_features(
+std::expected<float, RecognizerError> compare_features(
         std::span<const float> lhs,
         std::span<const float> rhs) const;
     void close_camera();
@@ -55,5 +55,6 @@ private:
     std::optional<int> active_camera_;
 };
 
-}  // namespace su::recognizer
+std::string embedding_sample_source(std::span<const float> feature);
 
+}  // namespace su::recognizer

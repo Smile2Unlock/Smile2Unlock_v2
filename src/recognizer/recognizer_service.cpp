@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <numeric>
 #include <ranges>
+#include <sstream>
 
 namespace su::recognizer {
 
@@ -77,6 +79,18 @@ std::expected<float, RecognizerError> RecognizerService::compare_features(
 
 void RecognizerService::close_camera() {
     active_camera_.reset();
+}
+
+std::string embedding_sample_source(std::span<const float> feature) {
+    auto out = std::ostringstream{};
+    out << "embedding:";
+    for (std::size_t index = 0; index < feature.size(); ++index) {
+        if (index != 0) {
+            out << ',';
+        }
+        out << std::format("{:.9g}", feature[index]);
+    }
+    return out.str();
 }
 
 }  // namespace su::recognizer

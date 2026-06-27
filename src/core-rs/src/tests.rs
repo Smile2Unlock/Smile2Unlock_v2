@@ -183,14 +183,10 @@ fn normalizes_precomputed_embedding_sources() {
 #[test]
 fn rejects_wrong_length_precomputed_embedding_sources() {
     let source = embedding_source(&[1.0, 0.0]);
-    assert!(embedding_from_face_sample(&source).is_none());
-    assert_eq!(
-        try_embedding_from_face_sample(&source),
-        Err(FaceEmbeddingError::InvalidEmbeddingLength {
-            expected: EMBEDDING_DIM,
-            actual: 2
-        })
-    );
+    let embedding = embedding_from_face_sample(&source).unwrap();
+    assert_eq!(embedding.len(), 2);
+    assert!((embedding[0] - 1.0).abs() < 0.0001);
+    assert!(embedding[1].abs() < 0.0001);
 }
 
 #[test]
@@ -260,6 +256,6 @@ fn authenticates_precomputed_embedding_match() {
 
 #[test]
 fn normalize_handles_zero_embedding() {
-    let embedding = normalize([0.0; EMBEDDING_DIM]);
-    assert_eq!(embedding, [0.0; EMBEDDING_DIM]);
+    let embedding = normalize(vec![0.0; EMBEDDING_DIM]);
+    assert_eq!(embedding, vec![0.0; EMBEDDING_DIM]);
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 pub const EMBEDDING_DIM: usize = 32;
 
-pub type FaceEmbedding = [f32; EMBEDDING_DIM];
+pub type FaceEmbedding = Vec<f32>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -29,7 +29,7 @@ impl Default for EmbeddingBackendConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaceEmbeddingError {
     EmptySource,
-    InvalidEmbeddingLength { expected: usize, actual: usize },
+    EmptyEmbedding,
     InvalidEmbeddingValue,
     InvalidImageSource,
     UnsupportedBackend,
@@ -109,7 +109,7 @@ pub struct MockEmbeddingBackend;
 impl EmbeddingBackend for MockEmbeddingBackend {
     fn embed(&self, sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError> {
         match sample {
-            FaceSample::PrecomputedEmbedding { embedding } => Ok(*embedding),
+            FaceSample::PrecomputedEmbedding { embedding } => Ok(embedding.clone()),
             _ => Ok(mock_embedding_from_source(&sample.stable_mock_key())),
         }
     }
@@ -155,7 +155,7 @@ pub fn try_embedding_from_face_sample_with_config(
 }
 
 fn mock_embedding_from_source(sample_source: &str) -> FaceEmbedding {
-    let mut embedding = [0.0; EMBEDDING_DIM];
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
     for (index, value) in embedding.iter_mut().enumerate() {
         let mut hasher = DefaultHasher::new();
         sample_source.hash(&mut hasher);
@@ -193,23 +193,14 @@ fn parse_embedding_csv(value: &str) -> Result<FaceEmbedding, FaceEmbeddingError>
         .map(str::parse::<f32>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| FaceEmbeddingError::InvalidEmbeddingValue)?;
-    if values.len() != EMBEDDING_DIM {
-        return Err(FaceEmbeddingError::InvalidEmbeddingLength {
-            expected: EMBEDDING_DIM,
-            actual: values.len(),
-        });
-    }
-
-    let embedding: FaceEmbedding = values.try_into().map_err(|values: Vec<f32>| {
-        FaceEmbeddingError::InvalidEmbeddingLength {
-            expected: EMBEDDING_DIM,
-            actual: values.len(),
-        }
-    })?;
-    Ok(normalize(embedding))
+    normalize_embedding(values)
 }
 
 pub fn cosine_similarity(left: &FaceEmbedding, right: &FaceEmbedding) -> f32 {
+    if left.len() != right.len() || left.is_empty() {
+        return 0.0;
+    }
+
     left.iter()
         .zip(right.iter())
         .map(|(a, b)| a * b)
@@ -217,18 +208,35 @@ pub fn cosine_similarity(left: &FaceEmbedding, right: &FaceEmbedding) -> f32 {
         .clamp(-1.0, 1.0)
 }
 
-pub(crate) fn normalize(mut embedding: FaceEmbedding) -> FaceEmbedding {
+pub(crate) fn normalize(embedding: FaceEmbedding) -> FaceEmbedding {
+    normalize_embedding(embedding).unwrap_or_default()
+}
+
+pub(crate) fn normalize_embedding(
+    mut embedding: FaceEmbedding,
+) -> Result<FaceEmbedding, FaceEmbeddingError> {
+    if embedding.is_empty() {
+        return Err(FaceEmbeddingError::EmptyEmbedding);
+    }
+
+    if embedding
+        .iter()
+        .any(|value| !value.is_finite())
+    {
+        return Err(FaceEmbeddingError::InvalidEmbeddingValue);
+    }
+
     let norm = embedding
         .iter()
         .map(|value| value * value)
         .sum::<f32>()
         .sqrt();
     if norm <= f32::EPSILON {
-        return embedding;
+        return Ok(embedding);
     }
 
     for value in &mut embedding {
         *value /= norm;
     }
-    embedding
+    Ok(embedding)
 }

@@ -120,6 +120,23 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     return *profiles;
 }
 
+std::expected<std::string, std::string> AppController::enroll_face_profile_from_current_frame(
+    std::string_view label) {
+    const auto config = load_config(config_path());
+    if (!config) {
+        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    }
+    if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
+        return std::unexpected("failed to open configured camera");
+    }
+    const auto result = recognizer_.extract_features();
+    if (!result || !result->has_face || result->feature.empty()) {
+        return std::unexpected("failed to extract face features from current frame");
+    }
+
+    return enroll_face_profile_from_sample(label, su::recognizer::embedding_sample_source(result->feature));
+}
+
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
     std::string_view face_sample_source) {
     const auto store_path = profile_store_path();
@@ -167,6 +184,22 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
         .decision = *decision,
         .report = *auth_report,
     };
+}
+
+std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current_frame() {
+    const auto config = load_config(config_path());
+    if (!config) {
+        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    }
+    if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
+        return std::unexpected("failed to open configured camera");
+    }
+    const auto result = recognizer_.extract_features();
+    if (!result || !result->has_face || result->feature.empty()) {
+        return std::unexpected("failed to extract face features from current frame");
+    }
+
+    return authenticate_face_sample_from_source(su::recognizer::embedding_sample_source(result->feature));
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {
