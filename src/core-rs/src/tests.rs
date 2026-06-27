@@ -6,7 +6,9 @@ use crate::SuStatus;
 use crate::auth::evaluate_auth_ffi;
 use crate::config::load_config;
 use crate::embedding::{
-    EMBEDDING_DIM, FaceSample, cosine_similarity, embedding_from_face_sample, normalize,
+    EMBEDDING_DIM, EmbeddingBackendConfig, EmbeddingBackendKind, FaceEmbeddingError, FaceSample,
+    cosine_similarity, default_embedding_backend_config, embedding_from_face_sample, normalize,
+    parse_face_sample_source, try_embedding_from_face_sample,
 };
 use crate::pipeline::authenticate_sample;
 use crate::profile::{delete_profile, enroll_profile, load_store};
@@ -75,25 +77,39 @@ fn cosine_similarity_is_one_for_same_embedding() {
 #[test]
 fn rejects_empty_face_sample_source() {
     assert!(embedding_from_face_sample(" ").is_none());
+    assert_eq!(
+        try_embedding_from_face_sample(" "),
+        Err(FaceEmbeddingError::EmptySource)
+    );
+}
+
+#[test]
+fn default_embedding_backend_config_uses_mock_backend() {
+    assert_eq!(
+        default_embedding_backend_config(),
+        EmbeddingBackendConfig {
+            kind: EmbeddingBackendKind::Mock
+        }
+    );
 }
 
 #[test]
 fn parses_explicit_sample_sources() {
     assert_eq!(
-        FaceSample::from_source("mock:alice"),
-        Some(FaceSample::Mock {
+        parse_face_sample_source("mock:alice"),
+        Ok(FaceSample::Mock {
             id: "alice".to_owned()
         })
     );
     assert_eq!(
-        FaceSample::from_source("image:/tmp/alice.png"),
-        Some(FaceSample::ImageFile {
+        parse_face_sample_source("image:/tmp/alice.png"),
+        Ok(FaceSample::ImageFile {
             path: PathBuf::from("/tmp/alice.png")
         })
     );
     assert_eq!(
-        FaceSample::from_source("camera:0:frame42"),
-        Some(FaceSample::CameraFrame {
+        parse_face_sample_source("camera:0:frame42"),
+        Ok(FaceSample::CameraFrame {
             descriptor: "0:frame42".to_owned()
         })
     );
@@ -115,6 +131,10 @@ fn rejects_missing_image_file_sources() {
     let path = temp_path("missing_face_sample_source_test", "png");
     let source = format!("image:{}", path.display());
     assert!(embedding_from_face_sample(&source).is_none());
+    assert_eq!(
+        try_embedding_from_face_sample(&source),
+        Err(FaceEmbeddingError::InvalidImageSource)
+    );
 }
 
 #[test]
@@ -151,11 +171,22 @@ fn normalizes_precomputed_embedding_sources() {
 fn rejects_wrong_length_precomputed_embedding_sources() {
     let source = embedding_source(&[1.0, 0.0]);
     assert!(embedding_from_face_sample(&source).is_none());
+    assert_eq!(
+        try_embedding_from_face_sample(&source),
+        Err(FaceEmbeddingError::InvalidEmbeddingLength {
+            expected: EMBEDDING_DIM,
+            actual: 2
+        })
+    );
 }
 
 #[test]
 fn rejects_non_numeric_precomputed_embedding_sources() {
     assert!(embedding_from_face_sample("embedding:1.0,nope").is_none());
+    assert_eq!(
+        try_embedding_from_face_sample("embedding:1.0,nope"),
+        Err(FaceEmbeddingError::InvalidEmbeddingValue)
+    );
 }
 
 #[test]
