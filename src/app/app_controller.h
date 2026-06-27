@@ -35,6 +35,11 @@ public:
         std::string_view label,
         std::string_view enroll_sample_seed,
         std::string_view probe_sample_seed);
+    std::expected<std::string, std::string> enroll_face_profile_from_sample(
+        std::string_view label,
+        std::string_view sample_seed);
+    std::expected<FaceDemoSnapshot, std::string> authenticate_face_sample_from_seed(
+        std::string_view sample_seed);
     std::expected<std::string, std::string> list_face_profiles();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
 

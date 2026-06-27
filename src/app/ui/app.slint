@@ -1,4 +1,4 @@
-import { Button } from "std-widgets.slint";
+import { Button, LineEdit } from "std-widgets.slint";
 
 export component AppWindow inherits Window {
     in property <string> title_text: "Smile2Unlock";
@@ -10,10 +10,16 @@ export component AppWindow inherits Window {
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "No cameras";
     in property <string> profile_text: "";
+    in-out property <string> enroll_label_text: "Demo Face";
+    in-out property <string> enroll_sample_text: "face:demo:front";
+    in-out property <string> probe_sample_text: "face:demo:front";
     in-out property <string> auth_text: "Not checked";
     in-out property <string> face_auth_report_text: "";
 
     callback demo_auth_requested();
+    callback enroll_requested(string, string);
+    callback face_auth_requested(string);
+    callback refresh_profiles_requested();
 
     title: title_text;
     width: 960px;
@@ -73,20 +79,68 @@ export component AppWindow inherits Window {
             }
         }
 
-        Text {
-            text: profile_text;
-            font-size: 12px;
+        GridLayout {
+            spacing: 8px;
+
+            Row {
+                Text { text: "Label"; font-weight: 700; }
+                LineEdit { text <=> root.enroll_label_text; }
+            }
+
+            Row {
+                Text { text: "Enroll Sample"; font-weight: 700; }
+                LineEdit { text <=> root.enroll_sample_text; }
+            }
+
+            Row {
+                Text { text: "Probe Sample"; font-weight: 700; }
+                LineEdit { text <=> root.probe_sample_text; }
+            }
         }
 
-        Text {
-            text: face_auth_report_text;
-            font-size: 12px;
+        HorizontalLayout {
+            spacing: 8px;
+
+            Button {
+                text: "Enroll";
+                clicked => {
+                    root.enroll_requested(root.enroll_label_text, root.enroll_sample_text);
+                }
+            }
+
+            Button {
+                text: "Authenticate";
+                clicked => {
+                    root.face_auth_requested(root.probe_sample_text);
+                }
+            }
+
+            Button {
+                text: "Refresh";
+                clicked => {
+                    root.refresh_profiles_requested();
+                }
+            }
+
+            Button {
+                text: "Run Demo Auth";
+                clicked => {
+                    root.demo_auth_requested();
+                }
+            }
         }
 
-        Button {
-            text: "Run Demo Auth";
-            clicked => {
-                root.demo_auth_requested();
+        HorizontalLayout {
+            spacing: 16px;
+
+            Text {
+                text: profile_text;
+                font-size: 12px;
+            }
+
+            Text {
+                text: face_auth_report_text;
+                font-size: 12px;
             }
         }
     }

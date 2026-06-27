@@ -92,13 +92,18 @@ std::expected<FaceDemoSnapshot, std::string> AppController::run_face_demo(
     std::string_view label,
     std::string_view enroll_sample_seed,
     std::string_view probe_sample_seed) {
-    const auto store_path = profile_store_path();
-    const auto config = load_config(config_path());
-    if (!config) {
-        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    const auto enrolled_profiles = enroll_face_profile_from_sample(label, enroll_sample_seed);
+    if (!enrolled_profiles) {
+        return std::unexpected(enrolled_profiles.error());
     }
+    return authenticate_face_sample_from_seed(probe_sample_seed);
+}
 
-    if (const auto enrolled = enroll_face_profile(store_path, label, enroll_sample_seed); !enrolled) {
+std::expected<std::string, std::string> AppController::enroll_face_profile_from_sample(
+    std::string_view label,
+    std::string_view sample_seed) {
+    const auto store_path = profile_store_path();
+    if (const auto enrolled = enroll_face_profile(store_path, label, sample_seed); !enrolled) {
         return std::unexpected(std::format("failed to enroll face profile: {}", store_path));
     }
 
@@ -106,10 +111,20 @@ std::expected<FaceDemoSnapshot, std::string> AppController::run_face_demo(
     if (!profiles) {
         return std::unexpected(std::format("failed to list face profiles: {}", store_path));
     }
+    return *profiles;
+}
+
+std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_seed(
+    std::string_view sample_seed) {
+    const auto store_path = profile_store_path();
+    const auto config = load_config(config_path());
+    if (!config) {
+        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    }
 
     const auto decision = authenticate_face_sample(
         store_path,
-        probe_sample_seed,
+        sample_seed,
         config->recognition_threshold);
     if (!decision) {
         return std::unexpected(std::format("failed to authenticate face sample: {}", store_path));
@@ -117,10 +132,15 @@ std::expected<FaceDemoSnapshot, std::string> AppController::run_face_demo(
 
     const auto report = authenticate_face_sample_report_json(
         store_path,
-        probe_sample_seed,
+        sample_seed,
         config->recognition_threshold);
     if (!report) {
         return std::unexpected(std::format("failed to build face auth report: {}", store_path));
+    }
+
+    const auto profiles = list_face_profiles_json(store_path);
+    if (!profiles) {
+        return std::unexpected(std::format("failed to list face profiles: {}", store_path));
     }
 
     return FaceDemoSnapshot{

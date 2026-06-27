@@ -39,6 +39,37 @@ su::app::FaceDemoSnapshot run_face_demo_or_empty(su::app::AppController& control
     return *face_demo;
 }
 
+slint::SharedString profiles_or_error(su::app::AppController& controller) {
+    const auto profiles = controller.list_face_profiles();
+    if (!profiles) {
+        return slint::SharedString(profiles.error());
+    }
+    return slint::SharedString(*profiles);
+}
+
+slint::SharedString enroll_or_error(
+    su::app::AppController& controller,
+    const slint::SharedString& label,
+    const slint::SharedString& sample_seed) {
+    const auto profiles = controller.enroll_face_profile_from_sample(
+        std::string(label),
+        std::string(sample_seed));
+    if (!profiles) {
+        return slint::SharedString(profiles.error());
+    }
+    return slint::SharedString(*profiles);
+}
+
+su::app::FaceDemoSnapshot authenticate_or_empty(
+    su::app::AppController& controller,
+    const slint::SharedString& sample_seed) {
+    const auto face_demo = controller.authenticate_face_sample_from_seed(std::string(sample_seed));
+    if (!face_demo) {
+        return {};
+    }
+    return *face_demo;
+}
+
 }  // namespace
 
 int main() {
@@ -67,6 +98,18 @@ int main() {
         const auto face_demo = run_face_demo_or_empty(controller);
         window->set_profile_text(slint::SharedString(face_demo.profiles_json));
         window->set_face_auth_report_text(slint::SharedString(face_demo.auth_report_json));
+    });
+    window->on_enroll_requested([window, &controller](slint::SharedString label, slint::SharedString sample_seed) {
+        window->set_profile_text(enroll_or_error(controller, label, sample_seed));
+    });
+    window->on_face_auth_requested([window, &controller](slint::SharedString sample_seed) {
+        const auto face_demo = authenticate_or_empty(controller, sample_seed);
+        window->set_profile_text(slint::SharedString(face_demo.profiles_json));
+        window->set_face_auth_report_text(slint::SharedString(face_demo.auth_report_json));
+        window->set_auth_text(slint::SharedString(face_demo.decision.accepted ? "Accepted" : "Rejected"));
+    });
+    window->on_refresh_profiles_requested([window, &controller] {
+        window->set_profile_text(profiles_or_error(controller));
     });
     window->run();
     return 0;
