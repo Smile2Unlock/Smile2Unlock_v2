@@ -33,7 +33,7 @@ Profile names are labels only. They must not become the authentication mechanism
 - Demo embedding: generated deterministically from a mock face sample source.
 - Demo sample source syntax:
   - `mock:<id>` for deterministic mock samples
-  - `image:<path>` reserved for file-based enrollment/probing
+  - `image:<path>` for file-based enrollment/probing boundary validation, currently embedded by the mock backend
   - `camera:<descriptor>` reserved for captured frames
   - `embedding:<source>` reserved for imported or precomputed embeddings
 - Demo matching: cosine similarity against all enrolled profiles, returning the best match.
@@ -106,7 +106,7 @@ It must be able to:
 
 ### Real Face Backend
 
-- Replace mock face sample source with camera frames.
+- Replace mock face sample source/image-path mock embedding with real camera frames or image decoding.
 - Add face detection and alignment.
 - Add embedding model inference.
 - Preserve the Rust pipeline API by passing embeddings or normalized face samples across the boundary.

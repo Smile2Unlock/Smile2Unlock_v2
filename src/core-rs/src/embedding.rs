@@ -41,6 +41,15 @@ impl FaceSample {
         })
     }
 
+    pub fn validate(&self) -> bool {
+        match self {
+            Self::Mock { .. } | Self::CameraFrame { .. } | Self::PrecomputedEmbedding { .. } => {
+                true
+            }
+            Self::ImageFile { path } => path.is_file() && has_supported_image_extension(path),
+        }
+    }
+
     pub fn stable_mock_key(&self) -> String {
         match self {
             Self::Mock { id } => format!("mock:{id}"),
@@ -70,6 +79,9 @@ pub fn default_embedding_backend() -> MockEmbeddingBackend {
 
 pub fn embedding_from_face_sample(sample_source: &str) -> Option<FaceEmbedding> {
     let sample = FaceSample::from_source(sample_source)?;
+    if !sample.validate() {
+        return None;
+    }
     Some(default_embedding_backend().embed(&sample))
 }
 
@@ -91,6 +103,18 @@ fn non_empty(value: &str) -> Option<String> {
         return None;
     }
     Some(value.to_owned())
+}
+
+fn has_supported_image_extension(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "bmp" | "webp"
+            )
+        })
+        .unwrap_or(false)
 }
 
 pub fn cosine_similarity(left: &FaceEmbedding, right: &FaceEmbedding) -> f32 {
@@ -160,5 +184,34 @@ mod tests {
                 descriptor: "0:frame42".to_owned()
             })
         );
+    }
+
+    #[test]
+    fn validates_image_file_sources() {
+        let path = std::env::temp_dir().join("su_face_sample_source_test.png");
+        std::fs::write(&path, b"placeholder").unwrap();
+
+        let source = format!("image:{}", path.display());
+        assert!(embedding_from_face_sample(&source).is_some());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_missing_image_file_sources() {
+        let path = std::env::temp_dir().join("su_missing_face_sample_source_test.png");
+        let source = format!("image:{}", path.display());
+        assert!(embedding_from_face_sample(&source).is_none());
+    }
+
+    #[test]
+    fn rejects_unsupported_image_extensions() {
+        let path = std::env::temp_dir().join("su_face_sample_source_test.txt");
+        std::fs::write(&path, b"placeholder").unwrap();
+
+        let source = format!("image:{}", path.display());
+        assert!(embedding_from_face_sample(&source).is_none());
+
+        let _ = std::fs::remove_file(path);
     }
 }
