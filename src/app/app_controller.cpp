@@ -96,20 +96,20 @@ std::expected<void, std::string> AppController::save_config_snapshot(const CoreC
 
 std::expected<FaceDemoSnapshot, std::string> AppController::run_face_demo(
     std::string_view label,
-    std::string_view enroll_sample_seed,
-    std::string_view probe_sample_seed) {
-    const auto enrolled_profiles = enroll_face_profile_from_sample(label, enroll_sample_seed);
+    std::string_view enroll_sample_source,
+    std::string_view probe_sample_source) {
+    const auto enrolled_profiles = enroll_face_profile_from_sample(label, enroll_sample_source);
     if (!enrolled_profiles) {
         return std::unexpected(enrolled_profiles.error());
     }
-    return authenticate_face_sample_from_seed(probe_sample_seed);
+    return authenticate_face_sample_from_source(probe_sample_source);
 }
 
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_sample(
     std::string_view label,
-    std::string_view sample_seed) {
+    std::string_view face_sample_source) {
     const auto store_path = profile_store_path();
-    if (const auto enrolled = enroll_face_profile(store_path, label, sample_seed); !enrolled) {
+    if (const auto enrolled = enroll_face_profile(store_path, label, face_sample_source); !enrolled) {
         return std::unexpected(std::format("failed to enroll face profile: {}", store_path));
     }
 
@@ -120,8 +120,8 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     return *profiles;
 }
 
-std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_seed(
-    std::string_view sample_seed) {
+std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
+    std::string_view face_sample_source) {
     const auto store_path = profile_store_path();
     const auto config = load_config(config_path());
     if (!config) {
@@ -130,7 +130,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
 
     const auto decision = authenticate_face_sample(
         store_path,
-        sample_seed,
+        face_sample_source,
         config->recognition_threshold);
     if (!decision) {
         return std::unexpected(std::format("failed to authenticate face sample: {}", store_path));
@@ -138,7 +138,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
 
     const auto report = authenticate_face_sample_report_json(
         store_path,
-        sample_seed,
+        face_sample_source,
         config->recognition_threshold);
     if (!report) {
         return std::unexpected(std::format("failed to build face auth report: {}", store_path));
@@ -154,7 +154,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     }
     const auto auth_report = authenticate_face_sample_report(
         store_path,
-        sample_seed,
+        face_sample_source,
         config->recognition_threshold);
     if (!auth_report) {
         return std::unexpected(std::format("failed to build structured face auth report: {}", store_path));

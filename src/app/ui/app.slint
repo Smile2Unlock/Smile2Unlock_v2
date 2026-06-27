@@ -12,8 +12,8 @@ export component AppWindow inherits Window {
     in property <string> profile_text: "";
     in-out property <string> delete_profile_id_text: "";
     in-out property <string> enroll_label_text: "Demo Face";
-    in-out property <string> enroll_sample_text: "face:demo:front";
-    in-out property <string> probe_sample_text: "face:demo:front";
+    in-out property <string> enroll_sample_source_text: "face:demo:front";
+    in-out property <string> probe_sample_source_text: "face:demo:front";
     in-out property <string> auth_text: "Not checked";
     in-out property <string> auth_score_text: "-";
     in-out property <string> auth_best_profile_text: "-";
@@ -93,13 +93,13 @@ export component AppWindow inherits Window {
             }
 
             Row {
-                Text { text: "Enroll Sample"; font-weight: 700; }
-                LineEdit { text <=> root.enroll_sample_text; }
+                Text { text: "Enroll Source"; font-weight: 700; }
+                LineEdit { text <=> root.enroll_sample_source_text; }
             }
 
             Row {
-                Text { text: "Probe Sample"; font-weight: 700; }
-                LineEdit { text <=> root.probe_sample_text; }
+                Text { text: "Probe Source"; font-weight: 700; }
+                LineEdit { text <=> root.probe_sample_source_text; }
             }
 
             Row {
@@ -114,14 +114,14 @@ export component AppWindow inherits Window {
             Button {
                 text: "Enroll";
                 clicked => {
-                    root.enroll_requested(root.enroll_label_text, root.enroll_sample_text);
+                    root.enroll_requested(root.enroll_label_text, root.enroll_sample_source_text);
                 }
             }
 
             Button {
                 text: "Authenticate";
                 clicked => {
-                    root.face_auth_requested(root.probe_sample_text);
+                    root.face_auth_requested(root.probe_sample_source_text);
                 }
             }
 

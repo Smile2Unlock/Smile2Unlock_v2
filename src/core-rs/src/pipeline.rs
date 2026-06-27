@@ -4,7 +4,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::SuStatus;
-use crate::embedding::{cosine_similarity, mock_embedding_from_sample};
+use crate::embedding::{cosine_similarity, embedding_from_face_sample};
 use crate::profile::{
     FaceProfile, PROFILE_ID_CAP, PROFILE_LABEL_CAP, copy_str_to_fixed, load_store,
 };
@@ -71,12 +71,12 @@ impl FaceAuthReport {
 
 pub fn authenticate_sample(
     store_path: &Path,
-    sample_seed: &str,
+    face_sample_source: &str,
     threshold: f32,
 ) -> Result<FaceAuthReport, SuStatus> {
-    if sample_seed.trim().is_empty() {
+    let Some(probe) = embedding_from_face_sample(face_sample_source) else {
         return Err(SuStatus::InvalidArgument);
-    }
+    };
 
     let store = load_store(store_path)?;
     if store.profiles.is_empty() {
@@ -91,7 +91,6 @@ pub fn authenticate_sample(
         });
     }
 
-    let probe = mock_embedding_from_sample(sample_seed);
     let best = store
         .profiles
         .iter()
@@ -114,10 +113,10 @@ pub fn authenticate_sample(
 
 pub fn authenticate_sample_ffi(
     store_path: &Path,
-    sample_seed: &str,
+    face_sample_source: &str,
     threshold: f32,
 ) -> SuFaceAuthDecision {
-    match authenticate_sample(store_path, sample_seed, threshold) {
+    match authenticate_sample(store_path, face_sample_source, threshold) {
         Ok(report) => SuFaceAuthDecision {
             status: SuStatus::Ok,
             accepted: report.accepted,
@@ -135,19 +134,19 @@ pub fn authenticate_sample_ffi(
 
 pub fn authenticate_sample_report_json(
     store_path: &Path,
-    sample_seed: &str,
+    face_sample_source: &str,
     threshold: f32,
 ) -> Result<String, SuStatus> {
-    let report = authenticate_sample(store_path, sample_seed, threshold)?;
+    let report = authenticate_sample(store_path, face_sample_source, threshold)?;
     serde_json::to_string_pretty(&report).map_err(|_| SuStatus::WriteError)
 }
 
 pub fn authenticate_sample_report_ffi(
     store_path: &Path,
-    sample_seed: &str,
+    face_sample_source: &str,
     threshold: f32,
 ) -> SuFaceAuthReport {
-    match authenticate_sample(store_path, sample_seed, threshold) {
+    match authenticate_sample(store_path, face_sample_source, threshold) {
         Ok(report) => report.to_ffi(SuStatus::Ok),
         Err(status) => FaceAuthReport {
             accepted: false,

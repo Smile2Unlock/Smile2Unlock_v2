@@ -5,11 +5,50 @@ pub const EMBEDDING_DIM: usize = 32;
 
 pub type FaceEmbedding = [f32; EMBEDDING_DIM];
 
-pub fn mock_embedding_from_sample(sample_seed: &str) -> FaceEmbedding {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaceSample {
+    pub source: String,
+}
+
+impl FaceSample {
+    pub fn from_source(source: &str) -> Option<Self> {
+        let source = source.trim();
+        if source.is_empty() {
+            return None;
+        }
+        Some(Self {
+            source: source.to_owned(),
+        })
+    }
+}
+
+pub trait EmbeddingBackend {
+    fn embed(&self, sample: &FaceSample) -> FaceEmbedding;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MockEmbeddingBackend;
+
+impl EmbeddingBackend for MockEmbeddingBackend {
+    fn embed(&self, sample: &FaceSample) -> FaceEmbedding {
+        mock_embedding_from_source(&sample.source)
+    }
+}
+
+pub fn default_embedding_backend() -> MockEmbeddingBackend {
+    MockEmbeddingBackend
+}
+
+pub fn embedding_from_face_sample(sample_source: &str) -> Option<FaceEmbedding> {
+    let sample = FaceSample::from_source(sample_source)?;
+    Some(default_embedding_backend().embed(&sample))
+}
+
+fn mock_embedding_from_source(sample_source: &str) -> FaceEmbedding {
     let mut embedding = [0.0; EMBEDDING_DIM];
     for (index, value) in embedding.iter_mut().enumerate() {
         let mut hasher = DefaultHasher::new();
-        sample_seed.hash(&mut hasher);
+        sample_source.hash(&mut hasher);
         index.hash(&mut hasher);
         let raw = hasher.finish();
         *value = ((raw % 20_000) as f32 / 10_000.0) - 1.0;
@@ -48,14 +87,19 @@ mod tests {
     #[test]
     fn mock_embeddings_are_deterministic() {
         assert_eq!(
-            mock_embedding_from_sample("face:alice:front"),
-            mock_embedding_from_sample("face:alice:front")
+            embedding_from_face_sample("face:alice:front"),
+            embedding_from_face_sample("face:alice:front")
         );
     }
 
     #[test]
     fn cosine_similarity_is_one_for_same_embedding() {
-        let embedding = mock_embedding_from_sample("face:alice:front");
+        let embedding = embedding_from_face_sample("face:alice:front").unwrap();
         assert!((cosine_similarity(&embedding, &embedding) - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn rejects_empty_face_sample_source() {
+        assert!(embedding_from_face_sample(" ").is_none());
     }
 }

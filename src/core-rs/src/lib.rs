@@ -131,7 +131,7 @@ pub extern "C" fn su_core_save_config(
 pub extern "C" fn su_core_enroll_face_profile(
     store_path: *const c_char,
     label: *const c_char,
-    sample_seed: *const c_char,
+    face_sample_source: *const c_char,
 ) -> SuStatus {
     let store_path = match profile::path_from_ptr(store_path) {
         Ok(path) => path,
@@ -141,12 +141,12 @@ pub extern "C" fn su_core_enroll_face_profile(
         Ok(value) => value,
         Err(status) => return status,
     };
-    let sample_seed = match profile::string_from_ptr(sample_seed) {
+    let face_sample_source = match profile::string_from_ptr(face_sample_source) {
         Ok(value) => value,
         Err(status) => return status,
     };
 
-    match profile::enroll_profile(&store_path, &label, &sample_seed) {
+    match profile::enroll_profile(&store_path, &label, &face_sample_source) {
         Ok(_) => SuStatus::Ok,
         Err(status) => status,
     }
@@ -249,7 +249,7 @@ pub extern "C" fn su_core_list_face_profile_summaries(
 #[unsafe(no_mangle)]
 pub extern "C" fn su_core_authenticate_face_sample(
     store_path: *const c_char,
-    sample_seed: *const c_char,
+    face_sample_source: *const c_char,
     threshold: f32,
 ) -> SuFaceAuthDecision {
     let store_path = match profile::path_from_ptr(store_path) {
@@ -263,7 +263,7 @@ pub extern "C" fn su_core_authenticate_face_sample(
             };
         }
     };
-    let sample_seed = match profile::string_from_ptr(sample_seed) {
+    let face_sample_source = match profile::string_from_ptr(face_sample_source) {
         Ok(value) => value,
         Err(status) => {
             return SuFaceAuthDecision {
@@ -275,13 +275,13 @@ pub extern "C" fn su_core_authenticate_face_sample(
         }
     };
 
-    pipeline::authenticate_sample_ffi(&store_path, &sample_seed, threshold)
+    pipeline::authenticate_sample_ffi(&store_path, &face_sample_source, threshold)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn su_core_authenticate_face_sample_report_json(
     store_path: *const c_char,
-    sample_seed: *const c_char,
+    face_sample_source: *const c_char,
     threshold: f32,
     out_buffer: *mut u8,
     buffer_len: usize,
@@ -291,12 +291,12 @@ pub extern "C" fn su_core_authenticate_face_sample_report_json(
         Ok(path) => path,
         Err(status) => return status,
     };
-    let sample_seed = match profile::string_from_ptr(sample_seed) {
+    let face_sample_source = match profile::string_from_ptr(face_sample_source) {
         Ok(value) => value,
         Err(status) => return status,
     };
 
-    match pipeline::authenticate_sample_report_json(&store_path, &sample_seed, threshold) {
+    match pipeline::authenticate_sample_report_json(&store_path, &face_sample_source, threshold) {
         Ok(json) => write_string_to_buffer(&json, out_buffer, buffer_len, out_required_len),
         Err(status) => status,
     }
@@ -305,7 +305,7 @@ pub extern "C" fn su_core_authenticate_face_sample_report_json(
 #[unsafe(no_mangle)]
 pub extern "C" fn su_core_authenticate_face_sample_report(
     store_path: *const c_char,
-    sample_seed: *const c_char,
+    face_sample_source: *const c_char,
     threshold: f32,
 ) -> SuFaceAuthReport {
     let store_path = match profile::path_from_ptr(store_path) {
@@ -323,7 +323,7 @@ pub extern "C" fn su_core_authenticate_face_sample_report(
             .to_ffi(status);
         }
     };
-    let sample_seed = match profile::string_from_ptr(sample_seed) {
+    let face_sample_source = match profile::string_from_ptr(face_sample_source) {
         Ok(value) => value,
         Err(status) => {
             return pipeline::FaceAuthReport {
@@ -339,5 +339,5 @@ pub extern "C" fn su_core_authenticate_face_sample_report(
         }
     };
 
-    pipeline::authenticate_sample_report_ffi(&store_path, &sample_seed, threshold)
+    pipeline::authenticate_sample_report_ffi(&store_path, &face_sample_source, threshold)
 }

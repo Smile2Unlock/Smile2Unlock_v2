@@ -30,7 +30,7 @@ Profile names are labels only. They must not become the authentication mechanism
   - list profiles
   - delete profile
   - run face authentication
-- Demo embedding: generated deterministically from a mock face sample seed.
+- Demo embedding: generated deterministically from a mock face sample source.
 - Demo matching: cosine similarity against all enrolled profiles, returning the best match.
 
 ## First Core Slice
@@ -43,7 +43,7 @@ The first implementation should build a complete, testable loop without real cam
 - Add a face embedding module.
 - Add a face authentication pipeline module.
 - Keep computation pure where practical:
-  - embedding generation is deterministic from a sample seed
+  - embedding generation is deterministic from a mock face sample source
   - cosine similarity is a pure function
   - best-match selection is a pure function over profile snapshots
   - file I/O is isolated in the profile store
@@ -88,10 +88,10 @@ The first UI does not need production design.
 It must be able to:
 
 - show the profile store path
-- enroll a profile from a label/sample seed
+- enroll a profile from a label and mock face sample source
 - list current profiles
 - delete a selected profile
-- authenticate a probe sample seed and display:
+- authenticate a probe face sample source and display:
   - accepted/rejected
   - best profile label/id
   - cosine score
@@ -101,7 +101,7 @@ It must be able to:
 
 ### Real Face Backend
 
-- Replace mock sample seed with camera frames.
+- Replace mock face sample source with camera frames.
 - Add face detection and alignment.
 - Add embedding model inference.
 - Preserve the Rust pipeline API by passing embeddings or normalized face samples across the boundary.

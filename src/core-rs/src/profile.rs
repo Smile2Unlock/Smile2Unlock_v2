@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::SuStatus;
-use crate::embedding::{FaceEmbedding, mock_embedding_from_sample};
+use crate::embedding::{FaceEmbedding, embedding_from_face_sample};
 
 pub const PROFILE_ID_CAP: usize = 64;
 pub const PROFILE_LABEL_CAP: usize = 128;
@@ -82,9 +82,12 @@ pub fn save_store(path: &Path, store: &ProfileStore) -> Result<(), SuStatus> {
 pub fn enroll_profile(
     path: &Path,
     label: &str,
-    sample_seed: &str,
+    face_sample_source: &str,
 ) -> Result<FaceProfile, SuStatus> {
-    if label.is_empty() || sample_seed.is_empty() {
+    let Some(embedding) = embedding_from_face_sample(face_sample_source) else {
+        return Err(SuStatus::InvalidArgument);
+    };
+    if label.is_empty() {
         return Err(SuStatus::InvalidArgument);
     }
 
@@ -92,7 +95,7 @@ pub fn enroll_profile(
     let profile = FaceProfile {
         id: stable_profile_id(label),
         label: label.to_owned(),
-        embedding: mock_embedding_from_sample(sample_seed),
+        embedding,
         created_at_unix: now_unix(),
     };
 

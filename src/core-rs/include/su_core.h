@@ -75,7 +75,7 @@ SuStatus su_core_save_config(const char* path, const SuCoreConfig* config);
 SuStatus su_core_enroll_face_profile(
     const char* store_path,
     const char* label,
-    const char* sample_seed);
+    const char* face_sample_source);
 SuStatus su_core_delete_face_profile(
     const char* store_path,
     const char* profile_id,
@@ -92,18 +92,18 @@ SuStatus su_core_list_face_profile_summaries(
     uintptr_t* out_profile_count);
 SuFaceAuthDecision su_core_authenticate_face_sample(
     const char* store_path,
-    const char* sample_seed,
+    const char* face_sample_source,
     float threshold);
 SuStatus su_core_authenticate_face_sample_report_json(
     const char* store_path,
-    const char* sample_seed,
+    const char* face_sample_source,
     float threshold,
     uint8_t* out_buffer,
     uintptr_t buffer_len,
     uintptr_t* out_required_len);
 SuFaceAuthReport su_core_authenticate_face_sample_report(
     const char* store_path,
-    const char* sample_seed,
+    const char* face_sample_source,
     float threshold);
 
 #ifdef __cplusplus

@@ -67,7 +67,7 @@ std::expected<AuthDecision, CoreError> evaluate_auth(
 std::expected<void, CoreError> enroll_face_profile(
     const std::string& store_path,
     std::string_view label,
-    std::string_view sample_seed);
+    std::string_view face_sample_source);
 std::expected<bool, CoreError> delete_face_profile(
     const std::string& store_path,
     std::string_view profile_id);
@@ -76,15 +76,15 @@ std::expected<std::vector<FaceProfileSummary>, CoreError> list_face_profile_summ
     const std::string& store_path);
 std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     const std::string& store_path,
-    std::string_view sample_seed,
+    std::string_view face_sample_source,
     float threshold);
 std::expected<std::string, CoreError> authenticate_face_sample_report_json(
     const std::string& store_path,
-    std::string_view sample_seed,
+    std::string_view face_sample_source,
     float threshold);
 std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
     const std::string& store_path,
-    std::string_view sample_seed,
+    std::string_view face_sample_source,
     float threshold);
 
 }  // namespace su::app
