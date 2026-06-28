@@ -48,6 +48,7 @@ struct FaceAuthReport {
     bool accepted = false;
     float score = 0.0F;
     float threshold = 0.0F;
+    bool liveness_ok = true;
     std::uint32_t profile_count = 0;
     std::string best_profile_id;
     std::string best_profile_label;
@@ -78,13 +79,28 @@ std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold);
+std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok);
 std::expected<std::string, CoreError> authenticate_face_sample_report_json(
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold);
+std::expected<std::string, CoreError> authenticate_face_sample_report_json(
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok);
+std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold);
 std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
     const std::string& store_path,
     std::string_view face_sample_source,
-    float threshold);
+    float threshold,
+    bool liveness_ok);
 
 }  // namespace su::app

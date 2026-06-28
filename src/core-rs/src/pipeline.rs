@@ -25,6 +25,7 @@ pub struct SuFaceAuthReport {
     pub accepted: bool,
     pub score: f32,
     pub threshold: f32,
+    pub liveness_ok: bool,
     pub profile_count: u32,
     pub best_profile_id: [u8; PROFILE_ID_CAP],
     pub best_profile_label: [u8; PROFILE_LABEL_CAP],
@@ -36,6 +37,7 @@ pub struct FaceAuthReport {
     pub accepted: bool,
     pub score: f32,
     pub threshold: f32,
+    pub liveness_ok: bool,
     pub profile_count: usize,
     pub best_profile_id: Option<String>,
     pub best_profile_label: Option<String>,
@@ -61,6 +63,7 @@ impl FaceAuthReport {
             accepted: self.accepted,
             score: self.score,
             threshold: self.threshold,
+            liveness_ok: self.liveness_ok,
             profile_count: self.profile_count as u32,
             best_profile_id,
             best_profile_label,
@@ -69,10 +72,11 @@ impl FaceAuthReport {
     }
 }
 
-pub fn authenticate_sample(
+pub fn authenticate_sample_with_liveness(
     store_path: &Path,
     face_sample_source: &str,
     threshold: f32,
+    liveness_ok: bool,
 ) -> Result<FaceAuthReport, SuStatus> {
     let Some(probe) = embedding_from_face_sample(face_sample_source) else {
         return Err(SuStatus::InvalidArgument);
@@ -84,6 +88,7 @@ pub fn authenticate_sample(
             accepted: false,
             score: 0.0,
             threshold,
+            liveness_ok,
             profile_count: 0,
             best_profile_id: None,
             best_profile_label: None,
@@ -98,11 +103,14 @@ pub fn authenticate_sample(
         .max_by(|left, right| left.1.partial_cmp(&right.1).unwrap_or(Ordering::Equal));
 
     Ok(match best {
-        Some((profile, score)) => report_for_match(profile, score, threshold, store.profiles.len()),
+        Some((profile, score)) => {
+            report_for_match(profile, score, threshold, liveness_ok, store.profiles.len())
+        }
         None => FaceAuthReport {
             accepted: false,
             score: 0.0,
             threshold,
+            liveness_ok,
             profile_count: store.profiles.len(),
             best_profile_id: None,
             best_profile_label: None,
@@ -111,12 +119,14 @@ pub fn authenticate_sample(
     })
 }
 
-pub fn authenticate_sample_ffi(
+pub fn authenticate_sample_with_liveness_ffi(
     store_path: &Path,
     face_sample_source: &str,
     threshold: f32,
+    liveness_ok: bool,
 ) -> SuFaceAuthDecision {
-    match authenticate_sample(store_path, face_sample_source, threshold) {
+    match authenticate_sample_with_liveness(store_path, face_sample_source, threshold, liveness_ok)
+    {
         Ok(report) => SuFaceAuthDecision {
             status: SuStatus::Ok,
             accepted: report.accepted,
@@ -132,26 +142,31 @@ pub fn authenticate_sample_ffi(
     }
 }
 
-pub fn authenticate_sample_report_json(
+pub fn authenticate_sample_report_json_with_liveness(
     store_path: &Path,
     face_sample_source: &str,
     threshold: f32,
+    liveness_ok: bool,
 ) -> Result<String, SuStatus> {
-    let report = authenticate_sample(store_path, face_sample_source, threshold)?;
+    let report =
+        authenticate_sample_with_liveness(store_path, face_sample_source, threshold, liveness_ok)?;
     serde_json::to_string_pretty(&report).map_err(|_| SuStatus::WriteError)
 }
 
-pub fn authenticate_sample_report_ffi(
+pub fn authenticate_sample_report_with_liveness_ffi(
     store_path: &Path,
     face_sample_source: &str,
     threshold: f32,
+    liveness_ok: bool,
 ) -> SuFaceAuthReport {
-    match authenticate_sample(store_path, face_sample_source, threshold) {
+    match authenticate_sample_with_liveness(store_path, face_sample_source, threshold, liveness_ok)
+    {
         Ok(report) => report.to_ffi(SuStatus::Ok),
         Err(status) => FaceAuthReport {
             accepted: false,
             score: 0.0,
             threshold,
+            liveness_ok,
             profile_count: 0,
             best_profile_id: None,
             best_profile_label: None,
@@ -165,17 +180,21 @@ fn report_for_match(
     profile: &FaceProfile,
     score: f32,
     threshold: f32,
+    liveness_ok: bool,
     profile_count: usize,
 ) -> FaceAuthReport {
-    let accepted = score >= threshold;
+    let accepted = liveness_ok && score >= threshold;
     FaceAuthReport {
         accepted,
         score,
         threshold,
+        liveness_ok,
         profile_count,
         best_profile_id: Some(profile.id.clone()),
         best_profile_label: Some(profile.label.clone()),
-        reason: if accepted {
+        reason: if !liveness_ok {
+            "liveness check failed".to_owned()
+        } else if accepted {
             "best face match passed threshold".to_owned()
         } else {
             "best face match below threshold".to_owned()

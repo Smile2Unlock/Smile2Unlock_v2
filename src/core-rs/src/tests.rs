@@ -11,7 +11,7 @@ use crate::embedding::{
     parse_face_sample_source, try_embedding_from_face_sample,
     try_embedding_from_face_sample_with_config,
 };
-use crate::pipeline::authenticate_sample;
+use crate::pipeline::authenticate_sample_with_liveness;
 use crate::profile::{delete_profile, enroll_profile, load_store};
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -220,7 +220,8 @@ fn authenticates_best_face_match() {
     enroll_profile(&path, "Alice", "mock:face:alice:front").unwrap();
     enroll_profile(&path, "Bob", "mock:face:bob:front").unwrap();
 
-    let report = authenticate_sample(&path, "mock:face:alice:front", 0.80).unwrap();
+    let report =
+        authenticate_sample_with_liveness(&path, "mock:face:alice:front", 0.80, true).unwrap();
     assert!(report.accepted);
     assert_eq!(report.best_profile_label.as_deref(), Some("Alice"));
     assert!(report.score > 0.99);
@@ -232,7 +233,8 @@ fn rejects_when_store_is_empty() {
     let path = temp_path("auth_pipeline_empty", "json");
     let _ = fs::remove_file(&path);
 
-    let report = authenticate_sample(&path, "mock:face:alice:front", 0.80).unwrap();
+    let report =
+        authenticate_sample_with_liveness(&path, "mock:face:alice:front", 0.80, true).unwrap();
     assert!(!report.accepted);
     assert_eq!(report.profile_count, 0);
 }
@@ -247,10 +249,26 @@ fn authenticates_precomputed_embedding_match() {
     enroll_profile(&path, "Alice", &alice).unwrap();
     enroll_profile(&path, "Bob", &bob).unwrap();
 
-    let report = authenticate_sample(&path, &alice, 0.95).unwrap();
+    let report = authenticate_sample_with_liveness(&path, &alice, 0.95, true).unwrap();
     assert!(report.accepted);
     assert_eq!(report.best_profile_label.as_deref(), Some("Alice"));
     assert!(report.score > 0.99);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn rejects_precomputed_embedding_match_without_liveness() {
+    let path = temp_path("auth_pipeline_precomputed_embedding_no_liveness", "json");
+    let _ = fs::remove_file(&path);
+
+    let alice = embedding_source(&basis_embedding(0));
+    enroll_profile(&path, "Alice", &alice).unwrap();
+
+    let report = authenticate_sample_with_liveness(&path, &alice, 0.95, false).unwrap();
+    assert!(!report.accepted);
+    assert!(report.score > 0.99);
+    assert_eq!(report.best_profile_label.as_deref(), Some("Alice"));
+    assert_eq!(report.reason, "liveness check failed");
     let _ = fs::remove_file(path);
 }
 

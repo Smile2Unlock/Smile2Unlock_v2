@@ -255,6 +255,16 @@ pub extern "C" fn su_core_authenticate_face_sample(
     face_sample_source: *const c_char,
     threshold: f32,
 ) -> SuFaceAuthDecision {
+    su_core_authenticate_face_sample_with_liveness(store_path, face_sample_source, threshold, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_authenticate_face_sample_with_liveness(
+    store_path: *const c_char,
+    face_sample_source: *const c_char,
+    threshold: f32,
+    liveness_ok: bool,
+) -> SuFaceAuthDecision {
     let store_path = match profile::path_from_ptr(store_path) {
         Ok(path) => path,
         Err(status) => {
@@ -278,7 +288,12 @@ pub extern "C" fn su_core_authenticate_face_sample(
         }
     };
 
-    pipeline::authenticate_sample_ffi(&store_path, &face_sample_source, threshold)
+    pipeline::authenticate_sample_with_liveness_ffi(
+        &store_path,
+        &face_sample_source,
+        threshold,
+        liveness_ok,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -286,6 +301,27 @@ pub extern "C" fn su_core_authenticate_face_sample_report_json(
     store_path: *const c_char,
     face_sample_source: *const c_char,
     threshold: f32,
+    out_buffer: *mut u8,
+    buffer_len: usize,
+    out_required_len: *mut usize,
+) -> SuStatus {
+    su_core_authenticate_face_sample_report_json_with_liveness(
+        store_path,
+        face_sample_source,
+        threshold,
+        true,
+        out_buffer,
+        buffer_len,
+        out_required_len,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_authenticate_face_sample_report_json_with_liveness(
+    store_path: *const c_char,
+    face_sample_source: *const c_char,
+    threshold: f32,
+    liveness_ok: bool,
     out_buffer: *mut u8,
     buffer_len: usize,
     out_required_len: *mut usize,
@@ -299,7 +335,12 @@ pub extern "C" fn su_core_authenticate_face_sample_report_json(
         Err(status) => return status,
     };
 
-    match pipeline::authenticate_sample_report_json(&store_path, &face_sample_source, threshold) {
+    match pipeline::authenticate_sample_report_json_with_liveness(
+        &store_path,
+        &face_sample_source,
+        threshold,
+        liveness_ok,
+    ) {
         Ok(json) => write_string_to_buffer(&json, out_buffer, buffer_len, out_required_len),
         Err(status) => status,
     }
@@ -311,6 +352,21 @@ pub extern "C" fn su_core_authenticate_face_sample_report(
     face_sample_source: *const c_char,
     threshold: f32,
 ) -> SuFaceAuthReport {
+    su_core_authenticate_face_sample_report_with_liveness(
+        store_path,
+        face_sample_source,
+        threshold,
+        true,
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_authenticate_face_sample_report_with_liveness(
+    store_path: *const c_char,
+    face_sample_source: *const c_char,
+    threshold: f32,
+    liveness_ok: bool,
+) -> SuFaceAuthReport {
     let store_path = match profile::path_from_ptr(store_path) {
         Ok(path) => path,
         Err(status) => {
@@ -318,6 +374,7 @@ pub extern "C" fn su_core_authenticate_face_sample_report(
                 accepted: false,
                 score: 0.0,
                 threshold,
+                liveness_ok,
                 profile_count: 0,
                 best_profile_id: None,
                 best_profile_label: None,
@@ -333,6 +390,7 @@ pub extern "C" fn su_core_authenticate_face_sample_report(
                 accepted: false,
                 score: 0.0,
                 threshold,
+                liveness_ok,
                 profile_count: 0,
                 best_profile_id: None,
                 best_profile_label: None,
@@ -342,5 +400,10 @@ pub extern "C" fn su_core_authenticate_face_sample_report(
         }
     };
 
-    pipeline::authenticate_sample_report_ffi(&store_path, &face_sample_source, threshold)
+    pipeline::authenticate_sample_report_with_liveness_ffi(
+        &store_path,
+        &face_sample_source,
+        threshold,
+        liveness_ok,
+    )
 }

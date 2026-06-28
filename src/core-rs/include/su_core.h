@@ -56,6 +56,7 @@ typedef struct SuFaceAuthReport {
     bool accepted;
     float score;
     float threshold;
+    bool liveness_ok;
     uint32_t profile_count;
     uint8_t best_profile_id[SuFaceProfileIdCap];
     uint8_t best_profile_label[SuFaceProfileLabelCap];
@@ -94,6 +95,11 @@ SuFaceAuthDecision su_core_authenticate_face_sample(
     const char* store_path,
     const char* face_sample_source,
     float threshold);
+SuFaceAuthDecision su_core_authenticate_face_sample_with_liveness(
+    const char* store_path,
+    const char* face_sample_source,
+    float threshold,
+    bool liveness_ok);
 SuStatus su_core_authenticate_face_sample_report_json(
     const char* store_path,
     const char* face_sample_source,
@@ -101,10 +107,23 @@ SuStatus su_core_authenticate_face_sample_report_json(
     uint8_t* out_buffer,
     uintptr_t buffer_len,
     uintptr_t* out_required_len);
+SuStatus su_core_authenticate_face_sample_report_json_with_liveness(
+    const char* store_path,
+    const char* face_sample_source,
+    float threshold,
+    bool liveness_ok,
+    uint8_t* out_buffer,
+    uintptr_t buffer_len,
+    uintptr_t* out_required_len);
 SuFaceAuthReport su_core_authenticate_face_sample_report(
     const char* store_path,
     const char* face_sample_source,
     float threshold);
+SuFaceAuthReport su_core_authenticate_face_sample_report_with_liveness(
+    const char* store_path,
+    const char* face_sample_source,
+    float threshold,
+    bool liveness_ok);
 
 #ifdef __cplusplus
 }

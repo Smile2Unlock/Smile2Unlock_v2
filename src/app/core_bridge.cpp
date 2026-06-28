@@ -92,6 +92,7 @@ FaceAuthReport map_auth_report(const SuFaceAuthReport& report) {
         .accepted = report.accepted,
         .score = report.score,
         .threshold = report.threshold,
+        .liveness_ok = report.liveness_ok,
         .profile_count = report.profile_count,
         .best_profile_id = fixed_string(report.best_profile_id, SuFaceProfileIdCap),
         .best_profile_label = fixed_string(report.best_profile_label, SuFaceProfileLabelCap),
@@ -231,11 +232,20 @@ std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold) {
+    return authenticate_face_sample(store_path, face_sample_source, threshold, true);
+}
+
+std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    const auto decision = su_core_authenticate_face_sample(
+    const auto decision = su_core_authenticate_face_sample_with_liveness(
         store_path.c_str(),
         owned_face_sample_source.c_str(),
-        threshold);
+        threshold,
+        liveness_ok);
     if (decision.status != SuStatus_Ok) {
         return std::unexpected(map_status(decision.status));
     }
@@ -250,15 +260,24 @@ std::expected<std::string, CoreError> authenticate_face_sample_report_json(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold) {
+    return authenticate_face_sample_report_json(store_path, face_sample_source, threshold, true);
+}
+
+std::expected<std::string, CoreError> authenticate_face_sample_report_json(
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    return read_json_from_core([&store_path, &owned_face_sample_source, threshold](
+    return read_json_from_core([&store_path, &owned_face_sample_source, threshold, liveness_ok](
                                    std::uint8_t* buffer,
                                    std::uintptr_t buffer_len,
                                    std::uintptr_t* required_len) {
-        return su_core_authenticate_face_sample_report_json(
+        return su_core_authenticate_face_sample_report_json_with_liveness(
             store_path.c_str(),
             owned_face_sample_source.c_str(),
             threshold,
+            liveness_ok,
             buffer,
             buffer_len,
             required_len);
@@ -269,11 +288,20 @@ std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold) {
+    return authenticate_face_sample_report(store_path, face_sample_source, threshold, true);
+}
+
+std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    const auto report = su_core_authenticate_face_sample_report(
+    const auto report = su_core_authenticate_face_sample_report_with_liveness(
         store_path.c_str(),
         owned_face_sample_source.c_str(),
-        threshold);
+        threshold,
+        liveness_ok);
     if (report.status != SuStatus_Ok) {
         return std::unexpected(map_status(report.status));
     }

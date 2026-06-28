@@ -219,10 +219,7 @@ pub(crate) fn normalize_embedding(
         return Err(FaceEmbeddingError::EmptyEmbedding);
     }
 
-    if embedding
-        .iter()
-        .any(|value| !value.is_finite())
-    {
+    if embedding.iter().any(|value| !value.is_finite()) {
         return Err(FaceEmbeddingError::InvalidEmbeddingValue);
     }
 

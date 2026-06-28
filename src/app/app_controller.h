@@ -45,6 +45,9 @@ public:
         std::string_view label);
     std::expected<FaceDemoSnapshot, std::string> authenticate_face_sample_from_source(
         std::string_view face_sample_source);
+    std::expected<FaceDemoSnapshot, std::string> authenticate_face_sample_from_source(
+        std::string_view face_sample_source,
+        bool liveness_ok);
     std::expected<FaceDemoSnapshot, std::string> authenticate_current_frame();
     std::expected<std::string, std::string> list_face_profiles();
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();

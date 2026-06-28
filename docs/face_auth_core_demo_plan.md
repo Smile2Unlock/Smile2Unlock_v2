@@ -119,11 +119,13 @@ It must be able to:
 
 ### Liveness
 
-- Add liveness result as an explicit pipeline input.
-- Keep liveness failure distinct from similarity failure.
+- Liveness result is now an explicit pipeline input for the Rust authentication
+  report and the C/C++ bridge.
+- Liveness failure is distinct from similarity failure in the report reason.
 - The SeetaFace backend loads anti-spoofing models, reports a normalized liveness score,
-  and exposes whether the FAS backend is available. The smoke test now requires FAS to load;
-  production threshold policy still needs to be defined separately.
+  and exposes whether the FAS backend is available. The current-frame app path gates
+  authentication on the configured liveness setting and normalized score; the exact
+  threshold is still a policy constant that should be tuned with real samples.
 
 ### Secure Storage
 
@@ -144,6 +146,7 @@ It must be able to:
   - best-match authentication
   - image source validation
   - precomputed embedding parsing and matching
+  - liveness-gated authentication rejection
 - Xmake builds the Rust static library through Cargo.
 - C++ bridge compiles against the stable C ABI header.
 - Console demo can run the full profile loop.

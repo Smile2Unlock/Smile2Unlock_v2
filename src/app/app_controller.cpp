@@ -6,6 +6,16 @@
 
 namespace su::app {
 
+namespace {
+
+constexpr auto kCurrentFrameLivenessThreshold = 0.50F;
+
+bool liveness_passes(const CoreConfig& config, const su::recognizer::RecognitionResult& result) {
+    return !config.liveness_detection || result.liveness_score >= kCurrentFrameLivenessThreshold;
+}
+
+}  // namespace
+
 std::string AppController::config_path() const {
     if (const auto* xdg_config_home = std::getenv("XDG_CONFIG_HOME")) {
         return (std::filesystem::path(xdg_config_home) / "smile2unlock" / "config.toml").string();
@@ -139,6 +149,12 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
 
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
     std::string_view face_sample_source) {
+    return authenticate_face_sample_from_source(face_sample_source, true);
+}
+
+std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
+    std::string_view face_sample_source,
+    bool liveness_ok) {
     const auto store_path = profile_store_path();
     const auto config = load_config(config_path());
     if (!config) {
@@ -148,7 +164,8 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     const auto decision = authenticate_face_sample(
         store_path,
         face_sample_source,
-        config->recognition_threshold);
+        config->recognition_threshold,
+        liveness_ok);
     if (!decision) {
         return std::unexpected(std::format("failed to authenticate face sample: {}", store_path));
     }
@@ -156,7 +173,8 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     const auto report = authenticate_face_sample_report_json(
         store_path,
         face_sample_source,
-        config->recognition_threshold);
+        config->recognition_threshold,
+        liveness_ok);
     if (!report) {
         return std::unexpected(std::format("failed to build face auth report: {}", store_path));
     }
@@ -172,7 +190,8 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     const auto auth_report = authenticate_face_sample_report(
         store_path,
         face_sample_source,
-        config->recognition_threshold);
+        config->recognition_threshold,
+        liveness_ok);
     if (!auth_report) {
         return std::unexpected(std::format("failed to build structured face auth report: {}", store_path));
     }
@@ -199,7 +218,10 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
         return std::unexpected("failed to extract face features from current frame");
     }
 
-    return authenticate_face_sample_from_source(su::recognizer::embedding_sample_source(result->feature));
+    const auto liveness_ok = liveness_passes(*config, *result);
+    return authenticate_face_sample_from_source(
+        su::recognizer::embedding_sample_source(result->feature),
+        liveness_ok);
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {

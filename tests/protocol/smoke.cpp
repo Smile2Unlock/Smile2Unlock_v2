@@ -29,6 +29,25 @@ int main() {
     assert(face_decision.has_value());
     assert(face_decision->accepted);
 
+    const auto no_liveness_decision = su::app::authenticate_face_sample(
+        store_path,
+        sample,
+        0.95F,
+        false);
+    assert(no_liveness_decision.has_value());
+    assert(!no_liveness_decision->accepted);
+    assert(no_liveness_decision->score > 0.99F);
+
+    const auto no_liveness_report = su::app::authenticate_face_sample_report(
+        store_path,
+        sample,
+        0.95F,
+        false);
+    assert(no_liveness_report.has_value());
+    assert(!no_liveness_report->accepted);
+    assert(!no_liveness_report->liveness_ok);
+    assert(no_liveness_report->reason == "liveness check failed");
+
 #if SU_HAS_SEETAFACE
     const auto model_paths = su::recognizer::seetaface_model_paths(
         su::recognizer::default_seetaface_model_dir());
