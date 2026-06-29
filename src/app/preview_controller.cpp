@@ -7,16 +7,18 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 namespace su::app {
 
 namespace {
 
-constexpr int kDetectionEveryNFrames = 4;
+// Detection runs on this fraction of the preview cadence. SeetaFace detection
+// is expensive (~100-300ms); keeping it off the preview thread is what makes
+// the preview smooth while the face box still updates regularly.
+constexpr int kDetectionIntervalDivider = 4;
 
-// Build a Slint image from an RGB PreviewFrame. Copies the pixels into a
-// SharedPixelBuffer so the buffer outlives the mmap'ed source frame.
 slint::Image preview_frame_to_image(const su::recognizer::PreviewFrame& frame) {
     slint::SharedPixelBuffer<slint::Rgb8Pixel> buffer(
         static_cast<uint32_t>(frame.width),
@@ -44,6 +46,16 @@ PreviewOverlay overlay_from_result(const su::recognizer::RecognitionResult& resu
     return overlay;
 }
 
+// The latest converted RGB frame, shared between the preview thread (producer)
+// and the detection thread (consumer) under a mutex. Copied so each thread
+// owns its data and neither races the next grab.
+struct SharedRgb {
+    int width = 0;
+    int height = 0;
+    std::vector<std::byte> bytes;
+    bool fresh = false;  // set when a new frame is published; cleared on consume
+};
+
 }  // namespace
 
 class PreviewController::Impl {
@@ -57,73 +69,91 @@ public:
             fps = 15;
         }
         running_ = std::make_shared<std::atomic<bool>>(true);
-        auto running = running_;
+
         const auto interval = std::chrono::milliseconds(1000 / fps);
+        const auto detect_interval = interval * kDetectionIntervalDivider;
+        auto running = running_;
 
-        thread_ = std::thread(
-            [running, interval, camera_index, callback = std::move(callback),
-             &recognizer]() mutable {
-                std::optional<su::recognizer::FaceBox> last_box;
-                float last_liveness = 0.0F;
-                std::string last_status = "starting";
-                int frame_index = 0;
-
+        // Detection thread: takes the freshest RGB snapshot, runs SeetaFace on
+        // it, and publishes the overlay. Slow model work is fully off the
+        // preview thread so it never stalls display.
+        detection_thread_ = std::thread(
+            [running, detect_interval, &recognizer, this]() {
                 while (running->load()) {
-                    // capture_and_extract grabs exactly one frame and runs
-                    // detection on it, so the preview image and the face box
-                    // always correspond to the same capture. Detection runs on
-                    // every grab but is throttled by the caller's fps; the Nth
-                    // frame reuse below only avoids re-detecting when we have a
-                    // cached frame without a fresh grab.
-                    const bool detect = (frame_index % kDetectionEveryNFrames) == 0;
-
-                    if (detect) {
-                        const auto captured = recognizer.capture_and_extract();
-                        if (!captured) {
-                            last_status = "capture failed";
-                            push_frame(callback, slint::Image(),
-                                       PreviewOverlay{.status_text = last_status});
-                            std::this_thread::sleep_for(interval);
-                            ++frame_index;
-                            continue;
+                    SharedRgb snapshot;
+                    {
+                        std::lock_guard lock(rgb_mutex_);
+                        if (shared_rgb_.fresh) {
+                            snapshot = shared_rgb_;
+                            shared_rgb_.fresh = false;
                         }
-                        auto& [frame, result] = *captured;
-                        auto image = preview_frame_to_image(frame);
-                        if (result.has_face) {
-                            auto overlay = overlay_from_result(result);
-                            last_box = overlay.face_box;
-                            last_liveness = overlay.liveness_score;
-                            last_status = overlay.status_text;
-                            push_frame(callback, std::move(image), std::move(overlay));
+                    }
+                    if (snapshot.width > 0 && !snapshot.bytes.empty()) {
+                        const auto result = recognizer.extract_from_image(
+                            su::recognizer::ImageView{
+                                .width = snapshot.width,
+                                .height = snapshot.height,
+                                .channels = 3,
+                                .bytes = std::span<const std::byte>(snapshot.bytes),
+                            });
+                        PreviewOverlay overlay;
+                        if (result && result->has_face) {
+                            overlay = overlay_from_result(*result);
                         } else {
-                            last_box.reset();
-                            last_liveness = 0.0F;
-                            last_status = "no face";
-                            push_frame(callback, std::move(image),
-                                       PreviewOverlay{.status_text = last_status});
+                            overlay.status_text = result ? "no face" : "detect failed";
                         }
-                    } else {
-                        // Skip detection this frame: grab only for the preview
-                        // image, reuse the last overlay.
-                        const auto frame = recognizer.capture_preview_frame();
-                        if (!frame) {
-                            last_status = "capture failed";
-                            push_frame(callback, slint::Image(),
-                                       PreviewOverlay{.status_text = last_status});
-                            std::this_thread::sleep_for(interval);
-                            ++frame_index;
-                            continue;
+                        {
+                            std::lock_guard lock(overlay_mutex_);
+                            latest_overlay_ = std::move(overlay);
                         }
-                        auto image = preview_frame_to_image(*frame);
-                        push_frame(callback, std::move(image),
-                                   PreviewOverlay{
-                                       .face_box = last_box,
-                                       .liveness_score = last_liveness,
-                                       .status_text = last_status,
-                                   });
+                    }
+                    std::this_thread::sleep_for(detect_interval);
+                }
+            });
+
+        // Preview thread: grab + convert + push image on every tick, carrying
+        // the latest overlay (updated asynchronously by the detection thread).
+        preview_thread_ = std::thread(
+            [running, interval, callback = std::move(callback),
+             &recognizer, this]() mutable {
+                while (running->load()) {
+                    const auto frame = recognizer.capture_preview_frame();
+                    if (!frame) {
+                        slint::invoke_from_event_loop(
+                            [callback]() {
+                                callback(slint::Image(),
+                                         PreviewOverlay{.status_text = "capture failed"});
+                            });
+                        std::this_thread::sleep_for(interval);
+                        continue;
                     }
 
-                    ++frame_index;
+                    auto image = preview_frame_to_image(*frame);
+
+                    // Publish a copy for the detection thread.
+                    {
+                        std::lock_guard lock(rgb_mutex_);
+                        shared_rgb_ = SharedRgb{
+                            .width = frame->width,
+                            .height = frame->height,
+                            .bytes = frame->rgba_or_rgb,
+                            .fresh = true,
+                        };
+                    }
+
+                    // Snapshot the latest overlay to push alongside this frame.
+                    PreviewOverlay overlay;
+                    {
+                        std::lock_guard lock(overlay_mutex_);
+                        overlay = latest_overlay_;
+                    }
+
+                    slint::invoke_from_event_loop(
+                        [callback, image = std::move(image),
+                         overlay = std::move(overlay)]() mutable {
+                            callback(std::move(image), std::move(overlay));
+                        });
+
                     std::this_thread::sleep_for(interval);
                 }
             });
@@ -133,27 +163,29 @@ public:
         if (running_) {
             running_->store(false);
         }
-        if (thread_.joinable()) {
-            thread_.join();
+        if (preview_thread_.joinable()) {
+            preview_thread_.join();
+        }
+        if (detection_thread_.joinable()) {
+            detection_thread_.join();
         }
     }
 
     [[nodiscard]] bool is_running() const {
-        return running_ && running_->load() && thread_.joinable();
+        return running_ && running_->load()
+            && (preview_thread_.joinable() || detection_thread_.joinable());
     }
 
     ~Impl() { stop(); }
 
 private:
-    static void push_frame(const FrameCallback& callback, slint::Image image, PreviewOverlay overlay) {
-        slint::invoke_from_event_loop(
-            [callback, image = std::move(image), overlay = std::move(overlay)]() mutable {
-                callback(std::move(image), std::move(overlay));
-            });
-    }
-
-    std::thread thread_;
+    std::thread preview_thread_;
+    std::thread detection_thread_;
     std::shared_ptr<std::atomic<bool>> running_;
+    std::mutex rgb_mutex_;
+    SharedRgb shared_rgb_;
+    std::mutex overlay_mutex_;
+    PreviewOverlay latest_overlay_;
 };
 
 PreviewController::~PreviewController() {

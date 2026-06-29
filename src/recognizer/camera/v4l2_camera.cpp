@@ -7,6 +7,7 @@
 #include <fstream>
 #include <linux/videodev2.h>
 #include <memory>
+#include <optional>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -152,6 +153,21 @@ public:
             return std::unexpected(RecognizerError::kCameraUnavailable);
         }
 
+        // Requeue the buffer held from the previous grab so the driver can
+        // refill it. By deferring the QBUF to the next call (instead of doing
+        // it immediately after DQBUF), the span returned last time stays valid
+        // for the whole interval between grabs, so the caller's pixel copy is
+        // not racing with the capture hardware overwriting the same mmap'd
+        // buffer. This is what fixes the intermittent black/tearing frames.
+        if (held_buffer_index_) {
+            v4l2_buffer requeue{};
+            requeue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            requeue.memory = V4L2_MEMORY_MMAP;
+            requeue.index = *held_buffer_index_;
+            ioctl(fd_, VIDIOC_QBUF, &requeue);
+            held_buffer_index_.reset();
+        }
+
         v4l2_buffer buf{};
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buf.memory = V4L2_MEMORY_MMAP;
@@ -160,20 +176,14 @@ public:
         }
 
         const auto& buffer = buffers_[buf.index];
-        CapturedFrame frame{
+        held_buffer_index_ = buf.index;
+        return CapturedFrame{
             .width = 640,
             .height = 480,
             .v4l2_format = negotiated_format_,
             .bytes = std::span<const std::byte>(
                 static_cast<const std::byte*>(buffer.start), buf.bytesused),
         };
-
-        // Requeue the buffer for the next capture; remember the index so the
-        // caller's span stays valid until the next grab.
-        if (ioctl(fd_, VIDIOC_QBUF, &buf) < 0) {
-            return std::unexpected(RecognizerError::kCameraUnavailable);
-        }
-        return frame;
     }
 
     void release() {
@@ -182,6 +192,7 @@ public:
             ioctl(fd_, VIDIOC_STREAMOFF, &type);
             streaming_ = false;
         }
+        held_buffer_index_.reset();
         for (auto& buffer : buffers_) {
             if (buffer.start != nullptr && buffer.start != MAP_FAILED) {
                 munmap(buffer.start, buffer.length);
@@ -207,6 +218,13 @@ private:
     uint32_t negotiated_format_ = 0;
     bool streaming_ = false;
     std::vector<MmapBuffer> buffers_{};
+    // Index of the buffer currently held out (DQBUF'd but not yet requeued).
+    // The returned span points into this buffer and stays valid until the next
+    // grab_frame call requeues it. Requeuing only on the next grab gives the
+    // caller a full frame interval to copy the data before the driver reuses
+    // the buffer, instead of requeuing immediately inside grab_frame and
+    // letting the next capture overwrite the bytes the caller just received.
+    std::optional<uint32_t> held_buffer_index_{};
 };
 
 V4L2Camera::V4L2Camera() = default;
