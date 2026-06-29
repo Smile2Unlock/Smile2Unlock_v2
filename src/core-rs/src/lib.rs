@@ -45,6 +45,7 @@ pub struct SuCoreConfig {
     pub selected_camera: i32,
     pub recognition_threshold: f32,
     pub liveness_detection: bool,
+    pub liveness_threshold: f32,
     pub preview_fps: u32,
 }
 

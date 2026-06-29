@@ -31,17 +31,13 @@ int main() {
     }
     std::cout << "Demo auth accepted: " << (*demo_auth ? "yes" : "no") << '\n';
 
-    const auto face_demo = controller.run_face_demo(
-        "Demo Face",
-        "mock:face:demo:front",
-        "mock:face:demo:front");
-    if (!face_demo) {
-        std::cerr << "face demo failed: " << face_demo.error() << '\n';
+    // Read-only: list whatever profiles already exist without enrolling a
+    // demo profile into the user's real store as a startup side effect.
+    const auto profiles = controller.list_face_profiles();
+    if (!profiles) {
+        std::cerr << "failed to list face profiles: " << profiles.error() << '\n';
         return 1;
     }
-    std::cout << "Face demo accepted: " << (face_demo->decision.accepted ? "yes" : "no") << '\n';
-    std::cout << "Face demo score: " << face_demo->decision.score << '\n';
-    std::cout << "Face profiles:\n" << face_demo->profiles_json << '\n';
-    std::cout << "Face auth report:\n" << face_demo->auth_report_json << '\n';
+    std::cout << "Face profiles:\n" << *profiles << '\n';
     return 0;
 }

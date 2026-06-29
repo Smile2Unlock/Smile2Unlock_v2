@@ -25,6 +25,7 @@ struct CoreConfig {
     int selected_camera = 0;
     float recognition_threshold = 0.65F;
     bool liveness_detection = true;
+    float liveness_threshold = 0.50F;
     std::uint32_t preview_fps = 15;
 };
 

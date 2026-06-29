@@ -69,27 +69,28 @@ public:
                 int frame_index = 0;
 
                 while (running->load()) {
-                    const auto frame = recognizer.capture_preview_frame();
-                    if (!frame) {
-                        last_status = "capture failed";
-                        slint::invoke_from_event_loop(
-                            [callback, status = last_status]() {
-                                callback(slint::Image(), PreviewOverlay{.status_text = status});
-                            });
-                        std::this_thread::sleep_for(interval);
-                        continue;
-                    }
-
-                    auto image = preview_frame_to_image(*frame);
-
-                    // Run detection on a throttled cadence; reuse the last
-                    // overlay between detections to avoid running SeetaFace on
-                    // every frame.
+                    // capture_and_extract grabs exactly one frame and runs
+                    // detection on it, so the preview image and the face box
+                    // always correspond to the same capture. Detection runs on
+                    // every grab but is throttled by the caller's fps; the Nth
+                    // frame reuse below only avoids re-detecting when we have a
+                    // cached frame without a fresh grab.
                     const bool detect = (frame_index % kDetectionEveryNFrames) == 0;
+
                     if (detect) {
-                        const auto result = recognizer.extract_features();
-                        if (result && result->has_face) {
-                            auto overlay = overlay_from_result(*result);
+                        const auto captured = recognizer.capture_and_extract();
+                        if (!captured) {
+                            last_status = "capture failed";
+                            push_frame(callback, slint::Image(),
+                                       PreviewOverlay{.status_text = last_status});
+                            std::this_thread::sleep_for(interval);
+                            ++frame_index;
+                            continue;
+                        }
+                        auto& [frame, result] = *captured;
+                        auto image = preview_frame_to_image(frame);
+                        if (result.has_face) {
+                            auto overlay = overlay_from_result(result);
                             last_box = overlay.face_box;
                             last_liveness = overlay.liveness_score;
                             last_status = overlay.status_text;
@@ -97,11 +98,23 @@ public:
                         } else {
                             last_box.reset();
                             last_liveness = 0.0F;
-                            last_status = result ? "no face" : "detect failed";
+                            last_status = "no face";
                             push_frame(callback, std::move(image),
                                        PreviewOverlay{.status_text = last_status});
                         }
                     } else {
+                        // Skip detection this frame: grab only for the preview
+                        // image, reuse the last overlay.
+                        const auto frame = recognizer.capture_preview_frame();
+                        if (!frame) {
+                            last_status = "capture failed";
+                            push_frame(callback, slint::Image(),
+                                       PreviewOverlay{.status_text = last_status});
+                            std::this_thread::sleep_for(interval);
+                            ++frame_index;
+                            continue;
+                        }
+                        auto image = preview_frame_to_image(*frame);
                         push_frame(callback, std::move(image),
                                    PreviewOverlay{
                                        .face_box = last_box,

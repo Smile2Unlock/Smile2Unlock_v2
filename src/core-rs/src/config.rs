@@ -8,21 +8,45 @@ use crate::{SuCoreConfig, SuStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default = "default_version")]
     pub version: u32,
+    #[serde(default)]
     pub selected_camera: i32,
+    #[serde(default = "default_recognition_threshold")]
     pub recognition_threshold: f32,
+    #[serde(default = "default_liveness_detection")]
     pub liveness_detection: bool,
+    #[serde(default = "default_liveness_threshold")]
+    pub liveness_threshold: f32,
+    #[serde(default = "default_preview_fps")]
     pub preview_fps: u32,
+}
+
+fn default_version() -> u32 {
+    1
+}
+fn default_recognition_threshold() -> f32 {
+    0.65
+}
+fn default_liveness_detection() -> bool {
+    true
+}
+fn default_liveness_threshold() -> f32 {
+    0.50
+}
+fn default_preview_fps() -> u32 {
+    15
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: default_version(),
             selected_camera: 0,
-            recognition_threshold: 0.65,
-            liveness_detection: true,
-            preview_fps: 15,
+            recognition_threshold: default_recognition_threshold(),
+            liveness_detection: default_liveness_detection(),
+            liveness_threshold: default_liveness_threshold(),
+            preview_fps: default_preview_fps(),
         }
     }
 }
@@ -34,6 +58,7 @@ impl From<AppConfig> for SuCoreConfig {
             selected_camera: value.selected_camera,
             recognition_threshold: value.recognition_threshold,
             liveness_detection: value.liveness_detection,
+            liveness_threshold: value.liveness_threshold,
             preview_fps: value.preview_fps,
         }
     }
@@ -42,12 +67,21 @@ impl From<AppConfig> for SuCoreConfig {
 impl From<SuCoreConfig> for AppConfig {
     fn from(value: SuCoreConfig) -> Self {
         Self {
-            version: if value.version == 0 { 1 } else { value.version },
+            version: if value.version == 0 { default_version() } else { value.version },
             selected_camera: value.selected_camera,
-            recognition_threshold: value.recognition_threshold,
+            recognition_threshold: if value.recognition_threshold <= 0.0 {
+                default_recognition_threshold()
+            } else {
+                value.recognition_threshold
+            },
             liveness_detection: value.liveness_detection,
+            liveness_threshold: if value.liveness_threshold <= 0.0 {
+                default_liveness_threshold()
+            } else {
+                value.liveness_threshold
+            },
             preview_fps: if value.preview_fps == 0 {
-                15
+                default_preview_fps()
             } else {
                 value.preview_fps
             },
@@ -72,7 +106,21 @@ pub(crate) fn load_config(path: &Path) -> Result<AppConfig, SuStatus> {
     }
 
     let text = fs::read_to_string(path).map_err(|_| SuStatus::IoError)?;
-    toml::from_str::<AppConfig>(&text).map_err(|_| SuStatus::ParseError)
+    // A corrupt or partially-valid config falls back to defaults instead of
+    // propagating a parse error, so the app stays usable. Missing fields are
+    // already tolerated via #[serde(default)] on each field; a fully malformed
+    // document is logged and replaced wholesale.
+    match toml::from_str::<AppConfig>(&text) {
+        Ok(config) => Ok(config),
+        Err(error) => {
+            eprintln!(
+                "smile2unlock: config at {} failed to parse ({}); using defaults",
+                path.display(),
+                error
+            );
+            Ok(AppConfig::default())
+        }
+    }
 }
 
 fn save_config(path: &Path, config: &AppConfig) -> Result<(), SuStatus> {

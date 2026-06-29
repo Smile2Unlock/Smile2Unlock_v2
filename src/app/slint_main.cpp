@@ -157,11 +157,14 @@ int main() {
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_seetaface_text(slint::SharedString(snapshot->seetaface_available ? "Available" : "Unavailable"));
     window->set_auth_text(demo_auth_text(controller));
-    const auto face_demo = run_face_demo_or_empty(controller);
-    window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
-    window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
-    window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
-    window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
+    // Do not run the face demo at startup: it would enroll a "Demo Face"
+    // profile into the user's real profile store as a side effect. Show
+    // placeholders instead; the Run Demo Auth button triggers it on demand.
+    window->set_auth_score_text(slint::SharedString("-"));
+    window->set_auth_best_profile_text(slint::SharedString("-"));
+    window->set_auth_reason_text(slint::SharedString("Not checked"));
+    window->set_debug_json_text(slint::SharedString(
+        "Sample sources: mock:<id>, image:<path> (real SeetaFace when available), embedding:<comma-separated floats>"));
     window->on_demo_auth_requested([window, &controller] {
         window->set_auth_text(demo_auth_text(controller));
         const auto face_demo = run_face_demo_or_empty(controller);

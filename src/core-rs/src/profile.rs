@@ -116,13 +116,12 @@ pub fn enroll_profile(
     }
 
     let profile = FaceProfile {
-        id: stable_profile_id(label),
+        id: unique_profile_id(),
         label: label.to_owned(),
         embedding,
         created_at_unix: now_unix(),
     };
 
-    store.profiles.retain(|existing| existing.id != profile.id);
     store.profiles.push(profile.clone());
     save_store(path, &store)?;
     Ok(profile)
@@ -150,9 +149,19 @@ pub fn list_profiles(path: &Path) -> Result<Vec<FaceProfile>, SuStatus> {
     Ok(load_store(path)?.profiles)
 }
 
-fn stable_profile_id(label: &str) -> String {
+// Generate a process-unique profile id. The id is derived from the current
+// monotonic nanosecond timestamp combined with a per-process counter, so it is
+// independent of the label. Labels are display-only and must never become the
+// profile identity (a re-enrollment of the same label is a new profile, not an
+// overwrite of the old one).
+fn unique_profile_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    label.trim().to_lowercase().hash(&mut hasher);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    seq.hash(&mut hasher);
+    now_unix().hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 

@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace su::recognizer {
@@ -75,6 +76,13 @@ std::expected<float, RecognizerError> compare_features(
         std::span<const float> lhs,
         std::span<const float> rhs) const;
     void close_camera();
+
+    // Capture one frame and run detection on that same frame, returning both.
+    // This avoids the double-grab (and face-box/preview frame mismatch) that
+    // separate capture_preview_frame + extract_features calls would cause,
+    // since each grab_frame returns a span valid only until the next grab.
+    std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
+    capture_and_extract() const;
 
     // Extract features from a decoded image (e.g. a static face photo).
     // Requires the SeetaFace backend; when the backend is unavailable this

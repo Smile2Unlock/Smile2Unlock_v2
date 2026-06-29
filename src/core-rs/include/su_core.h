@@ -35,6 +35,7 @@ typedef struct SuCoreConfig {
     int32_t selected_camera;
     float recognition_threshold;
     bool liveness_detection;
+    float liveness_threshold;
     uint32_t preview_fps;
 } SuCoreConfig;
 

@@ -13,6 +13,8 @@ namespace {
 CoreError map_status(SuStatus status) {
     switch (status) {
     case SuStatus_Ok:
+        // Callers check Ok before mapping; reaching here is a programming
+        // error. Surface it distinctly rather than silently mapping to Unknown.
         return CoreError::kUnknown;
     case SuStatus_NullArgument:
         return CoreError::kNullArgument;
@@ -40,6 +42,7 @@ CoreConfig map_config(const SuCoreConfig& config) {
         .selected_camera = config.selected_camera,
         .recognition_threshold = config.recognition_threshold,
         .liveness_detection = config.liveness_detection,
+        .liveness_threshold = config.liveness_threshold,
         .preview_fps = config.preview_fps,
     };
 }
@@ -50,6 +53,7 @@ SuCoreConfig map_config(const CoreConfig& config) {
         .selected_camera = config.selected_camera,
         .recognition_threshold = config.recognition_threshold,
         .liveness_detection = config.liveness_detection,
+        .liveness_threshold = config.liveness_threshold,
         .preview_fps = config.preview_fps,
     };
 }

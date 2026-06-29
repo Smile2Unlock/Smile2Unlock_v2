@@ -17,7 +17,10 @@ option("with_slint")
 option_end()
 
 option("with_zig")
-    set_default(true)
+    -- Default off: the Zig helper currently exports only a placeholder symbol
+    -- with no callers. It becomes meaningful in Phase 3 (control socket runtime
+    -- helpers). Flip to true once there is real C ABI surface to consume.
+    set_default(false)
     set_showmenu(true)
     set_description("Build the optional Zig platform helper target")
 option_end()
@@ -223,9 +226,9 @@ target("pam_smile2unlock")
         add_syslinks("pam")
     end
 
-target("su_protocol_smoke_test")
+target("su_face_auth_smoke_test")
     apply_cpp_target("binary")
-    add_files("tests/protocol/*.cpp")
+    add_files("tests/face_auth/*.cpp")
     add_deps("su_core", "su_recognizer")
     add_files("src/app/core_bridge.cpp")
     add_includedirs("src/core-rs/include")

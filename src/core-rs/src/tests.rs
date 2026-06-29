@@ -6,10 +6,8 @@ use crate::SuStatus;
 use crate::auth::evaluate_auth_ffi;
 use crate::config::load_config;
 use crate::embedding::{
-    EMBEDDING_DIM, EmbeddingBackendConfig, EmbeddingBackendKind, FaceEmbeddingError, FaceSample,
-    cosine_similarity, default_embedding_backend_config, embedding_from_face_sample, normalize,
-    parse_face_sample_source, try_embedding_from_face_sample,
-    try_embedding_from_face_sample_with_config,
+    EMBEDDING_DIM, FaceEmbeddingError, FaceSample, cosine_similarity, embedding_from_face_sample,
+    normalize, parse_face_sample_source, try_embedding_from_face_sample,
 };
 use crate::pipeline::authenticate_sample_with_liveness;
 use crate::profile::{delete_profile, enroll_profile, load_store};
@@ -81,28 +79,6 @@ fn rejects_empty_face_sample_source() {
     assert_eq!(
         try_embedding_from_face_sample(" "),
         Err(FaceEmbeddingError::EmptySource)
-    );
-}
-
-#[test]
-fn default_embedding_backend_config_uses_mock_backend() {
-    assert_eq!(
-        default_embedding_backend_config(),
-        EmbeddingBackendConfig {
-            kind: EmbeddingBackendKind::Mock
-        }
-    );
-}
-
-#[test]
-fn model_embedding_backend_is_explicitly_unsupported_until_implemented() {
-    let config = EmbeddingBackendConfig {
-        kind: EmbeddingBackendKind::Model,
-    };
-
-    assert_eq!(
-        try_embedding_from_face_sample_with_config("mock:face:alice:front", &config),
-        Err(FaceEmbeddingError::UnsupportedBackend)
     );
 }
 

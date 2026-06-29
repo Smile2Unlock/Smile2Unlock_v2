@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <ranges>
@@ -102,32 +103,64 @@ std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_
     };
 }
 
-std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_features() const {
+namespace {
+
+// Synthetic detection result for the mock 2x2 frame, which has no real face.
+// Keeps the headless demo path usable without a camera or SeetaFace.
+RecognitionResult mock_recognition_result() {
+    return RecognitionResult{
+        .has_face = true,
+        .face_box = FaceBox{.x = 10, .y = 12, .width = 96, .height = 96},
+        .feature = {0.10F, 0.20F, 0.30F, 0.40F},
+        .liveness_score = 0.95F,
+    };
+}
+
+}  // namespace
+
+std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
+RecognizerService::capture_and_extract() const {
     if (!active_camera_) {
         return std::unexpected(RecognizerError::kCameraUnavailable);
     }
 
-    auto frame = capture_preview_frame();
+    if (!camera_) {
+        return std::make_pair(mock_preview_frame(), mock_recognition_result());
+    }
+
+    // Grab exactly once and run detection on the same converted frame, so the
+    // face box and the preview image always correspond to the same capture.
+    auto frame = camera_->grab_frame();
     if (!frame) {
         return std::unexpected(frame.error());
     }
-    // Real camera frames go through SeetaFace; the mock 2x2 frame has no face,
-    // so return a synthetic result to keep the demo path working headlessly.
-    if (!camera_) {
-        return RecognitionResult{
-            .has_face = true,
-            .face_box = FaceBox{.x = 10, .y = 12, .width = 96, .height = 96},
-            .feature = {0.10F, 0.20F, 0.30F, 0.40F},
-            .liveness_score = 0.95F,
-        };
+    auto rgb = v4l2_frame_to_rgb(*frame);
+    if (!rgb) {
+        return std::unexpected(rgb.error());
     }
-
-    return extract_from_image(ImageView{
+    auto preview = PreviewFrame{
+        .width = frame->width,
+        .height = frame->height,
+        .rgba_or_rgb = *rgb,
+    };
+    auto result = extract_from_image(ImageView{
         .width = frame->width,
         .height = frame->height,
         .channels = 3,
-        .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
+        .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
     });
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    return std::make_pair(std::move(preview), std::move(*result));
+}
+
+std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_features() const {
+    auto captured = capture_and_extract();
+    if (!captured) {
+        return std::unexpected(captured.error());
+    }
+    return std::move(captured->second);
 }
 
 std::expected<float, RecognizerError> RecognizerService::compare_features(
@@ -137,17 +170,25 @@ std::expected<float, RecognizerError> RecognizerService::compare_features(
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
 
-    const auto squared_distance = std::transform_reduce(
+    // Cosine similarity, matching the Rust core's matching metric. SeetaFace
+    // embeddings are normalized, so for them this is equivalent to the dot
+    // product; the division keeps it correct for unnormalized inputs too.
+    const auto dot = std::transform_reduce(
         lhs.begin(),
         lhs.end(),
         rhs.begin(),
         0.0F,
         std::plus<>{},
-        [](float left, float right) {
-            const auto delta = left - right;
-            return delta * delta;
-        });
-    return 1.0F / (1.0F + std::sqrt(squared_distance));
+        [](float left, float right) { return left * right; });
+    const auto norm_lhs = std::sqrt(std::transform_reduce(
+        lhs.begin(), lhs.end(), 0.0F, std::plus<>{}, [](float v) { return v * v; }));
+    const auto norm_rhs = std::sqrt(std::transform_reduce(
+        rhs.begin(), rhs.end(), 0.0F, std::plus<>{}, [](float v) { return v * v; }));
+    if (norm_lhs <= std::numeric_limits<float>::epsilon()
+        || norm_rhs <= std::numeric_limits<float>::epsilon()) {
+        return 0.0F;
+    }
+    return std::clamp(dot / (norm_lhs * norm_rhs), -1.0F, 1.0F);
 }
 
 void RecognizerService::close_camera() {

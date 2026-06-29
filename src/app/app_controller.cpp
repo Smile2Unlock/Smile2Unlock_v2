@@ -13,11 +13,11 @@ namespace su::app {
 
 namespace {
 
-constexpr auto kCurrentFrameLivenessThreshold = 0.50F;
 constexpr std::string_view kImageSourcePrefix = "image:";
 
 bool liveness_passes(const CoreConfig& config, const su::recognizer::RecognitionResult& result) {
-    return !config.liveness_detection || result.liveness_score >= kCurrentFrameLivenessThreshold;
+    return !config.liveness_detection
+        || result.liveness_score >= config.liveness_threshold;
 }
 
 // Try to turn an `image:<path>` sample source into a real SeetaFace embedding.

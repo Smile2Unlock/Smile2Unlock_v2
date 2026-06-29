@@ -6,33 +6,12 @@ pub const EMBEDDING_DIM: usize = 32;
 
 pub type FaceEmbedding = Vec<f32>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum EmbeddingBackendKind {
-    Mock,
-    Model,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmbeddingBackendConfig {
-    pub kind: EmbeddingBackendKind,
-}
-
-impl Default for EmbeddingBackendConfig {
-    fn default() -> Self {
-        Self {
-            kind: EmbeddingBackendKind::Mock,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaceEmbeddingError {
     EmptySource,
     EmptyEmbedding,
     InvalidEmbeddingValue,
     InvalidImageSource,
-    UnsupportedBackend,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,37 +78,15 @@ pub(crate) fn parse_face_sample_source(source: &str) -> Result<FaceSample, FaceE
     })
 }
 
-pub trait EmbeddingBackend {
-    fn embed(&self, sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError>;
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MockEmbeddingBackend;
-
-impl EmbeddingBackend for MockEmbeddingBackend {
-    fn embed(&self, sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError> {
-        match sample {
-            FaceSample::PrecomputedEmbedding { embedding } => Ok(embedding.clone()),
-            _ => Ok(mock_embedding_from_source(&sample.stable_mock_key())),
-        }
+// Produce an embedding from a face sample source. Precomputed embeddings are
+// passed through; everything else uses the deterministic mock generator. Real
+// model inference lives on the C++ side (SeetaFace) and reaches Rust only as a
+// precomputed embedding:... source, so there is no "model backend" here.
+fn embed_sample(sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError> {
+    match sample {
+        FaceSample::PrecomputedEmbedding { embedding } => Ok(embedding.clone()),
+        _ => Ok(mock_embedding_from_source(&sample.stable_mock_key())),
     }
-}
-
-pub fn default_embedding_backend() -> MockEmbeddingBackend {
-    MockEmbeddingBackend
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ModelEmbeddingBackend;
-
-impl EmbeddingBackend for ModelEmbeddingBackend {
-    fn embed(&self, _sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError> {
-        Err(FaceEmbeddingError::UnsupportedBackend)
-    }
-}
-
-pub fn default_embedding_backend_config() -> EmbeddingBackendConfig {
-    EmbeddingBackendConfig::default()
 }
 
 pub fn embedding_from_face_sample(sample_source: &str) -> Option<FaceEmbedding> {
@@ -139,19 +96,9 @@ pub fn embedding_from_face_sample(sample_source: &str) -> Option<FaceEmbedding> 
 pub fn try_embedding_from_face_sample(
     sample_source: &str,
 ) -> Result<FaceEmbedding, FaceEmbeddingError> {
-    try_embedding_from_face_sample_with_config(sample_source, &default_embedding_backend_config())
-}
-
-pub fn try_embedding_from_face_sample_with_config(
-    sample_source: &str,
-    config: &EmbeddingBackendConfig,
-) -> Result<FaceEmbedding, FaceEmbeddingError> {
     let sample = parse_face_sample_source(sample_source)?;
     sample.validate_source()?;
-    match config.kind {
-        EmbeddingBackendKind::Mock => default_embedding_backend().embed(&sample),
-        EmbeddingBackendKind::Model => ModelEmbeddingBackend.embed(&sample),
-    }
+    embed_sample(&sample)
 }
 
 fn mock_embedding_from_source(sample_source: &str) -> FaceEmbedding {
