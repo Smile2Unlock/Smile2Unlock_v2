@@ -18,6 +18,7 @@ int main() {
     std::cout << "Selected camera: " << snapshot->config.selected_camera << '\n';
     std::cout << "Preview FPS: " << snapshot->config.preview_fps << '\n';
     std::cout << "Liveness: " << (snapshot->config.liveness_detection ? "yes" : "no") << '\n';
+    std::cout << "SeetaFace: " << (snapshot->seetaface_available ? "available" : "unavailable") << '\n';
     std::cout << "Detected cameras: " << snapshot->cameras.size() << '\n';
     for (const auto& camera : snapshot->cameras) {
         std::cout << "  [" << camera.index << "] " << camera.name << '\n';

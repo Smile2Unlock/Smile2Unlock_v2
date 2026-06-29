@@ -1,6 +1,7 @@
 #include "app/core_bridge.h"
 #include "recognizer/recognizer_service.h"
 #include "recognizer/seetaface_backend.h"
+#include "recognizer/image/image_loader.h"
 
 #include <cassert>
 #include <cctype>
@@ -144,6 +145,65 @@ int main() {
             assert(!other->feature.empty());
             assert(std::isfinite(other->liveness_score));
         }
+    }
+
+    // Exercise the real app image path: CImg-decoded PNG -> RecognizerService
+    // (lazy SeetaFace backend) -> embedding: source -> Rust enroll/auth, with
+    // the store-level dimension lock enforced end to end.
+    if (std::filesystem::exists(sample_dir / "official_face_1.png")) {
+        auto recognizer = su::recognizer::RecognizerService{};
+        assert(recognizer.seetaface_available());
+
+        auto loaded = su::recognizer::load_image_file(sample_dir / "official_face_1.png");
+        assert(loaded.has_value());
+        assert(loaded->width > 0);
+        assert(loaded->height > 0);
+        assert(loaded->channels == 3);
+
+        auto extracted = recognizer.extract_from_image(su::recognizer::ImageView{
+            .width = loaded->width,
+            .height = loaded->height,
+            .channels = loaded->channels,
+            .bytes = std::span<const std::byte>(loaded->bytes),
+        });
+        assert(extracted.has_value());
+        assert(extracted->has_face);
+        assert(!extracted->feature.empty());
+
+        const auto image_store_path = (
+            std::filesystem::temp_directory_path() / "su_seetaface_image_pipeline_profiles.json"
+        ).string();
+        std::filesystem::remove(image_store_path);
+
+        const auto png_embedding_source =
+            su::recognizer::embedding_sample_source(extracted->feature);
+        const auto enrolled = su::app::enroll_face_profile(
+            image_store_path,
+            "SeetaFace PNG Sample",
+            png_embedding_source);
+        assert(enrolled.has_value());
+
+        // Re-extract from the same image and authenticate; the dimension must
+        // match the locked store dimension and the self-match must pass.
+        const auto re_extracted = recognizer.extract_from_image(su::recognizer::ImageView{
+            .width = loaded->width,
+            .height = loaded->height,
+            .channels = loaded->channels,
+            .bytes = std::span<const std::byte>(loaded->bytes),
+        });
+        assert(re_extracted.has_value());
+        const auto probe_source =
+            su::recognizer::embedding_sample_source(re_extracted->feature);
+        const auto image_report = su::app::authenticate_face_sample_report(
+            image_store_path,
+            probe_source,
+            0.99F);
+        assert(image_report.has_value());
+        assert(image_report->accepted);
+        assert(image_report->score > 0.99F);
+        assert(image_report->profile_count == 1);
+
+        std::filesystem::remove(image_store_path);
     }
 
     std::filesystem::remove(store_path);

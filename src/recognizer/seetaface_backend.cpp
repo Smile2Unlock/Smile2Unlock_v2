@@ -141,7 +141,7 @@ public:
             return std::unexpected(RecognizerError::kModelUnavailable);
         }
         if (!valid_image(image)) {
-            return std::unexpected(RecognizerError::kCameraUnavailable);
+            return std::unexpected(RecognizerError::kInvalidImage);
         }
 
         auto owned_bytes = std::vector<unsigned char>(image.bytes.size());

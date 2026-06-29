@@ -5,16 +5,8 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <span>
 
 namespace su::recognizer {
-
-struct ImageView {
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    std::span<const std::byte> bytes;
-};
 
 struct SeetaFaceModelPaths {
     std::filesystem::path detector;

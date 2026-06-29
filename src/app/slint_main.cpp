@@ -153,6 +153,7 @@ int main() {
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profile_text(slint::SharedString(profile_rows_text(snapshot->profiles)));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
+    window->set_seetaface_text(slint::SharedString(snapshot->seetaface_available ? "Available" : "Unavailable"));
     window->set_auth_text(demo_auth_text(controller));
     const auto face_demo = run_face_demo_or_empty(controller);
     window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));

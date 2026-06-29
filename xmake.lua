@@ -3,6 +3,7 @@ add_rules("mode.debug", "mode.release")
 add_repositories("local-repo local-repo")
 
 add_requires("slint v1.17.0", { system = false, optional = true })
+add_requires("cimg")
 
 set_encodings("utf-8")
 set_languages("c++26")
@@ -137,7 +138,10 @@ target("su_platform_zig")
 target("su_recognizer")
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
+    add_files("src/recognizer/image/*.cpp")
     add_headerfiles("src/recognizer/*.h")
+    add_headerfiles("src/recognizer/image/*.h")
+    add_packages("cimg")
     if has_config("with_seetaface") then
         add_defines("SU_HAS_SEETAFACE=1", { public = true })
         add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
@@ -256,6 +260,11 @@ if has_config("with_seetaface") then
                 "-colorspace", "RGB",
                 path.join(dstdir, "official_face_2.ppm")
             })
+            -- Stage the original PNG/JPG too, so the CImg image-loader path
+            -- (RecognizerService::extract_from_image) can be exercised against
+            -- real encoded files, not only pre-converted PPM fixtures.
+            os.cp(path.join(recognizer_samples, "1.png"), path.join(dstdir, "official_face_1.png"))
+            os.cp(path.join(fas_samples, "hu.ge.jpg"), path.join(dstdir, "official_face_2.jpg"))
         end)
         add_tests("default")
 end

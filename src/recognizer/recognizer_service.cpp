@@ -1,13 +1,25 @@
 #include "recognizer/recognizer_service.h"
 
+#include "recognizer/seetaface_backend.h"
+
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <memory>
 #include <numeric>
 #include <ranges>
 #include <sstream>
+#include <utility>
 
 namespace su::recognizer {
+
+RecognizerService::RecognizerService() = default;
+
+RecognizerService::~RecognizerService() = default;
+
+RecognizerService::RecognizerService(RecognizerService&&) noexcept = default;
+
+RecognizerService& RecognizerService::operator=(RecognizerService&&) noexcept = default;
 
 std::vector<CameraInfo> RecognizerService::enumerate_cameras() const {
     return {
@@ -91,6 +103,61 @@ std::string embedding_sample_source(std::span<const float> feature) {
         out << std::format("{:.9g}", feature[index]);
     }
     return out.str();
+}
+
+#if SU_HAS_SEETAFACE
+
+std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
+    if (seetaface_backend_) {
+        return {};
+    }
+
+    auto paths = seetaface_model_paths(default_seetaface_model_dir());
+    if (!paths) {
+        return std::unexpected(paths.error());
+    }
+    auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
+    if (!backend->available()) {
+        return std::unexpected(RecognizerError::kModelUnavailable);
+    }
+    seetaface_backend_ = std::move(backend);
+    return {};
+}
+
+#else
+
+std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
+    return std::unexpected(RecognizerError::kModelUnavailable);
+}
+
+#endif
+
+std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_from_image(
+    ImageView image) const {
+#if SU_HAS_SEETAFACE
+    if (auto ensured = ensure_seetaface_backend(); !ensured) {
+        return std::unexpected(ensured.error());
+    }
+    auto result = seetaface_backend_->extract(image);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    if (!result->has_face) {
+        return std::unexpected(RecognizerError::kNoFace);
+    }
+    return result;
+#else
+    (void)image;
+    return std::unexpected(RecognizerError::kModelUnavailable);
+#endif
+}
+
+bool RecognizerService::seetaface_available() const {
+#if SU_HAS_SEETAFACE
+    return ensure_seetaface_backend().has_value();
+#else
+    return false;
+#endif
 }
 
 }  // namespace su::recognizer

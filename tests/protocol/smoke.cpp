@@ -55,7 +55,9 @@ int main() {
     auto backend = su::recognizer::SeetaFaceBackend(*model_paths);
     const auto empty_extract = backend.extract(su::recognizer::ImageView{});
     assert(!empty_extract.has_value());
-    if (!backend.available()) {
+    if (backend.available()) {
+        assert(empty_extract.error() == su::recognizer::RecognizerError::kInvalidImage);
+    } else {
         assert(empty_extract.error() == su::recognizer::RecognizerError::kModelUnavailable);
     }
 #endif

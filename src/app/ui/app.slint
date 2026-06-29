@@ -9,6 +9,7 @@ export component AppWindow inherits Window {
     in property <string> config_path_text: "";
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "No cameras";
+    in property <string> seetaface_text: "Unavailable";
     in property <string> profile_text: "";
     in-out property <string> delete_profile_id_text: "";
     in-out property <string> enroll_label_text: "Demo Face";
@@ -18,7 +19,7 @@ export component AppWindow inherits Window {
     in-out property <string> auth_score_text: "-";
     in-out property <string> auth_best_profile_text: "-";
     in-out property <string> auth_reason_text: "-";
-    in-out property <string> debug_json_text: "Sample sources: mock:<id>, image:<path>, embedding:<32 comma-separated floats>";
+    in-out property <string> debug_json_text: "Sample sources: mock:<id>, image:<path> (real SeetaFace when available), embedding:<comma-separated floats>";
 
     callback demo_auth_requested();
     callback enroll_requested(string, string);
@@ -68,6 +69,11 @@ export component AppWindow inherits Window {
             Row {
                 Text { text: "Camera"; font-weight: 700; }
                 Text { text: camera_text; }
+            }
+
+            Row {
+                Text { text: "SeetaFace"; font-weight: 700; }
+                Text { text: seetaface_text; }
             }
 
             Row {

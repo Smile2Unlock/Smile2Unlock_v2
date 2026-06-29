@@ -1,17 +1,62 @@
 #include "app/app_controller.h"
 
+#include "recognizer/image/image_loader.h"
+
+#include <algorithm>
 #include <cstdlib>
 #include <format>
 #include <filesystem>
+#include <span>
+#include <string_view>
 
 namespace su::app {
 
 namespace {
 
 constexpr auto kCurrentFrameLivenessThreshold = 0.50F;
+constexpr std::string_view kImageSourcePrefix = "image:";
 
 bool liveness_passes(const CoreConfig& config, const su::recognizer::RecognitionResult& result) {
     return !config.liveness_detection || result.liveness_score >= kCurrentFrameLivenessThreshold;
+}
+
+// Try to turn an `image:<path>` sample source into a real SeetaFace embedding.
+// When the SeetaFace backend is unavailable, the source is returned unchanged
+// so the Rust core falls back to its mock image-source handling (which only
+// validates the file exists). Returns the embedding:... source on success, or
+// an error describing which step failed.
+std::expected<std::string, std::string> resolve_image_sample_source(
+    su::recognizer::RecognizerService& recognizer,
+    std::string_view face_sample_source) {
+    if (face_sample_source.size() <= kImageSourcePrefix.size()) {
+        return std::string{face_sample_source};
+    }
+    if (face_sample_source.substr(0, kImageSourcePrefix.size()) != kImageSourcePrefix) {
+        return std::string{face_sample_source};
+    }
+    if (!recognizer.seetaface_available()) {
+        // Backend unavailable: let Rust core handle the image: source with its
+        // mock backend (file-existence validation only).
+        return std::string{face_sample_source};
+    }
+
+    const auto path = std::filesystem::path(
+        face_sample_source.substr(kImageSourcePrefix.size()));
+    auto loaded = su::recognizer::load_image_file(path);
+    if (!loaded) {
+        return std::unexpected(std::format("failed to load image: {}", path.string()));
+    }
+
+    auto result = recognizer.extract_from_image(su::recognizer::ImageView{
+        .width = loaded->width,
+        .height = loaded->height,
+        .channels = loaded->channels,
+        .bytes = std::span<const std::byte>(loaded->bytes),
+    });
+    if (!result) {
+        return std::unexpected(std::format("failed to extract face features: {}", path.string()));
+    }
+    return su::recognizer::embedding_sample_source(result->feature);
 }
 
 }  // namespace
@@ -64,6 +109,7 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         .profiles = *profiles,
         .profiles_json = *profiles_json,
         .slint_enabled = SU_HAS_SLINT != 0,
+        .seetaface_available = recognizer_.seetaface_available(),
     };
 }
 
@@ -118,8 +164,13 @@ std::expected<FaceDemoSnapshot, std::string> AppController::run_face_demo(
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_sample(
     std::string_view label,
     std::string_view face_sample_source) {
+    const auto resolved = resolve_image_sample_source(recognizer_, face_sample_source);
+    if (!resolved) {
+        return std::unexpected(resolved.error());
+    }
+
     const auto store_path = profile_store_path();
-    if (const auto enrolled = enroll_face_profile(store_path, label, face_sample_source); !enrolled) {
+    if (const auto enrolled = enroll_face_profile(store_path, label, *resolved); !enrolled) {
         return std::unexpected(std::format("failed to enroll face profile: {}", store_path));
     }
 
@@ -158,6 +209,11 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
     std::string_view face_sample_source,
     bool liveness_ok) {
+    const auto resolved = resolve_image_sample_source(recognizer_, face_sample_source);
+    if (!resolved) {
+        return std::unexpected(resolved.error());
+    }
+
     const auto store_path = profile_store_path();
     const auto config = load_config(config_path());
     if (!config) {
@@ -166,7 +222,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
 
     const auto decision = authenticate_face_sample(
         store_path,
-        face_sample_source,
+        *resolved,
         config->recognition_threshold,
         liveness_ok);
     if (!decision) {

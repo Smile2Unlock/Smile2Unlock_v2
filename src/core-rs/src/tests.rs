@@ -181,7 +181,10 @@ fn normalizes_precomputed_embedding_sources() {
 }
 
 #[test]
-fn rejects_wrong_length_precomputed_embedding_sources() {
+fn accepts_arbitrary_length_precomputed_embedding_sources() {
+    // Precomputed embeddings keep whatever length the caller supplies; the
+    // store-level dimension lock (not the parser) is what rejects mismatched
+    // dimensions. A 2-value embedding parses and normalizes like any other.
     let source = embedding_source(&[1.0, 0.0]);
     let embedding = embedding_from_face_sample(&source).unwrap();
     assert_eq!(embedding.len(), 2);
@@ -276,4 +279,113 @@ fn rejects_precomputed_embedding_match_without_liveness() {
 fn normalize_handles_zero_embedding() {
     let embedding = normalize(vec![0.0; EMBEDDING_DIM]);
     assert_eq!(embedding, vec![0.0; EMBEDDING_DIM]);
+}
+
+#[test]
+fn first_enrollment_locks_embedding_dimension() {
+    let path = temp_path("profile_store_dim_lock_first", "json");
+    let _ = fs::remove_file(&path);
+
+    let three = embedding_source(&[1.0, 0.0, 0.0]);
+    enroll_profile(&path, "Alice", &three).unwrap();
+    let store = load_store(&path).unwrap();
+    assert_eq!(store.embedding_dim, Some(3));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn rejects_enrollment_with_mismatched_dimension() {
+    let path = temp_path("profile_store_dim_lock_mismatch", "json");
+    let _ = fs::remove_file(&path);
+
+    enroll_profile(&path, "Alice", &embedding_source(&[1.0, 0.0, 0.0])).unwrap();
+    // A 4-dim embedding must be rejected once the store is locked to 3.
+    let result = enroll_profile(&path, "Bob", &embedding_source(&[1.0, 0.0, 0.0, 0.0]));
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), SuStatus::InvalidArgument);
+
+    let store = load_store(&path).unwrap();
+    assert_eq!(store.profiles.len(), 1);
+    assert_eq!(store.embedding_dim, Some(3));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn rejects_authentication_with_mismatched_probe_dimension() {
+    let path = temp_path("profile_store_dim_lock_auth_mismatch", "json");
+    let _ = fs::remove_file(&path);
+    enroll_profile(&path, "Alice", &embedding_source(&[1.0, 0.0, 0.0])).unwrap();
+
+    let report = authenticate_sample_with_liveness(
+        &path,
+        &embedding_source(&[1.0, 0.0, 0.0, 0.0]),
+        0.80,
+        true,
+    )
+    .unwrap();
+    assert!(!report.accepted);
+    assert_eq!(report.profile_count, 1);
+    assert!(
+        report.reason.contains("embedding dimension mismatch"),
+        "reason was: {reason}",
+        reason = report.reason
+    );
+    assert!(report.reason.contains("probe=4"));
+    assert!(report.reason.contains("store=3"));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn authenticates_when_probe_dimension_matches_locked_store() {
+    let path = temp_path("profile_store_dim_lock_auth_match", "json");
+    let _ = fs::remove_file(&path);
+    enroll_profile(&path, "Alice", &embedding_source(&[1.0, 0.0, 0.0])).unwrap();
+
+    let report = authenticate_sample_with_liveness(
+        &path,
+        &embedding_source(&[1.0, 0.0, 0.0]),
+        0.95,
+        true,
+    )
+    .unwrap();
+    assert!(report.accepted);
+    assert!(report.score > 0.99);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn legacy_store_without_dim_field_backfills_on_load() {
+    // A store written before embedding_dim existed: no field, but profiles
+    // present. load_store must backfill the dimension from the first profile.
+    let path = temp_path("profile_store_dim_legacy", "json");
+    let _ = fs::remove_file(&path);
+
+    let legacy = r#"{
+        "version": 1,
+        "profiles": [
+            {
+                "id": "legacy-alice",
+                "label": "Alice",
+                "embedding": [1.0, 0.0, 0.0, 0.0, 0.0],
+                "created_at_unix": 0
+            }
+        ]
+    }"#;
+    fs::write(&path, legacy).unwrap();
+
+    let store = load_store(&path).unwrap();
+    assert_eq!(store.embedding_dim, Some(5));
+
+    // Subsequent enrollment must honor the backfilled dimension.
+    let same_dim = enroll_profile(&path, "Bob", &embedding_source(&[0.0, 1.0, 0.0, 0.0, 0.0]));
+    assert!(same_dim.is_ok());
+    // Mismatched dimension still rejected.
+    let wrong_dim = enroll_profile(&path, "Carol", &embedding_source(&[0.0, 1.0, 0.0]));
+    assert!(wrong_dim.is_err());
+    assert_eq!(wrong_dim.unwrap_err(), SuStatus::InvalidArgument);
+
+    let _ = fs::remove_file(path);
 }

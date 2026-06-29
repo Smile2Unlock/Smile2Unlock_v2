@@ -96,6 +96,27 @@ pub fn authenticate_sample_with_liveness(
         });
     }
 
+    // Reject probes whose embedding dimension differs from the store's locked
+    // dimension instead of silently scoring them as 0 via cosine_similarity.
+    if let Some(dim) = store.embedding_dim {
+        if dim as usize != probe.len() {
+            return Ok(FaceAuthReport {
+                accepted: false,
+                score: 0.0,
+                threshold,
+                liveness_ok,
+                profile_count: store.profiles.len(),
+                best_profile_id: None,
+                best_profile_label: None,
+                reason: format!(
+                    "embedding dimension mismatch: probe={} store={}",
+                    probe.len(),
+                    dim
+                ),
+            });
+        }
+    }
+
     let best = store
         .profiles
         .iter()

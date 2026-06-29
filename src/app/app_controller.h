@@ -18,6 +18,7 @@ struct AppSnapshot {
     std::vector<FaceProfileSummary> profiles;
     std::string profiles_json;
     bool slint_enabled = false;
+    bool seetaface_available = false;
 };
 
 struct FaceDemoSnapshot {

@@ -23,6 +23,8 @@ pub struct FaceProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileStore {
     pub version: u32,
+    #[serde(default)]
+    pub embedding_dim: Option<u32>,
     pub profiles: Vec<FaceProfile>,
 }
 
@@ -30,6 +32,7 @@ impl Default for ProfileStore {
     fn default() -> Self {
         Self {
             version: 1,
+            embedding_dim: None,
             profiles: Vec::new(),
         }
     }
@@ -64,7 +67,15 @@ pub fn load_store(path: &Path) -> Result<ProfileStore, SuStatus> {
     }
 
     let text = fs::read_to_string(path).map_err(|_| SuStatus::IoError)?;
-    serde_json::from_str::<ProfileStore>(&text).map_err(|_| SuStatus::ParseError)
+    let mut store = serde_json::from_str::<ProfileStore>(&text).map_err(|_| SuStatus::ParseError)?;
+
+    // Legacy stores created before the embedding_dim field carry no dimension.
+    // Backfill from the first profile so the lock applies going forward; the
+    // existing profiles are by construction consistent with that dimension.
+    if store.embedding_dim.is_none() && !store.profiles.is_empty() {
+        store.embedding_dim = Some(store.profiles[0].embedding.len() as u32);
+    }
+    Ok(store)
 }
 
 pub fn save_store(path: &Path, store: &ProfileStore) -> Result<(), SuStatus> {
@@ -92,6 +103,18 @@ pub fn enroll_profile(
     }
 
     let mut store = load_store(path)?;
+
+    // Lock the embedding dimension at the first enrollment so a store never
+    // mixes embeddings from incompatible backends (e.g. mock 32-dim and
+    // SeetaFace ~512-dim). Subsequent enrollments must match the locked dim.
+    match store.embedding_dim {
+        None => store.embedding_dim = Some(embedding.len() as u32),
+        Some(dim) if dim as usize != embedding.len() => {
+            return Err(SuStatus::InvalidArgument);
+        }
+        Some(_) => {}
+    }
+
     let profile = FaceProfile {
         id: stable_profile_id(label),
         label: label.to_owned(),
