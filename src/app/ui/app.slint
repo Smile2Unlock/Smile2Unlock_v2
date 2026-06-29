@@ -22,7 +22,9 @@ export component AppWindow inherits Window {
 
     callback demo_auth_requested();
     callback enroll_requested(string, string);
+    callback enroll_current_frame_requested(string);
     callback face_auth_requested(string);
+    callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
 
@@ -119,9 +121,23 @@ export component AppWindow inherits Window {
             }
 
             Button {
+                text: "Enroll Frame";
+                clicked => {
+                    root.enroll_current_frame_requested(root.enroll_label_text);
+                }
+            }
+
+            Button {
                 text: "Authenticate";
                 clicked => {
                     root.face_auth_requested(root.probe_sample_source_text);
+                }
+            }
+
+            Button {
+                text: "Auth Frame";
+                clicked => {
+                    root.current_frame_auth_requested();
                 }
             }
 

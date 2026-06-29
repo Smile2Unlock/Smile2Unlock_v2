@@ -124,8 +124,8 @@ It must be able to:
 - Liveness failure is distinct from similarity failure in the report reason.
 - The SeetaFace backend loads anti-spoofing models, reports a normalized liveness score,
   and exposes whether the FAS backend is available. The current-frame app path gates
-  authentication on the configured liveness setting and normalized score; the exact
-  threshold is still a policy constant that should be tuned with real samples.
+  enrollment and authentication on the configured liveness setting and normalized score;
+  the exact threshold is still a policy constant that should be tuned with real samples.
 
 ### Secure Storage
 

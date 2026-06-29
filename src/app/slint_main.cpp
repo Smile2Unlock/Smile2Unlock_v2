@@ -80,6 +80,20 @@ slint::SharedString enroll_or_error(
     return slint::SharedString(profile_rows_text(*rows));
 }
 
+slint::SharedString enroll_current_frame_or_error(
+    su::app::AppController& controller,
+    const slint::SharedString& label) {
+    const auto profiles = controller.enroll_face_profile_from_current_frame(std::string(label));
+    if (!profiles) {
+        return slint::SharedString(profiles.error());
+    }
+    const auto rows = controller.list_face_profile_rows();
+    if (!rows) {
+        return slint::SharedString(rows.error());
+    }
+    return slint::SharedString(profile_rows_text(*rows));
+}
+
 slint::SharedString delete_or_error(
     su::app::AppController& controller,
     const slint::SharedString& profile_id) {
@@ -103,6 +117,17 @@ su::app::FaceDemoSnapshot authenticate_or_empty(
     const slint::SharedString& face_sample_source) {
     const auto face_demo = controller.authenticate_face_sample_from_source(std::string(face_sample_source));
     if (!face_demo) {
+        return {};
+    }
+    return *face_demo;
+}
+
+su::app::FaceDemoSnapshot authenticate_current_frame_or_empty(
+    su::app::AppController& controller,
+    slint::SharedString& error_text) {
+    const auto face_demo = controller.authenticate_current_frame();
+    if (!face_demo) {
+        error_text = slint::SharedString(face_demo.error());
         return {};
     }
     return *face_demo;
@@ -146,8 +171,26 @@ int main() {
     window->on_enroll_requested([window, &controller](slint::SharedString label, slint::SharedString face_sample_source) {
         window->set_profile_text(enroll_or_error(controller, label, face_sample_source));
     });
+    window->on_enroll_current_frame_requested([window, &controller](slint::SharedString label) {
+        window->set_profile_text(enroll_current_frame_or_error(controller, label));
+    });
     window->on_face_auth_requested([window, &controller](slint::SharedString face_sample_source) {
         const auto face_demo = authenticate_or_empty(controller, face_sample_source);
+        window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
+        window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
+        window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
+        window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
+        window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
+        window->set_auth_text(slint::SharedString(face_demo.decision.accepted ? "Accepted" : "Rejected"));
+    });
+    window->on_current_frame_auth_requested([window, &controller] {
+        auto error_text = slint::SharedString();
+        const auto face_demo = authenticate_current_frame_or_empty(controller, error_text);
+        if (!error_text.empty()) {
+            window->set_auth_text(slint::SharedString("Unavailable"));
+            window->set_auth_reason_text(error_text);
+            return;
+        }
         window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
         window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
         window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));

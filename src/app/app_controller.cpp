@@ -143,6 +143,9 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     if (!result || !result->has_face || result->feature.empty()) {
         return std::unexpected("failed to extract face features from current frame");
     }
+    if (!liveness_passes(*config, *result)) {
+        return std::unexpected("liveness check failed for current frame");
+    }
 
     return enroll_face_profile_from_sample(label, su::recognizer::embedding_sample_source(result->feature));
 }
