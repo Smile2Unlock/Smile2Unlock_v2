@@ -11,6 +11,13 @@ export component AppWindow inherits Window {
     in property <string> camera_text: "No cameras";
     in property <string> seetaface_text: "Unavailable";
     in property <string> profile_text: "";
+    in property <image> preview_image;
+    in property <float> face_box_x;
+    in property <float> face_box_y;
+    in property <float> face_box_w;
+    in property <float> face_box_h;
+    in property <bool> face_box_visible: false;
+    in property <string> preview_status_text: "Idle";
     in-out property <string> delete_profile_id_text: "";
     in-out property <string> enroll_label_text: "Demo Face";
     in-out property <string> enroll_sample_source_text: "mock:face:demo:front";
@@ -28,6 +35,8 @@ export component AppWindow inherits Window {
     callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
+    callback start_preview_requested();
+    callback stop_preview_requested();
 
     title: title_text;
     width: 960px;
@@ -166,6 +175,57 @@ export component AppWindow inherits Window {
                 clicked => {
                     root.demo_auth_requested();
                 }
+            }
+
+            Button {
+                text: "Start Preview";
+                clicked => {
+                    root.start_preview_requested();
+                }
+            }
+
+            Button {
+                text: "Stop Preview";
+                clicked => {
+                    root.stop_preview_requested();
+                }
+            }
+        }
+
+        // Preview area: the camera image fills a fixed-size container, with the
+        // face box and status overlaid via absolute positioning. Children of a
+        // plain Rectangle (no layout) are positioned with x/y/width/height.
+        Rectangle {
+            height: 240px;
+            width: 320px;
+            background: #000000;
+
+            Image {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                source: root.preview_image;
+                image-fit: contain;
+            }
+
+            Rectangle {
+                x: root.face_box_x * 1px;
+                y: root.face_box_y * 1px;
+                width: root.face_box_w * 1px;
+                height: root.face_box_h * 1px;
+                visible: root.face_box_visible;
+                border-color: #00ff00;
+                border-width: 2px;
+                background: transparent;
+            }
+
+            Text {
+                x: 4px;
+                y: 4px;
+                text: root.preview_status_text;
+                color: #00ff00;
+                font-size: 12px;
             }
         }
 

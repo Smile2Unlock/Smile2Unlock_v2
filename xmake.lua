@@ -4,6 +4,7 @@ add_repositories("local-repo local-repo")
 
 add_requires("slint v1.17.0", { system = false, optional = true })
 add_requires("cimg")
+add_requires("libyuv")
 
 set_encodings("utf-8")
 set_languages("c++26")
@@ -139,9 +140,15 @@ target("su_recognizer")
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
     add_files("src/recognizer/image/*.cpp")
+    add_files("src/recognizer/camera/*.cpp")
     add_headerfiles("src/recognizer/*.h")
     add_headerfiles("src/recognizer/image/*.h")
+    add_headerfiles("src/recognizer/camera/*.h")
     add_packages("cimg")
+    add_packages("libyuv")
+    if is_plat("linux") then
+        add_syslinks("jpeg")  -- libyuv MJPEG decode links libjpeg
+    end
     if has_config("with_seetaface") then
         add_defines("SU_HAS_SEETAFACE=1", { public = true })
         add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
@@ -174,6 +181,7 @@ target("su_app")
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
         add_files("src/app/slint_main.cpp")
+        add_files("src/app/preview_controller.cpp")
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
         on_load( function (target)
@@ -223,6 +231,26 @@ target("su_protocol_smoke_test")
     add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
+    add_tests("default")
+
+-- A real (binary) target whose test runs the Rust core unit suite via Cargo.
+-- Using a binary target instead of a phony one because xmake's on_test only
+-- reliably reports pass/fail for targets with a build artifact. The binary is
+-- a trivial main that is never run; cargo test is what on_test executes.
+target("su_core_rust_tests")
+    apply_cpp_target("binary")
+    add_files("tests/rust/main.cpp")
+    on_test(function (target)
+        local ok = os.execv("cargo", {
+            "test",
+            "--manifest-path",
+            path.join(os.projectdir(), "src", "core-rs", "Cargo.toml"),
+        }, { try = true })
+        if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
+            os.raise("cargo test failed: " .. tostring(ok))
+        end
+        return true
+    end)
     add_tests("default")
 
 if has_config("with_seetaface") then

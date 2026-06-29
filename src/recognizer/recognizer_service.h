@@ -11,6 +11,7 @@
 namespace su::recognizer {
 
 class SeetaFaceBackend;
+class V4L2Camera;
 
 enum class RecognizerError {
     kNoCamera,
@@ -96,6 +97,9 @@ private:
     // to include seetaface_backend.h, avoiding a circular include.
     mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;
 #endif
+    // V4L2 capture device. Owned via unique_ptr with a forward-declared type so
+    // this header stays free of platform (videodev2.h) includes.
+    std::unique_ptr<V4L2Camera> camera_;
 };
 
 std::string embedding_sample_source(std::span<const float> feature);

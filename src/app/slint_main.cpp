@@ -1,5 +1,6 @@
 #include "app/app_controller.h"
 #include "app/core_bridge.h"
+#include "app/preview_controller.h"
 
 #include "app_window.h"
 
@@ -137,6 +138,7 @@ su::app::FaceDemoSnapshot authenticate_current_frame_or_empty(
 
 int main() {
     su::app::AppController controller;
+    su::app::PreviewController preview;
     const auto snapshot = controller.load_initial_snapshot();
     if (!snapshot) {
         std::cerr << "su_app failed to start: " << snapshot.error() << '\n';
@@ -205,6 +207,43 @@ int main() {
     window->on_refresh_profiles_requested([window, &controller] {
         window->set_profile_text(profiles_or_error(controller));
     });
+
+    // Preview: the capture thread pushes frames onto the event loop; this
+    // callback runs on the UI thread and updates the image plus the face-box
+    // overlay. The box is scaled from the 640x480 capture frame to the 320x240
+    // preview area (0.5x).
+    auto push_preview_frame = [&window](slint::Image image, su::app::PreviewOverlay overlay) {
+        window->set_preview_image(std::move(image));
+        window->set_preview_status_text(slint::SharedString(overlay.status_text));
+        if (overlay.face_box) {
+            window->set_face_box_x(overlay.face_box->x * 0.5F);
+            window->set_face_box_y(overlay.face_box->y * 0.5F);
+            window->set_face_box_w(overlay.face_box->width * 0.5F);
+            window->set_face_box_h(overlay.face_box->height * 0.5F);
+            window->set_face_box_visible(true);
+        } else {
+            window->set_face_box_visible(false);
+        }
+    };
+
+    window->on_start_preview_requested([window, &controller, &preview, push_preview_frame] {
+        if (preview.is_running()) {
+            return;
+        }
+        const auto snapshot = controller.load_config_snapshot();
+        const auto fps = snapshot ? snapshot->preview_fps : 15;
+        const auto camera = snapshot ? snapshot->selected_camera : 0;
+        preview.start(controller.recognizer(), camera, static_cast<int>(fps),
+                      [push_preview_frame](slint::Image image, su::app::PreviewOverlay overlay) {
+                          push_preview_frame(std::move(image), std::move(overlay));
+                      });
+        window->set_preview_status_text(slint::SharedString("starting"));
+    });
+    window->on_stop_preview_requested([&preview] {
+        preview.stop();
+    });
+
     window->run();
+    preview.stop();
     return 0;
 }

@@ -54,6 +54,10 @@ public:
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
 
+    // Access the underlying recognizer so the preview controller can drive
+    // camera capture and feature extraction on the same service instance.
+    su::recognizer::RecognizerService& recognizer() { return recognizer_; }
+
 private:
     std::string config_path() const;
     std::string profile_store_path() const;

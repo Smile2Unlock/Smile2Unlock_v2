@@ -1,5 +1,7 @@
 #include "recognizer/recognizer_service.h"
 
+#include "recognizer/camera/v4l2_camera.h"
+#include "recognizer/image/pixel_convert.h"
 #include "recognizer/seetaface_backend.h"
 
 #include <algorithm>
@@ -22,12 +24,34 @@ RecognizerService::RecognizerService(RecognizerService&&) noexcept = default;
 RecognizerService& RecognizerService::operator=(RecognizerService&&) noexcept = default;
 
 std::vector<CameraInfo> RecognizerService::enumerate_cameras() const {
-    return {
-        CameraInfo{.index = 0, .name = "Mock camera 0"},
-    };
+    const auto devices = enumerate_v4l2_cameras();
+    auto cameras = std::vector<CameraInfo>{};
+    cameras.reserve(devices.size());
+    for (const auto& device : devices) {
+        cameras.push_back(CameraInfo{.index = device.index, .name = device.name});
+    }
+    // Always expose a mock slot so headless/test environments without a camera
+    // can still drive the demo path.
+    if (cameras.empty()) {
+        cameras.push_back(CameraInfo{.index = 0, .name = "Mock camera 0"});
+    }
+    return cameras;
 }
 
 std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_index) {
+    close_camera();
+
+    camera_ = std::make_unique<V4L2Camera>();
+    auto opened = camera_->open(camera_index);
+    if (opened) {
+        active_camera_ = camera_index;
+        return {};
+    }
+
+    // No physical device or format negotiation failed: fall back to mock mode
+    // so the app stays usable in headless/test environments. The caller still
+    // sees the camera as "open" and capture_preview_frame returns a mock frame.
+    camera_.reset();
     const auto cameras = enumerate_cameras();
     const auto exists = std::ranges::any_of(
         cameras,
@@ -37,22 +61,44 @@ std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_i
     if (!exists) {
         return std::unexpected(RecognizerError::kNoCamera);
     }
-
     active_camera_ = camera_index;
     return {};
 }
 
-std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_frame() const {
-    if (!active_camera_) {
-        return std::unexpected(RecognizerError::kCameraUnavailable);
-    }
+namespace {
 
+PreviewFrame mock_preview_frame() {
     constexpr int width = 2;
     constexpr int height = 2;
     return PreviewFrame{
         .width = width,
         .height = height,
-        .rgba_or_rgb = std::vector<std::byte>(width * height * 4, std::byte{0x80}),
+        .rgba_or_rgb = std::vector<std::byte>(width * height * 3, std::byte{0x80}),
+    };
+}
+
+}  // namespace
+
+std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_frame() const {
+    if (!active_camera_) {
+        return std::unexpected(RecognizerError::kCameraUnavailable);
+    }
+    if (!camera_) {
+        return mock_preview_frame();
+    }
+
+    auto frame = camera_->grab_frame();
+    if (!frame) {
+        return std::unexpected(frame.error());
+    }
+    auto rgb = v4l2_frame_to_rgb(*frame);
+    if (!rgb) {
+        return std::unexpected(rgb.error());
+    }
+    return PreviewFrame{
+        .width = frame->width,
+        .height = frame->height,
+        .rgba_or_rgb = std::move(*rgb),
     };
 }
 
@@ -61,12 +107,27 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_fea
         return std::unexpected(RecognizerError::kCameraUnavailable);
     }
 
-    return RecognitionResult{
-        .has_face = true,
-        .face_box = FaceBox{.x = 10, .y = 12, .width = 96, .height = 96},
-        .feature = {0.10F, 0.20F, 0.30F, 0.40F},
-        .liveness_score = 0.95F,
-    };
+    auto frame = capture_preview_frame();
+    if (!frame) {
+        return std::unexpected(frame.error());
+    }
+    // Real camera frames go through SeetaFace; the mock 2x2 frame has no face,
+    // so return a synthetic result to keep the demo path working headlessly.
+    if (!camera_) {
+        return RecognitionResult{
+            .has_face = true,
+            .face_box = FaceBox{.x = 10, .y = 12, .width = 96, .height = 96},
+            .feature = {0.10F, 0.20F, 0.30F, 0.40F},
+            .liveness_score = 0.95F,
+        };
+    }
+
+    return extract_from_image(ImageView{
+        .width = frame->width,
+        .height = frame->height,
+        .channels = 3,
+        .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
+    });
 }
 
 std::expected<float, RecognizerError> RecognizerService::compare_features(
@@ -90,6 +151,10 @@ std::expected<float, RecognizerError> RecognizerService::compare_features(
 }
 
 void RecognizerService::close_camera() {
+    if (camera_) {
+        camera_->release();
+        camera_.reset();
+    }
     active_camera_.reset();
 }
 
