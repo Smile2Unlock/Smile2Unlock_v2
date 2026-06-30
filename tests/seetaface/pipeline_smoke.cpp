@@ -1,17 +1,11 @@
-#include "app/core_bridge.h"
-#include "recognizer/recognizer_service.h"
-#include "recognizer/seetaface_backend.h"
-#include "recognizer/image/image_loader.h"
+#include <cassert>   // macro only — must precede import std; on GCC 16
 
-#include <cassert>
-#include <cctype>
-#include <cmath>
-#include <cstddef>
-#include <filesystem>
-#include <fstream>
-#include <span>
-#include <string>
-#include <vector>
+import std;
+import su.core.types;
+import su.recognizer.types;
+import su.recognizer.backend;
+import su.recognizer.image;
+import su.recognizer.service;
 
 namespace {
 

@@ -1,6 +1,5 @@
-#include "app/app_controller.h"
-
-#include <print>
+import std;
+import su.app.controller;
 
 int main() {
     su::app::AppController controller;

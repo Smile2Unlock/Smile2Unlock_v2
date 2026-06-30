@@ -1,18 +1,14 @@
-#include "recognizer/image/image_loader.h"
-
-#include <cstddef>
-#include <cstring>
-#include <mdspan>
-
+module;
 // CImg pulls in platform display backends we do not use; disable them so the
 // header compiles without X11/Wayland/OpenGL dependencies.
 #ifndef cimg_display
 #define cimg_display 0
 #endif
 #include <CImg.h>
-
 #include <exception>
 #include <filesystem>
+
+module su.recognizer.image;
 
 namespace su::recognizer {
 

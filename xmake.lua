@@ -112,10 +112,12 @@ local function apply_cpp_target(kind)
     end
 end
 
--- C++ Module interface units: registered globally so xmake can build all
--- BMIs before any dependent TU references them. The .cppm files export
--- types shared across su_recognizer and su_app (e.g. ImageView, CoreConfig).
-add_files("src/modules/*.cppm")
+-- C++ Module interface units: register globally (no platform-specific deps)
+-- so xmake builds all BMIs before dependent TUs reference them. Modules that
+-- depend on target-specific packages (e.g. slint) are registered per-target.
+add_files("src/modules/su.recognizer.*.cppm")
+add_files("src/modules/su.core.*.cppm")
+add_files("src/modules/su.app.controller.cppm")
 
 target("su_core")
     set_kind("phony")
@@ -152,9 +154,6 @@ target("su_recognizer")
     add_files("src/recognizer/*.cpp")
     add_files("src/recognizer/image/*.cpp")
     add_files("src/recognizer/camera/*.cpp")
-    add_headerfiles("src/recognizer/*.h")
-    add_headerfiles("src/recognizer/image/*.h")
-    add_headerfiles("src/recognizer/camera/*.h")
     add_packages("cimg")
     add_packages("libyuv")
     if is_plat("linux") then
@@ -179,7 +178,6 @@ target("su_recognizer")
 target("su_app")
     apply_cpp_target("binary")
     add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
-    add_headerfiles("src/app/*.h")
     add_includedirs("src/core-rs/include", {public = true})
     add_deps("su_core", "su_recognizer")
     if has_config("with_zig") then
@@ -193,6 +191,7 @@ target("su_app")
         add_packages("slint")
         add_files("src/app/slint_main.cpp")
         add_files("src/app/preview_controller.cpp")
+        add_files("src/modules/su.app.preview.cppm")
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
         on_load( function (target)

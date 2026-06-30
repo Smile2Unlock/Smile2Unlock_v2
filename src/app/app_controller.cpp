@@ -1,13 +1,7 @@
-#include "app/app_controller.h"
-
-#include "recognizer/image/image_loader.h"
-
-#include <algorithm>
-#include <cstdlib>
-#include <format>
-#include <filesystem>
-#include <span>
-#include <string_view>
+module su.app.controller;
+import std;
+import su.recognizer.service;
+import su.recognizer.image;
 
 namespace su::app {
 

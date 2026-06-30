@@ -1,12 +1,9 @@
-#pragma once
+export module su.recognizer.backend;
 
-#include "recognizer/recognizer_service.h"
+import std;
+import su.recognizer.types;
 
-#include <expected>
-#include <filesystem>
-#include <memory>
-
-namespace su::recognizer {
+export namespace su::recognizer {
 
 struct SeetaFaceModelPaths {
     std::filesystem::path detector;
@@ -30,15 +27,8 @@ public:
     SeetaFaceBackend(SeetaFaceBackend&&) noexcept;
     SeetaFaceBackend& operator=(SeetaFaceBackend&&) noexcept;
 
-    // Detect + landmark + (optionally) feature extract + (optionally) anti-
-    // spoofing Predict. liveness_enabled=false skips the Predict call and
-    // returns liveness_score=1.0 so the frame still has a face box without the
-    // liveness gate; callers gate this on config.liveness_detection.
     std::expected<RecognitionResult, RecognizerError> extract(
         ImageView image, bool liveness_enabled) const;
-    // Detect + landmark + (optionally) anti-spoofing Predict, no feature
-    // extraction. Intended to be called on every preview frame. When
-    // liveness_enabled is false, Predict is skipped and liveness_score=1.0.
     std::expected<RecognitionResult, RecognizerError> predict_liveness(
         ImageView image, bool liveness_enabled) const;
     bool available() const;
@@ -49,4 +39,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace su::recognizer
+} // namespace su::recognizer

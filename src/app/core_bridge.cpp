@@ -1,10 +1,8 @@
-#include "app/core_bridge.h"
-
+module;
 #include "su_core.h"
 
-#include <algorithm>
-#include <cstddef>
-#include <vector>
+module su.core.types;
+import std;
 
 namespace su::app {
 

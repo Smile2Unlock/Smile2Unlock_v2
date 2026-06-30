@@ -1,14 +1,17 @@
-#include "app/preview_controller.h"
-
-#if SU_HAS_SLINT
-
-#include "recognizer/recognizer_service.h"
-
+module;
+#include <slint/slint.h>
 #include <atomic>
 #include <chrono>
-#include <print>
+#include <cstddef>
+#include <functional>
 #include <memory>
+#include <span>
 #include <thread>
+
+module su.app.preview;
+import su.recognizer.service;
+
+#if SU_HAS_SLINT
 
 namespace su::app {
 

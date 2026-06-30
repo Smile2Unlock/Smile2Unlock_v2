@@ -1,21 +1,23 @@
-#include "recognizer/seetaface_backend.h"
-
-#include <algorithm>
-#include <array>
-#include <cstdio>
-#include <print>
-#include <exception>
-#include <mutex>
-#include <optional>
-#include <utility>
-#include <vector>
-
+module;
 #if SU_HAS_SEETAFACE
 #include <seeta/FaceAntiSpoofing.h>
 #include <seeta/FaceDetector.h>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceRecognizer.h>
 #endif
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <exception>
+#include <filesystem>
+#include <mutex>
+#include <optional>
+#include <print>
+#include <utility>
+#include <vector>
+
+module su.recognizer.backend;
+import su.recognizer.types;
 
 namespace su::recognizer {
 

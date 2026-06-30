@@ -1,18 +1,8 @@
-#include "recognizer/recognizer_service.h"
-
-#include "recognizer/camera/v4l2_camera.h"
-#include "recognizer/image/pixel_convert.h"
-#include "recognizer/seetaface_backend.h"
-
-#include <algorithm>
-#include <cmath>
-#include <format>
-#include <limits>
-#include <memory>
-#include <numeric>
-#include <ranges>
-#include <sstream>
-#include <utility>
+module su.recognizer.service;
+import std;
+import su.recognizer.camera;
+import su.recognizer.image;
+import su.recognizer.backend;
 
 namespace su::recognizer {
 

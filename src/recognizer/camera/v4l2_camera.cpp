@@ -1,17 +1,17 @@
-#include "recognizer/camera/v4l2_camera.h"
-
-#include <algorithm>
-#include <cstring>
+module;
+#include <cstdint>
 #include <fcntl.h>
-#include <filesystem>
-#include <fstream>
 #include <linux/videodev2.h>
-#include <memory>
-#include <optional>
-#include <ranges>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <ranges>
+
+module su.recognizer.camera;
 
 namespace su::recognizer {
 

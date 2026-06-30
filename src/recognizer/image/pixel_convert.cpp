@@ -1,11 +1,9 @@
-#include "recognizer/image/pixel_convert.h"
-
-#include <algorithm>
-#include <cstddef>
-#include <cstring>
-
+module;
 #include <libyuv.h>
 #include <linux/videodev2.h>
+#include <cstddef>
+
+module su.recognizer.image;
 
 namespace su::recognizer {
 

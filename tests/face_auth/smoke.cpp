@@ -1,10 +1,10 @@
-#include "app/core_bridge.h"
-#include "recognizer/recognizer_service.h"
-#include "recognizer/seetaface_backend.h"
+#include <cassert>   // macro only — must precede import std; on GCC 16
 
-#include <cassert>
-#include <array>
-#include <filesystem>
+import std;
+import su.core.types;
+import su.recognizer.types;
+import su.recognizer.backend;
+import su.recognizer.service;
 
 int main() {
     const auto threshold = su::app::default_threshold();

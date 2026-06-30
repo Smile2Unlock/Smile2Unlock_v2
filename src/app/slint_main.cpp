@@ -1,11 +1,9 @@
-#include "app/app_controller.h"
-#include "app/core_bridge.h"
-#include "app/preview_controller.h"
-
 #include "app_window.h"
 
-#include <format>
-#include <string>
+import std;
+import su.app.controller;
+import su.core.types;
+import su.app.preview;
 
 namespace {
 

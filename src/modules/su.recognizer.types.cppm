@@ -59,8 +59,4 @@ struct CapturedFrame {
     std::span<const std::byte> bytes;
 };
 
-// Encode an embedding vector as a source string consumable by the Rust core.
-// Inverse of the "embedding:" parser in the Rust profile store.
-std::string embedding_sample_source(std::span<const float> feature);
-
 } // namespace su::recognizer
