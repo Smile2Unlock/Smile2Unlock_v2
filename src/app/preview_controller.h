@@ -2,7 +2,7 @@
 
 #include "recognizer/recognizer_service.h"
 
-#include <functional>
+#include <functional>   // std::move_only_function
 #include <optional>
 #include <string>
 
@@ -29,7 +29,7 @@ struct PreviewOverlay {
 // frame conversion and detection are delegated to RecognizerService.
 class PreviewController {
 public:
-    using FrameCallback = std::function<void(slint::Image, PreviewOverlay)>;
+    using FrameCallback = std::move_only_function<void(slint::Image, PreviewOverlay)>;
 
     PreviewController() = default;
     ~PreviewController();

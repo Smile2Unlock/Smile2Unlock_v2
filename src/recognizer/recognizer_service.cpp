@@ -17,7 +17,7 @@
 namespace su::recognizer {
 
 RecognizerService::RecognizerService()
-    : backend_mutex_(std::make_unique<std::mutex>()) {}
+    : seetaface_init_flag_(std::make_unique<std::once_flag>()) {}
 
 RecognizerService::~RecognizerService() = default;
 
@@ -222,28 +222,31 @@ std::string embedding_sample_source(std::span<const float> feature) {
 #if SU_HAS_SEETAFACE
 
 std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
-    // Fast path: already initialized, no lock needed.
+    // Fast path: already initialized.
     if (seetaface_backend_) {
         return {};
     }
 
-    std::lock_guard lock(*backend_mutex_);
-    // Double-check after acquiring the lock so concurrent fast-path callers
-    // do not block each other for the full model-load duration.
+    // std::call_once guarantees the init lambda runs at most once. The
+    // seetaface_backend_ pointer is the authoritative success indicator: if
+    // the lambda completes without throwing and the backend loaded, the
+    // pointer is set; otherwise it stays null and we return an error.
+    std::call_once(*seetaface_init_flag_, [this] {
+        auto paths = seetaface_model_paths(default_seetaface_model_dir());
+        if (!paths) {
+            return;  // seetaface_backend_ stays null; failure handled below
+        }
+        auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
+        if (!backend->available()) {
+            return;  // seetaface_backend_ stays null; failure handled below
+        }
+        seetaface_backend_ = std::move(backend);
+    });
+
     if (seetaface_backend_) {
         return {};
     }
-
-    auto paths = seetaface_model_paths(default_seetaface_model_dir());
-    if (!paths) {
-        return std::unexpected(paths.error());
-    }
-    auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
-    if (!backend->available()) {
-        return std::unexpected(RecognizerError::kModelUnavailable);
-    }
-    seetaface_backend_ = std::move(backend);
-    return {};
+    return std::unexpected(RecognizerError::kModelUnavailable);
 }
 
 #else

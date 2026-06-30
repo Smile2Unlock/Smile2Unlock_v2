@@ -106,7 +106,7 @@ float liveness_score_from(
     case seeta::FaceAntiSpoofing::DETECTING:
         return reality * 0.5F;
     }
-    return 0.0F;
+    std::unreachable();
 }
 
 }  // namespace

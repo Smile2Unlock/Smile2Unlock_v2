@@ -6,7 +6,7 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
+#include <print>
 #include <memory>
 #include <thread>
 
@@ -62,7 +62,7 @@ public:
             fps = 15;
         }
         if (const auto opened = recognizer.open_camera(camera_index); !opened) {
-            std::fprintf(stderr, "[preview] open_camera failed\n");
+            std::println(stderr, "[preview] open_camera failed");
             return;
         }
         recognizer_ = &recognizer;
@@ -78,7 +78,7 @@ public:
                     auto frame = recognizer.capture_preview_frame();
                     if (!frame) {
                         slint::invoke_from_event_loop(
-                            [callback]() {
+                            [&callback]() {
                                 callback(slint::Image(),
                                          PreviewOverlay{.status_text = "capture failed"});
                             });
@@ -113,7 +113,7 @@ public:
                     }
 
                     slint::invoke_from_event_loop(
-                        [callback, image = std::move(image),
+                        [&callback, image = std::move(image),
                          overlay = std::move(overlay)]() mutable {
                             callback(std::move(image), std::move(overlay));
                         });

@@ -127,7 +127,10 @@ private:
     // Stored as a unique_ptr (with a forward-declared type) so this header does
     // not need to include seetaface_backend.h, avoiding a circular include.
     mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;
-    mutable std::unique_ptr<std::mutex> backend_mutex_;
+    // Heap-allocated because std::once_flag is not movable; wrapped in
+    // unique_ptr so RecognizerService's implicitly-defined move constructor
+    // (which moves each member) compiles without error.
+    mutable std::unique_ptr<std::once_flag> seetaface_init_flag_;
 #endif
     // V4L2 capture device. Owned via unique_ptr with a forward-declared type so
     // this header stays free of platform (videodev2.h) includes.
