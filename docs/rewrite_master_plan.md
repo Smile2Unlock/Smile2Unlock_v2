@@ -4,6 +4,12 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
+## Current Status (2026-07-01)
+
+Phase 0, 1, 2 — **全部完成**。Phase 3 — **部分完成**（Rust auth policy 就绪，PAM module skeleton 就绪，缺 control socket 和端到端集成）。Phase 4, 5 — 未开始。
+
+已构建 8 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 25 个单元测试 + 2 个 C++ smoke test 均通过）。
+
 重写后的第一阶段目标：
 
 - Linux 成为一等平台，完整覆盖桌面 GUI、摄像头识别、用户管理、配置、PAM 认证链路。
@@ -593,52 +599,54 @@ Slint 是唯一计划内 GUI。
 
 ## Migration Phases
 
-### Phase 0: Plan and build skeleton
+### Phase 0: Plan and build skeleton ✅
 
-- 固定 Slint 版本和包来源。
-- 建立 xmake target skeleton。
-- 建立 Rust `su_core` skeleton。
-- 建立 C++ `AppController` skeleton。
-- 建立 recognizer static library skeleton。
+- ✅ 固定 Slint 版本和包来源 — Slint v1.17.0 pinned in xmake.lua
+- ✅ 建立 xmake target skeleton — 共 8 个 target（su_core / su_recognizer / su_app / pam_smile2unlock / su_platform_zig / su_face_auth_smoke_test / su_core_rust_tests / su_seetaface_pipeline_smoke_test）
+- ✅ 建立 Rust `su_core` skeleton — config/profile/auth/embedding/pipeline/ffi 完整模块，25 个单元测试
+- ✅ 建立 C++ `AppController` skeleton — AppController + core_bridge + console_main + slint_main
+- ✅ 建立 recognizer static library skeleton — su_recognizer + camera(V4L2) + image(libyuv) + seetaface_backend
 
-### Phase 1: UI and core connection
+### Phase 1: UI and core connection ✅
 
-- Slint 主窗口可运行。
-- C++ AppController 可调用 Rust core mock。
-- 配置读写走 Rust core。
-- 用户列表和基础设置可用。
+- ✅ Slint 主窗口可运行 — app.slint 261 行 UI，含预览/用户管理/认证/配置展示
+- ✅ C++ AppController 可调用 Rust core mock — core_bridge 通过 C ABI 全链路 callable
+- ✅ 配置读写走 Rust core — TOML 格式，load_config/save_config 通过 Rust FFI
+- ✅ 用户列表和基础设置可用 — enroll/delete/list/authenticate 完整
 
-### Phase 2: Recognizer library
+### Phase 2: Recognizer library ✅
 
-- 接入 SeetaFace wrapper。
-- 接入 libyuv。
-- Linux V4L2 摄像头预览可用。
-- 人脸注册和特征提取可用。
+- ✅ 接入 SeetaFace wrapper — SeetaFaceBackend::extract / predict_liveness（含 liveness_enabled 联动）
+- ✅ 接入 libyuv — pixel_convert.h/.cpp 格式转换
+- ✅ Linux V4L2 摄像头预览可用 — V4L2Camera + PreviewController（背景线程 + Slint 事件循环）
+- ✅ 人脸注册和特征提取可用 — capture_and_extract / extract_from_image（支持 image: 和 mock: 源）
 
-### Phase 3: Auth path
+### Phase 3: Auth path ⚠️ 部分完成
 
-- Linux PAM thin module。
-- control socket。
-- Rust auth policy。
-- 端到端认证 mock 和真实 PAM 验证。
+- ⚠️ Linux PAM thin module — target 定义 + 源码 skeleton，当前仅返回 PAM_AUTHINFO_UNAVAIL，尚未接入 control socket
+- ❌ control socket — 未实现（第一阶段规划中的 `/run/smile2unlock/control.sock`）
+- ✅ Rust auth policy — auth.rs 完整实现，支持 liveness_ok 参数透传
+- ❌ 端到端认证 mock 和真实 PAM 验证 — 未实现
 
-### Phase 4: Windows compatibility
+### Phase 4: Windows compatibility ❌ 未开始
 
-- Credential Provider thin adapter。
-- control socket Windows 路径。
-- 保持 core 与平台隔离。
+- ❌ Credential Provider thin adapter
+- ❌ control socket Windows 路径
+- ❌ 保持 core 与平台隔离
 
-### Phase 5: Optimization and optional split
+### Phase 5: Optimization and optional split ❌ 未开始
 
-- 评估 SIMD。
-- 评估 Zig helper 是否扩大使用范围。
-- 评估是否需要把 recognizer 再拆回独立进程。
+- ❌ 评估 SIMD
+- ❌ 评估 Zig helper 是否扩大使用范围
+- ❌ 评估是否需要把 recognizer 再拆回独立进程
 
 ## Open Decisions
 
-- Slint 具体版本 pin 到哪个 release。
-- Rust/C++ 边界使用纯 C ABI 还是 `cxxbridge`。
-- 数据库确定使用 `rusqlite` 还是 `sqlx`。
-- Linux 摄像头第一阶段只做 V4L2，还是同时预留 PipeWire。
-- Zig 第一阶段是否启用真实 target，还是只保留目录和计划。
-- 汇编优化是否进入第一版里程碑。
+| 决策 | 状态 | 当前选择 |
+|------|------|----------|
+| Slint 版本 pin | ✅ 已决定 | v1.17.0 |
+| Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
+| 数据库 | ❌ 未决定 | 当前用 JSON 文件存储；后续 `rusqlite` vs `sqlx` 待选 |
+| Linux 摄像头 | ✅ 已决定 | V4L2（第一阶段），暂不预留 PipeWire |
+| Zig target 启用 | ✅ 已决定 | 默认不启用（`with_zig` defaults to false），仅 placeholder |
+| 汇编优化 | ✅ 已决定 | 不入第一版（`with_simd` defaults to false） |

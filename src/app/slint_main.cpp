@@ -236,7 +236,9 @@ int main() {
         const auto snapshot = controller.load_config_snapshot();
         const auto fps = snapshot ? snapshot->preview_fps : 15;
         const auto camera = snapshot ? snapshot->selected_camera : 0;
+        const auto liveness_enabled = snapshot ? snapshot->liveness_detection : true;
         preview.start(controller.recognizer(), camera, static_cast<int>(fps),
+                      liveness_enabled,
                       [push_preview_frame](slint::Image image, su::app::PreviewOverlay overlay) {
                           push_preview_frame(std::move(image), std::move(overlay));
                       });

@@ -75,13 +75,14 @@ TestImage load_ppm_rgb(const std::filesystem::path& path) {
 
 su::recognizer::RecognitionResult extract_required(
     const su::recognizer::SeetaFaceBackend& backend,
-    const TestImage& image) {
+    const TestImage& image,
+    bool liveness_enabled) {
     const auto result = backend.extract(su::recognizer::ImageView{
         .width = image.width,
         .height = image.height,
         .channels = image.channels,
         .bytes = std::span<const std::byte>(image.bytes),
-    });
+    }, liveness_enabled);
     assert(result.has_value());
     assert(result->has_face);
     assert(result->face_box.has_value());
@@ -105,8 +106,8 @@ int main() {
 
     const auto sample_dir = std::filesystem::path(SU_SEETAFACE_TEST_DATA_DIR);
     const auto image_a = load_ppm_rgb(sample_dir / "official_face_1.ppm");
-    const auto first = extract_required(backend, image_a);
-    const auto second = extract_required(backend, image_a);
+    const auto first = extract_required(backend, image_a, /*liveness_enabled=*/true);
+    const auto second = extract_required(backend, image_a, /*liveness_enabled=*/true);
 
     auto recognizer = su::recognizer::RecognizerService{};
     const auto self_score = recognizer.compare_features(first.feature, second.feature);
@@ -140,7 +141,7 @@ int main() {
             .height = image_b.height,
             .channels = image_b.channels,
             .bytes = std::span<const std::byte>(image_b.bytes),
-        });
+        }, /*liveness_enabled=*/true);
         if (other.has_value() && other->has_face) {
             assert(!other->feature.empty());
             assert(std::isfinite(other->liveness_score));

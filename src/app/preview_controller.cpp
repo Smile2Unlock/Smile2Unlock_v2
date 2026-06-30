@@ -55,6 +55,7 @@ public:
     void start(su::recognizer::RecognizerService& recognizer,
                int camera_index,
                int fps,
+               bool liveness_enabled,
                FrameCallback callback) {
         stop();
         if (fps <= 0) {
@@ -72,7 +73,7 @@ public:
 
         thread_ = std::thread(
             [running, interval, callback = std::move(callback),
-             &recognizer]() mutable {
+             &recognizer, liveness_enabled]() mutable {
                 while (running->load()) {
                     auto frame = recognizer.capture_preview_frame();
                     if (!frame) {
@@ -87,18 +88,24 @@ public:
 
                     auto image = preview_frame_to_image(*frame);
 
-                    // Run detection + liveness on this frame. predict_liveness
-                    // feeds anti-spoofing every tick so the verdict stabilizes.
+                    // Run detection + (optionally) liveness on this frame.
+                    // predict_liveness feeds anti-spoofing every tick so the
+                    // verdict stabilizes; when liveness is disabled in config
+                    // the Predict call is skipped entirely and the score is
+                    // pinned to 1.0 (passing).
                     auto result = recognizer.predict_liveness(su::recognizer::ImageView{
                         .width = frame->width,
                         .height = frame->height,
                         .channels = 3,
                         .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
-                    });
+                    }, liveness_enabled);
 
                     PreviewOverlay overlay;
                     if (result && result->has_face) {
                         overlay = overlay_from_result(*result);
+                        if (!liveness_enabled) {
+                            overlay.status_text = "face: liveness disabled";
+                        }
                     } else if (result && !result->has_face) {
                         overlay.status_text = "no face";
                     } else {
@@ -148,11 +155,12 @@ PreviewController::~PreviewController() {
 void PreviewController::start(su::recognizer::RecognizerService& recognizer,
                               int camera_index,
                               int fps,
+                              bool liveness_enabled,
                               FrameCallback callback) {
     if (!impl_) {
         impl_ = new Impl();
     }
-    impl_->start(recognizer, camera_index, fps, std::move(callback));
+    impl_->start(recognizer, camera_index, fps, liveness_enabled, std::move(callback));
 }
 
 void PreviewController::stop() {

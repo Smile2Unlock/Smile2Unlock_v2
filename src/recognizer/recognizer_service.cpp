@@ -239,12 +239,12 @@ std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend
 #endif
 
 std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_from_image(
-    ImageView image) const {
+    ImageView image, bool liveness_enabled) const {
 #if SU_HAS_SEETAFACE
     if (auto ensured = ensure_seetaface_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    auto result = seetaface_backend_->extract(image);
+    auto result = seetaface_backend_->extract(image, liveness_enabled);
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -254,19 +254,21 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_fro
     return result;
 #else
     (void)image;
+    (void)liveness_enabled;
     return std::unexpected(RecognizerError::kModelUnavailable);
 #endif
 }
 
 std::expected<RecognitionResult, RecognizerError> RecognizerService::predict_liveness(
-    ImageView image) const {
+    ImageView image, bool liveness_enabled) const {
 #if SU_HAS_SEETAFACE
     if (auto ensured = ensure_seetaface_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    return seetaface_backend_->predict_liveness(image);
+    return seetaface_backend_->predict_liveness(image, liveness_enabled);
 #else
     (void)image;
+    (void)liveness_enabled;
     return std::unexpected(RecognizerError::kModelUnavailable);
 #endif
 }

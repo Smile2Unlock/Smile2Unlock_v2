@@ -40,9 +40,13 @@ public:
 
     // Begin capturing from the given camera at fps frames per second. Each
     // produced frame is handed to callback on the Slint event loop thread.
+    // When liveness_enabled is false, predict_liveness skips the anti-spoofing
+    // Predict and returns liveness_score=1.0; the overlay status text reflects
+    // the disabled state. Callers should gate this on config.liveness_detection.
     void start(su::recognizer::RecognizerService& recognizer,
                int camera_index,
                int fps,
+               bool liveness_enabled,
                FrameCallback callback);
 
     // Signal the capture thread to stop and join it.

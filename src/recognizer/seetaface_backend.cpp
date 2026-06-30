@@ -146,7 +146,7 @@ public:
     // (used on the throttled detect cadence). The mutex serializes access from
     // the preview thread (predict_liveness) and the detect thread (extract).
     std::expected<RecognitionResult, RecognizerError> run_pipeline(
-        const ImageView image, bool extract_feature) const {
+        const ImageView image, bool extract_feature, bool liveness_enabled) const {
         std::lock_guard lock(mutex_);
         if (!available()) {
             return std::unexpected(RecognizerError::kModelUnavailable);
@@ -180,8 +180,12 @@ public:
         const auto face = faces.data[0].pos;
         const auto points = landmarker_->mark(seeta_image, face);
 
-        auto liveness_score = 0.0F;
-        if (anti_spoofing_) {
+        // Liveness is optional per-call: when disabled in config the caller
+        // skips anti-spoofing entirely (Predict is the expensive part of the
+        // pipeline beyond detect+landmark), returns a passing score so the
+        // frame still has a face box without a liveness gate.
+        auto liveness_score = liveness_enabled ? 0.0F : 1.0F;
+        if (liveness_enabled && anti_spoofing_) {
             const auto liveness_status = anti_spoofing_->Predict(seeta_image, face, points.data());
             auto clarity = 0.0F;
             auto reality = 0.0F;
@@ -219,12 +223,14 @@ public:
         return result;
     }
 
-    std::expected<RecognitionResult, RecognizerError> extract(const ImageView image) const {
-        return run_pipeline(image, /*extract_feature=*/true);
+    std::expected<RecognitionResult, RecognizerError> extract(
+        const ImageView image, bool liveness_enabled) const {
+        return run_pipeline(image, /*extract_feature=*/true, liveness_enabled);
     }
 
-    std::expected<RecognitionResult, RecognizerError> predict_liveness(const ImageView image) const {
-        return run_pipeline(image, /*extract_feature=*/false);
+    std::expected<RecognitionResult, RecognizerError> predict_liveness(
+        const ImageView image, bool liveness_enabled) const {
+        return run_pipeline(image, /*extract_feature=*/false, liveness_enabled);
     }
 
     bool available() const {
@@ -288,16 +294,17 @@ SeetaFaceBackend::SeetaFaceBackend(SeetaFaceBackend&&) noexcept = default;
 SeetaFaceBackend& SeetaFaceBackend::operator=(SeetaFaceBackend&&) noexcept = default;
 
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::extract(
-    const ImageView image) const {
-    return impl_->extract(image);
+    const ImageView image, bool liveness_enabled) const {
+    return impl_->extract(image, liveness_enabled);
 }
 
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::predict_liveness(
-    const ImageView image) const {
+    const ImageView image, bool liveness_enabled) const {
 #if SU_HAS_SEETAFACE
-    return impl_->predict_liveness(image);
+    return impl_->predict_liveness(image, liveness_enabled);
 #else
     (void)image;
+    (void)liveness_enabled;
     return std::unexpected(RecognizerError::kModelUnavailable);
 #endif
 }
