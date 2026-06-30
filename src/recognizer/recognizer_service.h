@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <expected>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -58,6 +59,17 @@ struct ImageView {
     std::span<const std::byte> bytes;
 };
 
+// A captured camera frame in its native V4L2 pixel format. The bytes are
+// non-owning (they point at the mmap'ed V4L2 buffer) and only valid until the
+// next grab_frame call. The v4l2_format field carries a V4L2_PIX_FMT_* value
+// interpreted by v4l2_frame_to_rgb in pixel_convert.cpp.
+struct CapturedFrame {
+    int width = 0;
+    int height = 0;
+    std::uint32_t v4l2_format = 0;
+    std::span<const std::byte> bytes;
+};
+
 class RecognizerService {
 public:
     RecognizerService();
@@ -109,10 +121,13 @@ private:
     std::optional<int> active_camera_;
 #if SU_HAS_SEETAFACE
     // Lazily loaded on first extract_from_image / seetaface_available call so
-    // that app startup does not pay the model-load cost until needed. Stored as
-    // a unique_ptr (with a forward-declared type) so this header does not need
-    // to include seetaface_backend.h, avoiding a circular include.
+    // that app startup does not pay the model-load cost until needed. Protected
+    // by a mutable mutex (double-checked locking) because ensure_seetaface_backend
+    // is const and may be called concurrently from the preview and detect threads.
+    // Stored as a unique_ptr (with a forward-declared type) so this header does
+    // not need to include seetaface_backend.h, avoiding a circular include.
     mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;
+    mutable std::unique_ptr<std::mutex> backend_mutex_;
 #endif
     // V4L2 capture device. Owned via unique_ptr with a forward-declared type so
     // this header stays free of platform (videodev2.h) includes.

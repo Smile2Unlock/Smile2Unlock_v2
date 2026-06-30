@@ -42,8 +42,9 @@ std::expected<std::vector<std::byte>, RecognizerError> v4l2_frame_to_rgb(
 
     const auto width = frame.width;
     const auto height = frame.height;
+    const auto stride = static_cast<std::size_t>(width) * kArgbChannels;
     auto argb = argb_buffer(width, height);
-    const auto argb_stride = width * kArgbChannels;
+    const auto argb_stride = static_cast<int>(stride);
 
     if (frame.v4l2_format == V4L2_PIX_FMT_YUYV) {
         const auto src_stride = width * 2;  // YUYV packs 2 pixels in 4 bytes

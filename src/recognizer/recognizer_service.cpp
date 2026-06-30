@@ -16,7 +16,8 @@
 
 namespace su::recognizer {
 
-RecognizerService::RecognizerService() = default;
+RecognizerService::RecognizerService()
+    : backend_mutex_(std::make_unique<std::mutex>()) {}
 
 RecognizerService::~RecognizerService() = default;
 
@@ -163,27 +164,34 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_fea
     return std::move(captured->second);
 }
 
+namespace {
+
+// Pure function: sum of squared elements for a span of floats. Used by
+// cosine similarity to compute norms. Zero-overhead: inlined at call site.
+float squared_norm(std::span<const float> values) {
+    return std::transform_reduce(
+        values.begin(), values.end(), 0.0F, std::plus<>{},
+        [](float v) { return v * v; });
+}
+
+}  // namespace
+
 std::expected<float, RecognizerError> RecognizerService::compare_features(
     std::span<const float> lhs,
     std::span<const float> rhs) const {
     if (lhs.size() != rhs.size() || lhs.empty()) {
-        return std::unexpected(RecognizerError::kModelUnavailable);
+        return std::unexpected(RecognizerError::kInvalidArgument);
     }
 
     // Cosine similarity, matching the Rust core's matching metric. SeetaFace
     // embeddings are normalized, so for them this is equivalent to the dot
     // product; the division keeps it correct for unnormalized inputs too.
     const auto dot = std::transform_reduce(
-        lhs.begin(),
-        lhs.end(),
-        rhs.begin(),
-        0.0F,
-        std::plus<>{},
+        lhs.begin(), lhs.end(), rhs.begin(),
+        0.0F, std::plus<>{},
         [](float left, float right) { return left * right; });
-    const auto norm_lhs = std::sqrt(std::transform_reduce(
-        lhs.begin(), lhs.end(), 0.0F, std::plus<>{}, [](float v) { return v * v; }));
-    const auto norm_rhs = std::sqrt(std::transform_reduce(
-        rhs.begin(), rhs.end(), 0.0F, std::plus<>{}, [](float v) { return v * v; }));
+    const auto norm_lhs = std::sqrt(squared_norm(lhs));
+    const auto norm_rhs = std::sqrt(squared_norm(rhs));
     if (norm_lhs <= std::numeric_limits<float>::epsilon()
         || norm_rhs <= std::numeric_limits<float>::epsilon()) {
         return 0.0F;
@@ -214,6 +222,14 @@ std::string embedding_sample_source(std::span<const float> feature) {
 #if SU_HAS_SEETAFACE
 
 std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
+    // Fast path: already initialized, no lock needed.
+    if (seetaface_backend_) {
+        return {};
+    }
+
+    std::lock_guard lock(*backend_mutex_);
+    // Double-check after acquiring the lock so concurrent fast-path callers
+    // do not block each other for the full model-load duration.
     if (seetaface_backend_) {
         return {};
     }

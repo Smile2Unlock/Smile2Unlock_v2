@@ -15,10 +15,19 @@ int main() {
     assert(decision.has_value());
     assert(decision->accepted);
 
+    // Verify that evaluate_auth with liveness_ok=false rejects the request.
+    const auto no_liveness_auth = su::app::evaluate_auth("demo", 0.72F, *threshold, false);
+    assert(no_liveness_auth.has_value());
+    assert(!no_liveness_auth->accepted);
+
+    // RAII scope guard: ensure the temp profile store is cleaned up on every
+    // exit path (including early assert failures that abort).
     const auto store_path = (
         std::filesystem::temp_directory_path() / "su_protocol_smoke_profiles.json"
     ).string();
     std::filesystem::remove(store_path);
+    const auto store_guard = std::shared_ptr<void>(nullptr,
+        [store_path](...) { std::filesystem::remove(store_path); });
 
     const auto feature = std::array{1.0F, 0.0F, 0.0F, 0.0F};
     const auto sample = su::recognizer::embedding_sample_source(feature);
@@ -62,6 +71,5 @@ int main() {
     }
 #endif
 
-    std::filesystem::remove(store_path);
     return 0;
 }

@@ -224,11 +224,8 @@ std::expected<std::vector<FaceProfileSummary>, CoreError> list_face_profile_summ
         return std::unexpected(map_status(status));
     }
 
-    std::vector<FaceProfileSummary> profiles;
-    profiles.reserve(count);
-    for (std::uintptr_t index = 0; index < count; ++index) {
-        profiles.push_back(map_profile_summary(ffi_profiles[index]));
-    }
+    auto profiles = std::vector<FaceProfileSummary>(count);
+    std::ranges::transform(ffi_profiles, profiles.begin(), map_profile_summary);
     return profiles;
 }
 

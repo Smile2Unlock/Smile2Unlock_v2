@@ -53,7 +53,8 @@ std::expected<LoadedImage, RecognizerError> load_image_file(
         image.resize(image.width(), image.height(), 1, kRgbChannels, /*value=*/0);
     }
 
-    auto bytes = std::vector<std::byte>(static_cast<std::size_t>(width * height * kRgbChannels));
+    const auto pixel_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    auto bytes = std::vector<std::byte>(pixel_count * kRgbChannels);
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
             const auto out_index =

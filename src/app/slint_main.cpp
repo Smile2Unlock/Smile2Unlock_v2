@@ -215,7 +215,7 @@ int main() {
     // callback runs on the UI thread and updates the image plus the face-box
     // overlay. The box is scaled from the 640x480 capture frame to the 320x240
     // preview area (0.5x).
-    auto push_preview_frame = [&window](slint::Image image, su::app::PreviewOverlay overlay) {
+    auto push_preview_frame = [window](slint::Image image, su::app::PreviewOverlay overlay) {
         window->set_preview_image(std::move(image));
         window->set_preview_status_text(slint::SharedString(overlay.status_text));
         if (overlay.face_box) {
@@ -239,9 +239,7 @@ int main() {
         const auto liveness_enabled = snapshot ? snapshot->liveness_detection : true;
         preview.start(controller.recognizer(), camera, static_cast<int>(fps),
                       liveness_enabled,
-                      [push_preview_frame](slint::Image image, su::app::PreviewOverlay overlay) {
-                          push_preview_frame(std::move(image), std::move(overlay));
-                      });
+                      push_preview_frame);
         window->set_preview_status_text(slint::SharedString("starting"));
     });
     window->on_stop_preview_requested([&preview] {

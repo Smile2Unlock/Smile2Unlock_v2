@@ -41,7 +41,11 @@ void skip_ppm_space_and_comments(std::istream& input) {
 int read_ppm_int(std::istream& input) {
     skip_ppm_space_and_comments(input);
     auto value = 0;
-    input >> value;
+    if (!(input >> value)) {
+        // Malformed input: return 0 so the caller's assert(width > 0) catches
+        // it in debug builds, avoiding silent data corruption in release.
+        input.clear();
+    }
     return value;
 }
 
@@ -109,15 +113,31 @@ int main() {
     const auto first = extract_required(backend, image_a, /*liveness_enabled=*/true);
     const auto second = extract_required(backend, image_a, /*liveness_enabled=*/true);
 
+    // Verify that extract with liveness_enabled=false skips the anti-spoofing
+    // Predict and returns liveness_score=1.0 (passing) with a valid face box.
+    const auto no_liveness = backend.extract(su::recognizer::ImageView{
+        .width = image_a.width,
+        .height = image_a.height,
+        .channels = image_a.channels,
+        .bytes = std::span<const std::byte>(image_a.bytes),
+    }, /*liveness_enabled=*/false);
+    assert(no_liveness.has_value());
+    assert(no_liveness->has_face);
+    assert(no_liveness->liveness_score == 1.0F);
+    assert(std::isfinite(no_liveness->liveness_score));
+
     auto recognizer = su::recognizer::RecognizerService{};
     const auto self_score = recognizer.compare_features(first.feature, second.feature);
     assert(self_score.has_value());
     assert(*self_score > 0.99F);
 
+    // RAII scope guard: clean up the temp profile store on every exit path.
     const auto store_path = (
         std::filesystem::temp_directory_path() / "su_seetaface_pipeline_profiles.json"
     ).string();
     std::filesystem::remove(store_path);
+    const auto store_guard = std::shared_ptr<void>(nullptr,
+        [store_path](...) { std::filesystem::remove(store_path); });
 
     const auto enrolled = su::app::enroll_face_profile(
         store_path,
@@ -175,6 +195,8 @@ int main() {
             std::filesystem::temp_directory_path() / "su_seetaface_image_pipeline_profiles.json"
         ).string();
         std::filesystem::remove(image_store_path);
+        const auto image_store_guard = std::shared_ptr<void>(nullptr,
+            [image_store_path](...) { std::filesystem::remove(image_store_path); });
 
         const auto png_embedding_source =
             su::recognizer::embedding_sample_source(extracted->feature);
@@ -204,9 +226,7 @@ int main() {
         assert(image_report->score > 0.99F);
         assert(image_report->profile_count == 1);
 
-        std::filesystem::remove(image_store_path);
     }
 
-    std::filesystem::remove(store_path);
     return 0;
 }

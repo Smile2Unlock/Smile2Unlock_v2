@@ -190,6 +190,9 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
         return std::unexpected("failed to open configured camera");
     }
+    // Scope guard: camera must be closed regardless of success/error so the
+    // preview controller (if running) can re-acquire it on next frame.
+    const auto close_guard = std::shared_ptr<void>(nullptr, [this](...) { recognizer_.close_camera(); });
     const auto result = recognizer_.extract_features();
     if (!result || !result->has_face || result->feature.empty()) {
         return std::unexpected("failed to extract face features from current frame");
@@ -220,46 +223,50 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
         return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
     }
 
-    const auto decision = authenticate_face_sample(
-        store_path,
-        *resolved,
-        config->recognition_threshold,
-        liveness_ok);
-    if (!decision) {
-        return std::unexpected(std::format("failed to authenticate face sample: {}", store_path));
-    }
-
-    const auto report = authenticate_face_sample_report_json(
-        store_path,
-        face_sample_source,
-        config->recognition_threshold,
-        liveness_ok);
-    if (!report) {
-        return std::unexpected(std::format("failed to build face auth report: {}", store_path));
-    }
-
-    const auto profiles = list_face_profiles_json(store_path);
-    if (!profiles) {
-        return std::unexpected(std::format("failed to list face profiles: {}", store_path));
-    }
-    const auto profile_rows = list_face_profile_summaries(store_path);
-    if (!profile_rows) {
-        return std::unexpected(std::format("failed to list face profile summaries: {}", store_path));
-    }
+    // Single FFI auth call: authenticate_face_sample_report returns the full
+    // decision + report in one round-trip (decision fields: accepted, score,
+    // profile_count; report fields: threshold, liveness_ok, best_profile, etc.)
     const auto auth_report = authenticate_face_sample_report(
         store_path,
         face_sample_source,
         config->recognition_threshold,
         liveness_ok);
     if (!auth_report) {
-        return std::unexpected(std::format("failed to build structured face auth report: {}", store_path));
+        return std::unexpected(std::format("failed to authenticate face sample: {}", store_path));
     }
+
+    const auto profiles_json = list_face_profiles_json(store_path);
+    if (!profiles_json) {
+        return std::unexpected(std::format("failed to list face profiles: {}", store_path));
+    }
+    const auto profile_rows = list_face_profile_summaries(store_path);
+    if (!profile_rows) {
+        return std::unexpected(std::format("failed to list face profile summaries: {}", store_path));
+    }
+
+    // Single FFI JSON call for the full report (includes best_profile_label,
+    // reason, threshold, liveness_ok, etc.).
+    const auto report_json = authenticate_face_sample_report_json(
+        store_path,
+        face_sample_source,
+        config->recognition_threshold,
+        liveness_ok);
+    if (!report_json) {
+        return std::unexpected(std::format("failed to build face auth report JSON: {}", store_path));
+    }
+
+    // Build the decision from the report struct to avoid a separate FFI call.
+    const auto decision = FaceAuthDecision{
+        .accepted = auth_report->accepted,
+        .score = auth_report->score,
+        .profile_count = auth_report->profile_count,
+    };
 
     return FaceDemoSnapshot{
         .profiles = *profile_rows,
-        .profiles_json = *profiles,
-        .auth_report_json = *report,
-        .decision = *decision,
+        .profiles_json = *profiles_json,
+        .auth_report_json = *report_json,
+        .decision = decision,
         .report = *auth_report,
     };
 }
@@ -272,6 +279,8 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
     if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
         return std::unexpected("failed to open configured camera");
     }
+    // Scope guard: close camera on every exit path.
+    const auto close_guard = std::shared_ptr<void>(nullptr, [this](...) { recognizer_.close_camera(); });
     const auto result = recognizer_.extract_features();
     if (!result || !result->has_face || result->feature.empty()) {
         return std::unexpected("failed to extract face features from current frame");
