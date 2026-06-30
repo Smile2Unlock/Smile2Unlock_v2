@@ -32,9 +32,12 @@ option("with_simd")
 option_end()
 
 option("with_seetaface")
-    set_default(false)
+    -- Default on: SeetaFace is the real recognizer backend. A build without it
+    -- is a mock-only shell useful only for headless CI; the desktop app is
+    -- expected to ship with real face detection.
+    set_default(true)
     set_showmenu(true)
-    set_description("Enable the optional SeetaFace recognizer backend")
+    set_description("Enable the SeetaFace recognizer backend")
 option_end()
 
 if has_config("with_seetaface") then

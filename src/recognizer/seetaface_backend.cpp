@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <exception>
 #include <optional>
 #include <utility>
@@ -177,6 +178,15 @@ public:
             auto reality = 0.0F;
             anti_spoofing_->GetPreFrameScore(&clarity, &reality);
             liveness_score = liveness_score_from(liveness_status, {clarity, reality});
+            const char* status_name = "UNKNOWN";
+            switch (liveness_status) {
+            case seeta::FaceAntiSpoofing::REAL: status_name = "REAL"; break;
+            case seeta::FaceAntiSpoofing::SPOOF: status_name = "SPOOF"; break;
+            case seeta::FaceAntiSpoofing::FUZZY: status_name = "FUZZY"; break;
+            case seeta::FaceAntiSpoofing::DETECTING: status_name = "DETECTING"; break;
+            }
+            std::fprintf(stderr, "[seeta] liveness status=%s clarity=%.3f reality=%.3f score=%.3f\n",
+                         status_name, clarity, reality, liveness_score);
         }
 
         return RecognitionResult{
