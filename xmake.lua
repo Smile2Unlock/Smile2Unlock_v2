@@ -112,6 +112,11 @@ local function apply_cpp_target(kind)
     end
 end
 
+-- C++ Module interface units: registered globally so xmake can build all
+-- BMIs before any dependent TU references them. The .cppm files export
+-- types shared across su_recognizer and su_app (e.g. ImageView, CoreConfig).
+add_files("src/modules/*.cppm")
+
 target("su_core")
     set_kind("phony")
     on_build( function ()
