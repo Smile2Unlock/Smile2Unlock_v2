@@ -112,12 +112,10 @@ local function apply_cpp_target(kind)
     end
 end
 
--- C++ Module interface units: register globally (no platform-specific deps)
--- so xmake builds all BMIs before dependent TUs reference them. Modules that
--- depend on target-specific packages (e.g. slint) are registered per-target.
-add_files("src/modules/su.recognizer.*.cppm")
-add_files("src/modules/su.core.*.cppm")
-add_files("src/modules/su.app.controller.cppm")
+-- C++ Module interface units: registered per target so non-C++ targets
+-- (e.g. su_platform_zig) are not scanned by the module scanner.
+-- su_recognizer owns the recognizer + core types modules; su_app and test
+-- targets depend on su_recognizer and inherit its module BMIs.
 
 target("su_core")
     set_kind("phony")
@@ -154,6 +152,8 @@ target("su_recognizer")
     add_files("src/recognizer/*.cpp")
     add_files("src/recognizer/image/*.cpp")
     add_files("src/recognizer/camera/*.cpp")
+    add_files("src/modules/su.recognizer.*.cppm")
+    add_files("src/modules/su.core.*.cppm")
     add_packages("cimg")
     add_packages("libyuv")
     if is_plat("linux") then
@@ -186,6 +186,9 @@ target("su_app")
     else
         add_defines("SU_HAS_ZIG_PLATFORM=0")
     end
+    add_files("src/modules/su.recognizer.*.cppm")
+    add_files("src/modules/su.core.*.cppm")
+    add_files("src/modules/su.app.controller.cppm")
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
@@ -238,6 +241,8 @@ target("su_face_auth_smoke_test")
     add_files("tests/face_auth/*.cpp")
     add_deps("su_core", "su_recognizer")
     add_files("src/app/core_bridge.cpp")
+    add_files("src/modules/su.core.*.cppm")
+    add_files("src/modules/su.recognizer.*.cppm")
     add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
@@ -270,6 +275,8 @@ if has_config("with_seetaface") then
         add_deps("su_core", "su_recognizer")
         add_packages("seetaface6open")
         add_files("src/app/core_bridge.cpp")
+        add_files("src/modules/su.core.*.cppm")
+        add_files("src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_defines("SU_SEETAFACE_TEST_DATA_DIR=\"" .. path.unix(seetaface_test_data_dir()) .. "\"")
         add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
@@ -306,3 +313,14 @@ if has_config("with_seetaface") then
         end)
         add_tests("default")
 end
+
+-- Auto-generate compile_commands.json for clangd LSP after each full build.
+-- Only triggers once (on the su_app target, which is the last C++ target).
+-- The --lsp=clangd flag produces clangd-compatible output with module info.
+local cdb_generated = false
+after_build(function (target)
+    if not cdb_generated and target:name() == "su_app" then
+        cdb_generated = true
+        os.exec("xmake project -k compile_commands --lsp=clangd 2>/dev/null || true")
+    end
+end)
