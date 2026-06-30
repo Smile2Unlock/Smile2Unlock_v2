@@ -8,17 +8,11 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
-#include <mutex>
 #include <thread>
 
 namespace su::app {
 
 namespace {
-
-// Detection runs on this fraction of the preview cadence. SeetaFace detection
-// is expensive (~100-300ms); keeping it off the preview thread is what makes
-// the preview smooth while the face box still updates regularly.
-constexpr int kDetectionIntervalDivider = 4;
 
 slint::Image preview_frame_to_image(const su::recognizer::PreviewFrame& frame) {
     slint::SharedPixelBuffer<slint::Rgb8Pixel> buffer(
@@ -47,18 +41,15 @@ PreviewOverlay overlay_from_result(const su::recognizer::RecognitionResult& resu
     return overlay;
 }
 
-// The latest converted RGB frame, shared between the preview thread (producer)
-// and the detection thread (consumer) under a mutex. Copied so each thread
-// owns its data and neither races the next grab.
-struct SharedRgb {
-    int width = 0;
-    int height = 0;
-    std::vector<std::byte> bytes;
-    bool fresh = false;  // set when a new frame is published; cleared on consume
-};
-
 }  // namespace
 
+// Single capture+detect thread. SeetaFace's FaceAntiSpoofing is a stateful
+// video-stream model that must be fed on consecutive frames to reach a stable
+// REAL/SPOOF verdict, so predict_liveness runs on EVERY preview frame (not a
+// throttled subset). Feature extraction (the expensive, liveness-irrelevant
+// step) is NOT done here; it only runs on explicit enroll/auth. This keeps the
+// liveness score accurate while the preview stays on one thread with no
+// cross-thread snapshot ownership.
 class PreviewController::Impl {
 public:
     void start(su::recognizer::RecognizerService& recognizer,
@@ -69,9 +60,6 @@ public:
         if (fps <= 0) {
             fps = 15;
         }
-        // The preview owns the camera for its lifetime so it does not depend
-        // on any other caller (e.g. enroll) having opened it, and so capture
-        // and detection share one open/close cycle.
         if (const auto opened = recognizer.open_camera(camera_index); !opened) {
             std::fprintf(stderr, "[preview] open_camera failed\n");
             return;
@@ -80,64 +68,13 @@ public:
         running_ = std::make_shared<std::atomic<bool>>(true);
 
         const auto interval = std::chrono::milliseconds(1000 / fps);
-        const auto detect_interval = interval * kDetectionIntervalDivider;
         auto running = running_;
 
-        // Detection thread: takes the freshest RGB snapshot, runs SeetaFace on
-        // it, and publishes the overlay. Slow model work is fully off the
-        // preview thread so it never stalls display.
-        detection_thread_ = std::thread(
-            [running, detect_interval, &recognizer, this]() {
-                while (running->load()) {
-                    SharedRgb snapshot;
-                    {
-                        std::lock_guard lock(rgb_mutex_);
-                        if (shared_rgb_.fresh) {
-                            snapshot = shared_rgb_;
-                            shared_rgb_.fresh = false;
-                        }
-                    }
-                    if (snapshot.width > 0 && !snapshot.bytes.empty()) {
-                        const auto result = recognizer.extract_from_image(
-                            su::recognizer::ImageView{
-                                .width = snapshot.width,
-                                .height = snapshot.height,
-                                .channels = 3,
-                                .bytes = std::span<const std::byte>(snapshot.bytes),
-                            });
-                        PreviewOverlay overlay;
-                        if (result && result->has_face) {
-                            overlay = overlay_from_result(*result);
-                            if (overlay.face_box) {
-                                std::fprintf(stderr, "[preview] face box: %d,%d %dx%d liveness=%.3f\n",
-                                             overlay.face_box->x, overlay.face_box->y,
-                                             overlay.face_box->width, overlay.face_box->height,
-                                             overlay.liveness_score);
-                            }
-                        } else if (result && !result->has_face) {
-                            overlay.status_text = "no face";
-                        } else {
-                            std::fprintf(stderr, "[preview] extract_from_image failed: %dx%d err=%d\n",
-                                         snapshot.width, snapshot.height,
-                                         static_cast<int>(result.error()));
-                            overlay.status_text = "detect failed";
-                        }
-                        {
-                            std::lock_guard lock(overlay_mutex_);
-                            latest_overlay_ = std::move(overlay);
-                        }
-                    }
-                    std::this_thread::sleep_for(detect_interval);
-                }
-            });
-
-        // Preview thread: grab + convert + push image on every tick, carrying
-        // the latest overlay (updated asynchronously by the detection thread).
-        preview_thread_ = std::thread(
+        thread_ = std::thread(
             [running, interval, callback = std::move(callback),
-             &recognizer, this]() mutable {
+             &recognizer]() mutable {
                 while (running->load()) {
-                    const auto frame = recognizer.capture_preview_frame();
+                    auto frame = recognizer.capture_preview_frame();
                     if (!frame) {
                         slint::invoke_from_event_loop(
                             [callback]() {
@@ -150,22 +87,22 @@ public:
 
                     auto image = preview_frame_to_image(*frame);
 
-                    // Publish a copy for the detection thread.
-                    {
-                        std::lock_guard lock(rgb_mutex_);
-                        shared_rgb_ = SharedRgb{
-                            .width = frame->width,
-                            .height = frame->height,
-                            .bytes = frame->rgba_or_rgb,
-                            .fresh = true,
-                        };
-                    }
+                    // Run detection + liveness on this frame. predict_liveness
+                    // feeds anti-spoofing every tick so the verdict stabilizes.
+                    auto result = recognizer.predict_liveness(su::recognizer::ImageView{
+                        .width = frame->width,
+                        .height = frame->height,
+                        .channels = 3,
+                        .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
+                    });
 
-                    // Snapshot the latest overlay to push alongside this frame.
                     PreviewOverlay overlay;
-                    {
-                        std::lock_guard lock(overlay_mutex_);
-                        overlay = latest_overlay_;
+                    if (result && result->has_face) {
+                        overlay = overlay_from_result(*result);
+                    } else if (result && !result->has_face) {
+                        overlay.status_text = "no face";
+                    } else {
+                        overlay.status_text = "detect failed";
                     }
 
                     slint::invoke_from_event_loop(
@@ -183,14 +120,9 @@ public:
         if (running_) {
             running_->store(false);
         }
-        if (preview_thread_.joinable()) {
-            preview_thread_.join();
+        if (thread_.joinable()) {
+            thread_.join();
         }
-        if (detection_thread_.joinable()) {
-            detection_thread_.join();
-        }
-        // Release the camera after the worker threads are joined, so no grab
-        // call is in flight when the V4L2 device is torn down.
         if (recognizer_ != nullptr) {
             recognizer_->close_camera();
             recognizer_ = nullptr;
@@ -198,21 +130,15 @@ public:
     }
 
     [[nodiscard]] bool is_running() const {
-        return running_ && running_->load()
-            && (preview_thread_.joinable() || detection_thread_.joinable());
+        return running_ && running_->load() && thread_.joinable();
     }
 
     ~Impl() { stop(); }
 
 private:
-    std::thread preview_thread_;
-    std::thread detection_thread_;
+    std::thread thread_;
     std::shared_ptr<std::atomic<bool>> running_;
     su::recognizer::RecognizerService* recognizer_ = nullptr;
-    std::mutex rgb_mutex_;
-    SharedRgb shared_rgb_;
-    std::mutex overlay_mutex_;
-    PreviewOverlay latest_overlay_;
 };
 
 PreviewController::~PreviewController() {

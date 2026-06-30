@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdio>
 #include <exception>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -137,7 +138,16 @@ public:
         }
     }
 
-    std::expected<RecognitionResult, RecognizerError> extract(const ImageView image) const {
+    // Detect the primary face, run landmark detection and, if anti-spoofing is
+    // loaded, run Predict. FaceAntiSpoofing is a stateful video-stream model:
+    // it must be fed on consecutive frames to reach a stable REAL/SPOOF verdict,
+    // so this is called once per preview frame. Returns has_face + face_box +
+    // liveness_score. When extract_feature is set, also runs feature extraction
+    // (used on the throttled detect cadence). The mutex serializes access from
+    // the preview thread (predict_liveness) and the detect thread (extract).
+    std::expected<RecognitionResult, RecognizerError> run_pipeline(
+        const ImageView image, bool extract_feature) const {
+        std::lock_guard lock(mutex_);
         if (!available()) {
             return std::unexpected(RecognizerError::kModelUnavailable);
         }
@@ -161,15 +171,14 @@ public:
 
         const auto faces = detector_->detect(seeta_image);
         if (faces.size <= 0 || faces.data == nullptr) {
+            // Still feed anti-spoofing? No: it needs a face box/points. A frame
+            // with no face resets the model's expectation implicitly via the
+            // absence of Predict; report no-face and let the caller decide.
             return RecognitionResult{};
         }
 
         const auto face = faces.data[0].pos;
         const auto points = landmarker_->mark(seeta_image, face);
-        auto feature = std::vector<float>(recognizer_->GetExtractFeatureSize());
-        if (!recognizer_->Extract(seeta_image, points.data(), feature.data())) {
-            return std::unexpected(RecognizerError::kModelUnavailable);
-        }
 
         auto liveness_score = 0.0F;
         if (anti_spoofing_) {
@@ -189,7 +198,7 @@ public:
                          status_name, clarity, reality, liveness_score);
         }
 
-        return RecognitionResult{
+        RecognitionResult result{
             .has_face = true,
             .face_box = FaceBox{
                 .x = face.x,
@@ -197,9 +206,25 @@ public:
                 .width = face.width,
                 .height = face.height,
             },
-            .feature = std::move(feature),
             .liveness_score = liveness_score,
         };
+
+        if (extract_feature) {
+            auto feature = std::vector<float>(recognizer_->GetExtractFeatureSize());
+            if (!recognizer_->Extract(seeta_image, points.data(), feature.data())) {
+                return std::unexpected(RecognizerError::kModelUnavailable);
+            }
+            result.feature = std::move(feature);
+        }
+        return result;
+    }
+
+    std::expected<RecognitionResult, RecognizerError> extract(const ImageView image) const {
+        return run_pipeline(image, /*extract_feature=*/true);
+    }
+
+    std::expected<RecognitionResult, RecognizerError> predict_liveness(const ImageView image) const {
+        return run_pipeline(image, /*extract_feature=*/false);
     }
 
     bool available() const {
@@ -229,6 +254,7 @@ private:
     std::unique_ptr<seeta::FaceLandmarker> landmarker_;
     std::unique_ptr<seeta::FaceRecognizer> recognizer_;
     std::unique_ptr<seeta::FaceAntiSpoofing> anti_spoofing_;
+    mutable std::mutex mutex_;
 };
 
 #else
@@ -264,6 +290,16 @@ SeetaFaceBackend& SeetaFaceBackend::operator=(SeetaFaceBackend&&) noexcept = def
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::extract(
     const ImageView image) const {
     return impl_->extract(image);
+}
+
+std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::predict_liveness(
+    const ImageView image) const {
+#if SU_HAS_SEETAFACE
+    return impl_->predict_liveness(image);
+#else
+    (void)image;
+    return std::unexpected(RecognizerError::kModelUnavailable);
+#endif
 }
 
 bool SeetaFaceBackend::available() const {

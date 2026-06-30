@@ -89,6 +89,14 @@ std::expected<float, RecognizerError> compare_features(
     // returns kModelUnavailable so callers can fall back to mock sources.
     std::expected<RecognitionResult, RecognizerError> extract_from_image(ImageView image) const;
 
+    // Detect the face and run anti-spoofing Predict only (no feature
+    // extraction). Intended to be called on every preview frame so
+    // FaceAntiSpoofing sees a continuous video stream and can settle on a
+    // stable REAL/SPOOF verdict. Returns has_face + face_box + liveness_score
+    // (feature is empty). kModelUnavailable when SeetaFace is compiled out or
+    // not yet loaded.
+    std::expected<RecognitionResult, RecognizerError> predict_liveness(ImageView image) const;
+
     // Whether the real SeetaFace recognizer backend is available. False when
     // SeetaFace is compiled out (SU_HAS_SEETAFACE=0) or model assets are
     // missing at the resolved model directory.

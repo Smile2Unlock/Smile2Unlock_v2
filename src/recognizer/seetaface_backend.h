@@ -31,6 +31,12 @@ public:
     SeetaFaceBackend& operator=(SeetaFaceBackend&&) noexcept;
 
     std::expected<RecognitionResult, RecognizerError> extract(ImageView image) const;
+    // Detect the face and run the anti-spoofing Predict only (no feature
+    // extraction). Cheaper than extract and intended to be called on every
+    // preview frame so FaceAntiSpoofing sees a continuous video stream and can
+    // reach a stable REAL/SPOOF verdict. Returns has_face + face_box +
+    // liveness_score (no feature). Thread-safe via an internal mutex.
+    std::expected<RecognitionResult, RecognizerError> predict_liveness(ImageView image) const;
     bool available() const;
     bool liveness_available() const;
 
