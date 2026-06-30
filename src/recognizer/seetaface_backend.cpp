@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <print>
 #include <exception>
 #include <mutex>
 #include <optional>
@@ -155,13 +156,13 @@ public:
             return std::unexpected(RecognizerError::kInvalidImage);
         }
 
+        // Zero-overhead copy: std::byte and unsigned char share the same
+        // representation on all supported platforms; a single memcpy replaces
+        // the per-element transform/static_cast chain.
         auto owned_bytes = std::vector<unsigned char>(image.bytes.size());
-        std::ranges::transform(
-            image.bytes,
-            owned_bytes.begin(),
-            [](const std::byte value) {
-                return static_cast<unsigned char>(value);
-            });
+        if (!image.bytes.empty()) {
+            std::memcpy(owned_bytes.data(), image.bytes.data(), image.bytes.size_bytes());
+        }
         auto seeta_image = SeetaImageData{
             .width = image.width,
             .height = image.height,
@@ -198,7 +199,7 @@ public:
             case seeta::FaceAntiSpoofing::FUZZY: status_name = "FUZZY"; break;
             case seeta::FaceAntiSpoofing::DETECTING: status_name = "DETECTING"; break;
             }
-            std::fprintf(stderr, "[seeta] liveness status=%s clarity=%.3f reality=%.3f score=%.3f\n",
+            std::println(stderr, "[seeta] liveness status={} clarity={:.3f} reality={:.3f} score={:.3f}",
                          status_name, clarity, reality, liveness_score);
         }
 

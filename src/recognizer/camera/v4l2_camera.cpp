@@ -8,6 +8,7 @@
 #include <linux/videodev2.h>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -64,19 +65,18 @@ std::expected<uint32_t, RecognizerError> negotiate_format(int fd, int width, int
 }  // namespace
 
 std::vector<CameraDevice> enumerate_v4l2_cameras() {
-    auto devices = std::vector<CameraDevice>{};
-    for (int index = 0; index < 64; ++index) {
-        const auto path = "/dev/video" + std::to_string(index);
-        if (!std::filesystem::exists(path)) {
-            continue;
-        }
-        devices.push_back(CameraDevice{
-            .index = index,
-            .name = read_camera_name(index),
-            .device_path = path,
-        });
-    }
-    return devices;
+    auto range = std::views::iota(0, 64)
+        | std::views::filter([](int index) {
+              return std::filesystem::exists("/dev/video" + std::to_string(index));
+          })
+        | std::views::transform([](int index) {
+              return CameraDevice{
+                  .index = index,
+                  .name = read_camera_name(index),
+                  .device_path = "/dev/video" + std::to_string(index),
+              };
+          });
+    return std::vector<CameraDevice>(range.begin(), range.end());
 }
 
 class V4L2Camera::Impl {

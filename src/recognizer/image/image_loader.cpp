@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <mdspan>
 
 // CImg pulls in platform display backends we do not use; disable them so the
 // header compiles without X11/Wayland/OpenGL dependencies.
@@ -55,13 +56,19 @@ std::expected<LoadedImage, RecognizerError> load_image_file(
 
     const auto pixel_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     auto bytes = std::vector<std::byte>(pixel_count * kRgbChannels);
+    // Use mdspan for zero-overhead 3D indexing over the interleaved RGB
+    // buffer: extents<height, width, 3>. This replaces the manual pointer
+    // arithmetic (y * width + x) * 3 with structured [y, x, channel] access.
+    auto rgb = std::mdspan<std::byte, std::dextents<std::size_t, 3>>(
+        bytes.data(), height, width, kRgbChannels);
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
-            const auto out_index =
-                static_cast<std::size_t>((y * width + x) * kRgbChannels);
-            bytes[out_index + 0] = std::byte{image(x, y, 0, 0)};  // R
-            bytes[out_index + 1] = std::byte{image(x, y, 0, 1)};  // G
-            bytes[out_index + 2] = std::byte{image(x, y, 0, 2)};  // B
+            rgb[static_cast<std::size_t>(y),
+                static_cast<std::size_t>(x), 0] = std::byte{image(x, y, 0, 0)};  // R
+            rgb[static_cast<std::size_t>(y),
+                static_cast<std::size_t>(x), 1] = std::byte{image(x, y, 0, 1)};  // G
+            rgb[static_cast<std::size_t>(y),
+                static_cast<std::size_t>(x), 2] = std::byte{image(x, y, 0, 2)};  // B
         }
     }
 
