@@ -248,9 +248,9 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_fro
     if (!result) {
         return std::unexpected(result.error());
     }
-    if (!result->has_face) {
-        return std::unexpected(RecognizerError::kNoFace);
-    }
+    // No face detected is a normal outcome, not an error: return the result
+    // with has_face=false so callers can show "no face" without treating it
+    // as a detection failure.
     return result;
 #else
     (void)image;

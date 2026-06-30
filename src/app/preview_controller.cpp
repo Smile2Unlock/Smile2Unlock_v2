@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -68,6 +69,14 @@ public:
         if (fps <= 0) {
             fps = 15;
         }
+        // The preview owns the camera for its lifetime so it does not depend
+        // on any other caller (e.g. enroll) having opened it, and so capture
+        // and detection share one open/close cycle.
+        if (const auto opened = recognizer.open_camera(camera_index); !opened) {
+            std::fprintf(stderr, "[preview] open_camera failed\n");
+            return;
+        }
+        recognizer_ = &recognizer;
         running_ = std::make_shared<std::atomic<bool>>(true);
 
         const auto interval = std::chrono::milliseconds(1000 / fps);
@@ -99,8 +108,19 @@ public:
                         PreviewOverlay overlay;
                         if (result && result->has_face) {
                             overlay = overlay_from_result(*result);
+                            if (overlay.face_box) {
+                                std::fprintf(stderr, "[preview] face box: %d,%d %dx%d liveness=%.3f\n",
+                                             overlay.face_box->x, overlay.face_box->y,
+                                             overlay.face_box->width, overlay.face_box->height,
+                                             overlay.liveness_score);
+                            }
+                        } else if (result && !result->has_face) {
+                            overlay.status_text = "no face";
                         } else {
-                            overlay.status_text = result ? "no face" : "detect failed";
+                            std::fprintf(stderr, "[preview] extract_from_image failed: %dx%d err=%d\n",
+                                         snapshot.width, snapshot.height,
+                                         static_cast<int>(result.error()));
+                            overlay.status_text = "detect failed";
                         }
                         {
                             std::lock_guard lock(overlay_mutex_);
@@ -169,6 +189,12 @@ public:
         if (detection_thread_.joinable()) {
             detection_thread_.join();
         }
+        // Release the camera after the worker threads are joined, so no grab
+        // call is in flight when the V4L2 device is torn down.
+        if (recognizer_ != nullptr) {
+            recognizer_->close_camera();
+            recognizer_ = nullptr;
+        }
     }
 
     [[nodiscard]] bool is_running() const {
@@ -182,6 +208,7 @@ private:
     std::thread preview_thread_;
     std::thread detection_thread_;
     std::shared_ptr<std::atomic<bool>> running_;
+    su::recognizer::RecognizerService* recognizer_ = nullptr;
     std::mutex rgb_mutex_;
     SharedRgb shared_rgb_;
     std::mutex overlay_mutex_;
