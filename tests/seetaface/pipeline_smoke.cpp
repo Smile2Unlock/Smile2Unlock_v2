@@ -1,6 +1,14 @@
-#include <cassert>   // macro only — must precede import std; on GCC 16
+#include <cassert>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <span>
+#include <string>
+#include <vector>
 
-import std;
 import su.core.types;
 import su.recognizer.types;
 import su.recognizer.backend;
