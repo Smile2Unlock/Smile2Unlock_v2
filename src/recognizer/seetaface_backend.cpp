@@ -111,6 +111,18 @@ float liveness_score_from(
     std::unreachable();
 }
 
+// Human-readable label for the anti-spoofing status. Logged on status
+// transitions; compiles to a constant string in release builds.
+const char* liveness_status_name(seeta::FaceAntiSpoofing::Status status) {
+    switch (status) {
+    case seeta::FaceAntiSpoofing::REAL: return "REAL";
+    case seeta::FaceAntiSpoofing::SPOOF: return "SPOOF";
+    case seeta::FaceAntiSpoofing::FUZZY: return "FUZZY";
+    case seeta::FaceAntiSpoofing::DETECTING: return "DETECTING";
+    }
+    std::unreachable();
+}
+
 }  // namespace
 
 class SeetaFaceBackend::Impl {
@@ -194,15 +206,13 @@ public:
             auto reality = 0.0F;
             anti_spoofing_->GetPreFrameScore(&clarity, &reality);
             liveness_score = liveness_score_from(liveness_status, {clarity, reality});
-            const char* status_name = "UNKNOWN";
-            switch (liveness_status) {
-            case seeta::FaceAntiSpoofing::REAL: status_name = "REAL"; break;
-            case seeta::FaceAntiSpoofing::SPOOF: status_name = "SPOOF"; break;
-            case seeta::FaceAntiSpoofing::FUZZY: status_name = "FUZZY"; break;
-            case seeta::FaceAntiSpoofing::DETECTING: status_name = "DETECTING"; break;
+            // Log only on status transitions to keep stderr quiet during
+            // stable REAL/SPOOF stretches (which may last hundreds of frames).
+            if (liveness_status != prev_liveness_status_) {
+                prev_liveness_status_ = liveness_status;
+                std::println(stderr, "[seeta] liveness status={} clarity={:.3f} reality={:.3f} score={:.3f}",
+                             liveness_status_name(liveness_status), clarity, reality, liveness_score);
             }
-            std::println(stderr, "[seeta] liveness status={} clarity={:.3f} reality={:.3f} score={:.3f}",
-                         status_name, clarity, reality, liveness_score);
         }
 
         RecognitionResult result{
@@ -265,6 +275,7 @@ private:
     std::unique_ptr<seeta::FaceRecognizer> recognizer_;
     std::unique_ptr<seeta::FaceAntiSpoofing> anti_spoofing_;
     mutable std::mutex mutex_;
+    mutable seeta::FaceAntiSpoofing::Status prev_liveness_status_ = seeta::FaceAntiSpoofing::DETECTING;
 };
 
 #else
