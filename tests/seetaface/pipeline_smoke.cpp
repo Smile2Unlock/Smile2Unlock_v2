@@ -65,6 +65,7 @@ TestImage load_ppm_rgb(const std::filesystem::path& path) {
     assert(width > 0);
     assert(height > 0);
     assert(max_value == 255);
+    (void)max_value;
     input.get();
 
     auto bytes = std::vector<std::byte>(static_cast<std::size_t>(width * height * 3));

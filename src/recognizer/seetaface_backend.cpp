@@ -213,6 +213,7 @@ public:
                 .width = face.width,
                 .height = face.height,
             },
+            .feature = {},
             .liveness_score = liveness_score,
         };
 

@@ -82,8 +82,8 @@ public:
                     if (!frame) {
                         slint::invoke_from_event_loop(
                             [&callback]() {
-                                callback(slint::Image(),
-                                         PreviewOverlay{.status_text = "capture failed"});
+                                 callback(slint::Image(),
+                                         PreviewOverlay{.face_box = {}, .status_text = "capture failed"});
                             });
                         std::this_thread::sleep_for(interval);
                         continue;

@@ -240,7 +240,8 @@ std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     float threshold,
     bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    const auto decision = su_core_authenticate_face_sample_with_liveness(
+    auto decision = SuFaceAuthDecision{};
+    decision = su_core_authenticate_face_sample_with_liveness(
         store_path.c_str(),
         owned_face_sample_source.c_str(),
         threshold,
