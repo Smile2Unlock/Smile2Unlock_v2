@@ -217,6 +217,11 @@ std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend
         return {};
     }
 
+    // Moved-from state: seetaface_init_flag_ is null.
+    if (!seetaface_init_flag_) {
+        return std::unexpected(RecognizerError::kModelUnavailable);
+    }
+
     // std::call_once guarantees the init lambda runs at most once. The
     // seetaface_backend_ pointer is the authoritative success indicator: if
     // the lambda completes without throwing and the backend loaded, the

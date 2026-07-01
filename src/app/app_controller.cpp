@@ -9,6 +9,12 @@ namespace {
 
 constexpr std::string_view kImageSourcePrefix = "image:";
 
+// RAII guard: closes the recognizer camera when leaving scope.
+struct [[nodiscard]] CameraGuard {
+    su::recognizer::RecognizerService& svc;
+    ~CameraGuard() { svc.close_camera(); }
+};
+
 bool liveness_passes(const CoreConfig& config, const su::recognizer::RecognitionResult& result) {
     return !config.liveness_detection
         || result.liveness_score >= config.liveness_threshold;
@@ -80,9 +86,6 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
     const auto loaded_config = load_config(path);
     if (!loaded_config) {
         return std::unexpected(std::format("failed to load config from Rust core: {}", path));
-    }
-    if (const auto saved = save_config(path, *loaded_config); !saved) {
-        return std::unexpected(std::format("failed to save config through Rust core: {}", path));
     }
     const auto store_path = profile_store_path();
     const auto profiles = list_face_profile_summaries(store_path);
@@ -184,9 +187,8 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
         return std::unexpected("failed to open configured camera");
     }
-    // Scope guard: camera must be closed regardless of success/error so the
-    // preview controller (if running) can re-acquire it on next frame.
-    const auto close_guard = std::shared_ptr<void>(nullptr, [this](...) { recognizer_.close_camera(); });
+    // CameraGuard closes the camera on every exit path.
+    const CameraGuard _close_guard{recognizer_};
     const auto result = recognizer_.extract_features();
     if (!result || !result->has_face || result->feature.empty()) {
         return std::unexpected("failed to extract face features from current frame");
@@ -273,8 +275,8 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
     if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
         return std::unexpected("failed to open configured camera");
     }
-    // Scope guard: close camera on every exit path.
-    const auto close_guard = std::shared_ptr<void>(nullptr, [this](...) { recognizer_.close_camera(); });
+    // CameraGuard closes the camera on every exit path.
+    const CameraGuard _close_guard{recognizer_};
     const auto result = recognizer_.extract_features();
     if (!result || !result->has_face || result->feature.empty()) {
         return std::unexpected("failed to extract face features from current frame");

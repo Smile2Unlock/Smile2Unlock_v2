@@ -148,11 +148,16 @@ pub fn cosine_similarity(left: &FaceEmbedding, right: &FaceEmbedding) -> f32 {
         return 0.0;
     }
 
-    left.iter()
-        .zip(right.iter())
-        .map(|(a, b)| a * b)
-        .sum::<f32>()
-        .clamp(-1.0, 1.0)
+    let dot: f32 = left.iter().zip(right.iter()).map(|(a, b)| a * b).sum();
+
+    let norm_lhs = left.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let norm_rhs = right.iter().map(|v| v * v).sum::<f32>().sqrt();
+
+    if norm_lhs <= f32::EPSILON || norm_rhs <= f32::EPSILON {
+        return 0.0;
+    }
+
+    (dot / (norm_lhs * norm_rhs)).clamp(-1.0, 1.0)
 }
 
 pub(crate) fn normalize(embedding: FaceEmbedding) -> FaceEmbedding {
