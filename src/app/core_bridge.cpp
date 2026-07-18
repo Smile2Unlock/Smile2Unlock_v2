@@ -108,6 +108,37 @@ std::uint32_t core_version_major() {
     return su_core_version_major();
 }
 
+std::expected<ControlRequest, CoreError> parse_control_request(std::string_view json) {
+    SuControlRequest request{};
+    const auto status = su_core_parse_control_request(
+        reinterpret_cast<const std::uint8_t*>(json.data()),
+        json.size(),
+        &request);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+
+    auto type = ControlMessageType::kStatus;
+    switch (request.msg_type) {
+    case SuControlMessageType_Authenticate:
+        type = ControlMessageType::kAuthenticate;
+        break;
+    case SuControlMessageType_Status:
+        type = ControlMessageType::kStatus;
+        break;
+    case SuControlMessageType_Cancel:
+        type = ControlMessageType::kCancel;
+        break;
+    }
+
+    return ControlRequest{
+        .type = type,
+        .request_id = request.request_id,
+        .target_request_id = request.target_request_id,
+        .username = fixed_string(request.username, SuControlUsernameCap),
+    };
+}
+
 std::expected<float, CoreError> default_threshold() {
     float threshold = 0.0F;
     const auto status = su_core_default_threshold(&threshold);

@@ -11,6 +11,7 @@ enum {
     SuFaceProfileIdCap = 64,
     SuFaceProfileLabelCap = 128,
     SuFaceAuthReasonCap = 128,
+    SuControlUsernameCap = 256,
 };
 
 typedef enum SuStatus {
@@ -24,6 +25,19 @@ typedef enum SuStatus {
     SuStatus_InvalidArgument = 7,
     SuStatus_BufferTooSmall = 8,
 } SuStatus;
+
+typedef enum SuControlMessageType {
+    SuControlMessageType_Authenticate = 1,
+    SuControlMessageType_Status = 2,
+    SuControlMessageType_Cancel = 3,
+} SuControlMessageType;
+
+typedef struct SuControlRequest {
+    SuControlMessageType msg_type;
+    uint64_t request_id;
+    uint64_t target_request_id;
+    uint8_t username[SuControlUsernameCap];
+} SuControlRequest;
 
 typedef struct SuAuthDecision {
     SuStatus status;
@@ -65,6 +79,10 @@ typedef struct SuFaceAuthReport {
 } SuFaceAuthReport;
 
 uint32_t su_core_version_major(void);
+SuStatus su_core_parse_control_request(
+    const uint8_t* input,
+    uintptr_t input_len,
+    SuControlRequest* out_request);
 SuAuthDecision su_core_evaluate_auth(
     const char* username,
     float similarity,

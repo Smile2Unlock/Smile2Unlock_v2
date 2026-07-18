@@ -13,8 +13,53 @@ use crate::embedding::{
 };
 use crate::pipeline::authenticate_sample_with_liveness;
 use crate::profile::{copy_str_to_fixed, delete_profile, enroll_profile, load_store};
+use crate::protocol::{ControlRequest, parse_control_request};
 
 static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn control_protocol_parses_versioned_requests() {
+    let auth = parse_control_request(
+        br#"{"version":1,"msg_type":"authenticate","request_id":42,"username":" alice "}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        auth,
+        ControlRequest::Authenticate {
+            request_id: 42,
+            username: "alice".to_owned(),
+        }
+    );
+
+    let status =
+        parse_control_request(br#"{"version":1,"msg_type":"status","request_id":43}"#).unwrap();
+    assert_eq!(status, ControlRequest::Status { request_id: 43 });
+
+    let cancel = parse_control_request(
+        br#"{"version":1,"msg_type":"cancel","request_id":44,"target_request_id":42}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        cancel,
+        ControlRequest::Cancel {
+            request_id: 44,
+            target_request_id: 42,
+        }
+    );
+}
+
+#[test]
+fn control_protocol_rejects_untrusted_input() {
+    for input in [
+        br#"{"version":2,"msg_type":"status","request_id":1}"#.as_slice(),
+        br#"{"version":1,"msg_type":"authenticate","request_id":0,"username":"alice"}"#,
+        br#"{"version":1,"msg_type":"authenticate","request_id":1,"username":""}"#,
+        br#"{"version":1,"msg_type":"authenticate","request_id":1,"username":"a\nb"}"#,
+        br#"{"version":1,"msg_type":"unknown","request_id":1}"#,
+    ] {
+        assert!(parse_control_request(input).is_err());
+    }
+}
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
     let sequence = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);

@@ -20,6 +20,32 @@ bool liveness_passes(const CoreConfig& config, const su::recognizer::Recognition
         || result.liveness_score >= config.liveness_threshold;
 }
 
+std::expected<su::recognizer::RecognitionResult, std::string> capture_live_features(
+    su::recognizer::RecognizerService& recognizer,
+    const CoreConfig& config) {
+    if (config.liveness_detection) {
+        if (const auto reset = recognizer.reset_liveness(); !reset) {
+            return std::unexpected("failed to reset liveness detector");
+        }
+    }
+
+    auto saw_face = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto result = recognizer.extract_features(config.liveness_detection);
+        if (!result || !result->has_face || result->feature.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{80});
+            continue;
+        }
+        saw_face = true;
+        if (liveness_passes(config, *result)) {
+            return *result;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{80});
+    }
+    return std::unexpected(saw_face ? "liveness check failed" : "no face detected");
+}
+
 // Try to turn an `image:<path>` sample source into a real SeetaFace embedding.
 // When the SeetaFace backend is unavailable, the source is returned unchanged
 // so the Rust core falls back to its mock image-source handling (which only
@@ -189,12 +215,9 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     }
     // CameraGuard closes the camera on every exit path.
     const CameraGuard _close_guard{recognizer_};
-    const auto result = recognizer_.extract_features();
-    if (!result || !result->has_face || result->feature.empty()) {
-        return std::unexpected("failed to extract face features from current frame");
-    }
-    if (!liveness_passes(*config, *result)) {
-        return std::unexpected("liveness check failed for current frame");
+    const auto result = capture_live_features(recognizer_, *config);
+    if (!result) {
+        return std::unexpected(result.error());
     }
 
     return enroll_face_profile_from_sample(label, su::recognizer::embedding_sample_source(result->feature));
@@ -277,15 +300,14 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
     }
     // CameraGuard closes the camera on every exit path.
     const CameraGuard _close_guard{recognizer_};
-    const auto result = recognizer_.extract_features();
-    if (!result || !result->has_face || result->feature.empty()) {
-        return std::unexpected("failed to extract face features from current frame");
+    const auto result = capture_live_features(recognizer_, *config);
+    if (!result) {
+        return std::unexpected(result.error());
     }
 
-    const auto liveness_ok = liveness_passes(*config, *result);
     return authenticate_face_sample_from_source(
         su::recognizer::embedding_sample_source(result->feature),
-        liveness_ok);
+        true);
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {

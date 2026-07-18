@@ -12,7 +12,8 @@ use crate::auth;
 use crate::config;
 use crate::pipeline;
 use crate::profile;
-use crate::{SuAuthDecision, SuCoreConfig, SuStatus, SuFaceProfileSummary};
+use crate::protocol;
+use crate::{SuAuthDecision, SuControlRequest, SuCoreConfig, SuFaceProfileSummary, SuStatus};
 
 use profile::{PROFILE_ID_CAP, PROFILE_LABEL_CAP};
 
@@ -20,6 +21,15 @@ use profile::{PROFILE_ID_CAP, PROFILE_LABEL_CAP};
 // in the domain modules (pipeline/auth) and the crate root; keeping them there
 // avoids a second source of truth for their layout.
 pub use crate::pipeline::{SuFaceAuthDecision, SuFaceAuthReport};
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_parse_control_request(
+    input: *const u8,
+    input_len: usize,
+    out_request: *mut SuControlRequest,
+) -> SuStatus {
+    protocol::parse_control_request_ffi(input, input_len, out_request)
+}
 
 pub(crate) fn write_string_to_buffer(
     value: &str,
