@@ -3,6 +3,7 @@ add_rules("mode.debug", "mode.release")
 add_repositories("local-repo local-repo")
 
 add_requires("slint v1.17.0", { system = false, optional = true })
+add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg")
 add_requires("libyuv")
 
@@ -190,10 +191,11 @@ target("su_app")
     add_files("src/modules/su.app.controller.cppm")
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
-        add_packages("slint")
+        add_packages("slint", "nlohmann_json")
         add_files("src/app/slint_main.cpp")
         add_files("src/app/preview_controller.cpp")
         add_files("src/modules/su.app.preview.cppm")
+        add_files("src/modules/su.app.i18n.cppm")
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
         on_load( function (target)
@@ -217,6 +219,14 @@ target("su_app")
                 "--cpp-file", path.join(outputdir, "app_window.cpp"),
                 path.join(os.projectdir(), "src", "app", "ui", "app.slint")
             })
+        end)
+        after_build( function (target)
+            local outputdir = path.join(target:targetdir(), "assets", "i18n")
+            os.rm(outputdir)
+            os.mkdir(outputdir)
+            for _, file in ipairs(os.files(path.join(os.projectdir(), "assets", "i18n", "*.json"))) do
+                os.cp(file, outputdir)
+            end
         end)
     else
         add_defines("SU_HAS_SLINT=0")
