@@ -12,6 +12,8 @@ export namespace su::app {
 // Overlay data derived from a preview frame.
 struct PreviewOverlay {
     std::optional<su::recognizer::FaceBox> face_box;
+    int source_width = 0;
+    int source_height = 0;
     float liveness_score = 0.0F;
     std::string status_text;
 };

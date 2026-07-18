@@ -50,7 +50,13 @@ std::expected<LoadedImage, RecognizerError> load_image_file(
         image.resize(image.width(), image.height(), 1, kRgbChannels, /*value=*/0);
     }
 
-    const auto pixel_count = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const auto width_size = static_cast<std::size_t>(width);
+    const auto height_size = static_cast<std::size_t>(height);
+    if (width_size > std::numeric_limits<std::size_t>::max() / height_size
+        || width_size * height_size > std::numeric_limits<std::size_t>::max() / kRgbChannels) {
+        return std::unexpected(RecognizerError::kInvalidImage);
+    }
+    const auto pixel_count = width_size * height_size;
     auto bytes = std::vector<std::byte>(pixel_count * kRgbChannels);
     // Use mdspan for zero-overhead 3D indexing over the interleaved RGB
     // buffer: extents<height, width, 3>. This replaces the manual pointer

@@ -1,7 +1,9 @@
 module;
 #include <cstdint>
+#include <cerrno>
 #include <fcntl.h>
 #include <linux/videodev2.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -40,11 +42,23 @@ bool device_supports_capture(int fd) {
     if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
         return false;
     }
-    return (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) != 0;
+    const auto capabilities = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) != 0
+        ? cap.device_caps
+        : cap.capabilities;
+    return (capabilities & V4L2_CAP_VIDEO_CAPTURE) != 0;
 }
 
-// Try to set the requested format; returns the format actually negotiated.
-std::expected<uint32_t, RecognizerError> negotiate_format(int fd, int width, int height) {
+struct NegotiatedFormat {
+    uint32_t pixel_format = 0;
+    int width = 0;
+    int height = 0;
+    std::size_t stride = 0;
+};
+
+// V4L2 may adjust dimensions and row stride even when it accepts the requested
+// pixel format. Preserve the complete negotiated shape for downstream bounds
+// checks and conversion.
+std::expected<NegotiatedFormat, RecognizerError> negotiate_format(int fd, int width, int height) {
     for (const auto preferred : {V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_MJPEG}) {
         v4l2_format fmt{};
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -56,7 +70,17 @@ std::expected<uint32_t, RecognizerError> negotiate_format(int fd, int width, int
             continue;
         }
         if (fmt.fmt.pix.pixelformat == preferred) {
-            return preferred;
+            const auto fallback_stride = preferred == V4L2_PIX_FMT_YUYV
+                ? static_cast<std::size_t>(fmt.fmt.pix.width) * 2
+                : 0;
+            return NegotiatedFormat{
+                .pixel_format = preferred,
+                .width = static_cast<int>(fmt.fmt.pix.width),
+                .height = static_cast<int>(fmt.fmt.pix.height),
+                .stride = fmt.fmt.pix.bytesperline != 0
+                    ? fmt.fmt.pix.bytesperline
+                    : fallback_stride,
+            };
         }
     }
     return std::unexpected(RecognizerError::kCameraUnavailable);
@@ -90,11 +114,21 @@ public:
     Impl& operator=(Impl&&) = delete;
 
     std::expected<void, RecognizerError> open(int index) {
+        release();
         device_path_ = "/dev/video" + std::to_string(index);
-        fd_ = ::open(device_path_.c_str(), O_RDWR);
+        fd_ = ::open(device_path_.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
         if (fd_ < 0) {
             return std::unexpected(RecognizerError::kNoCamera);
         }
+        struct OpenRollback {
+            Impl* owner;
+            ~OpenRollback() {
+                if (owner != nullptr) {
+                    owner->release();
+                }
+            }
+            void dismiss() { owner = nullptr; }
+        } rollback{this};
         if (!device_supports_capture(fd_)) {
             return std::unexpected(RecognizerError::kCameraUnavailable);
         }
@@ -103,7 +137,10 @@ public:
         if (!format) {
             return std::unexpected(format.error());
         }
-        negotiated_format_ = *format;
+        negotiated_format_ = format->pixel_format;
+        width_ = format->width;
+        height_ = format->height;
+        stride_ = format->stride;
 
         v4l2_requestbuffers req{};
         req.count = kMmapBufferCount;
@@ -145,6 +182,7 @@ public:
             return std::unexpected(RecognizerError::kCameraUnavailable);
         }
         streaming_ = true;
+        rollback.dismiss();
         return {};
     }
 
@@ -164,8 +202,24 @@ public:
             requeue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             requeue.memory = V4L2_MEMORY_MMAP;
             requeue.index = *held_buffer_index_;
-            ioctl(fd_, VIDIOC_QBUF, &requeue);
+            if (ioctl(fd_, VIDIOC_QBUF, &requeue) < 0) {
+                held_buffer_index_.reset();
+                return std::unexpected(RecognizerError::kCameraUnavailable);
+            }
             held_buffer_index_.reset();
+        }
+
+        auto descriptor = pollfd{
+            .fd = fd_,
+            .events = POLLIN,
+            .revents = 0,
+        };
+        int poll_result = 0;
+        do {
+            poll_result = ::poll(&descriptor, 1, 500);
+        } while (poll_result < 0 && errno == EINTR);
+        if (poll_result <= 0 || (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            return std::unexpected(RecognizerError::kCameraUnavailable);
         }
 
         v4l2_buffer buf{};
@@ -175,11 +229,18 @@ public:
             return std::unexpected(RecognizerError::kCameraUnavailable);
         }
 
+        if (buf.index >= buffers_.size()) {
+            return std::unexpected(RecognizerError::kCameraUnavailable);
+        }
         const auto& buffer = buffers_[buf.index];
+        if (buf.bytesused > buffer.length) {
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
         held_buffer_index_ = buf.index;
         return CapturedFrame{
-            .width = 640,
-            .height = 480,
+            .width = width_,
+            .height = height_,
+            .stride = stride_,
             .v4l2_format = negotiated_format_,
             .bytes = std::span<const std::byte>(
                 static_cast<const std::byte*>(buffer.start), buf.bytesused),
@@ -203,6 +264,10 @@ public:
             ::close(fd_);
             fd_ = -1;
         }
+        negotiated_format_ = 0;
+        width_ = 0;
+        height_ = 0;
+        stride_ = 0;
     }
 
     [[nodiscard]] bool is_open() const { return fd_ >= 0 && streaming_; }
@@ -216,6 +281,9 @@ private:
     std::string device_path_;
     int fd_ = -1;
     uint32_t negotiated_format_ = 0;
+    int width_ = 0;
+    int height_ = 0;
+    std::size_t stride_ = 0;
     bool streaming_ = false;
     std::vector<MmapBuffer> buffers_{};
     // Index of the buffer currently held out (DQBUF'd but not yet requeued).

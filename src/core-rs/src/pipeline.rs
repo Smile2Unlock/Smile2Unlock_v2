@@ -78,6 +78,9 @@ pub fn authenticate_sample_with_liveness(
     threshold: f32,
     liveness_ok: bool,
 ) -> Result<FaceAuthReport, SuStatus> {
+    if !threshold.is_finite() || threshold <= 0.0 || threshold > 1.0 {
+        return Err(SuStatus::InvalidArgument);
+    }
     let Some(probe) = embedding_from_face_sample(face_sample_source) else {
         return Err(SuStatus::InvalidArgument);
     };
@@ -98,23 +101,23 @@ pub fn authenticate_sample_with_liveness(
 
     // Reject probes whose embedding dimension differs from the store's locked
     // dimension instead of silently scoring them as 0 via cosine_similarity.
-    if let Some(dim) = store.embedding_dim {
-        if dim as usize != probe.len() {
-            return Ok(FaceAuthReport {
-                accepted: false,
-                score: 0.0,
-                threshold,
-                liveness_ok,
-                profile_count: store.profiles.len(),
-                best_profile_id: None,
-                best_profile_label: None,
-                reason: format!(
-                    "embedding dimension mismatch: probe={} store={}",
-                    probe.len(),
-                    dim
-                ),
-            });
-        }
+    if let Some(dim) = store.embedding_dim
+        && dim as usize != probe.len()
+    {
+        return Ok(FaceAuthReport {
+            accepted: false,
+            score: 0.0,
+            threshold,
+            liveness_ok,
+            profile_count: store.profiles.len(),
+            best_profile_id: None,
+            best_profile_label: None,
+            reason: format!(
+                "embedding dimension mismatch: probe={} store={}",
+                probe.len(),
+                dim
+            ),
+        });
     }
 
     let best = store

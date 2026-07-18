@@ -15,7 +15,13 @@ fn username_from_ptr(username: *const c_char) -> Result<String, SuStatus> {
 }
 
 fn evaluate_auth(username: &str, similarity: f32, threshold: f32, liveness_ok: bool) -> bool {
-    !username.is_empty() && liveness_ok && similarity >= threshold
+    !username.is_empty()
+        && liveness_ok
+        && similarity.is_finite()
+        && threshold.is_finite()
+        && threshold > 0.0
+        && threshold <= 1.0
+        && similarity >= threshold
 }
 
 pub fn evaluate_auth_ffi(

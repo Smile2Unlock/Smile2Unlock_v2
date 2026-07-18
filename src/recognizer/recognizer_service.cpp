@@ -7,13 +7,13 @@ import su.recognizer.backend;
 namespace su::recognizer {
 
 RecognizerService::RecognizerService()
+#if SU_HAS_SEETAFACE
     : seetaface_init_flag_(std::make_unique<std::once_flag>()) {}
+#else
+    = default;
+#endif
 
 RecognizerService::~RecognizerService() = default;
-
-RecognizerService::RecognizerService(RecognizerService&&) noexcept = default;
-
-RecognizerService& RecognizerService::operator=(RecognizerService&&) noexcept = default;
 
 std::vector<CameraInfo> RecognizerService::enumerate_cameras() const {
     const auto devices = enumerate_v4l2_cameras();
@@ -22,16 +22,12 @@ std::vector<CameraInfo> RecognizerService::enumerate_cameras() const {
     for (const auto& device : devices) {
         cameras.push_back(CameraInfo{.index = device.index, .name = device.name});
     }
-    // Always expose a mock slot so headless/test environments without a camera
-    // can still drive the demo path.
-    if (cameras.empty()) {
-        cameras.push_back(CameraInfo{.index = 0, .name = "Mock camera 0"});
-    }
     return cameras;
 }
 
 std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_index) {
-    close_camera();
+    std::lock_guard lock(camera_mutex_);
+    close_camera_unlocked();
 
     camera_ = std::make_unique<V4L2Camera>();
     auto opened = camera_->open(camera_index);
@@ -40,43 +36,18 @@ std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_i
         return {};
     }
 
-    // No physical device or format negotiation failed: fall back to mock mode
-    // so the app stays usable in headless/test environments. The caller still
-    // sees the camera as "open" and capture_preview_frame returns a mock frame.
+    const auto error = opened.error();
     camera_.reset();
-    const auto cameras = enumerate_cameras();
-    const auto exists = std::ranges::any_of(
-        cameras,
-        [camera_index](const CameraInfo& camera) {
-            return camera.index == camera_index;
-        });
-    if (!exists) {
-        return std::unexpected(RecognizerError::kNoCamera);
-    }
-    active_camera_ = camera_index;
-    return {};
+    return std::unexpected(error);
 }
-
-namespace {
-
-PreviewFrame mock_preview_frame() {
-    constexpr int width = 2;
-    constexpr int height = 2;
-    return PreviewFrame{
-        .width = width,
-        .height = height,
-        .rgba_or_rgb = std::vector<std::byte>(width * height * 3, std::byte{0x80}),
-    };
-}
-
-}  // namespace
 
 std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_frame() const {
+    std::lock_guard lock(camera_mutex_);
     if (!active_camera_) {
         return std::unexpected(RecognizerError::kCameraUnavailable);
     }
     if (!camera_) {
-        return mock_preview_frame();
+        return std::unexpected(RecognizerError::kCameraUnavailable);
     }
 
     auto frame = camera_->grab_frame();
@@ -94,49 +65,39 @@ std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_
     };
 }
 
-namespace {
-
-// Synthetic detection result for the mock 2x2 frame, which has no real face.
-// Keeps the headless demo path usable without a camera or SeetaFace.
-RecognitionResult mock_recognition_result() {
-    return RecognitionResult{
-        .has_face = true,
-        .face_box = FaceBox{.x = 10, .y = 12, .width = 96, .height = 96},
-        .feature = {0.10F, 0.20F, 0.30F, 0.40F},
-        .liveness_score = 0.95F,
-    };
-}
-
-}  // namespace
-
 std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
 RecognizerService::capture_and_extract() const {
-    if (!active_camera_) {
-        return std::unexpected(RecognizerError::kCameraUnavailable);
-    }
+    auto preview = PreviewFrame{};
+    {
+        std::lock_guard lock(camera_mutex_);
+        if (!active_camera_) {
+            return std::unexpected(RecognizerError::kCameraUnavailable);
+        }
 
-    if (!camera_) {
-        return std::make_pair(mock_preview_frame(), mock_recognition_result());
-    }
+        if (!camera_) {
+            return std::unexpected(RecognizerError::kCameraUnavailable);
+        }
 
-    // Grab exactly once and run detection on the same converted frame, so the
-    // face box and the preview image always correspond to the same capture.
-    auto frame = camera_->grab_frame();
-    if (!frame) {
-        return std::unexpected(frame.error());
+        // Copy the mmap-backed frame while holding the camera lock. SeetaFace
+        // runs after the copy, so camera control does not stay blocked during
+        // model inference.
+        auto frame = camera_->grab_frame();
+        if (!frame) {
+            return std::unexpected(frame.error());
+        }
+        auto rgb = v4l2_frame_to_rgb(*frame);
+        if (!rgb) {
+            return std::unexpected(rgb.error());
+        }
+        preview = PreviewFrame{
+            .width = frame->width,
+            .height = frame->height,
+            .rgba_or_rgb = std::move(*rgb),
+        };
     }
-    auto rgb = v4l2_frame_to_rgb(*frame);
-    if (!rgb) {
-        return std::unexpected(rgb.error());
-    }
-    auto preview = PreviewFrame{
-        .width = frame->width,
-        .height = frame->height,
-        .rgba_or_rgb = *rgb,
-    };
     auto result = extract_from_image(ImageView{
-        .width = frame->width,
-        .height = frame->height,
+        .width = preview.width,
+        .height = preview.height,
         .channels = 3,
         .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
     });
@@ -190,6 +151,11 @@ std::expected<float, RecognizerError> RecognizerService::compare_features(
 }
 
 void RecognizerService::close_camera() {
+    std::lock_guard lock(camera_mutex_);
+    close_camera_unlocked();
+}
+
+void RecognizerService::close_camera_unlocked() {
     if (camera_) {
         camera_->release();
         camera_.reset();
@@ -212,11 +178,6 @@ std::string embedding_sample_source(std::span<const float> feature) {
 #if SU_HAS_SEETAFACE
 
 std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
-    // Fast path: already initialized.
-    if (seetaface_backend_) {
-        return {};
-    }
-
     // Moved-from state: seetaface_init_flag_ is null.
     if (!seetaface_init_flag_) {
         return std::unexpected(RecognizerError::kModelUnavailable);

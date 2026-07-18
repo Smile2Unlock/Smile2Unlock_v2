@@ -11,6 +11,7 @@ mod embedding;
 mod ffi;
 mod pipeline;
 mod profile;
+mod storage;
 
 #[cfg(test)]
 mod tests;

@@ -1,16 +1,20 @@
+use std::collections::HashSet;
 use std::ffi::{CStr, c_char};
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::SuStatus;
 use crate::embedding::{FaceEmbedding, embedding_from_face_sample};
+use crate::storage::atomic_write_private;
 
 pub const PROFILE_ID_CAP: usize = 64;
 pub const PROFILE_LABEL_CAP: usize = 128;
+
+static PROFILE_STORE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaceProfile {
@@ -67,7 +71,8 @@ pub fn load_store(path: &Path) -> Result<ProfileStore, SuStatus> {
     }
 
     let text = fs::read_to_string(path).map_err(|_| SuStatus::IoError)?;
-    let mut store = serde_json::from_str::<ProfileStore>(&text).map_err(|_| SuStatus::ParseError)?;
+    let mut store =
+        serde_json::from_str::<ProfileStore>(&text).map_err(|_| SuStatus::ParseError)?;
 
     // Legacy stores created before the embedding_dim field carry no dimension.
     // Backfill from the first profile so the lock applies going forward; the
@@ -75,19 +80,35 @@ pub fn load_store(path: &Path) -> Result<ProfileStore, SuStatus> {
     if store.embedding_dim.is_none() && !store.profiles.is_empty() {
         store.embedding_dim = Some(store.profiles[0].embedding.len() as u32);
     }
+    if !valid_store(&store) {
+        return Err(SuStatus::ParseError);
+    }
     Ok(store)
 }
 
-pub fn save_store(path: &Path, store: &ProfileStore) -> Result<(), SuStatus> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| SuStatus::IoError)?;
+fn valid_store(store: &ProfileStore) -> bool {
+    let Some(expected_dim) = store.embedding_dim.map(|dim| dim as usize) else {
+        return store.profiles.is_empty();
+    };
+    if expected_dim == 0 {
+        return false;
     }
+    let mut ids = HashSet::with_capacity(store.profiles.len());
+    store.profiles.iter().all(|profile| {
+        !profile.id.is_empty()
+            && !profile.label.is_empty()
+            && ids.insert(profile.id.as_str())
+            && profile.embedding.len() == expected_dim
+            && profile.embedding.iter().all(|value| value.is_finite())
+    })
+}
 
+pub fn save_store(path: &Path, store: &ProfileStore) -> Result<(), SuStatus> {
+    if !valid_store(store) {
+        return Err(SuStatus::InvalidArgument);
+    }
     let text = serde_json::to_string_pretty(store).map_err(|_| SuStatus::WriteError)?;
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, text).map_err(|_| SuStatus::WriteError)?;
-    fs::rename(&tmp_path, path).map_err(|_| SuStatus::WriteError)?;
-    Ok(())
+    atomic_write_private(path, text.as_bytes())
 }
 
 pub fn enroll_profile(
@@ -102,6 +123,7 @@ pub fn enroll_profile(
         return Err(SuStatus::InvalidArgument);
     }
 
+    let _guard = PROFILE_STORE_LOCK.lock().map_err(|_| SuStatus::IoError)?;
     let mut store = load_store(path)?;
 
     // Lock the embedding dimension at the first enrollment so a store never
@@ -132,6 +154,7 @@ pub fn delete_profile(path: &Path, profile_id: &str) -> Result<bool, SuStatus> {
         return Err(SuStatus::InvalidArgument);
     }
 
+    let _guard = PROFILE_STORE_LOCK.lock().map_err(|_| SuStatus::IoError)?;
     let mut store = load_store(path)?;
     let before = store.profiles.len();
     store.profiles.retain(|profile| profile.id != profile_id);
@@ -149,20 +172,22 @@ pub fn list_profiles(path: &Path) -> Result<Vec<FaceProfile>, SuStatus> {
     Ok(load_store(path)?.profiles)
 }
 
-// Generate a process-unique profile id. The id is derived from the current
-// monotonic nanosecond timestamp combined with a per-process counter, so it is
-// independent of the label. Labels are display-only and must never become the
+// Generate a profile id from epoch nanoseconds, process id, and a per-process
+// counter. The components remain visible instead of being compressed through a
+// non-stable standard-library hasher, and fit in the 64-byte FFI field.
+// It is independent of the label. Labels are display-only and must never become the
 // profile identity (a re-enrollment of the same label is a new profile, not an
 // overwrite of the old one).
 fn unique_profile_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-    seq.hash(&mut hasher);
-    now_unix().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{nanos:032x}-{:08x}-{seq:016x}", std::process::id())
 }
 
 pub fn copy_str_to_fixed<const N: usize>(value: &str, out: &mut [u8; N]) {
@@ -172,7 +197,10 @@ pub fn copy_str_to_fixed<const N: usize>(value: &str, out: &mut [u8; N]) {
     }
 
     let bytes = value.as_bytes();
-    let len = bytes.len().min(N - 1);
+    let mut len = bytes.len().min(N - 1);
+    while !value.is_char_boundary(len) {
+        len -= 1;
+    }
     out[..len].copy_from_slice(&bytes[..len]);
 }
 

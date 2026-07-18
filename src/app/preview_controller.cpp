@@ -18,12 +18,24 @@ namespace su::app {
 namespace {
 
 slint::Image preview_frame_to_image(const su::recognizer::PreviewFrame& frame) {
+    if (frame.width <= 0 || frame.height <= 0
+        || !std::in_range<std::uint32_t>(frame.width)
+        || !std::in_range<std::uint32_t>(frame.height)) {
+        return {};
+    }
+    const auto width = static_cast<std::size_t>(frame.width);
+    const auto height = static_cast<std::size_t>(frame.height);
+    if (width > std::numeric_limits<std::size_t>::max() / height
+        || width * height > std::numeric_limits<std::size_t>::max() / 3
+        || frame.rgba_or_rgb.size() < width * height * 3) {
+        return {};
+    }
     slint::SharedPixelBuffer<slint::Rgb8Pixel> buffer(
         static_cast<uint32_t>(frame.width),
         static_cast<uint32_t>(frame.height));
     const auto* src = reinterpret_cast<const unsigned char*>(frame.rgba_or_rgb.data());
     auto* dst = buffer.begin();
-    const auto pixel_count = static_cast<std::size_t>(frame.width) * frame.height;
+    const auto pixel_count = width * height;
     for (std::size_t i = 0; i < pixel_count; ++i) {
         dst[i] = slint::Rgb8Pixel{
             .r = src[i * 3 + 0],
@@ -61,9 +73,11 @@ public:
                bool liveness_enabled,
                FrameCallback callback) {
         stop();
-        if (fps <= 0) {
-            fps = 15;
+        if (!callback) {
+            std::println(stderr, "[preview] missing frame callback");
+            return;
         }
+        fps = std::clamp(fps, 1, 120);
         if (const auto opened = recognizer.open_camera(camera_index); !opened) {
             std::println(stderr, "[preview] open_camera failed");
             return;
@@ -73,17 +87,20 @@ public:
 
         const auto interval = std::chrono::milliseconds(1000 / fps);
         auto running = running_;
+        auto shared_callback = std::make_shared<FrameCallback>(std::move(callback));
 
         thread_ = std::thread(
-            [running, interval, callback = std::move(callback),
+            [running, interval, callback = std::move(shared_callback),
              &recognizer, liveness_enabled]() mutable {
-                while (running->load()) {
+                while (running->load(std::memory_order_relaxed)) {
                     auto frame = recognizer.capture_preview_frame();
                     if (!frame) {
                         slint::invoke_from_event_loop(
-                            [&callback]() {
-                                 callback(slint::Image(),
-                                         PreviewOverlay{.face_box = {}, .status_text = "capture failed"});
+                            [running, callback]() {
+                                if (running->load(std::memory_order_relaxed)) {
+                                    (*callback)(slint::Image(),
+                                                PreviewOverlay{.face_box = {}, .status_text = "capture failed"});
+                                }
                             });
                         std::this_thread::sleep_for(interval);
                         continue;
@@ -114,11 +131,15 @@ public:
                     } else {
                         overlay.status_text = "detect failed";
                     }
+                    overlay.source_width = frame->width;
+                    overlay.source_height = frame->height;
 
                     slint::invoke_from_event_loop(
-                        [&callback, image = std::move(image),
+                        [running, callback, image = std::move(image),
                          overlay = std::move(overlay)]() mutable {
-                            callback(std::move(image), std::move(overlay));
+                            if (running->load(std::memory_order_relaxed)) {
+                                (*callback)(std::move(image), std::move(overlay));
+                            }
                         });
 
                     std::this_thread::sleep_for(interval);
@@ -128,7 +149,7 @@ public:
 
     void stop() {
         if (running_) {
-            running_->store(false);
+            running_->store(false, std::memory_order_relaxed);
         }
         if (thread_.joinable()) {
             thread_.join();
@@ -137,10 +158,11 @@ public:
             recognizer_->close_camera();
             recognizer_ = nullptr;
         }
+        running_.reset();
     }
 
     [[nodiscard]] bool is_running() const {
-        return running_ && running_->load() && thread_.joinable();
+        return running_ && running_->load(std::memory_order_relaxed) && thread_.joinable();
     }
 
     ~Impl() { stop(); }

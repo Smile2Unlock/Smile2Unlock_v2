@@ -15,8 +15,8 @@ public:
 
     RecognizerService(const RecognizerService&) = delete;
     RecognizerService& operator=(const RecognizerService&) = delete;
-    RecognizerService(RecognizerService&&) noexcept;
-    RecognizerService& operator=(RecognizerService&&) noexcept;
+    RecognizerService(RecognizerService&&) = delete;
+    RecognizerService& operator=(RecognizerService&&) = delete;
 
     std::vector<CameraInfo> enumerate_cameras() const;
     std::expected<void, RecognizerError> open_camera(int camera_index);
@@ -40,7 +40,9 @@ public:
 
 private:
     std::expected<void, RecognizerError> ensure_seetaface_backend() const;
+    void close_camera_unlocked();
 
+    mutable std::mutex camera_mutex_;
     std::optional<int> active_camera_;
 #if SU_HAS_SEETAFACE
     mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;

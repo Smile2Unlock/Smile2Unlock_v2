@@ -175,7 +175,8 @@ int main() {
     window->on_enroll_requested([window, &controller](slint::SharedString label, slint::SharedString face_sample_source) {
         window->set_profile_text(enroll_or_error(controller, label, face_sample_source));
     });
-    window->on_enroll_current_frame_requested([window, &controller](slint::SharedString label) {
+    window->on_enroll_current_frame_requested([window, &controller, &preview](slint::SharedString label) {
+        preview.stop();
         window->set_profile_text(enroll_current_frame_or_error(controller, label));
     });
     window->on_face_auth_requested([window, &controller](slint::SharedString face_sample_source) {
@@ -187,7 +188,8 @@ int main() {
         window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
         window->set_auth_text(slint::SharedString(face_demo.decision.accepted ? "Accepted" : "Rejected"));
     });
-    window->on_current_frame_auth_requested([window, &controller] {
+    window->on_current_frame_auth_requested([window, &controller, &preview] {
+        preview.stop();
         auto error_text = slint::SharedString();
         const auto face_demo = authenticate_current_frame_or_empty(controller, error_text);
         if (!error_text.empty()) {
@@ -216,11 +218,18 @@ int main() {
     auto push_preview_frame = [window](slint::Image image, su::app::PreviewOverlay overlay) {
         window->set_preview_image(std::move(image));
         window->set_preview_status_text(slint::SharedString(overlay.status_text));
-        if (overlay.face_box) {
-            window->set_face_box_x(overlay.face_box->x * 0.5F);
-            window->set_face_box_y(overlay.face_box->y * 0.5F);
-            window->set_face_box_w(overlay.face_box->width * 0.5F);
-            window->set_face_box_h(overlay.face_box->height * 0.5F);
+        if (overlay.face_box && overlay.source_width > 0 && overlay.source_height > 0) {
+            constexpr auto preview_width = 320.0F;
+            constexpr auto preview_height = 240.0F;
+            const auto scale = std::min(
+                preview_width / static_cast<float>(overlay.source_width),
+                preview_height / static_cast<float>(overlay.source_height));
+            const auto offset_x = (preview_width - overlay.source_width * scale) * 0.5F;
+            const auto offset_y = (preview_height - overlay.source_height * scale) * 0.5F;
+            window->set_face_box_x(offset_x + overlay.face_box->x * scale);
+            window->set_face_box_y(offset_y + overlay.face_box->y * scale);
+            window->set_face_box_w(overlay.face_box->width * scale);
+            window->set_face_box_h(overlay.face_box->height * scale);
             window->set_face_box_visible(true);
         } else {
             window->set_face_box_visible(false);

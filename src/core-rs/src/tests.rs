@@ -1,6 +1,8 @@
 use std::ffi::CString;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::SuStatus;
 use crate::auth::evaluate_auth_ffi;
@@ -10,10 +12,16 @@ use crate::embedding::{
     normalize, parse_face_sample_source, try_embedding_from_face_sample,
 };
 use crate::pipeline::authenticate_sample_with_liveness;
-use crate::profile::{delete_profile, enroll_profile, load_store};
+use crate::profile::{copy_str_to_fixed, delete_profile, enroll_profile, load_store};
+
+static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("su_core_{name}.{extension}"))
+    let sequence = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "su_core_{name}-{}-{sequence}.{extension}",
+        std::process::id()
+    ))
 }
 
 fn embedding_source(values: &[f32]) -> String {
@@ -57,6 +65,33 @@ fn missing_config_file_returns_default() {
     let config = load_config(&path).unwrap();
     assert_eq!(config.version, 1);
     assert_eq!(config.preview_fps, 15);
+}
+
+#[test]
+fn unsafe_config_values_fall_back_to_safe_defaults() {
+    let path = temp_path("unsafe_config", "toml");
+    fs::write(
+        &path,
+        "version = 0\nselected_camera = -1\nrecognition_threshold = -1.0\nliveness_detection = true\nliveness_threshold = 2.0\npreview_fps = 5000\n",
+    )
+    .unwrap();
+
+    let config = load_config(&path).unwrap();
+    assert_eq!(config.version, 1);
+    assert_eq!(config.selected_camera, 0);
+    assert_eq!(config.recognition_threshold, 0.65);
+    assert_eq!(config.liveness_threshold, 0.50);
+    assert_eq!(config.preview_fps, 15);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn invalid_auth_thresholds_are_rejected() {
+    let name = CString::new("alice").unwrap();
+    for threshold in [-1.0, 0.0, 1.1, f32::NAN] {
+        let decision = evaluate_auth_ffi(name.as_ptr(), 1.0, threshold, true);
+        assert!(!decision.accepted);
+    }
 }
 
 #[test]
@@ -193,6 +228,72 @@ fn enroll_list_delete_profile() {
 }
 
 #[test]
+fn concurrent_enrollment_preserves_all_profiles() {
+    let path = Arc::new(temp_path("profile_store_concurrent", "json"));
+    let _ = fs::remove_file(path.as_ref());
+    let workers = (0..8)
+        .map(|index| {
+            let path = Arc::clone(&path);
+            std::thread::spawn(move || {
+                enroll_profile(
+                    path.as_ref(),
+                    &format!("User {index}"),
+                    &format!("mock:face:user:{index}"),
+                )
+                .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let ids = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap().id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), 8);
+    assert_eq!(load_store(path.as_ref()).unwrap().profiles.len(), 8);
+    let _ = fs::remove_file(path.as_ref());
+}
+
+#[test]
+fn fixed_strings_preserve_utf8_boundaries() {
+    let mut output = [0_u8; 6];
+    copy_str_to_fixed("你好", &mut output);
+    let end = output.iter().position(|byte| *byte == 0).unwrap();
+    assert_eq!(std::str::from_utf8(&output[..end]).unwrap(), "你");
+}
+
+#[cfg(unix)]
+#[test]
+fn profile_store_is_private_on_disk() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = temp_path("profile_store_permissions", "json");
+    enroll_profile(&path, "Alice", "mock:face:alice").unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn corrupt_store_with_mixed_dimensions_is_rejected() {
+    let path = temp_path("profile_store_corrupt_dimensions", "json");
+    fs::write(
+        &path,
+        r#"{
+            "version": 1,
+            "embedding_dim": 2,
+            "profiles": [
+                {"id":"a","label":"A","embedding":[1.0,0.0],"created_at_unix":0},
+                {"id":"b","label":"B","embedding":[1.0,0.0,0.0],"created_at_unix":0}
+            ]
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(load_store(&path).unwrap_err(), SuStatus::ParseError);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn authenticates_best_face_match() {
     let path = temp_path("auth_pipeline_best_match", "json");
     let _ = fs::remove_file(&path);
@@ -319,13 +420,9 @@ fn authenticates_when_probe_dimension_matches_locked_store() {
     let _ = fs::remove_file(&path);
     enroll_profile(&path, "Alice", &embedding_source(&[1.0, 0.0, 0.0])).unwrap();
 
-    let report = authenticate_sample_with_liveness(
-        &path,
-        &embedding_source(&[1.0, 0.0, 0.0]),
-        0.95,
-        true,
-    )
-    .unwrap();
+    let report =
+        authenticate_sample_with_liveness(&path, &embedding_source(&[1.0, 0.0, 0.0]), 0.95, true)
+            .unwrap();
     assert!(report.accepted);
     assert!(report.score > 0.99);
 

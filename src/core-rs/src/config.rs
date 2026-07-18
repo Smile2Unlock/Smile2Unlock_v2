@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::storage::atomic_write_private;
 use crate::{SuCoreConfig, SuStatus};
+
+const MAX_PREVIEW_FPS: u32 = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -66,27 +69,42 @@ impl From<AppConfig> for SuCoreConfig {
 
 impl From<SuCoreConfig> for AppConfig {
     fn from(value: SuCoreConfig) -> Self {
-        Self {
-            version: if value.version == 0 { default_version() } else { value.version },
+        normalize_config(Self {
+            version: if value.version == 0 {
+                default_version()
+            } else {
+                value.version
+            },
             selected_camera: value.selected_camera,
-            recognition_threshold: if value.recognition_threshold <= 0.0 {
-                default_recognition_threshold()
-            } else {
-                value.recognition_threshold
-            },
+            recognition_threshold: value.recognition_threshold,
             liveness_detection: value.liveness_detection,
-            liveness_threshold: if value.liveness_threshold <= 0.0 {
-                default_liveness_threshold()
-            } else {
-                value.liveness_threshold
-            },
-            preview_fps: if value.preview_fps == 0 {
-                default_preview_fps()
-            } else {
-                value.preview_fps
-            },
-        }
+            liveness_threshold: value.liveness_threshold,
+            preview_fps: value.preview_fps,
+        })
     }
+}
+
+fn valid_threshold(value: f32) -> bool {
+    value.is_finite() && value > 0.0 && value <= 1.0
+}
+
+fn normalize_config(mut config: AppConfig) -> AppConfig {
+    if config.version == 0 {
+        config.version = default_version();
+    }
+    if config.selected_camera < 0 {
+        config.selected_camera = 0;
+    }
+    if !valid_threshold(config.recognition_threshold) {
+        config.recognition_threshold = default_recognition_threshold();
+    }
+    if !valid_threshold(config.liveness_threshold) {
+        config.liveness_threshold = default_liveness_threshold();
+    }
+    if config.preview_fps == 0 || config.preview_fps > MAX_PREVIEW_FPS {
+        config.preview_fps = default_preview_fps();
+    }
+    config
 }
 
 fn path_from_ptr(path: *const c_char) -> Result<PathBuf, SuStatus> {
@@ -111,7 +129,7 @@ pub(crate) fn load_config(path: &Path) -> Result<AppConfig, SuStatus> {
     // already tolerated via #[serde(default)] on each field; a fully malformed
     // document is logged and replaced wholesale.
     match toml::from_str::<AppConfig>(&text) {
-        Ok(config) => Ok(config),
+        Ok(config) => Ok(normalize_config(config)),
         Err(error) => {
             eprintln!(
                 "smile2unlock: config at {} failed to parse ({}); using defaults",
@@ -124,15 +142,9 @@ pub(crate) fn load_config(path: &Path) -> Result<AppConfig, SuStatus> {
 }
 
 fn save_config(path: &Path, config: &AppConfig) -> Result<(), SuStatus> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|_| SuStatus::IoError)?;
-    }
-
-    let text = toml::to_string_pretty(config).map_err(|_| SuStatus::WriteError)?;
-    let tmp_path = path.with_extension("tmp");
-    fs::write(&tmp_path, text).map_err(|_| SuStatus::WriteError)?;
-    fs::rename(&tmp_path, path).map_err(|_| SuStatus::WriteError)?;
-    Ok(())
+    let text = toml::to_string_pretty(&normalize_config(config.clone()))
+        .map_err(|_| SuStatus::WriteError)?;
+    atomic_write_private(path, text.as_bytes())
 }
 
 pub fn default_config_ffi() -> SuCoreConfig {

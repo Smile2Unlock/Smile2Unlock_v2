@@ -30,11 +30,14 @@ int main() {
     }
     std::println("Demo auth accepted: {}", *demo_auth ? "yes" : "no");
 
-    const auto profiles = controller.list_face_profiles();
+    const auto profiles = controller.list_face_profile_rows();
     if (!profiles) {
         std::println(stderr, "failed to list face profiles: {}", profiles.error());
         return 1;
     }
-    std::println("Face profiles:\n{}", *profiles);
+    std::println("Face profiles: {}", profiles->size());
+    for (const auto& profile : *profiles) {
+        std::println("  {} / {} / created_at={}", profile.id, profile.label, profile.created_at_unix);
+    }
     return 0;
 }

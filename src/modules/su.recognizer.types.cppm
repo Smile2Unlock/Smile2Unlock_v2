@@ -55,6 +55,7 @@ struct ImageView {
 struct CapturedFrame {
     int width = 0;
     int height = 0;
+    std::size_t stride = 0;
     std::uint32_t v4l2_format = 0;
     std::span<const std::byte> bytes;
 };

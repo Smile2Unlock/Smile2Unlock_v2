@@ -121,7 +121,7 @@ std::expected<bool, std::string> AppController::evaluate_demo_auth(std::string_v
         username,
         0.72F,
         loaded_config->recognition_threshold,
-        loaded_config->liveness_detection);
+        true);
     if (!decision) {
         return std::unexpected("Rust core rejected the demo auth request");
     }
@@ -224,7 +224,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     // profile_count; report fields: threshold, liveness_ok, best_profile, etc.)
     const auto auth_report = authenticate_face_sample_report(
         store_path,
-        face_sample_source,
+        *resolved,
         config->recognition_threshold,
         liveness_ok);
     if (!auth_report) {
@@ -244,7 +244,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     // reason, threshold, liveness_ok, etc.).
     const auto report_json = authenticate_face_sample_report_json(
         store_path,
-        face_sample_source,
+        *resolved,
         config->recognition_threshold,
         liveness_ok);
     if (!report_json) {

@@ -89,10 +89,18 @@ std::expected<SeetaFaceModelPaths, RecognizerError> seetaface_model_paths(
 namespace {
 
 bool valid_image(const ImageView image) {
-    return image.width > 0
-        && image.height > 0
-        && (image.channels == 1 || image.channels == 3 || image.channels == 4)
-        && !image.bytes.empty();
+    if (image.width <= 0 || image.height <= 0
+        || (image.channels != 1 && image.channels != 3 && image.channels != 4)) {
+        return false;
+    }
+    const auto width = static_cast<std::size_t>(image.width);
+    const auto height = static_cast<std::size_t>(image.height);
+    const auto channels = static_cast<std::size_t>(image.channels);
+    if (width > std::numeric_limits<std::size_t>::max() / height
+        || width * height > std::numeric_limits<std::size_t>::max() / channels) {
+        return false;
+    }
+    return image.bytes.size() >= width * height * channels;
 }
 
 float liveness_score_from(
@@ -103,10 +111,9 @@ float liveness_score_from(
     case seeta::FaceAntiSpoofing::REAL:
         return reality;
     case seeta::FaceAntiSpoofing::SPOOF:
-        return 0.0F;
     case seeta::FaceAntiSpoofing::FUZZY:
     case seeta::FaceAntiSpoofing::DETECTING:
-        return reality * 0.5F;
+        return 0.0F;
     }
     std::unreachable();
 }
@@ -189,6 +196,11 @@ public:
             // Still feed anti-spoofing? No: it needs a face box/points. A frame
             // with no face resets the model's expectation implicitly via the
             // absence of Predict; report no-face and let the caller decide.
+            return RecognitionResult{};
+        }
+        if (faces.size != 1) {
+            // Authentication must not silently choose one identity from a
+            // multi-person frame. Require the user to present alone.
             return RecognitionResult{};
         }
 
@@ -284,7 +296,7 @@ class SeetaFaceBackend::Impl {
 public:
     explicit Impl(const SeetaFaceModelPaths&) {}
 
-    std::expected<RecognitionResult, RecognizerError> extract(ImageView) const {
+    std::expected<RecognitionResult, RecognizerError> extract(ImageView, bool) const {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
 
