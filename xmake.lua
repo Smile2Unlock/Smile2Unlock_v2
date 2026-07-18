@@ -18,8 +18,7 @@ option_end()
 
 option("with_zig")
     -- Default off: the Zig helper currently exports only a placeholder symbol
-    -- with no callers. It becomes meaningful in Phase 3 (control socket runtime
-    -- helpers). Flip to true once there is real C ABI surface to consume.
+    -- with no callers. Phase 5 will decide whether it gains a real platform ABI.
     set_default(false)
     set_showmenu(true)
     set_description("Build the optional Zig platform helper target")
@@ -226,15 +225,31 @@ target("su_app")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
 
-target("pam_smile2unlock")
-    apply_cpp_target("shared")
-    set_filename("pam_smile2unlock.so")
-    set_prefixname("")
-    add_files("src/platform/linux/pam/*.cpp")
-    add_headerfiles("src/platform/linux/pam/*.h")
-    if is_plat("linux") then
+if is_plat("linux") then
+    target("pam_smile2unlock")
+        apply_cpp_target("shared")
+        set_filename("pam_smile2unlock.so")
+        set_prefixname("")
+        add_files("src/platform/linux/pam/*.cpp")
+        add_files("src/modules/su.control.socket.cppm")
+        add_headerfiles("src/platform/linux/pam/*.h")
         add_syslinks("pam")
-    end
+
+    target("su_authd")
+        apply_cpp_target("binary")
+        add_files("src/platform/linux/authd/*.cpp", "src/app/core_bridge.cpp")
+        add_files("src/modules/su.auth.daemon.cppm", "src/modules/su.control.socket.cppm")
+        add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
+        add_includedirs("src/core-rs/include")
+        add_deps("su_core", "su_recognizer")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+
+    target("su_control_socket_smoke_test")
+        apply_cpp_target("binary")
+        add_files("tests/control/*.cpp", "src/modules/su.control.socket.cppm")
+        add_tests("default")
+end
 
 target("su_face_auth_smoke_test")
     apply_cpp_target("binary")

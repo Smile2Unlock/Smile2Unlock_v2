@@ -11,6 +11,7 @@ mod embedding;
 mod ffi;
 mod pipeline;
 mod profile;
+mod protocol;
 mod storage;
 
 #[cfg(test)]
@@ -51,6 +52,7 @@ pub struct SuCoreConfig {
 }
 
 pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};
+pub use protocol::{SuControlMessageType, SuControlRequest};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

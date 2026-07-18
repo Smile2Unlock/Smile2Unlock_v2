@@ -29,6 +29,19 @@ struct AuthDecision {
     bool accepted = false;
 };
 
+enum class ControlMessageType {
+    kAuthenticate,
+    kStatus,
+    kCancel,
+};
+
+struct ControlRequest {
+    ControlMessageType type = ControlMessageType::kStatus;
+    std::uint64_t request_id = 0;
+    std::uint64_t target_request_id = 0;
+    std::string username;
+};
+
 struct FaceAuthDecision {
     bool accepted = false;
     float score = 0.0F;
@@ -53,6 +66,7 @@ struct FaceAuthReport {
 };
 
 std::uint32_t core_version_major();
+std::expected<ControlRequest, CoreError> parse_control_request(std::string_view json);
 std::expected<float, CoreError> default_threshold();
 CoreConfig default_config();
 std::expected<CoreConfig, CoreError> load_config(const std::string& path);

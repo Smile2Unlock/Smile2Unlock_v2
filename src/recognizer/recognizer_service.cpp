@@ -66,7 +66,7 @@ std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_
 }
 
 std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
-RecognizerService::capture_and_extract() const {
+RecognizerService::capture_and_extract(bool liveness_enabled) const {
     auto preview = PreviewFrame{};
     {
         std::lock_guard lock(camera_mutex_);
@@ -95,20 +95,23 @@ RecognizerService::capture_and_extract() const {
             .rgba_or_rgb = std::move(*rgb),
         };
     }
-    auto result = extract_from_image(ImageView{
-        .width = preview.width,
-        .height = preview.height,
-        .channels = 3,
-        .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
-    });
+    auto result = extract_from_image(
+        ImageView{
+            .width = preview.width,
+            .height = preview.height,
+            .channels = 3,
+            .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
+        },
+        liveness_enabled);
     if (!result) {
         return std::unexpected(result.error());
     }
     return std::make_pair(std::move(preview), std::move(*result));
 }
 
-std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_features() const {
-    auto captured = capture_and_extract();
+std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_features(
+    bool liveness_enabled) const {
+    auto captured = capture_and_extract(liveness_enabled);
     if (!captured) {
         return std::unexpected(captured.error());
     }
@@ -244,6 +247,18 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::predict_liv
 #else
     (void)image;
     (void)liveness_enabled;
+    return std::unexpected(RecognizerError::kModelUnavailable);
+#endif
+}
+
+std::expected<void, RecognizerError> RecognizerService::reset_liveness() const {
+#if SU_HAS_SEETAFACE
+    if (auto ensured = ensure_seetaface_backend(); !ensured) {
+        return std::unexpected(ensured.error());
+    }
+    seetaface_backend_->reset_liveness();
+    return {};
+#else
     return std::unexpected(RecognizerError::kModelUnavailable);
 #endif
 }

@@ -21,20 +21,22 @@ public:
     std::vector<CameraInfo> enumerate_cameras() const;
     std::expected<void, RecognizerError> open_camera(int camera_index);
     std::expected<PreviewFrame, RecognizerError> capture_preview_frame() const;
-    std::expected<RecognitionResult, RecognizerError> extract_features() const;
+    std::expected<RecognitionResult, RecognizerError> extract_features(
+        bool liveness_enabled = true) const;
     std::expected<float, RecognizerError> compare_features(
         std::span<const float> lhs,
         std::span<const float> rhs) const;
     void close_camera();
 
     std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
-    capture_and_extract() const;
+    capture_and_extract(bool liveness_enabled = true) const;
 
     std::expected<RecognitionResult, RecognizerError> extract_from_image(
         ImageView image, bool liveness_enabled = true) const;
 
     std::expected<RecognitionResult, RecognizerError> predict_liveness(
         ImageView image, bool liveness_enabled = true) const;
+    std::expected<void, RecognizerError> reset_liveness() const;
 
     bool seetaface_available() const;
 

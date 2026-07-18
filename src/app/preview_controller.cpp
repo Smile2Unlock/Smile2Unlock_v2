@@ -82,6 +82,13 @@ public:
             std::println(stderr, "[preview] open_camera failed");
             return;
         }
+        if (liveness_enabled) {
+            if (const auto reset = recognizer.reset_liveness(); !reset) {
+                recognizer.close_camera();
+                std::println(stderr, "[preview] liveness reset failed");
+                return;
+            }
+        }
         recognizer_ = &recognizer;
         running_ = std::make_shared<std::atomic<bool>>(true);
 
