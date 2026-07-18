@@ -43,7 +43,8 @@ int main() {
     }
     const auto result = su::control::parse_response(*response);
     server.join();
-    return result && *result == su::control::ControlResult::kAccepted
+    return result && result->request_id == 7
+            && result->result == su::control::ControlResult::kAccepted
             && server_ok.load(std::memory_order_acquire)
         ? 0
         : 1;

@@ -42,6 +42,11 @@ enum class ControlResult {
     kError,
 };
 
+struct ControlResponse {
+    std::uint64_t request_id = 0;
+    ControlResult result = ControlResult::kError;
+};
+
 class Connection {
 public:
     Connection() = default;
@@ -95,7 +100,7 @@ std::string make_response(
     std::uint64_t request_id,
     ControlResult result,
     std::string_view reason = {});
-std::expected<ControlResult, SocketError> parse_response(std::string_view response);
+std::expected<ControlResponse, SocketError> parse_response(std::string_view response);
 
 } // namespace su::control
 
@@ -370,7 +375,29 @@ std::string make_response(
         json_escape(reason));
 }
 
-std::expected<ControlResult, SocketError> parse_response(std::string_view response) {
+std::expected<ControlResponse, SocketError> parse_response(std::string_view response) {
+    if (!response.contains(R"("version":1,)")
+        || !response.contains(R"("msg_type":"auth_result")")) {
+        return std::unexpected(SocketError::kProtocolError);
+    }
+
+    constexpr auto request_id_field = std::string_view{R"("request_id":)"};
+    const auto request_id_start = response.find(request_id_field);
+    if (request_id_start == std::string_view::npos) {
+        return std::unexpected(SocketError::kProtocolError);
+    }
+    const auto digits = response.substr(request_id_start + request_id_field.size());
+    auto request_id = std::uint64_t{0};
+    const auto parsed = std::from_chars(
+        digits.data(), digits.data() + digits.size(), request_id);
+    if (parsed.ec != std::errc{}
+        || parsed.ptr == digits.data()
+        || parsed.ptr == digits.data() + digits.size()
+        || *parsed.ptr != ','
+        || request_id == 0) {
+        return std::unexpected(SocketError::kProtocolError);
+    }
+
     for (const auto result : {
              ControlResult::kAccepted,
              ControlResult::kRejected,
@@ -381,7 +408,7 @@ std::expected<ControlResult, SocketError> parse_response(std::string_view respon
          }) {
         const auto token = std::format(R"("result":"{}")", result_name(result));
         if (response.contains(token)) {
-            return result;
+            return ControlResponse{.request_id = request_id, .result = result};
         }
     }
     return std::unexpected(SocketError::kProtocolError);

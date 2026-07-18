@@ -63,9 +63,8 @@ PAM_EXTERN int pam_sm_authenticate(
         return PAM_AUTHINFO_UNAVAIL;
     }
 
-    const auto request = su::control::make_authenticate_request(
-        next_request_id(),
-        username);
+    const auto request_id = next_request_id();
+    const auto request = su::control::make_authenticate_request(request_id, username);
     if (auto sent = connection->send_frame(request); !sent) {
         return PAM_AUTHINFO_UNAVAIL;
     }
@@ -74,7 +73,9 @@ PAM_EXTERN int pam_sm_authenticate(
         return PAM_AUTHINFO_UNAVAIL;
     }
     const auto result = su::control::parse_response(*response);
-    return result ? pam_result(*result) : PAM_AUTHINFO_UNAVAIL;
+    return result && result->request_id == request_id
+        ? pam_result(result->result)
+        : PAM_AUTHINFO_UNAVAIL;
 }
 
 PAM_EXTERN int pam_sm_setcred(

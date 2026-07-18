@@ -8,7 +8,7 @@
 
 Phase 0, 1, 2 — **全部完成**。Phase 3 — **实现完成、部署验证待完成**（Rust control protocol、root `su_authd`、Unix control socket、PAM client、systemd unit 均已实现并通过构建/自动测试；尚未修改本机 PAM 栈并重启验证真实开机登录）。Phase 4, 5 — 未开始。
 
-已构建 10 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 3 个 C++ smoke test 均通过）。
+已构建 11 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 4 个 C++ 集成/smoke test 均通过）。
 
 重写后的第一阶段目标：
 
@@ -595,7 +595,7 @@ Slint 是唯一计划内 GUI。
 集成测试：
 
 - control socket 请求/响应。
-- PAM mock client 到 `su_app`。
+- Linux-PAM loader 到 control socket mock server。
 - 用户注册到识别结果链路。
 - 配置损坏恢复。
 - 数据库迁移。
@@ -647,6 +647,7 @@ Slint 是唯一计划内 GUI。
 - ✅ Rust auth policy — auth.rs 完整实现，支持 liveness_ok 参数透传
 - ✅ Rust control protocol — version/msg_type/request_id 校验及 authenticate/status/cancel typed request
 - ✅ control socket smoke test — listener/client/framing/response 自动测试通过
+- ✅ Linux-PAM 集成测试 — 通过 `pam_start_confdir` 加载真实模块，覆盖 accepted/rejected/unavailable 和 request ID 不匹配
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
 ### Phase 4: Windows compatibility ❌ 未开始
