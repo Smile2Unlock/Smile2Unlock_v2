@@ -2,258 +2,538 @@
 
 import std;
 import su.app.controller;
+import su.app.i18n;
 import su.core.types;
 import su.app.preview;
 
 namespace {
 
+namespace ui = su::app::ui;
+
+using ProfileModel = slint::VectorModel<ui::ProfileRow>;
+using WindowHandle = slint::ComponentHandle<ui::AppWindow>;
+using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
+
 std::string camera_summary(const su::app::AppSnapshot& snapshot) {
-    if (snapshot.cameras.empty()) {
-        return "No cameras detected";
+    if (snapshot.cameras.size() == 1) {
+        return snapshot.cameras.front().name;
     }
-
-    std::string text = std::format("{} camera(s)", snapshot.cameras.size());
-    for (const auto& camera : snapshot.cameras) {
-        text += std::format(" / [{}] {}", camera.index, camera.name);
-    }
-    return text;
+    return {};
 }
 
-slint::SharedString demo_auth_text(su::app::AppController& controller) {
-    const auto demo_auth = controller.evaluate_demo_auth("demo");
-    if (!demo_auth) {
-        return slint::SharedString("Unavailable");
+std::string current_username(std::string_view fallback) {
+    if (const auto* username = std::getenv("USER"); username != nullptr && *username != '\0') {
+        return username;
     }
-    return slint::SharedString(*demo_auth ? "Accepted" : "Rejected");
+    if (const auto* username = std::getenv("LOGNAME"); username != nullptr && *username != '\0') {
+        return username;
+    }
+    return std::string(fallback);
 }
 
-std::string profile_rows_text(const std::vector<su::app::FaceProfileSummary>& profiles) {
-    if (profiles.empty()) {
-        return "No enrolled face profiles";
+std::string username_initial(std::string_view username) {
+    if (username.empty()) {
+        return "U";
+    }
+    auto initial = static_cast<char>(std::toupper(static_cast<unsigned char>(username.front())));
+    return std::string(1, initial);
+}
+
+std::string enrollment_date(std::uint64_t created_at_unix) {
+    if (created_at_unix > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+        return "-";
     }
 
-    std::string text;
+    using namespace std::chrono;
+    const auto timestamp = sys_seconds{seconds{static_cast<std::int64_t>(created_at_unix)}};
+    const auto date = year_month_day{floor<days>(timestamp)};
+    if (!date.ok()) {
+        return "-";
+    }
+    return std::format(
+        "{:04}-{:02}-{:02}",
+        static_cast<int>(date.year()),
+        static_cast<unsigned>(date.month()),
+        static_cast<unsigned>(date.day()));
+}
+
+std::vector<ui::ProfileRow> profile_rows(
+    const std::vector<su::app::FaceProfileSummary>& profiles) {
+    std::vector<ui::ProfileRow> rows;
+    rows.reserve(profiles.size());
     for (const auto& profile : profiles) {
-        text += std::format(
-            "{} / {} / created_at={}\n",
-            profile.id,
-            profile.label,
-            profile.created_at_unix);
+        rows.push_back(ui::ProfileRow{
+            .id = slint::SharedString(profile.id),
+            .label = slint::SharedString(profile.label),
+            .enrolled_at = slint::SharedString(enrollment_date(profile.created_at_unix)),
+        });
     }
-    return text;
+    return rows;
 }
 
-su::app::FaceDemoSnapshot run_face_demo_or_empty(su::app::AppController& controller) {
-    const auto face_demo = controller.run_face_demo(
-        "Demo Face",
-        "mock:face:demo:front",
-        "mock:face:demo:front");
-    if (!face_demo) {
-        return {};
-    }
-    return *face_demo;
+void update_profiles(
+    const std::shared_ptr<ProfileModel>& model,
+    const std::vector<su::app::FaceProfileSummary>& profiles) {
+    model->set_vector(profile_rows(profiles));
 }
 
-slint::SharedString profiles_or_error(su::app::AppController& controller) {
-    const auto profiles = controller.list_face_profile_rows();
-    if (!profiles) {
-        return slint::SharedString(profiles.error());
-    }
-    return slint::SharedString(profile_rows_text(*profiles));
+void set_activity(
+    const WindowHandle& window,
+    std::string_view title,
+    std::string_view detail,
+    std::string_view tone,
+    bool busy = false) {
+    window->set_activity_title(slint::SharedString(title));
+    window->set_activity_detail(slint::SharedString(detail));
+    window->set_activity_tone(slint::SharedString(tone));
+    window->set_busy(busy);
 }
 
-slint::SharedString enroll_or_error(
-    su::app::AppController& controller,
-    const slint::SharedString& label,
-    const slint::SharedString& face_sample_source) {
-    const auto profiles = controller.enroll_face_profile_from_sample(
-        std::string(label),
-        std::string(face_sample_source));
-    if (!profiles) {
-        return slint::SharedString(profiles.error());
-    }
-    const auto rows = controller.list_face_profile_rows();
-    if (!rows) {
-        return slint::SharedString(rows.error());
-    }
-    return slint::SharedString(profile_rows_text(*rows));
+std::size_t language_index(const WindowHandle& window) {
+    return static_cast<std::size_t>(std::max(window->get_language_index(), 0));
 }
 
-slint::SharedString enroll_current_frame_or_error(
-    su::app::AppController& controller,
-    const slint::SharedString& label) {
-    const auto profiles = controller.enroll_face_profile_from_current_frame(std::string(label));
-    if (!profiles) {
-        return slint::SharedString(profiles.error());
-    }
-    const auto rows = controller.list_face_profile_rows();
-    if (!rows) {
-        return slint::SharedString(rows.error());
-    }
-    return slint::SharedString(profile_rows_text(*rows));
+std::string translated(
+    const su::app::LanguageCatalog& catalog,
+    const WindowHandle& window,
+    std::string_view key) {
+    return catalog.translate(language_index(window), key);
 }
 
-slint::SharedString delete_or_error(
-    su::app::AppController& controller,
-    const slint::SharedString& profile_id) {
-    const auto deleted = controller.delete_face_profile_by_id(std::string(profile_id));
-    if (!deleted) {
-        return slint::SharedString(deleted.error());
-    }
-    const auto profiles = controller.list_face_profile_rows();
-    if (!profiles) {
-        return slint::SharedString(profiles.error());
-    }
-    auto text = profile_rows_text(*profiles);
-    if (!*deleted) {
-        text = "No profile deleted\n" + text;
-    }
-    return slint::SharedString(text);
+std::string translated_value(
+    const su::app::LanguageCatalog& catalog,
+    const WindowHandle& window,
+    std::string_view key,
+    std::string_view value) {
+    return catalog.translate_value(language_index(window), key, value);
 }
 
-su::app::FaceDemoSnapshot authenticate_or_empty(
-    su::app::AppController& controller,
-    const slint::SharedString& face_sample_source) {
-    const auto face_demo = controller.authenticate_face_sample_from_source(std::string(face_sample_source));
-    if (!face_demo) {
-        return {};
-    }
-    return *face_demo;
+void set_preview_idle(
+    const WindowHandle& window,
+    const su::app::LanguageCatalog& catalog) {
+    window->set_preview_status_text(slint::SharedString(translated(catalog, window, "preview.idle")));
+    window->set_face_box_visible(false);
 }
 
-su::app::FaceDemoSnapshot authenticate_current_frame_or_empty(
-    su::app::AppController& controller,
-    slint::SharedString& error_text) {
-    const auto face_demo = controller.authenticate_current_frame();
-    if (!face_demo) {
-        error_text = slint::SharedString(face_demo.error());
-        return {};
+std::filesystem::path executable_directory(const char* argument_zero) {
+    std::error_code error;
+    auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error) {
+        return executable.parent_path();
     }
-    return *face_demo;
+    executable = std::filesystem::absolute(argument_zero, error);
+    return error ? std::filesystem::current_path() : executable.parent_path();
+}
+
+std::filesystem::path ui_preference_path() {
+    if (const auto* config_home = std::getenv("XDG_CONFIG_HOME");
+        config_home != nullptr && *config_home != '\0') {
+        return std::filesystem::path(config_home) / "smile2unlock" / "ui.json";
+    }
+    if (const auto* home = std::getenv("HOME"); home != nullptr && *home != '\0') {
+        return std::filesystem::path(home) / ".config" / "smile2unlock" / "ui.json";
+    }
+    return std::filesystem::current_path() / ".smile2unlock-ui.json";
+}
+
+std::string system_locale() {
+    for (const auto* name : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
+        if (const auto* value = std::getenv(name); value != nullptr && *value != '\0') {
+            return value;
+        }
+    }
+    return "en";
 }
 
 }  // namespace
 
-int main() {
-    su::app::AppController controller;
-    su::app::PreviewController preview;
-    const auto snapshot = controller.load_initial_snapshot();
+int main(int argc, char** argv) {
+    const auto language_directory = executable_directory(argc > 0 ? argv[0] : "su_app")
+        / "assets" / "i18n";
+    auto loaded_catalog = su::app::LanguageCatalog::load(language_directory);
+    if (!loaded_catalog) {
+        std::cerr << "su_app failed to load language packs: " << loaded_catalog.error() << '\n';
+        return 1;
+    }
+    const auto catalog = std::make_shared<const su::app::LanguageCatalog>(std::move(*loaded_catalog));
+    const auto preference_path = ui_preference_path();
+    auto loaded_preference = su::app::load_language_preference(preference_path);
+    std::optional<std::string> preferred_language;
+    if (loaded_preference) {
+        preferred_language = std::move(*loaded_preference);
+    } else {
+        std::println(stderr, "[i18n] {}", loaded_preference.error());
+    }
+    const auto selected_language = catalog->select_language(preferred_language, system_locale());
+
+    auto controller = std::make_shared<su::app::AppController>();
+    auto preview = std::make_shared<su::app::PreviewController>();
+    const auto snapshot = controller->load_initial_snapshot();
     if (!snapshot) {
         std::cerr << "su_app failed to start: " << snapshot.error() << '\n';
         return 1;
     }
 
-    auto window = su::app::ui::AppWindow::create();
-    window->set_title_text(slint::SharedString(snapshot->title));
-    window->set_core_version(slint::SharedString(std::format("Rust core v{}", su::app::core_version_major())));
-    window->set_threshold_text(slint::SharedString(std::format("{:.2f}", snapshot->config.recognition_threshold)));
-    window->set_preview_fps_text(slint::SharedString(std::format("{}", snapshot->config.preview_fps)));
-    window->set_liveness_text(slint::SharedString(snapshot->config.liveness_detection ? "Enabled" : "Disabled"));
-    window->set_config_path_text(slint::SharedString(snapshot->config_path));
-    window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
-    window->set_profile_text(slint::SharedString(profile_rows_text(snapshot->profiles)));
-    window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
-    window->set_seetaface_text(slint::SharedString(snapshot->seetaface_available ? "Available" : "Unavailable"));
-    window->set_auth_text(demo_auth_text(controller));
-    // Do not run the face demo at startup: it would enroll a "Demo Face"
-    // profile into the user's real profile store as a side effect. Show
-    // placeholders instead; the Run Demo Auth button triggers it on demand.
-    window->set_auth_score_text(slint::SharedString("-"));
-    window->set_auth_best_profile_text(slint::SharedString("-"));
-    window->set_auth_reason_text(slint::SharedString("Not checked"));
-    window->set_debug_json_text(slint::SharedString(
-        "Sample sources: mock:<id>, image:<path> (real SeetaFace when available), embedding:<comma-separated floats>"));
-    window->on_demo_auth_requested([window, &controller] {
-        window->set_auth_text(demo_auth_text(controller));
-        const auto face_demo = run_face_demo_or_empty(controller);
-        window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
-        window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
-        window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
-        window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
-        window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
+    auto window = ui::AppWindow::create();
+    const WeakWindowHandle weak_window(window);
+    const auto profiles = std::make_shared<ProfileModel>(profile_rows(snapshot->profiles));
+
+    window->on_translate([catalog](slint::SharedString key, int index) {
+        return slint::SharedString(catalog->translate(
+            static_cast<std::size_t>(std::max(index, 0)), std::string_view(key)));
     });
-    window->on_enroll_requested([window, &controller](slint::SharedString label, slint::SharedString face_sample_source) {
-        window->set_profile_text(enroll_or_error(controller, label, face_sample_source));
-    });
-    window->on_enroll_current_frame_requested([window, &controller, &preview](slint::SharedString label) {
-        preview.stop();
-        window->set_profile_text(enroll_current_frame_or_error(controller, label));
-    });
-    window->on_face_auth_requested([window, &controller](slint::SharedString face_sample_source) {
-        const auto face_demo = authenticate_or_empty(controller, face_sample_source);
-        window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
-        window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
-        window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
-        window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
-        window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
-        window->set_auth_text(slint::SharedString(face_demo.decision.accepted ? "Accepted" : "Rejected"));
-    });
-    window->on_current_frame_auth_requested([window, &controller, &preview] {
-        preview.stop();
-        auto error_text = slint::SharedString();
-        const auto face_demo = authenticate_current_frame_or_empty(controller, error_text);
-        if (!error_text.empty()) {
-            window->set_auth_text(slint::SharedString("Unavailable"));
-            window->set_auth_reason_text(error_text);
+    window->on_translate_value(
+        [catalog](slint::SharedString key, int index, slint::SharedString value) {
+            return slint::SharedString(catalog->translate_value(
+                static_cast<std::size_t>(std::max(index, 0)),
+                std::string_view(key),
+                std::string_view(value)));
+        });
+    std::vector<slint::SharedString> language_names;
+    for (const auto& name : catalog->language_names()) {
+        language_names.emplace_back(name);
+    }
+    window->set_language_names(
+        std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(language_names)));
+    window->set_language_index(static_cast<int>(selected_language));
+    window->on_language_selected([catalog, preference_path](int index) {
+        if (index < 0 || static_cast<std::size_t>(index) >= catalog->size()) {
             return;
         }
-        window->set_profile_text(slint::SharedString(profile_rows_text(face_demo.profiles)));
-        window->set_auth_score_text(slint::SharedString(std::format("{:.4f}", face_demo.report.score)));
-        window->set_auth_best_profile_text(slint::SharedString(face_demo.report.best_profile_label));
-        window->set_auth_reason_text(slint::SharedString(face_demo.report.reason));
-        window->set_debug_json_text(slint::SharedString(face_demo.auth_report_json));
-        window->set_auth_text(slint::SharedString(face_demo.decision.accepted ? "Accepted" : "Rejected"));
-    });
-    window->on_delete_profile_requested([window, &controller](slint::SharedString profile_id) {
-        window->set_profile_text(delete_or_error(controller, profile_id));
-    });
-    window->on_refresh_profiles_requested([window, &controller] {
-        window->set_profile_text(profiles_or_error(controller));
+        if (const auto saved = su::app::save_language_preference(
+                preference_path, catalog->language_code(static_cast<std::size_t>(index)));
+            !saved) {
+            std::println(stderr, "[i18n] {}", saved.error());
+        }
     });
 
-    // Preview: the capture thread pushes frames onto the event loop; this
-    // callback runs on the UI thread and updates the image plus the face-box
-    // overlay. The box is scaled from the 640x480 capture frame to the 320x240
-    // preview area (0.5x).
-    auto push_preview_frame = [window](slint::Image image, su::app::PreviewOverlay overlay) {
-        window->set_preview_image(std::move(image));
-        window->set_preview_status_text(slint::SharedString(overlay.status_text));
+    std::vector<slint::SharedString> camera_names;
+    std::vector<int> camera_indices;
+    camera_names.reserve(snapshot->cameras.size());
+    camera_indices.reserve(snapshot->cameras.size());
+    auto selected_camera = 0;
+    for (const auto& camera : snapshot->cameras) {
+        if (camera.index == snapshot->config.selected_camera) {
+            selected_camera = static_cast<int>(camera_indices.size());
+        }
+        camera_names.emplace_back(std::format("{}: {}", camera.index, camera.name));
+        camera_indices.push_back(camera.index);
+    }
+
+    const auto username = current_username(catalog->translate(selected_language, "common.current_user"));
+    window->set_title_text(slint::SharedString(snapshot->title));
+    window->set_username(slint::SharedString(username));
+    window->set_username_initial(slint::SharedString(username_initial(username)));
+    window->set_core_version(slint::SharedString(catalog->translate_value(
+        selected_language,
+        "diagnostics.core_version",
+        std::format("{}", su::app::core_version_major()))));
+    window->set_config_path_text(slint::SharedString(snapshot->config_path));
+    window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
+    window->set_profiles(profiles);
+    window->set_camera_options(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(camera_names)));
+    window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
+    window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
+    window->set_seetaface_available(snapshot->seetaface_available);
+    window->set_control_socket_present(std::filesystem::exists("/run/smile2unlock/control.sock"));
+    window->set_selected_camera(selected_camera);
+    window->set_recognition_threshold(snapshot->config.recognition_threshold);
+    window->set_liveness_enabled(snapshot->config.liveness_detection);
+    window->set_liveness_threshold(snapshot->config.liveness_threshold);
+    window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
+    set_preview_idle(window, *catalog);
+    window->set_activity_title(slint::SharedString(catalog->translate(selected_language, "activity.not_checked")));
+    window->set_settings_status(slint::SharedString(catalog->translate(selected_language, "settings.saved")));
+
+    window->on_enroll_current_frame_requested(
+        [weak_window, controller, preview, profiles, catalog](slint::SharedString requested_label) {
+            if (auto window = weak_window.lock()) {
+                preview->stop();
+                set_preview_idle(*window, *catalog);
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "activity.capturing_face"),
+                    translated(*catalog, *window, "activity.look_camera"),
+                    "warn",
+                    true);
+            }
+
+            auto label = std::string(requested_label);
+            if (label.empty()) {
+                if (const auto window = weak_window.lock()) {
+                    label = translated(*catalog, *window, "enrollment.default_label");
+                }
+            }
+            std::thread([weak_window, controller, profiles, catalog, label = std::move(label)] {
+                const auto enrolled = controller->enroll_face_profile_from_current_frame(label);
+                auto rows = enrolled
+                    ? controller->list_face_profile_rows()
+                    : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
+                        std::unexpected(enrolled.error())};
+
+                slint::invoke_from_event_loop(
+                    [weak_window, profiles, catalog, label, rows = std::move(rows)]() mutable {
+                        const auto window = weak_window.lock();
+                        if (!window) {
+                            return;
+                        }
+                        if (!rows) {
+                            set_activity(
+                                *window,
+                                translated(*catalog, *window, "activity.enrollment_failed"),
+                                rows.error(),
+                                "bad");
+                            return;
+                        }
+                        update_profiles(profiles, *rows);
+                        set_activity(
+                            *window,
+                            translated(*catalog, *window, "activity.enrolled"),
+                            translated_value(*catalog, *window, "activity.enrolled_detail", label),
+                            "good");
+                    });
+            }).detach();
+        });
+
+    window->on_current_frame_auth_requested([weak_window, controller, preview, profiles, catalog] {
+        if (auto window = weak_window.lock()) {
+            preview->stop();
+            set_preview_idle(*window, *catalog);
+            set_activity(
+                *window,
+                translated(*catalog, *window, "activity.checking_identity"),
+                translated(*catalog, *window, "activity.keep_centered"),
+                "warn",
+                true);
+        }
+
+        std::thread([weak_window, controller, profiles, catalog] {
+            auto result = controller->authenticate_current_frame();
+            slint::invoke_from_event_loop(
+                [weak_window, profiles, catalog, result = std::move(result)]() mutable {
+                    const auto window = weak_window.lock();
+                    if (!window) {
+                        return;
+                    }
+                    if (!result) {
+                        set_activity(
+                            *window,
+                            translated(*catalog, *window, "activity.auth_unavailable"),
+                            result.error(),
+                            "bad");
+                        return;
+                    }
+
+                    update_profiles(profiles, result->profiles);
+                    const auto detail = result->report.best_profile_label.empty()
+                        ? translated_value(
+                            *catalog,
+                            *window,
+                            "activity.auth_score",
+                            std::format("{:.2f}", result->report.score))
+                        : translated_value(
+                            *catalog,
+                            *window,
+                            "activity.auth_matched",
+                            std::format(
+                                "{} ({:.2f})",
+                                result->report.best_profile_label,
+                                result->report.score));
+                    set_activity(
+                        *window,
+                        translated(
+                            *catalog,
+                            *window,
+                            result->decision.accepted
+                                ? "activity.auth_passed"
+                                : "activity.auth_rejected"),
+                        detail,
+                        result->decision.accepted ? "good" : "bad");
+                });
+        }).detach();
+    });
+
+    window->on_delete_profile_requested(
+        [weak_window, controller, profiles, catalog](slint::SharedString profile_id) {
+            const auto deleted = controller->delete_face_profile_by_id(std::string(profile_id));
+            const auto window = weak_window.lock();
+            if (!window) {
+                return;
+            }
+            if (!deleted) {
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "activity.remove_failed"),
+                    deleted.error(),
+                    "bad");
+                return;
+            }
+            if (!*deleted) {
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "activity.sample_not_found"),
+                    translated(*catalog, *window, "activity.refresh_retry"),
+                    "bad");
+                return;
+            }
+
+            const auto rows = controller->list_face_profile_rows();
+            if (!rows) {
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "activity.removed"),
+                    translated(*catalog, *window, "activity.refresh_after_remove_failed"),
+                    "warn");
+                return;
+            }
+            update_profiles(profiles, *rows);
+            set_activity(
+                *window,
+                translated(*catalog, *window, "activity.removed"),
+                translated(*catalog, *window, "activity.removed_detail"),
+                "good");
+        });
+
+    window->on_refresh_profiles_requested([weak_window, controller, profiles, catalog] {
+        const auto rows = controller->list_face_profile_rows();
+        const auto window = weak_window.lock();
+        if (!window) {
+            return;
+        }
+        if (!rows) {
+            set_activity(
+                *window,
+                translated(*catalog, *window, "activity.refresh_failed"),
+                rows.error(),
+                "bad");
+            return;
+        }
+        update_profiles(profiles, *rows);
+        set_activity(
+            *window,
+            translated(*catalog, *window, "activity.refreshed"),
+            translated(*catalog, *window, "activity.refreshed_detail"),
+            "good");
+    });
+
+    window->on_save_settings_requested(
+        [weak_window, controller, camera_indices, catalog](
+            int camera_selection,
+            float recognition_threshold,
+            bool liveness_enabled,
+            float liveness_threshold,
+            int preview_fps) {
+            const auto window = weak_window.lock();
+            if (!window) {
+                return;
+            }
+
+            auto config = controller->load_config_snapshot();
+            if (!config) {
+                (*window)->set_settings_status(slint::SharedString(config.error()));
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "activity.settings_unavailable"),
+                    config.error(),
+                    "bad");
+                return;
+            }
+            if (camera_selection >= 0
+                && static_cast<std::size_t>(camera_selection) < camera_indices.size()) {
+                config->selected_camera = camera_indices[static_cast<std::size_t>(camera_selection)];
+            }
+            config->recognition_threshold = recognition_threshold;
+            config->liveness_detection = liveness_enabled;
+            config->liveness_threshold = liveness_threshold;
+            config->preview_fps = static_cast<std::uint32_t>(std::clamp(preview_fps, 1, 60));
+
+            const auto saved = controller->save_config_snapshot(*config);
+            if (!saved) {
+                (*window)->set_settings_status(slint::SharedString(saved.error()));
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "activity.settings_not_saved"),
+                    saved.error(),
+                    "bad");
+                return;
+            }
+            (*window)->set_settings_status(slint::SharedString(
+                translated(*catalog, *window, "settings.saved")));
+            set_activity(
+                *window,
+                translated(*catalog, *window, "settings.saved"),
+                translated(*catalog, *window, "activity.settings_applied"),
+                "good");
+        });
+
+    // Preview frames arrive on Slint's event loop. Keep only a weak window
+    // handle so stopping the UI also releases the capture callback cleanly.
+    auto push_preview_frame = [weak_window, catalog](
+                                  slint::Image image,
+                                  su::app::PreviewOverlay overlay) {
+        const auto window = weak_window.lock();
+        if (!window) {
+            return;
+        }
+        (*window)->set_preview_image(std::move(image));
+        const auto status = overlay.status_text == "preview.face_liveness"
+            ? translated_value(
+                *catalog,
+                *window,
+                overlay.status_text,
+                std::format("{:.2f}", overlay.liveness_score))
+            : translated(*catalog, *window, overlay.status_text);
+        (*window)->set_preview_status_text(slint::SharedString(status));
         if (overlay.face_box && overlay.source_width > 0 && overlay.source_height > 0) {
-            constexpr auto preview_width = 320.0F;
-            constexpr auto preview_height = 240.0F;
-            const auto scale = std::min(
-                preview_width / static_cast<float>(overlay.source_width),
-                preview_height / static_cast<float>(overlay.source_height));
-            const auto offset_x = (preview_width - overlay.source_width * scale) * 0.5F;
-            const auto offset_y = (preview_height - overlay.source_height * scale) * 0.5F;
-            window->set_face_box_x(offset_x + overlay.face_box->x * scale);
-            window->set_face_box_y(offset_y + overlay.face_box->y * scale);
-            window->set_face_box_w(overlay.face_box->width * scale);
-            window->set_face_box_h(overlay.face_box->height * scale);
-            window->set_face_box_visible(true);
+            (*window)->set_preview_source_width(overlay.source_width);
+            (*window)->set_preview_source_height(overlay.source_height);
+            (*window)->set_face_box_x(static_cast<float>(overlay.face_box->x));
+            (*window)->set_face_box_y(static_cast<float>(overlay.face_box->y));
+            (*window)->set_face_box_w(static_cast<float>(overlay.face_box->width));
+            (*window)->set_face_box_h(static_cast<float>(overlay.face_box->height));
+            (*window)->set_face_box_visible(true);
         } else {
-            window->set_face_box_visible(false);
+            (*window)->set_face_box_visible(false);
         }
     };
 
-    window->on_start_preview_requested([window, &controller, &preview, push_preview_frame] {
-        if (preview.is_running()) {
+    window->on_start_preview_requested(
+        [weak_window, controller, preview, push_preview_frame, catalog] {
+        if (preview->is_running()) {
             return;
         }
-        const auto snapshot = controller.load_config_snapshot();
-        const auto fps = snapshot ? snapshot->preview_fps : 15;
-        const auto camera = snapshot ? snapshot->selected_camera : 0;
-        const auto liveness_enabled = snapshot ? snapshot->liveness_detection : true;
-        preview.start(controller.recognizer(), camera, static_cast<int>(fps),
-                      liveness_enabled,
-                      push_preview_frame);
-        window->set_preview_status_text(slint::SharedString("starting"));
+        const auto config = controller->load_config_snapshot();
+        const auto window = weak_window.lock();
+        if (!window) {
+            return;
+        }
+        if (!config) {
+            (*window)->set_preview_status_text(slint::SharedString(config.error()));
+            return;
+        }
+
+        (*window)->set_preview_status_text(slint::SharedString(
+            translated(*catalog, *window, "preview.starting")));
+        preview->start(
+            controller->recognizer(),
+            config->selected_camera,
+            static_cast<int>(config->preview_fps),
+            config->liveness_detection,
+            push_preview_frame);
+        if (!preview->is_running()) {
+            (*window)->set_preview_status_text(slint::SharedString(
+                translated(*catalog, *window, "preview.start_failed")));
+        }
     });
-    window->on_stop_preview_requested([&preview] {
-        preview.stop();
+
+    window->on_stop_preview_requested([weak_window, preview, catalog] {
+        preview->stop();
+        if (const auto window = weak_window.lock()) {
+            set_preview_idle(*window, *catalog);
+        }
     });
 
     window->run();
-    preview.stop();
+    preview->stop();
     return 0;
 }
