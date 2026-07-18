@@ -24,3 +24,5 @@ CMakeLists.txt
 # 安装器文件
 installer-files
 Output
+
+.*
