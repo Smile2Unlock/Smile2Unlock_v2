@@ -95,6 +95,34 @@ component StatusPill inherits Rectangle {
     }
 }
 
+component CenteredActionButton inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback activated();
+
+    Rectangle { vertical-stretch: 1; background: transparent; }
+    ActionButton {
+        width: parent.width;
+        label: root.label;
+        primary: root.primary;
+        danger: root.danger;
+        enabled: root.enabled;
+        activated => { root.activated(); }
+    }
+    Rectangle { vertical-stretch: 1; background: transparent; }
+}
+
+component CenteredStatusPill inherits VerticalLayout {
+    in property <string> label;
+    in property <string> tone: "neutral";
+
+    Rectangle { vertical-stretch: 1; background: transparent; }
+    StatusPill { width: parent.width; label: root.label; tone: root.tone; }
+    Rectangle { vertical-stretch: 1; background: transparent; }
+}
+
 component MetricBlock inherits Rectangle {
     in property <string> label;
     in property <string> value;
@@ -327,14 +355,18 @@ export component AppWindow inherits Window {
                         background: #ffffff;
 
                         VerticalLayout {
-                            padding: 20px;
-                            spacing: 16px;
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            spacing: 12px;
                             SectionTitle {
                                 title: root.translate("account.current", root.language_index);
                                 detail: root.translate("account.protected_detail", root.language_index);
                             }
 
                             HorizontalLayout {
+                                height: 52px;
                                 spacing: 16px;
                                 Rectangle {
                                     width: 52px;
@@ -364,14 +396,14 @@ export component AppWindow inherits Window {
                                         font-size: 13px;
                                     }
                                 }
-                                StatusPill {
+                                CenteredStatusPill {
                                     width: root.profiles.length == 0 ? 132px : 92px;
                                     label: root.profiles.length == 0
                                         ? root.translate("status.action_required", root.language_index)
                                         : root.translate("status.protected", root.language_index);
                                     tone: root.profiles.length == 0 ? "warn" : "good";
                                 }
-                                ActionButton {
+                                CenteredActionButton {
                                     width: 124px;
                                     label: root.profiles.length == 0
                                         ? root.translate("action.enroll_face", root.language_index)
@@ -384,6 +416,7 @@ export component AppWindow inherits Window {
                             Rectangle { height: 1px; background: #e2e8e6; }
 
                             HorizontalLayout {
+                                height: 26px;
                                 spacing: 12px;
                                 Text { text: root.translate("overview.last_check", root.language_index); color: #65746f; font-size: 12px; vertical-alignment: center; }
                                 Text { text: root.activity_title; color: #243a34; font-size: 13px; font-weight: 600; vertical-alignment: center; }
@@ -415,18 +448,23 @@ export component AppWindow inherits Window {
                             spacing: 20px;
                             VerticalLayout {
                                 horizontal-stretch: 1;
-                                spacing: 7px;
-                                Text { text: root.translate("overview.verify_account", root.language_index); color: #1b302a; font-size: 16px; font-weight: 700; }
-                                Text {
-                                    text: root.activity_detail == ""
-                                        ? root.translate("overview.verify_hint", root.language_index)
-                                        : root.activity_detail;
-                                    color: #6c7b76;
-                                    font-size: 13px;
-                                    wrap: word-wrap;
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                VerticalLayout {
+                                    height: 50px;
+                                    spacing: 7px;
+                                    Text { text: root.translate("overview.verify_account", root.language_index); color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text {
+                                        text: root.activity_detail == ""
+                                            ? root.translate("overview.verify_hint", root.language_index)
+                                            : root.activity_detail;
+                                        color: #6c7b76;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
                                 }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
                             }
-                            ActionButton {
+                            CenteredActionButton {
                                 width: 150px;
                                 label: root.busy
                                     ? root.translate("status.checking", root.language_index)
@@ -585,14 +623,30 @@ export component AppWindow inherits Window {
                             padding-left: 16px;
                             padding-right: 12px;
                             spacing: 14px;
-                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3a9d7c; }
+                            VerticalLayout {
+                                width: 8px;
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3a9d7c; }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                            }
                             VerticalLayout {
                                 horizontal-stretch: 1;
-                                spacing: 3px;
-                                Text { text: profile.label; color: #203730; font-size: 14px; font-weight: 700; overflow: elide; }
-                                Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: #75827e; font-size: 11px; }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                VerticalLayout {
+                                    height: 37px;
+                                    spacing: 3px;
+                                    Text { text: profile.label; color: #203730; font-size: 14px; font-weight: 700; overflow: elide; }
+                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: #75827e; font-size: 11px; }
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
                             }
-                            ActionButton { width: 86px; label: root.translate("action.remove", root.language_index); danger: true; enabled: !root.busy; activated => { root.delete_profile_requested(profile.id); } }
+                            CenteredActionButton {
+                                width: 86px;
+                                label: root.translate("action.remove", root.language_index);
+                                danger: true;
+                                enabled: !root.busy;
+                                activated => { root.delete_profile_requested(profile.id); }
+                            }
                         }
                     }
                 }
@@ -744,6 +798,7 @@ export component AppWindow inherits Window {
                             spacing: 14px;
                             SectionTitle { title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
                             HorizontalLayout {
+                                height: 20px;
                                 Text { width: 180px; text: root.translate("diagnostics.auth_service", root.language_index); color: #65746f; font-size: 13px; }
                                 Text {
                                     text: root.control_socket_present
@@ -755,6 +810,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             HorizontalLayout {
+                                height: 20px;
                                 Text { width: 180px; text: root.translate("diagnostics.recognizer", root.language_index); color: #65746f; font-size: 13px; }
                                 Text {
                                     text: root.seetaface_available
@@ -766,6 +822,7 @@ export component AppWindow inherits Window {
                                 }
                             }
                             HorizontalLayout {
+                                height: 20px;
                                 Text { width: 180px; text: root.translate("settings.camera", root.language_index); color: #65746f; font-size: 13px; }
                                 Text {
                                     text: root.camera_count == 0
@@ -788,13 +845,24 @@ export component AppWindow inherits Window {
                         border-color: #d7dfdc;
                         background: #ffffff;
                         VerticalLayout {
-                            padding: 20px;
-                            spacing: 12px;
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            spacing: 10px;
                             SectionTitle { title: root.translate("diagnostics.local_data", root.language_index); detail: root.translate("diagnostics.local_data_detail", root.language_index); }
-                            Text { text: root.translate("diagnostics.configuration", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
-                            Text { text: root.config_path_text; color: #283e37; font-size: 12px; overflow: elide; }
-                            Text { text: root.translate("overview.face_samples", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
-                            Text { text: root.profile_store_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                            VerticalLayout {
+                                height: 36px;
+                                spacing: 3px;
+                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
+                                Text { text: root.config_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                            }
+                            VerticalLayout {
+                                height: 36px;
+                                spacing: 3px;
+                                Text { text: root.translate("overview.face_samples", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
+                                Text { text: root.profile_store_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                            }
                         }
                     }
 
@@ -809,11 +877,16 @@ export component AppWindow inherits Window {
                             spacing: 16px;
                             VerticalLayout {
                                 horizontal-stretch: 1;
-                                spacing: 6px;
-                                Text { text: root.translate("diagnostics.auth_check", root.language_index); color: #203730; font-size: 15px; font-weight: 700; }
-                                Text { text: root.activity_title; color: #6d7b77; font-size: 12px; }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                VerticalLayout {
+                                    height: 44px;
+                                    spacing: 6px;
+                                    Text { text: root.translate("diagnostics.auth_check", root.language_index); color: #203730; font-size: 15px; font-weight: 700; }
+                                    Text { text: root.activity_title; color: #6d7b77; font-size: 12px; overflow: elide; }
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
                             }
-                            ActionButton {
+                            CenteredActionButton {
                                 width: 140px;
                                 label: root.busy
                                     ? root.translate("status.checking", root.language_index)
