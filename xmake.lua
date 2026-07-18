@@ -242,6 +242,7 @@ if is_plat("linux") then
         add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_deps("su_core", "su_recognizer")
+        add_rpathdirs("/usr/lib/smile2unlock")
         add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
 
