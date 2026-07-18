@@ -15,6 +15,19 @@ xmake build
 sudo packaging/install-linux-auth.sh
 ```
 
+For distributions with a different PAM module directory, override it explicitly:
+
+```bash
+sudo PAM_MODULE_DIR=/lib/x86_64-linux-gnu/security packaging/install-linux-auth.sh
+```
+
+Package maintainers can validate or stage the complete filesystem layout without
+root privileges or `systemctl` side effects:
+
+```bash
+DESTDIR=build/test-data/install-root packaging/install-linux-auth.sh
+```
+
 The install script deliberately does not edit `/etc/pam.d`. A bad PAM stack can
 lock out every login path, and distributions compose these files differently.
 
