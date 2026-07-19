@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <sys/stat.h>
 
 import std;
 import su.control.socket;
@@ -10,6 +11,11 @@ int main() {
 
     auto listener = su::control::Listener::bind_to(socket_path.string());
     if (!listener) {
+        return 1;
+    }
+    struct stat metadata {};
+    if (::stat(socket_path.c_str(), &metadata) != 0
+        || (metadata.st_mode & 0777) != 0666) {
         return 1;
     }
 

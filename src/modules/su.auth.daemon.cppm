@@ -24,7 +24,9 @@ namespace su::auth {
 
 namespace {
 
-constexpr auto kAuthenticationTimeout = std::chrono::seconds{8};
+// DMS abandons a stalled unlock request after eight seconds. Leave enough
+// time for the face result to return and its password stack to take over.
+constexpr auto kAuthenticationTimeout = std::chrono::seconds{6};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 
 struct UserPaths {
@@ -96,6 +98,22 @@ std::expected<UserPaths, std::string> paths_for_user(std::string_view username) 
         .config = home / ".config" / "smile2unlock" / "config.toml",
         .profiles = home / ".local" / "share" / "smile2unlock" / "profiles.json",
     };
+}
+
+std::optional<std::string_view> peer_authorization_error(
+    std::uint32_t peer_uid,
+    const su::app::ControlRequest& request) {
+    if (peer_uid == 0) {
+        return std::nullopt;
+    }
+    if (request.type != su::app::ControlMessageType::kAuthenticate) {
+        return "user peer may only authenticate";
+    }
+    const auto paths = paths_for_user(request.username);
+    if (!paths || paths->uid != peer_uid) {
+        return "peer identity does not match requested user";
+    }
+    return std::nullopt;
 }
 
 bool secure_user_file(const std::filesystem::path& path, std::uint32_t uid, bool required) {
@@ -300,7 +318,7 @@ public:
 
     void handle(su::control::Connection connection) {
         const auto peer_uid = connection.peer_uid();
-        if (!peer_uid || *peer_uid != 0) {
+        if (!peer_uid) {
             std::println(stderr, "su_authd event=peer_rejected");
             return;
         }
@@ -312,6 +330,27 @@ public:
         const auto request = su::app::parse_control_request(*payload);
         if (!request) {
             std::println(stderr, "su_authd event=request_invalid");
+            return;
+        }
+
+        if (const auto reason = peer_authorization_error(*peer_uid, *request)) {
+            std::println(
+                stderr,
+                R"(su_authd event=peer_rejected peer_uid={} request_id={} type={} reason="{}")",
+                *peer_uid,
+                request->request_id,
+                message_type_name(request->type),
+                *reason);
+            const auto sent = connection.send_frame(su::control::make_response(
+                request->request_id,
+                su::control::ControlResult::kRejected,
+                *reason));
+            if (!sent) {
+                std::println(
+                    stderr,
+                    "su_authd event=response_send_failed request_id={}",
+                    request->request_id);
+            }
             return;
         }
 
