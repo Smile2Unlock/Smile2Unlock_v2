@@ -43,6 +43,32 @@ struct UserAuthData {
     std::size_t profile_count = 0;
 };
 
+std::string_view message_type_name(su::app::ControlMessageType type) {
+    switch (type) {
+    case su::app::ControlMessageType::kAuthenticate: return "authenticate";
+    case su::app::ControlMessageType::kStatus: return "status";
+    case su::app::ControlMessageType::kCancel: return "cancel";
+    }
+    std::unreachable();
+}
+
+std::string log_value(std::string_view value, std::size_t limit = 160) {
+    auto output = std::string{};
+    output.reserve(std::min(value.size(), limit));
+    for (const auto character : value.substr(0, limit)) {
+        switch (character) {
+        case '"': output += "\\\""; break;
+        case '\\': output += "\\\\"; break;
+        case '\n': output += "\\n"; break;
+        case '\r': output += "\\r"; break;
+        case '\t': output += "\\t"; break;
+        default:
+            output += static_cast<unsigned char>(character) < 0x20 ? '?' : character;
+        }
+    }
+    return output;
+}
+
 std::expected<UserPaths, std::string> paths_for_user(std::string_view username) {
     auto buffer_size = ::sysconf(_SC_GETPW_R_SIZE_MAX);
     if (buffer_size < 1024) {
@@ -275,15 +301,35 @@ public:
     void handle(su::control::Connection connection) {
         const auto peer_uid = connection.peer_uid();
         if (!peer_uid || *peer_uid != 0) {
+            std::println(stderr, "su_authd event=peer_rejected");
             return;
         }
         const auto payload = connection.receive_frame();
         if (!payload) {
+            std::println(stderr, "su_authd event=request_receive_failed");
             return;
         }
         const auto request = su::app::parse_control_request(*payload);
         if (!request) {
+            std::println(stderr, "su_authd event=request_invalid");
             return;
+        }
+
+        const auto started_at = std::chrono::steady_clock::now();
+        const auto type_name = message_type_name(request->type);
+        if (request->type == su::app::ControlMessageType::kAuthenticate) {
+            std::println(
+                stderr,
+                R"(su_authd event=request_started request_id={} type={} user="{}")",
+                request->request_id,
+                type_name,
+                log_value(request->username, 64));
+        } else {
+            std::println(
+                stderr,
+                "su_authd event=request_started request_id={} type={}",
+                request->request_id,
+                type_name);
         }
 
         auto response = AttemptResult{};
@@ -303,10 +349,27 @@ public:
             break;
         }
 
-        (void)connection.send_frame(su::control::make_response(
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_at);
+        std::println(
+            stderr,
+            R"(su_authd event=request_completed request_id={} type={} result={} reason="{}" duration_ms={})",
+            request->request_id,
+            type_name,
+            su::control::control_result_name(response.result),
+            log_value(response.reason),
+            elapsed.count());
+
+        const auto sent = connection.send_frame(su::control::make_response(
             request->request_id,
             response.result,
             response.reason));
+        if (!sent) {
+            std::println(
+                stderr,
+                "su_authd event=response_send_failed request_id={}",
+                request->request_id);
+        }
     }
 
 private:
@@ -338,8 +401,12 @@ int run_daemon(std::string_view socket_path) {
         return 1;
     }
 
-    std::println("su_authd listening on {}", socket_path);
     auto service = AuthService{};
+    std::println(
+        stderr,
+        "su_authd event=listening socket={} available={}",
+        socket_path,
+        service.available());
     while (true) {
         auto connection = listener->accept_one();
         if (!connection) {
