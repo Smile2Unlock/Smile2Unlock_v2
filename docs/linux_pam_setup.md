@@ -31,6 +31,38 @@ DESTDIR=build/test-data/install-root packaging/install-linux-auth.sh
 The install script deliberately does not edit `/etc/pam.d`. A bad PAM stack can
 lock out every login path, and distributions compose these files differently.
 
+## Safe acceptance test
+
+Before logging out or rebooting, invoke the built PAM module against the running
+`su_authd` through an isolated PAM config:
+
+```bash
+sudo build/linux/x86_64/release/su_pam_acceptance --user "$USER"
+```
+
+The tool creates a private service file under `/run`, calls
+`pam_start_confdir`, and removes the file on exit. It does not edit
+`/etc/pam.d`. Look at the camera until it reports one of:
+
+- `pam_result=accepted` (exit 0)
+- `pam_result=rejected` (exit 2)
+- `pam_result=unavailable` (exit 3)
+- `pam_result=error` (exit 4)
+
+The default test uses the PAM module from the current build. To validate an
+installed module or alternate socket explicitly:
+
+```bash
+sudo build/linux/x86_64/release/su_pam_acceptance \
+  --user "$USER" \
+  --module /usr/lib/security/pam_smile2unlock.so \
+  --socket /run/smile2unlock/control.sock
+```
+
+Keep an authenticated root shell open while testing the real display manager.
+An accepted result proves the PAM module, socket, daemon, target user's data,
+camera, models, liveness check, and face comparison worked in one request.
+
 ## Enable a PAM entry point
 
 Add this before the password module in the PAM service that should allow face

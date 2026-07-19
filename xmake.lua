@@ -270,6 +270,19 @@ if is_plat("linux") then
             get_config("mode"), "pam_smile2unlock.so")) .. "\"")
         add_syslinks("pam")
         add_tests("default")
+
+    target("su_pam_acceptance")
+        apply_cpp_target("binary")
+        add_files("src/platform/linux/pam_acceptance/*.cpp")
+        add_files("src/modules/su.control.socket.cppm")
+        add_deps("pam_smile2unlock")
+        add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
+            os.projectdir(), "build", get_config("plat"), get_config("arch"),
+            get_config("mode"), "pam_smile2unlock.so")) .. "\"")
+        add_syslinks("pam")
+        add_tests("help", {
+            runargs = {"--help"}
+        })
 end
 
 target("su_face_auth_smoke_test")
