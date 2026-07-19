@@ -27,6 +27,8 @@ done
 install -d -m 0755 "$(destination /usr/libexec/smile2unlock)"
 install -m 0755 "${build_dir}/su_authd" \
     "$(destination /usr/libexec/smile2unlock/su_authd)"
+install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" \
+    "$(destination /usr/libexec/smile2unlock/install-dms-lock)"
 
 install -d -m 0755 "$(destination "${pam_module_dir}")"
 install -m 0755 "${build_dir}/pam_smile2unlock.so" \
@@ -35,6 +37,9 @@ install -m 0755 "${build_dir}/pam_smile2unlock.so" \
 install -d -m 0755 "$(destination /usr/share/smile2unlock/models)"
 install -m 0644 "${build_dir}/assets/models/seeta/"*.csta \
     "$(destination /usr/share/smile2unlock/models)/"
+install -d -m 0755 "$(destination /usr/share/smile2unlock/pam)"
+install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
+    "$(destination /usr/share/smile2unlock/pam/dankshell-smile2unlock)"
 
 rpath="$(readelf -d "${build_dir}/su_authd" \
     | sed -n 's/.*Library rpath: \[\(.*\)\]/\1/p')"

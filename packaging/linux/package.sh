@@ -101,12 +101,15 @@ mkdir -p \
     "${root_dir}/usr/share/icons/hicolor/128x128/apps" \
     "${root_dir}/usr/share/smile2unlock/i18n" \
     "${root_dir}/usr/share/smile2unlock/models" \
+    "${root_dir}/usr/share/smile2unlock/pam" \
     "${root_dir}/usr/share/doc/smile2unlock" \
     "${output_dir}"
 
 install -m 0755 "${build_dir}/su_app" "${root_dir}/usr/bin/su_app"
 install -m 0755 "${build_dir}/su_authd" \
     "${root_dir}/usr/libexec/smile2unlock/su_authd"
+install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" \
+    "${root_dir}/usr/libexec/smile2unlock/install-dms-lock"
 install -m 0644 "${build_dir}/pam_smile2unlock.so" \
     "${root_dir}${pam_module_dir}/pam_smile2unlock.so"
 install -m 0644 "${project_dir}/packaging/systemd/su-authd.service" \
@@ -121,6 +124,10 @@ install -m 0644 "${project_dir}/NOTICE/THIRD-PARTY-NOTICES.md" \
     "${root_dir}/usr/share/doc/smile2unlock/THIRD-PARTY-NOTICES.md"
 install -m 0644 "${project_dir}/packaging/linux/README.md" \
     "${root_dir}/usr/share/doc/smile2unlock/README.md"
+install -m 0644 "${project_dir}/docs/linux_pam_setup.md" \
+    "${root_dir}/usr/share/doc/smile2unlock/linux_pam_setup.md"
+install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
+    "${root_dir}/usr/share/smile2unlock/pam/dankshell-smile2unlock"
 
 install -m 0644 "${build_dir}/assets/i18n/"*.json \
     "${root_dir}/usr/share/smile2unlock/i18n/"
