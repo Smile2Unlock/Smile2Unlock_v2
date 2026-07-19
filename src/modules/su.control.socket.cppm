@@ -322,9 +322,9 @@ std::expected<Listener, SocketError> Listener::bind_to(std::string_view path) {
     if (::bind(fd, reinterpret_cast<const sockaddr*>(&*address), sizeof(*address)) != 0) {
         return std::unexpected(SocketError::kBindFailed);
     }
-    // Only root-owned PAM processes may connect; SO_PEERCRED is checked again
-    // after accept so filesystem permissions are not the sole trust boundary.
-    if (::chmod(listener.path_.c_str(), 0600) != 0 || ::listen(fd, 16) != 0) {
+    // DMS runs its PAM subprocess as the desktop user. The daemon treats
+    // SO_PEERCRED, rather than this filesystem mode, as the trust boundary.
+    if (::chmod(listener.path_.c_str(), 0666) != 0 || ::listen(fd, 16) != 0) {
         return std::unexpected(SocketError::kListenFailed);
     }
     return listener;

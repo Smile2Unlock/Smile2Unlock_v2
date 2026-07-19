@@ -1,4 +1,5 @@
 #include <security/pam_appl.h>
+#include <cstdlib>
 #include <cstdio>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -26,6 +27,7 @@ void print_usage(std::string_view program) {
         "Usage: {} --user USER [--module PAM_MODULE] [--socket CONTROL_SOCKET]",
         program);
     std::println("Runs one real PAM authentication without modifying /etc/pam.d.");
+    std::println("Non-root callers may authenticate only their own NSS user.");
 }
 
 std::expected<Options, std::string> parse_options(int argc, char** argv) {
@@ -91,7 +93,24 @@ std::expected<std::filesystem::path, std::string> write_service_config(
         return std::unexpected("PAM module and socket paths cannot contain whitespace or '#'");
     }
 
-    const auto directory = std::filesystem::path("/run")
+    auto runtime_directory = std::filesystem::path{"/run"};
+    if (::geteuid() != 0) {
+        const auto* xdg_runtime = std::getenv("XDG_RUNTIME_DIR");
+        if (xdg_runtime == nullptr || xdg_runtime[0] == '\0') {
+            return std::unexpected("XDG_RUNTIME_DIR is required for non-root acceptance tests");
+        }
+        runtime_directory = xdg_runtime;
+        struct stat metadata {};
+        if (!runtime_directory.is_absolute()
+            || ::stat(runtime_directory.c_str(), &metadata) != 0
+            || !S_ISDIR(metadata.st_mode)
+            || metadata.st_uid != ::geteuid()
+            || (metadata.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+            return std::unexpected("XDG_RUNTIME_DIR is not a private directory owned by this user");
+        }
+    }
+
+    const auto directory = runtime_directory
         / std::format("smile2unlock-acceptance-{}", ::getpid());
     std::error_code error;
     if (!std::filesystem::create_directory(directory, error) || error
@@ -155,11 +174,6 @@ int main(int argc, char** argv) {
         print_usage(argc > 0 ? argv[0] : "su_pam_acceptance");
         return 0;
     }
-    if (::geteuid() != 0) {
-        std::println(stderr, "su_pam_acceptance must run as root");
-        return 77;
-    }
-
     const auto config_directory = write_service_config(*options);
     if (!config_directory) {
         std::println(stderr, "{}", config_directory.error());
