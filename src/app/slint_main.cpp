@@ -5,6 +5,7 @@ import su.app.controller;
 import su.app.i18n;
 import su.core.types;
 import su.app.preview;
+import su.app.session;
 
 namespace {
 
@@ -177,6 +178,22 @@ int main(int argc, char** argv) {
     auto window = ui::AppWindow::create();
     const WeakWindowHandle weak_window(window);
     const auto profiles = std::make_shared<ProfileModel>(profile_rows(snapshot->profiles));
+    const auto session_lock_monitor = std::make_unique<su::app::SessionLockMonitor>(
+        [weak_window, controller, preview, catalog] {
+            slint::invoke_from_event_loop([weak_window, controller, preview, catalog] {
+                const auto preview_was_running = preview->is_running();
+                preview->stop();
+                controller->cancel_camera_operation();
+                if (preview_was_running) {
+                    const auto window = weak_window.lock();
+                    if (!window) {
+                        return;
+                    }
+                    set_preview_idle(*window, *catalog);
+                }
+                std::println(stderr, "[session] GUI camera released for session lock");
+            });
+        });
 
     window->on_translate([catalog](slint::SharedString key, int index) {
         return slint::SharedString(catalog->translate(

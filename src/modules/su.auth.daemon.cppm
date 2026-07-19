@@ -28,6 +28,7 @@ namespace {
 // time for the face result to return and its password stack to take over.
 constexpr auto kAuthenticationTimeout = std::chrono::seconds{6};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
+constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
 
 struct UserPaths {
     std::uint32_t uid = 0;
@@ -114,6 +115,22 @@ std::optional<std::string_view> peer_authorization_error(
         return "peer identity does not match requested user";
     }
     return std::nullopt;
+}
+
+bool open_camera_with_retry(
+    su::recognizer::RecognizerService& recognizer,
+    int camera_index,
+    std::chrono::steady_clock::time_point deadline) {
+    while (true) {
+        if (recognizer.open_camera(camera_index)) {
+            return true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_until(std::min(deadline, now + kRetryInterval));
+    }
 }
 
 bool secure_user_file(const std::filesystem::path& path, std::uint32_t uid, bool required) {
@@ -232,6 +249,7 @@ public:
 
         const auto active_request = ActiveRequestGuard{
             active_request_, cancel_requested_, request_id};
+        const auto deadline = std::chrono::steady_clock::now() + kAuthenticationTimeout;
 
         const auto paths = paths_for_user(username);
         if (!paths) {
@@ -253,7 +271,10 @@ public:
         if (!recognizer_.seetaface_available()) {
             return {su::control::ControlResult::kUnavailable, "face models unavailable"};
         }
-        if (auto opened = recognizer_.open_camera(config.selected_camera); !opened) {
+        const auto camera_deadline = std::min(
+            deadline,
+            std::chrono::steady_clock::now() + kCameraAcquireTimeout);
+        if (!open_camera_with_retry(recognizer_, config.selected_camera, camera_deadline)) {
             return {su::control::ControlResult::kUnavailable, "camera unavailable"};
         }
         const auto close_camera = CameraGuard{recognizer_};
@@ -265,7 +286,6 @@ public:
 
         auto saw_face = false;
         auto saw_live_face = false;
-        const auto deadline = std::chrono::steady_clock::now() + kAuthenticationTimeout;
         while (std::chrono::steady_clock::now() < deadline) {
             if (cancel_requested_.load(std::memory_order_acquire)) {
                 return {su::control::ControlResult::kCancelled, "authentication cancelled"};

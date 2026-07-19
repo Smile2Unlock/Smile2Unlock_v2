@@ -195,7 +195,11 @@ target("su_app")
         add_files("src/app/slint_main.cpp")
         add_files("src/app/preview_controller.cpp")
         add_files("src/modules/su.app.preview.cppm")
+        add_files("src/modules/su.app.session.cppm")
         add_files("src/modules/su.app.i18n.cppm")
+        if is_plat("linux") then
+            add_syslinks("systemd")
+        end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
         on_load( function (target)
@@ -259,6 +263,12 @@ if is_plat("linux") then
     target("su_control_socket_smoke_test")
         apply_cpp_target("binary")
         add_files("tests/control/*.cpp", "src/modules/su.control.socket.cppm")
+        add_tests("default")
+
+    target("su_session_lock_monitor_smoke_test")
+        apply_cpp_target("binary")
+        add_files("tests/session/*.cpp", "src/modules/su.app.session.cppm")
+        add_syslinks("systemd")
         add_tests("default")
 
     target("su_pam_integration_test")
