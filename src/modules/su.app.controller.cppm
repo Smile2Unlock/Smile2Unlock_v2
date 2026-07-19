@@ -51,6 +51,7 @@ public:
     std::expected<std::string, std::string> list_face_profiles();
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
+    void cancel_camera_operation();
 
     su::recognizer::RecognizerService& recognizer() { return recognizer_; }
 
@@ -58,6 +59,7 @@ private:
     std::string config_path() const;
     std::string profile_store_path() const;
     su::recognizer::RecognizerService recognizer_{};
+    std::atomic<bool> camera_cancel_requested_{false};
 };
 
 } // namespace su::app

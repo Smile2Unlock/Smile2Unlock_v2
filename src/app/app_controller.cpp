@@ -22,7 +22,11 @@ bool liveness_passes(const CoreConfig& config, const su::recognizer::Recognition
 
 std::expected<su::recognizer::RecognitionResult, std::string> capture_live_features(
     su::recognizer::RecognizerService& recognizer,
-    const CoreConfig& config) {
+    const CoreConfig& config,
+    const std::atomic<bool>& cancel_requested) {
+    if (cancel_requested.load(std::memory_order_acquire)) {
+        return std::unexpected("camera operation cancelled");
+    }
     if (config.liveness_detection) {
         if (const auto reset = recognizer.reset_liveness(); !reset) {
             return std::unexpected("failed to reset liveness detector");
@@ -32,7 +36,13 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
     auto saw_face = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
     while (std::chrono::steady_clock::now() < deadline) {
+        if (cancel_requested.load(std::memory_order_acquire)) {
+            return std::unexpected("camera operation cancelled");
+        }
         const auto result = recognizer.extract_features(config.liveness_detection);
+        if (cancel_requested.load(std::memory_order_acquire)) {
+            return std::unexpected("camera operation cancelled");
+        }
         if (!result || !result->has_face || result->feature.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
             continue;
@@ -206,6 +216,7 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
 
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_current_frame(
     std::string_view label) {
+    camera_cancel_requested_.store(false, std::memory_order_release);
     const auto config = load_config(config_path());
     if (!config) {
         return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
@@ -215,7 +226,7 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     }
     // CameraGuard closes the camera on every exit path.
     const CameraGuard _close_guard{recognizer_};
-    const auto result = capture_live_features(recognizer_, *config);
+    const auto result = capture_live_features(recognizer_, *config, camera_cancel_requested_);
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -291,6 +302,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
 }
 
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current_frame() {
+    camera_cancel_requested_.store(false, std::memory_order_release);
     const auto config = load_config(config_path());
     if (!config) {
         return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
@@ -300,7 +312,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
     }
     // CameraGuard closes the camera on every exit path.
     const CameraGuard _close_guard{recognizer_};
-    const auto result = capture_live_features(recognizer_, *config);
+    const auto result = capture_live_features(recognizer_, *config, camera_cancel_requested_);
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -308,6 +320,11 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
     return authenticate_face_sample_from_source(
         su::recognizer::embedding_sample_source(result->feature),
         true);
+}
+
+void AppController::cancel_camera_operation() {
+    camera_cancel_requested_.store(true, std::memory_order_release);
+    recognizer_.close_camera();
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {
