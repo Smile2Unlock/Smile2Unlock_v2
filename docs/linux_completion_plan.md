@@ -8,6 +8,20 @@
 
 本计划是 `docs/rewrite_master_plan.md` 中 Linux Phase 3 的后续落地计划。Windows compatibility、可选 SIMD / Zig 扩展和 DMS Monet 配色分别保留在原计划及 `docs/dms_monet_theme_plan.md` 中，不阻塞 Linux 第一版跑通。
 
+## Current Status (2026-07-19)
+
+Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，其余阶段未开始。
+
+- `xmake build` 已通过。
+- 6 个 Xmake test case 和 33 个 Rust unit test 已通过。
+- 临时 PAM 验收入口已覆盖真实 accepted、rejected 和 unavailable 结果，未修改 `/etc/pam.d`。
+- accepted 请求已贯通 PAM module、root socket、已安装 daemon、目标用户档案、V4L2、SeetaFace、活体检测和特征比对。
+- Release 与已安装的 daemon / PAM module 哈希一致。
+- `su_authd` 已重启到带结构化诊断日志的版本，并报告 `available=true`。
+- accepted 日志结果为 `face matched`，本次请求耗时 2621 ms。
+
+Phase 2 必须通过真实 display manager 注销和重启完成，不能由进程内 PAM 测试替代。
+
 ## Verified Baseline
 
 截至 2026-07-19，仓库和当前开发机已确认：
@@ -70,6 +84,14 @@ Linux 第一版不要求：
 - 在当前会话内完成成功、拒绝和服务不可用三类真实 PAM 验证。
 - 每种失败都能继续使用原有密码认证。
 - 日志能够定位失败阶段，且不包含生物特征或敏感认证数据。
+
+### Result (2026-07-19)
+
+- accepted：通过，有效人脸返回 `PAM_SUCCESS`。
+- rejected：通过，不存在的 NSS 用户返回 `PAM_AUTH_ERR`。
+- unavailable：通过，不存在的 control socket 返回 `PAM_AUTHINFO_UNAVAIL`。
+- daemon 日志：通过，记录 request id、类型、用户、结果、固定原因和耗时。
+- 密码回退：模块返回值和现有 PAM 栈顺序已确认；真实 greeter 中的交互回退归入 Phase 2 验收。
 
 ## Phase 2: Greetd And Boot Login
 
@@ -245,4 +267,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-下一项任务应是 Phase 1：建立安全的真实 PAM 验收入口，并在当前会话中验证 accepted、rejected 和 unavailable 三条路径。只有该步骤通过后，才继续验证注销 / 重启登录和 DMS 锁屏，避免在无法诊断基础认证问题时同时修改多个 PAM 入口。
+下一项任务是 Phase 2：保持一个已认证 root shell，注销到实际 greeter，先验证有效人脸登录，再验证人脸失败后的密码回退。两条路径通过后重启，完成冷启动登录和 systemd / greetd 日志检查。该步骤会中断当前桌面会话，执行前必须由用户确认合适的验证时间。
