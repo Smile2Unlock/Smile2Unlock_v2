@@ -1,0 +1,9 @@
+#%PAM-1.0
+
+# Face authentication is optional; any failure continues into the system's
+# normal login stack so DMS always retains password authentication.
+auth       sufficient   pam_smile2unlock.so socket=/run/smile2unlock/control.sock
+auth       include      login
+account    include      login
+password   include      login
+session    include      login
