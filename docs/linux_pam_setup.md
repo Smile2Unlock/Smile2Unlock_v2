@@ -4,6 +4,24 @@
 owns `/run/smile2unlock/control.sock`, captures from V4L2 on demand, and reads the
 target user's enrolled profiles. The PAM module is only a socket client.
 
+## Package the Linux application
+
+Build the Release targets, then create a portable archive or a native package:
+
+```bash
+xmake f -m release --with_slint=y --with_seetaface=y
+xmake build
+packaging/linux/package.sh --format tar.gz
+packaging/linux/package.sh --format pacman
+```
+
+The package contains `su_app`, `su_authd`, the PAM module, models, language
+packs, bundled Slint / SeetaFace runtime libraries, systemd metadata, the
+desktop entry and licenses. It does not enable the service or edit `/etc/pam.d`.
+For DEB/RPM output, install fpm and use `--format deb` or `--format rpm`; see
+[`packaging/linux/README.md`](../packaging/linux/README.md) for dependency
+mapping, PAM module directory overrides and staging details.
+
 ## Build and install
 
 Configure the release build with the real recognizer enabled, then build through
