@@ -50,6 +50,16 @@ std::optional<std::filesystem::path> find_model_dir_from(const std::filesystem::
     return std::nullopt;
 }
 
+std::optional<std::filesystem::path> installed_model_dir() {
+#if defined(__linux__)
+    constexpr auto path = std::string_view{"/usr/share/smile2unlock/models"};
+    if (std::filesystem::is_directory(path)) {
+        return std::filesystem::path(path);
+    }
+#endif
+    return std::nullopt;
+}
+
 }  // namespace
 
 std::filesystem::path default_seetaface_model_dir() {
@@ -64,6 +74,9 @@ std::filesystem::path default_seetaface_model_dir() {
 #endif
 
     if (const auto model_dir = find_model_dir_from(std::filesystem::current_path())) {
+        return *model_dir;
+    }
+    if (const auto model_dir = installed_model_dir()) {
         return *model_dir;
     }
     return std::filesystem::current_path() / "assets" / "models" / "seeta";
