@@ -42,10 +42,11 @@ packaging/linux/package.sh --format rpm
 
 The package layout is the same for every format. fpm dependencies default to
 `pam`; set `PACKAGE_DEPENDS` to the names used by the target distribution when
-packaging the system libraries required by Slint, libyuv, libjpeg and OpenMP:
+packaging the system libraries required by Slint, libyuv, libjpeg, OpenMP and
+libsystemd:
 
 ```bash
-PACKAGE_DEPENDS='libpam0g,libyuv0,libjpeg8,libgomp1' \
+PACKAGE_DEPENDS='libpam0g,libyuv0,libjpeg8,libgomp1,libsystemd0' \
   packaging/linux/package.sh --format deb
 ```
 
@@ -85,8 +86,9 @@ package documentation for verification and rollback commands.
 
 The package bundles Slint and SeetaFace libraries, but intentionally uses the
 distribution's system libraries for PAM, libyuv, libjpeg, OpenMP, libc++
-runtime, V4L2 and the Wayland / X11 platform stack. The exact package names are
-distribution-specific, which is why DEB/RPM dependency names are configurable.
+runtime, libsystemd, V4L2 and the Wayland / X11 platform stack. The exact
+package names are distribution-specific, which is why DEB/RPM dependency names
+are configurable.
 
 The script patches application RPATHs to package-relative locations and fails
 if a binary still references the build user's Xmake cache.

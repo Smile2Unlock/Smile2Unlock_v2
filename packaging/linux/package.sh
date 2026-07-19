@@ -202,7 +202,7 @@ pkgdesc='Local face authentication enrollment and diagnostics'
 arch=('${architecture}')
 license=('MIT')
 options=('!debug')
-depends=('pam' 'libyuv' 'libjpeg-turbo' 'gcc-libs')
+depends=('pam' 'libyuv' 'libjpeg-turbo' 'systemd-libs' 'gcc-libs')
 _stage_root='${root_dir}'
 
 package() {
