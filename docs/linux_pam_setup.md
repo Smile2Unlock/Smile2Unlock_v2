@@ -134,11 +134,19 @@ Validate the service and select it as the desktop user running DMS:
 dms auth validate --path /etc/pam.d/dankshell-smile2unlock --json
 dms ipc call settings set lockPamPath /etc/pam.d/dankshell-smile2unlock
 dms ipc call settings get lockPamPath
+dms ipc call settings get loginctlLockIntegration
 ```
 
 The service uses `pam_smile2unlock.so` as `sufficient`, followed by the complete
 system `login` stack. A rejected, timed-out, busy, or unavailable face attempt
 therefore continues to DMS password authentication.
+
+Keep DMS's `loginctlLockIntegration` enabled (its default). The desktop app
+listens to the current logind session's standard `Lock` signal, stops preview or
+an in-progress capture, and releases V4L2 before lock-screen authentication.
+The daemon also retries camera acquisition for up to 1.2 seconds within its
+six-second authentication budget. Preview remains stopped after unlock until
+the user explicitly starts it again.
 
 Before removing the PAM service, reset DMS to its automatically resolved stack
 as the desktop user, then remove the file as root:

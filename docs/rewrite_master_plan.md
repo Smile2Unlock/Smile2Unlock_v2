@@ -8,7 +8,7 @@
 
 Phase 0, 1, 2 — **全部完成**。Phase 3 — **实现完成、部署验证待完成**（Rust control protocol、root `su_authd`、Unix control socket、PAM client、systemd unit 均已实现并通过构建/自动测试；尚未修改本机 PAM 栈并重启验证真实开机登录）。Phase 4, 5 — 未开始。
 
-已构建 11 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 4 个 C++ 集成/smoke test 均通过）。
+已构建 13 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 6 个 C++ 集成/smoke test 均通过）。
 
 重写后的第一阶段目标：
 

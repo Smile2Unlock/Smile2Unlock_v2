@@ -10,10 +10,10 @@
 
 ## Current Status (2026-07-19)
 
-Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入已实现但锁屏与摄像头协调仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5、6、7 尚未开始。
+Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入和摄像头协调已实现但真实锁屏仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5、6、7 尚未开始。
 
 - `xmake build` 已通过。
-- 6 个 Xmake test case 和 33 个 Rust unit test 已通过。
+- 7 个 Xmake test case 和 33 个 Rust unit test 已通过。
 - 临时 PAM 验收入口已覆盖真实 accepted、rejected 和 unavailable 结果，未修改 `/etc/pam.d`。
 - accepted 请求已贯通 PAM module、root socket、已安装 daemon、目标用户档案、V4L2、SeetaFace、活体检测和特征比对。
 - Release 与已安装的 daemon / PAM module 哈希一致。
@@ -156,7 +156,9 @@ Linux 第一版不要求：
 - DMS v1.5.2 配置校验通过，`lockPamPath` 已部署为 `/etc/pam.d/dankshell-smile2unlock`，IPC 与持久化设置回读一致。
 - 已通过普通用户 PAM subprocess 完成本人真实人脸认证，并确认同一用户跨 uid 请求被 daemon 拒绝。
 - 真实 DMS 锁屏 UI 中的人脸成功和密码回退仍需在用户可配合锁屏时完成现场验收。
-- GUI preview 与 DMS 锁屏之间的摄像头主动释放仍属于本阶段剩余工作。
+- GUI 通过标准 logind `Lock` 信号停止 preview、取消录入 / 测试认证并释放 V4L2，不依赖 DMS 私有 IPC；解锁后不自动重启 preview。
+- daemon 在六秒认证总时限内为摄像头释放竞态保留最多 1.2 秒的有界重试，失败后返回 unavailable 并进入密码回退。
+- logind 会话解析和 `Lock` 信号订阅已由独立 Xmake smoke test 覆盖；GUI preview 开启后的真实 DMS 锁屏仍需现场验收。
 
 ## Phase 4: Linux GUI Installation And Packaging
 
@@ -281,4 +283,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 仍需在合适时间注销和重启验证。当前先完成 DMS `lockPamPath` 部署及普通用户 PAM 验收，再进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 摄像头竞争测试。之后执行 Phase 5 的双用户路径 / 权限自动测试，再处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用。
+P2 仍需在合适时间注销和重启验证。DMS `lockPamPath`、普通用户 PAM 验收和摄像头协调代码已经完成；下一步进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 释放测试。之后执行 Phase 5 的双用户路径 / 权限自动测试，再处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用。
