@@ -47,6 +47,8 @@ struct ControlResponse {
     ControlResult result = ControlResult::kError;
 };
 
+std::string_view control_result_name(ControlResult result);
+
 class Connection {
 public:
     Connection() = default;
@@ -183,7 +185,9 @@ std::string json_escape(std::string_view value) {
     return output;
 }
 
-std::string_view result_name(ControlResult result) {
+} // namespace
+
+std::string_view control_result_name(ControlResult result) {
     switch (result) {
     case ControlResult::kAccepted: return "accepted";
     case ControlResult::kRejected: return "rejected";
@@ -194,8 +198,6 @@ std::string_view result_name(ControlResult result) {
     }
     std::unreachable();
 }
-
-} // namespace
 
 Connection::~Connection() {
     reset();
@@ -371,7 +373,7 @@ std::string make_response(
         R"({{"version":{},"msg_type":"auth_result","request_id":{},"result":"{}","reason":"{}"}})",
         kProtocolVersion,
         request_id,
-        result_name(result),
+        control_result_name(result),
         json_escape(reason));
 }
 
@@ -406,7 +408,8 @@ std::expected<ControlResponse, SocketError> parse_response(std::string_view resp
              ControlResult::kBusy,
              ControlResult::kError,
          }) {
-        const auto token = std::format(R"("result":"{}")", result_name(result));
+        const auto token = std::format(
+            R"("result":"{}")", control_result_name(result));
         if (response.contains(token)) {
             return ControlResponse{.request_id = request_id, .result = result};
         }

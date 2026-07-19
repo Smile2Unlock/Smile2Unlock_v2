@@ -107,3 +107,7 @@ systemctl status su-authd.service
 journalctl -u su-authd.service -b
 ls -l /run/smile2unlock/control.sock
 ```
+
+Each handled request emits `request_started` and `request_completed` records.
+The completion record includes the result, fixed diagnostic reason, and elapsed
+milliseconds, but never includes images, embeddings, or profile JSON.
