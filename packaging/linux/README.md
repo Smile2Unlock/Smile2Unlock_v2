@@ -22,7 +22,7 @@ packaging/linux/package.sh --format tar.gz
 
 The archive contains `su_app`, `su_authd`, the PAM module, bundled Slint and
 SeetaFace libraries, models, language packs, the systemd unit, desktop entry,
-icon and license files.
+icon, DMS lock-screen PAM template and installer, and license files.
 
 ## Native packages
 
@@ -60,6 +60,26 @@ PAM_MODULE_DIR=/lib/x86_64-linux-gnu/security \
 The package never enables `su-authd.service` and never edits `/etc/pam.d`.
 Install the package first, then follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
 to enable and validate the desired PAM entry point.
+
+## DMS lock screen
+
+After installing the package and starting `su-authd.service`, install the
+dedicated PAM service as root:
+
+```bash
+sudo /usr/libexec/smile2unlock/install-dms-lock
+```
+
+Then validate and select it as the desktop user running DMS:
+
+```bash
+dms auth validate --path /etc/pam.d/dankshell-smile2unlock --json
+dms ipc call settings set lockPamPath /etc/pam.d/dankshell-smile2unlock
+```
+
+The dedicated service tries face authentication first and always retains the
+system `login` password stack as fallback. See `linux_pam_setup.md` in the
+package documentation for verification and rollback commands.
 
 ## Runtime dependencies
 
