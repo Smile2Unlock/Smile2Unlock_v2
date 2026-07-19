@@ -10,7 +10,7 @@
 
 ## Current Status (2026-07-19)
 
-Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，其余阶段未开始。
+Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 4 的打包基础设施已完成并验证；Phase 3、5、6、7 尚未开始。
 
 - `xmake build` 已通过。
 - 6 个 Xmake test case 和 33 个 Rust unit test 已通过。
@@ -19,6 +19,9 @@ Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，其余阶段�
 - Release 与已安装的 daemon / PAM module 哈希一致。
 - `su_authd` 已重启到带结构化诊断日志的版本，并报告 `available=true`。
 - accepted 日志结果为 `face matched`，本次请求耗时 2621 ms。
+- `tar.gz` 和 Arch `pkg.tar.zst` 均已生成，包内 GUI / daemon RPATH 已改为包内相对路径。
+- 打包 staging 已包含 GUI、PAM、daemon、模型、语言包、Slint / SeetaFace runtime、systemd、桌面入口、图标和许可证。
+- DEB / RPM 的 fpm 入口已实现；当前开发机未安装 fpm，因此只验证了缺失工具时的明确跳过行为。
 
 Phase 2 必须通过真实 display manager 注销和重启完成，不能由进程内 PAM 测试替代。
 
@@ -267,4 +270,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-下一项任务是 Phase 2：保持一个已认证 root shell，注销到实际 greeter，先验证有效人脸登录，再验证人脸失败后的密码回退。两条路径通过后重启，完成冷启动登录和 systemd / greetd 日志检查。该步骤会中断当前桌面会话，执行前必须由用户确认合适的验证时间。
+P2 仍需在合适时间注销和重启验证。等待期间，下一项可执行的代码任务是 Phase 5 的多用户路径 / 权限自动测试，然后处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用；Phase 3 的 DMS 锁屏 PAM 模板可以先实现，但实际锁屏和摄像头竞争仍需会话测试。
