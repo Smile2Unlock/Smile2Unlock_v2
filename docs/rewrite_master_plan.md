@@ -643,7 +643,7 @@ Slint 是唯一计划内 GUI。
 
 - ✅ Linux PAM thin module — 获取 PAM 用户名，通过带超时的 Unix socket 请求认证，并映射为 PAM 返回码
 - ✅ root `su_authd` — systemd 开机启动，在 display manager 前提供认证服务
-- ✅ control socket — `/run/smile2unlock/control.sock`，长度帧、16 KiB 上限、root peer credential 校验
+- ✅ control socket — `/run/smile2unlock/control.sock`，长度帧、16 KiB 上限、`SO_PEERCRED` 授权；root 可使用完整协议，普通用户只能认证与自身 uid 匹配的 NSS 用户
 - ✅ Rust auth policy — auth.rs 完整实现，支持 liveness_ok 参数透传
 - ✅ Rust control protocol — version/msg_type/request_id 校验及 authenticate/status/cancel typed request
 - ✅ control socket smoke test — listener/client/framing/response 自动测试通过

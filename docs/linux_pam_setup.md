@@ -17,7 +17,8 @@ packaging/linux/package.sh --format pacman
 
 The package contains `su_app`, `su_authd`, the PAM module, models, language
 packs, bundled Slint / SeetaFace runtime libraries, systemd metadata, the
-desktop entry and licenses. It does not enable the service or edit `/etc/pam.d`.
+desktop entry, a DMS PAM template and its installer, and licenses. It does not
+enable the service or edit `/etc/pam.d`.
 For DEB/RPM output, install fpm and use `--format deb` or `--format rpm`; see
 [`packaging/linux/README.md`](../packaging/linux/README.md) for dependency
 mapping, PAM module directory overrides and staging details.
@@ -55,12 +56,13 @@ Before logging out or rebooting, invoke the built PAM module against the running
 `su_authd` through an isolated PAM config:
 
 ```bash
-sudo build/linux/x86_64/release/su_pam_acceptance --user "$USER"
+build/linux/x86_64/release/su_pam_acceptance --user "$USER"
 ```
 
-The tool creates a private service file under `/run`, calls
-`pam_start_confdir`, and removes the file on exit. It does not edit
-`/etc/pam.d`. Look at the camera until it reports one of:
+The tool creates a private service file under `$XDG_RUNTIME_DIR` for a desktop
+user (or `/run` for root), calls `pam_start_confdir`, and removes the file on
+exit. It does not edit `/etc/pam.d`. A non-root caller can authenticate only
+the NSS user matching its own uid. Look at the camera until it reports one of:
 
 - `pam_result=accepted` (exit 0)
 - `pam_result=rejected` (exit 2)
@@ -71,7 +73,7 @@ The default test uses the PAM module from the current build. To validate an
 installed module or alternate socket explicitly:
 
 ```bash
-sudo build/linux/x86_64/release/su_pam_acceptance \
+build/linux/x86_64/release/su_pam_acceptance \
   --user "$USER" \
   --module /usr/lib/security/pam_smile2unlock.so \
   --socket /run/smile2unlock/control.sock
@@ -101,6 +103,55 @@ An alternate socket can be supplied for diagnostics:
 auth sufficient pam_smile2unlock.so socket=/run/smile2unlock/control.sock
 ```
 
+## Enable DMS lock-screen authentication
+
+DMS runs its PAM subprocess as the desktop user, so the control socket is
+connectable by local users. `su_authd` still authorizes every connection with
+`SO_PEERCRED`: root retains status, cancellation, and cross-user authentication;
+a non-root peer can only submit an authentication request for the NSS user whose
+uid matches its own. Cross-user and non-authentication requests are rejected.
+
+Install the dedicated service from a source checkout:
+
+```bash
+sudo packaging/install-dms-lock.sh
+```
+
+For an installed package, use:
+
+```bash
+sudo /usr/libexec/smile2unlock/install-dms-lock
+```
+
+The installer manages only `/etc/pam.d/dankshell-smile2unlock`. It refuses to
+overwrite a modified file unless `--force` is given, and a forced replacement
+is backed up under `/var/lib/smile2unlock/pam-backups`. It never modifies DMS's
+generated PAM file under the user's state directory.
+
+Validate the service and select it as the desktop user running DMS:
+
+```bash
+dms auth validate --path /etc/pam.d/dankshell-smile2unlock --json
+dms ipc call settings set lockPamPath /etc/pam.d/dankshell-smile2unlock
+dms ipc call settings get lockPamPath
+```
+
+The service uses `pam_smile2unlock.so` as `sufficient`, followed by the complete
+system `login` stack. A rejected, timed-out, busy, or unavailable face attempt
+therefore continues to DMS password authentication.
+
+Before removing the PAM service, reset DMS to its automatically resolved stack
+as the desktop user, then remove the file as root:
+
+```bash
+dms ipc call settings set lockPamPath ""
+sudo /usr/libexec/smile2unlock/install-dms-lock --remove
+```
+
+Keep a working unlocked session while performing the first live lock-screen
+test. Confirm face success, password fallback after a failed face attempt, and
+password fallback while `su-authd.service` is stopped.
+
 ## User data
 
 At boot, the service resolves the PAM username through NSS and reads:
@@ -125,6 +176,10 @@ systemctl status su-authd.service
 journalctl -u su-authd.service -b
 ls -l /run/smile2unlock/control.sock
 ```
+
+The expected socket mode is `0666`; this permits DMS's user-owned PAM process to
+connect. Authorization is enforced from kernel-provided peer credentials in the
+daemon, not from the socket mode.
 
 Each handled request emits `request_started` and `request_completed` records.
 The completion record includes the result, fixed diagnostic reason, and elapsed

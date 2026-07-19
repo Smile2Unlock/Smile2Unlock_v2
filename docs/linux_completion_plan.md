@@ -10,7 +10,7 @@
 
 ## Current Status (2026-07-19)
 
-Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 4 的打包基础设施已完成并验证；Phase 3、5、6、7 尚未开始。
+Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入已实现但锁屏与摄像头协调仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5、6、7 尚未开始。
 
 - `xmake build` 已通过。
 - 6 个 Xmake test case 和 33 个 Rust unit test 已通过。
@@ -147,6 +147,17 @@ Linux 第一版不要求：
 - 锁屏认证结束后 GUI 可以由用户重新启动预览。
 - 摄像头竞争不会造成 daemon 崩溃、无限等待或密码回退失效。
 
+### PAM Integration Result (2026-07-19)
+
+- 已增加独立的 `dankshell-smile2unlock` PAM 模板，Smile2Unlock 失败后继续系统 `login` 密码栈。
+- 已增加不覆盖已有修改、支持回滚的 PAM 安装脚本，并把模板和脚本加入 Linux 包。
+- control socket 允许 DMS 用户态 PAM subprocess 连接；daemon 使用 `SO_PEERCRED` 和 NSS 限制普通用户只能认证自己，root 原有控制能力保持不变。
+- 普通用户 PAM 验收入口不再依赖 root，并使用私有 XDG runtime 目录。
+- DMS v1.5.2 配置校验通过，`lockPamPath` 已部署为 `/etc/pam.d/dankshell-smile2unlock`，IPC 与持久化设置回读一致。
+- 已通过普通用户 PAM subprocess 完成本人真实人脸认证，并确认同一用户跨 uid 请求被 daemon 拒绝。
+- 真实 DMS 锁屏 UI 中的人脸成功和密码回退仍需在用户可配合锁屏时完成现场验收。
+- GUI preview 与 DMS 锁屏之间的摄像头主动释放仍属于本阶段剩余工作。
+
 ## Phase 4: Linux GUI Installation And Packaging
 
 ### Goal
@@ -203,7 +214,7 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 - 为认证请求增加合理的频率限制和连续失败策略，同时避免与发行版 `pam_faillock` 产生不可预测的双重锁定。
 - 对 profile JSON 的生物特征隐私、加密、完整性和版本迁移做威胁建模。
 - 检查用户路径验证与实际文件打开之间的竞态，优先使用 fd-based 和 `openat2` 风格的安全读取方案。
-- 保持 daemon 只接受 root peer，并继续限制 control frame 大小、协议版本和超时。
+- daemon 必须继续通过 `SO_PEERCRED` 授权：root 可使用完整控制协议，普通用户只能认证 NSS uid 与 peer uid 一致的本人；继续限制 control frame 大小、协议版本和超时。
 - 验证 systemd sandbox 对目标用户 home、摄像头设备和需要的动态库只开放必要访问。
 - 评估 SeetaFace 模型懒加载、空闲释放和 daemon 常驻内存占用。
 - 增加 camera / model initialization 的恢复能力，避免一次启动失败永久标记服务不可用。
@@ -270,4 +281,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 仍需在合适时间注销和重启验证。等待期间，下一项可执行的代码任务是 Phase 5 的多用户路径 / 权限自动测试，然后处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用；Phase 3 的 DMS 锁屏 PAM 模板可以先实现，但实际锁屏和摄像头竞争仍需会话测试。
+P2 仍需在合适时间注销和重启验证。当前先完成 DMS `lockPamPath` 部署及普通用户 PAM 验收，再进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 摄像头竞争测试。之后执行 Phase 5 的双用户路径 / 权限自动测试，再处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用。
