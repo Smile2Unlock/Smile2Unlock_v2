@@ -12,6 +12,7 @@ export module su.auth.daemon;
 import std;
 import su.control.socket;
 import su.core.types;
+import su.auth.user;
 import su.recognizer.service;
 
 export namespace su::auth {
@@ -29,12 +30,6 @@ namespace {
 constexpr auto kAuthenticationTimeout = std::chrono::seconds{6};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
-
-struct UserPaths {
-    std::uint32_t uid = 0;
-    std::filesystem::path config;
-    std::filesystem::path profiles;
-};
 
 struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
@@ -93,12 +88,9 @@ std::expected<UserPaths, std::string> paths_for_user(std::string_view username) 
         return std::unexpected("unknown PAM user");
     }
 
-    const auto home = std::filesystem::path(entry.pw_dir);
-    return UserPaths{
-        .uid = static_cast<std::uint32_t>(entry.pw_uid),
-        .config = home / ".config" / "smile2unlock" / "config.toml",
-        .profiles = home / ".local" / "share" / "smile2unlock" / "profiles.json",
-    };
+    return su::auth::paths_for_identity(
+        static_cast<std::uint32_t>(entry.pw_uid),
+        std::filesystem::path(entry.pw_dir));
 }
 
 std::optional<std::string_view> peer_authorization_error(
@@ -111,7 +103,7 @@ std::optional<std::string_view> peer_authorization_error(
         return "user peer may only authenticate";
     }
     const auto paths = paths_for_user(request.username);
-    if (!paths || paths->uid != peer_uid) {
+    if (!paths || !su::auth::peer_request_allowed(peer_uid, request.type, paths->uid)) {
         return "peer identity does not match requested user";
     }
     return std::nullopt;
@@ -131,16 +123,6 @@ bool open_camera_with_retry(
         }
         std::this_thread::sleep_until(std::min(deadline, now + kRetryInterval));
     }
-}
-
-bool secure_user_file(const std::filesystem::path& path, std::uint32_t uid, bool required) {
-    struct stat metadata {};
-    if (::lstat(path.c_str(), &metadata) != 0) {
-        return !required && errno == ENOENT;
-    }
-    return S_ISREG(metadata.st_mode)
-        && static_cast<std::uint32_t>(metadata.st_uid) == uid
-        && (metadata.st_mode & (S_IWGRP | S_IWOTH)) == 0;
 }
 
 class CameraGuard {
@@ -208,6 +190,10 @@ std::expected<UserAuthData, std::string> load_user_auth_data(const UserPaths& pa
     if (!fsuid.valid()) {
         return std::unexpected("failed to enter user filesystem context");
     }
+    if (!su::auth::secure_user_file(paths.config, paths.uid, false)
+        || !su::auth::secure_user_file(paths.profiles, paths.uid, true)) {
+        return std::unexpected("unsafe, inaccessible, or missing user data");
+    }
     const auto config = su::app::load_config(paths.config.string());
     if (!config) {
         return std::unexpected("failed to load user config");
@@ -226,6 +212,9 @@ std::expected<su::app::FaceAuthReport, std::string> authenticate_user_sample(
     const auto fsuid = FsUidGuard{paths.uid};
     if (!fsuid.valid()) {
         return std::unexpected("failed to enter user filesystem context");
+    }
+    if (!su::auth::secure_user_file(paths.profiles, paths.uid, true)) {
+        return std::unexpected("unsafe, inaccessible, or missing face profiles");
     }
     const auto report = su::app::authenticate_face_sample_report(
         paths.profiles.string(), sample, threshold, true);
@@ -255,11 +244,6 @@ public:
         if (!paths) {
             return {su::control::ControlResult::kRejected, paths.error()};
         }
-        if (!secure_user_file(paths->config, paths->uid, false)
-            || !secure_user_file(paths->profiles, paths->uid, true)) {
-            return {su::control::ControlResult::kUnavailable, "unsafe or missing user data"};
-        }
-
         const auto user_data = load_user_auth_data(*paths);
         if (!user_data) {
             return {su::control::ControlResult::kUnavailable, user_data.error()};
