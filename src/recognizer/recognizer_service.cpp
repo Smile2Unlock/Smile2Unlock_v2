@@ -7,11 +7,7 @@ import su.recognizer.backend;
 namespace su::recognizer {
 
 RecognizerService::RecognizerService()
-#if SU_HAS_SEETAFACE
-    : seetaface_init_flag_(std::make_unique<std::once_flag>()) {}
-#else
     = default;
-#endif
 
 RecognizerService::~RecognizerService() = default;
 
@@ -181,27 +177,31 @@ std::string embedding_sample_source(std::span<const float> feature) {
 #if SU_HAS_SEETAFACE
 
 std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
-    // Moved-from state: seetaface_init_flag_ is null.
-    if (!seetaface_init_flag_) {
+    auto lock = std::lock_guard{seetaface_mutex_};
+    if (seetaface_backend_) {
+        return {};
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_seetaface_retry_) {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
-
-    // std::call_once guarantees the init lambda runs at most once. The
-    // seetaface_backend_ pointer is the authoritative success indicator: if
-    // the lambda completes without throwing and the backend loaded, the
-    // pointer is set; otherwise it stays null and we return an error.
-    std::call_once(*seetaface_init_flag_, [this] {
+    // A missing model directory is recoverable after package installation or
+    // a mount becoming available. Retry lazily instead of caching failure for
+    // the lifetime of the daemon.
+    next_seetaface_retry_ = now + std::chrono::seconds{5};
+    try {
         auto paths = seetaface_model_paths(default_seetaface_model_dir());
-        if (!paths) {
-            return;  // seetaface_backend_ stays null; failure handled below
+        if (paths) {
+            auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
+            if (backend->available()) {
+                seetaface_backend_ = std::move(backend);
+                next_seetaface_retry_ = {};
+            }
         }
-        auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
-        if (!backend->available()) {
-            return;  // seetaface_backend_ stays null; failure handled below
-        }
-        seetaface_backend_ = std::move(backend);
-    });
-
+    } catch (...) {
+        // Model constructors are third-party code; expose a safe unavailable
+        // result and allow the bounded retry above to recover later.
+    }
     if (seetaface_backend_) {
         return {};
     }
