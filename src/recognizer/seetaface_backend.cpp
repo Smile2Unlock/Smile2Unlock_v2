@@ -38,7 +38,8 @@ std::optional<std::filesystem::path> find_model_dir_from(const std::filesystem::
                  path / "assets" / "models" / "seeta",
                  path / "FaceRecognizer" / "resources" / "models",
              }) {
-            if (std::filesystem::is_directory(candidate)) {
+            auto error = std::error_code{};
+            if (std::filesystem::is_directory(candidate, error)) {
                 return candidate;
             }
         }
@@ -53,7 +54,8 @@ std::optional<std::filesystem::path> find_model_dir_from(const std::filesystem::
 std::optional<std::filesystem::path> installed_model_dir() {
 #if defined(__linux__)
     constexpr auto path = std::string_view{"/usr/share/smile2unlock/models"};
-    if (std::filesystem::is_directory(path)) {
+    auto error = std::error_code{};
+    if (std::filesystem::is_directory(path, error)) {
         return std::filesystem::path(path);
     }
 #endif
@@ -63,12 +65,14 @@ std::optional<std::filesystem::path> installed_model_dir() {
 }  // namespace
 
 std::filesystem::path default_seetaface_model_dir() {
+    auto error = std::error_code{};
     if (const auto* configured = std::getenv("SU_SEETAFACE_MODEL_DIR");
-        configured != nullptr && std::filesystem::is_directory(configured)) {
+        configured != nullptr && std::filesystem::is_directory(configured, error)) {
         return std::filesystem::path(configured);
     }
 #ifdef SU_SEETAFACE_MODEL_DIR
-    if (std::filesystem::is_directory(SU_SEETAFACE_MODEL_DIR)) {
+    error.clear();
+    if (std::filesystem::is_directory(SU_SEETAFACE_MODEL_DIR, error)) {
         return std::filesystem::path(SU_SEETAFACE_MODEL_DIR);
     }
 #endif

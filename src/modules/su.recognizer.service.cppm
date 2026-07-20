@@ -48,7 +48,8 @@ private:
     std::optional<int> active_camera_;
 #if SU_HAS_SEETAFACE
     mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;
-    mutable std::unique_ptr<std::once_flag> seetaface_init_flag_;
+    mutable std::mutex seetaface_mutex_;
+    mutable std::chrono::steady_clock::time_point next_seetaface_retry_{};
 #endif
     std::unique_ptr<V4L2Camera> camera_;
 };
