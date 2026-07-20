@@ -649,6 +649,8 @@ Slint 是唯一计划内 GUI。
 - ✅ control socket smoke test — listener/client/framing/response 自动测试通过
 - ✅ Linux-PAM 集成测试 — 通过 `pam_start_confdir` 加载真实模块，覆盖 accepted/rejected/unavailable 和 request ID 不匹配
 - ✅ Linux 多用户隔离测试 — 策略测试和一次性本地账户系统验收覆盖 peer uid、独立 home、权限、符号链接、损坏档案和不可访问 home
+- ✅ Linux 多用户 GUI 验收 — 打包 runtime 在一次性第二账户下显示 NSS 身份、加载私有档案并通过 GUI 删除，测试账户和授权已清理
+- ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
 ### Phase 4: Windows compatibility ❌ 未开始

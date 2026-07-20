@@ -10,7 +10,7 @@
 
 ## Current Status (2026-07-20)
 
-Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入和摄像头协调已实现但真实锁屏仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5 的 daemon 多用户隔离和临时账户系统验收已完成，第二个图形会话中的 GUI 操作仍待现场验证；Phase 6、7 尚未开始。
+Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入和摄像头协调已实现但真实锁屏仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5 的 daemon 隔离、第二账户 GUI 启动 / 加载 / 删除和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成，隐私威胁建模及加密策略尚未完成；Phase 7 尚未开始。
 
 - `xmake build` 已通过。
 - 8 个 Xmake test case 和 33 个 Rust unit test 已通过。
@@ -217,7 +217,10 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 - 使用一次性本地账户完成真实 PAM / daemon 系统验收：无档案安全回退、跨用户请求被拒绝，复制为该账户所有的档案后能够进入生物识别判定。
 - 符号链接、错误所有者、全局可写、损坏和删除后的 profile，以及不可访问的 home 均返回 unavailable；源用户配置和档案哈希保持不变。
 - 系统测试发现并修复了 user file 检查发生在 root filesystem context 的问题；当前路径检查和文件读取均在目标用户 `fsuid` 下执行。
-- 一次性账户、home 和 runtime 目录已由脚本清理并复核不存在。第二个用户的图形会话、GUI 录入 / 删除和真实 DMS 锁屏仍需人工验收。
+- daemon 系统测试的一次性账户、home 和 runtime 目录已由脚本清理并复核不存在。第二用户的新鲜人脸录入和真实 DMS 锁屏仍需人工验收。
+- GUI 用户名改为通过当前 uid 查询 NSS，不再信任可伪造的 `USER` / `LOGNAME` 环境变量。
+- 使用第二个一次性账户从打包 runtime 启动 GUI，确认显示该 NSS 用户、识别器 Ready、检测到两路摄像头，并只加载该账户 `0600` XDG 档案；随后通过 GUI 删除档案并确认 profile 数量从 1 变为 0。
+- GUI 测试同时修复了安装语言目录解析和不可访问 cwd 导致模型安装目录探测提前失败的问题。测试账户、home、runtime、X11 授权和截图均已清理；新鲜人脸录入仍需镜头前人工配合。
 
 ## Phase 6: Security And Reliability Hardening
 
@@ -230,6 +233,14 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 - 增加 camera / model initialization 的恢复能力，避免一次启动失败永久标记服务不可用。
 - 明确人脸认证是密码替代还是第二因素；第一版保持密码替代时必须说明 keyring 不会自动获得密码。
 - 禁止日志、core dump 和诊断输出包含图像、embedding 或完整 profile JSON。
+
+### Result (2026-07-20)
+
+- daemon 在目标用户 `fsuid` 下用 `openat2` 固定 home 和 user file fd，拒绝路径中任意符号链接、错误 owner、组 / 全局可写文件及超限文件；Rust 只读取 `/proc/self/fd` 指向的已固定对象，原路径替换不会改变本次认证输入。
+- 对过滤 `openat2` 并返回 `ENOSYS` 的 service 环境提供逐级 `openat(O_NOFOLLOW)` fd-relative 回退，保持相同的禁止符号链接约束。
+- 增加每 uid 一秒的内存态启动间隔；限流返回 busy 并立即进入密码回退，不累计失败次数、不持久化，也不与 `pam_faillock` 形成第二套账户锁定。
+- SeetaFace 初始化失败不再永久缓存，每五秒允许惰性重试；实测缺模型返回 unavailable，补齐模型后同一 daemon 无需重启即可恢复到摄像头判定。V4L2 继续在每次认证时重新枚举 / 打开并进行 1.2 秒有界重试。
+- systemd unit 限制网络、namespace、内核接口、能力和设备访问，仅保留 `CAP_SETUID`、只读 home、AF_UNIX 和 `video4linux` 字符设备；真实 PAM 请求可加载模型、读取目标用户档案并使用摄像头。`systemd-analyze security` 暴露评分由 8.1 降至 3.1（OK）。
 
 ## Phase 7: Linux UX Completion
 
@@ -291,4 +302,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 仍需在合适时间注销和重启验证。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调和 Phase 5 的多用户路径 / 权限系统测试已经完成；下一步进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 释放测试，并在第二个图形会话中验证 GUI 录入 / 删除。之后处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用。
+P2 仍需在合适时间注销和重启验证。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、第二账户 GUI 数据隔离，以及 Phase 6 的 fd 读取、限流、模型恢复和 sandbox 已完成；下一步进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 释放测试，并在第二个图形会话中完成新鲜人脸录入。之后继续 profile 隐私 / 完整性威胁建模和 Phase 7 Linux UX。

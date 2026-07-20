@@ -187,11 +187,28 @@ At boot, the service resolves the PAM username through NSS and reads:
 
 Both files must be regular files owned by that user and must not be group- or
 world-writable. The profile store must already exist from enrollment in `su_app`.
+The daemon resolves the username through NSS for every request, so a rename or
+home migration follows the current NSS record; the old name fails as unknown.
+An NSS backend error or an empty/non-absolute home is reported as unavailable.
+Deleted users are not retained in a daemon-side identity cache.
+
+On Linux, the daemon opens the NSS home and fixed relative data paths with
+`openat2`, pins the regular files by descriptor, and gives Rust only the pinned
+`/proc/self/fd` path. Service environments that filter `openat2` use a
+descriptor-relative `openat(O_NOFOLLOW)` traversal instead. Config files larger
+than 1 MiB and profile stores larger than 16 MiB are rejected.
 
 Homes that remain encrypted and unavailable until after password authentication
 cannot supply their face profile during initial login. Supporting that setup
 requires moving encrypted profile data and key management into a system-owned
 store; the service fails closed when the home data is unavailable.
+
+Authentication starts are limited to one per uid per second. The limit is
+memory-only and returns PAM unavailable so the existing password stack can run;
+it does not count failures or lock accounts and is intentionally independent of
+distribution `pam_faillock` policy. A failed model initialization is retried
+lazily after five seconds, while cameras are enumerated and opened for each
+request.
 
 ## Diagnostics
 
