@@ -144,7 +144,9 @@ Rust 建议库：
 - `toml`
 - `thiserror`
 - `tracing`
-- `rusqlite`
+- `chacha20poly1305`
+- `hkdf`
+- `sha2`
 - `zeroize`
 
 Rust 和 C++ 的边界：
@@ -284,17 +286,16 @@ Zig 边界规则：
 - `libyuv`
   - 摄像头帧格式转换。
 
-- `sqlite3`
-  - 如果 Rust 侧使用 `rusqlite`，由 Rust 依赖链管理。
-  - 如果 C++ 侧直接访问数据库，则显式 xmake 依赖。
-  - 第一阶段建议数据库归 Rust `su_core` 管理。
-
 ### Replace
 
 - `EUI` -> `Slint`
   - EUI breaking change 风险过高。
 
 ### Remove or Defer
+
+- `sqlite3` / SQLCipher
+  - 当前 profile 体积小且人脸匹配仍需扫描 embedding，第一阶段使用 Rust AEAD 文件。
+  - 出现需要索引的复杂查询后再评估 SQLCipher；C++ 不直接访问凭据数据库。
 
 - `glad`
   - Slint 接管 GUI 渲染路径，第一阶段不手写 OpenGL。
@@ -528,11 +529,13 @@ Camera
 - 日志级别。
 - 开发诊断开关。
 
-数据库：
+凭据存储：
 
-- 第一阶段建议 Rust `rusqlite` 管理。
-- C++ 不直接拼 SQL。
-- 用户、人脸元数据、特征索引由 Rust core 提供稳定 API。
+- 第一阶段采用 Rust 管理的版本化 XChaCha20-Poly1305 加密文件，不引入普通 SQLite。
+- profile 迁到 system-owned store，GUI 只通过认证服务 IPC 进行录入、列出和删除。
+- Linux 使用 systemd encrypted credential；TPM2 机器使用 `host+tpm2`，无 TPM2 时明确回退 `host` key，并建议配合全盘加密。
+- Windows 登录密码使用与 profile 分离的 encrypted envelope；TPM 由 CNG Platform Crypto Provider 保护 master key，无 TPM 时回退 machine DPAPI。
+- 完整格式、密钥、迁移和 Windows stale password 规则见 `docs/credential_storage_encryption_plan.md`。
 
 ## UI Plan
 
@@ -575,6 +578,9 @@ Slint 是唯一计划内 GUI。
 - CP 只做登录入口和 control socket。
 - 不让 Win32/COM 类型泄漏到 core。
 - 旧的命名管道、UDP、共享内存不作为新架构主路径。
+- Windows 人脸登录所需账户密码必须独立加密保存，不能进入 profile store、普通 SQLite、日志或用户级 Credential Manager。
+- 密码错误后通过 Credential Provider `ReportResult` 标记为 stale，停止自动提交并要求用户重新确认密码。
+- TPM 使用 CNG hardware key，无 TPM 使用 machine DPAPI fallback；两者都不能声称抵御已控制 LocalSystem 的攻击者。
 
 ## Test Plan
 
@@ -658,6 +664,7 @@ Slint 是唯一计划内 GUI。
 - ❌ Credential Provider thin adapter
 - ❌ control socket Windows 路径
 - ❌ 保持 core 与平台隔离
+- ❌ Windows password encrypted store、TPM CNG provider、machine DPAPI fallback 和 stale-password 更新流程
 
 ### Phase 5: Optimization and optional split ❌ 未开始
 
@@ -671,7 +678,7 @@ Slint 是唯一计划内 GUI。
 |------|------|----------|
 | Slint 版本 pin | ✅ 已决定 | v1.17.0 |
 | Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
-| 数据库 | ❌ 未决定 | 当前用 JSON 文件存储；后续 `rusqlite` vs `sqlx` 待选 |
+| 凭据存储 | ✅ 已决定 | system-owned XChaCha20-Poly1305 envelope；SQLite 暂不引入，详见加密存储计划 |
 | Linux 摄像头 | ✅ 已决定 | V4L2（第一阶段），暂不预留 PipeWire |
 | Zig target 启用 | ✅ 已决定 | 默认不启用（`with_zig` defaults to false），仅 placeholder |
 | 汇编优化 | ✅ 已决定 | 不入第一版（`with_simd` defaults to false） |

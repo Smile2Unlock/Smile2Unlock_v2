@@ -225,7 +225,7 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 ## Phase 6: Security And Reliability Hardening
 
 - 为认证请求增加合理的频率限制和连续失败策略，同时避免与发行版 `pam_faillock` 产生不可预测的双重锁定。
-- 对 profile JSON 的生物特征隐私、加密、完整性和版本迁移做威胁建模。
+- 按 `docs/credential_storage_encryption_plan.md` 把 profile 迁到 system-owned XChaCha20-Poly1305 store；TPM2 使用 `host+tpm2`，无 TPM2 使用明确标识的 host-key fallback。
 - 检查用户路径验证与实际文件打开之间的竞态，优先使用 fd-based 和 `openat2` 风格的安全读取方案。
 - daemon 必须继续通过 `SO_PEERCRED` 授权：root 可使用完整控制协议，普通用户只能认证 NSS uid 与 peer uid 一致的本人；继续限制 control frame 大小、协议版本和超时。
 - 验证 systemd sandbox 对目标用户 home、摄像头设备和需要的动态库只开放必要访问。
@@ -302,4 +302,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 仍需在合适时间注销和重启验证。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、第二账户 GUI 数据隔离，以及 Phase 6 的 fd 读取、限流、模型恢复和 sandbox 已完成；下一步进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 释放测试，并在第二个图形会话中完成新鲜人脸录入。之后继续 profile 隐私 / 完整性威胁建模和 Phase 7 Linux UX。
+P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试按当前决定暂缓。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、第二账户 GUI 数据隔离，以及 Phase 6 的 fd 读取、限流、模型恢复和 sandbox 已完成；profile / Windows 密码的隐私、完整性、TPM2 和无 TPM2 回退威胁建模已写入 `docs/credential_storage_encryption_plan.md`。下一步按该计划实现 Rust encrypted envelope 和 Linux key provider，再迁移 daemon / GUI storage IPC；Phase 7 Linux UX 可随后继续。
