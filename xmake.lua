@@ -189,6 +189,7 @@ target("su_app")
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
     add_files("src/modules/su.app.controller.cppm")
+    add_files("src/modules/su.app.user.cppm")
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint", "nlohmann_json")
@@ -279,6 +280,7 @@ if is_plat("linux") then
         add_files(
             "tests/multi_user/*.cpp",
             "src/modules/su.auth.user.cppm",
+            "src/modules/su.app.user.cppm",
             "src/modules/su.core.types.cppm")
         add_tests("default")
 
