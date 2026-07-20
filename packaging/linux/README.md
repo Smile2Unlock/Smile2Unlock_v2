@@ -59,7 +59,17 @@ PAM_MODULE_DIR=/lib/x86_64-linux-gnu/security \
 ```
 
 The package never enables `su-authd.service` and never edits `/etc/pam.d`.
-Install the package first, then follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
+Install the package first, initialize the machine storage key, then start the
+service:
+
+```bash
+sudo /usr/libexec/smile2unlock/setup-storage-key
+sudo systemctl enable --now su-authd.service
+```
+
+The setup command preserves an existing key. It selects TPM2-bound protection
+when TPM2 is available and the systemd host-key fallback otherwise; it never
+falls back to plaintext. Then follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
 to enable and validate the desired PAM entry point.
 
 ## DMS lock screen

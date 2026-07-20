@@ -9,6 +9,7 @@ module;
 #include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <nlohmann/json.hpp>
 
 export module su.control.socket;
 
@@ -18,7 +19,7 @@ export namespace su::control {
 
 inline constexpr std::string_view kDefaultSocketPath = "/run/smile2unlock/control.sock";
 inline constexpr std::uint32_t kProtocolVersion = 1;
-inline constexpr std::size_t kMaximumFrameSize = 16 * 1024;
+inline constexpr std::size_t kMaximumFrameSize = 64 * 1024;
 
 enum class SocketError {
     kInvalidArgument,
@@ -45,6 +46,8 @@ enum class ControlResult {
 struct ControlResponse {
     std::uint64_t request_id = 0;
     ControlResult result = ControlResult::kError;
+    std::string reason;
+    std::string payload_json = "null";
 };
 
 std::string_view control_result_name(ControlResult result);
@@ -98,10 +101,28 @@ private:
 std::string make_authenticate_request(std::uint64_t request_id, std::string_view username);
 std::string make_status_request(std::uint64_t request_id);
 std::string make_cancel_request(std::uint64_t request_id, std::uint64_t target_request_id);
+std::string make_storage_status_request(std::uint64_t request_id);
+std::string make_list_profiles_request(std::uint64_t request_id, std::string_view username);
+std::string make_enroll_profile_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view label,
+    std::string_view face_sample_source);
+std::string make_delete_profile_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view profile_id);
+std::string make_migrate_profiles_request(std::uint64_t request_id, std::string_view username);
+std::string make_verify_profile_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view face_sample_source,
+    bool liveness_ok);
 std::string make_response(
     std::uint64_t request_id,
     ControlResult result,
-    std::string_view reason = {});
+    std::string_view reason = {},
+    std::string_view payload_json = "null");
 std::expected<ControlResponse, SocketError> parse_response(std::string_view response);
 
 } // namespace su::control
@@ -162,27 +183,28 @@ std::expected<void, SocketError> read_all(int fd, void* data, std::size_t size) 
     return {};
 }
 
-std::string json_escape(std::string_view value) {
-    auto output = std::string{};
-    output.reserve(value.size());
-    for (const auto character : value) {
-        switch (character) {
-        case '"': output += "\\\""; break;
-        case '\\': output += "\\\\"; break;
-        case '\b': output += "\\b"; break;
-        case '\f': output += "\\f"; break;
-        case '\n': output += "\\n"; break;
-        case '\r': output += "\\r"; break;
-        case '\t': output += "\\t"; break;
-        default:
-            if (static_cast<unsigned char>(character) < 0x20) {
-                output += std::format("\\u{:04x}", static_cast<unsigned char>(character));
-            } else {
-                output += character;
-            }
+std::string request_json(std::string_view type, std::uint64_t request_id) {
+    return nlohmann::json{
+        {"version", kProtocolVersion},
+        {"msg_type", type},
+        {"request_id", request_id},
+    }.dump();
+}
+
+std::optional<ControlResult> control_result_from_name(std::string_view name) {
+    for (const auto result : {
+             ControlResult::kAccepted,
+             ControlResult::kRejected,
+             ControlResult::kUnavailable,
+             ControlResult::kCancelled,
+             ControlResult::kBusy,
+             ControlResult::kError,
+         }) {
+        if (name == control_result_name(result)) {
+            return result;
         }
     }
-    return output;
+    return std::nullopt;
 }
 
 } // namespace
@@ -343,78 +365,115 @@ std::expected<Connection, SocketError> Listener::accept_one() const {
 }
 
 std::string make_authenticate_request(std::uint64_t request_id, std::string_view username) {
-    return std::format(
-        R"({{"version":{},"msg_type":"authenticate","request_id":{},"username":"{}"}})",
-        kProtocolVersion,
-        request_id,
-        json_escape(username));
+    auto request = nlohmann::json::parse(request_json("authenticate", request_id));
+    request["username"] = username;
+    return request.dump();
 }
 
 std::string make_status_request(std::uint64_t request_id) {
-    return std::format(
-        R"({{"version":{},"msg_type":"status","request_id":{}}})",
-        kProtocolVersion,
-        request_id);
+    return request_json("status", request_id);
 }
 
 std::string make_cancel_request(std::uint64_t request_id, std::uint64_t target_request_id) {
-    return std::format(
-        R"({{"version":{},"msg_type":"cancel","request_id":{},"target_request_id":{}}})",
-        kProtocolVersion,
-        request_id,
-        target_request_id);
+    auto request = nlohmann::json::parse(request_json("cancel", request_id));
+    request["target_request_id"] = target_request_id;
+    return request.dump();
+}
+
+std::string make_storage_status_request(std::uint64_t request_id) {
+    return request_json("storage_status", request_id);
+}
+
+std::string make_list_profiles_request(std::uint64_t request_id, std::string_view username) {
+    auto request = nlohmann::json::parse(request_json("list_profiles", request_id));
+    request["username"] = username;
+    return request.dump();
+}
+
+std::string make_enroll_profile_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view label,
+    std::string_view face_sample_source) {
+    auto request = nlohmann::json::parse(request_json("enroll_profile", request_id));
+    request["username"] = username;
+    request["label"] = label;
+    request["face_sample_source"] = face_sample_source;
+    return request.dump();
+}
+
+std::string make_delete_profile_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view profile_id) {
+    auto request = nlohmann::json::parse(request_json("delete_profile", request_id));
+    request["username"] = username;
+    request["profile_id"] = profile_id;
+    return request.dump();
+}
+
+std::string make_migrate_profiles_request(std::uint64_t request_id, std::string_view username) {
+    auto request = nlohmann::json::parse(request_json("migrate_profiles", request_id));
+    request["username"] = username;
+    return request.dump();
+}
+
+std::string make_verify_profile_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view face_sample_source,
+    bool liveness_ok) {
+    auto request = nlohmann::json::parse(request_json("verify_profile", request_id));
+    request["username"] = username;
+    request["face_sample_source"] = face_sample_source;
+    request["liveness_ok"] = liveness_ok;
+    return request.dump();
 }
 
 std::string make_response(
     std::uint64_t request_id,
     ControlResult result,
-    std::string_view reason) {
-    return std::format(
-        R"({{"version":{},"msg_type":"auth_result","request_id":{},"result":"{}","reason":"{}"}})",
-        kProtocolVersion,
-        request_id,
-        control_result_name(result),
-        json_escape(reason));
+    std::string_view reason,
+    std::string_view payload_json) {
+    auto payload = nlohmann::json::parse(payload_json, nullptr, false);
+    if (payload.is_discarded()) {
+        payload = nullptr;
+    }
+    return nlohmann::json{
+        {"version", kProtocolVersion},
+        {"msg_type", "auth_result"},
+        {"request_id", request_id},
+        {"result", control_result_name(result)},
+        {"reason", reason},
+        {"payload", std::move(payload)},
+    }.dump();
 }
 
 std::expected<ControlResponse, SocketError> parse_response(std::string_view response) {
-    if (!response.contains(R"("version":1,)")
-        || !response.contains(R"("msg_type":"auth_result")")) {
+    const auto parsed = nlohmann::json::parse(response, nullptr, false);
+    if (parsed.is_discarded()
+        || !parsed.is_object()
+        || parsed.value("version", 0U) != kProtocolVersion
+        || parsed.value("msg_type", std::string{}) != "auth_result"
+        || !parsed.contains("request_id")
+        || !parsed["request_id"].is_number_unsigned()
+        || !parsed.contains("result")
+        || !parsed["result"].is_string()
+        || !parsed.contains("reason")
+        || !parsed["reason"].is_string()) {
         return std::unexpected(SocketError::kProtocolError);
     }
-
-    constexpr auto request_id_field = std::string_view{R"("request_id":)"};
-    const auto request_id_start = response.find(request_id_field);
-    if (request_id_start == std::string_view::npos) {
+    const auto request_id = parsed["request_id"].get<std::uint64_t>();
+    const auto result = control_result_from_name(parsed["result"].get<std::string>());
+    if (request_id == 0 || !result) {
         return std::unexpected(SocketError::kProtocolError);
     }
-    const auto digits = response.substr(request_id_start + request_id_field.size());
-    auto request_id = std::uint64_t{0};
-    const auto parsed = std::from_chars(
-        digits.data(), digits.data() + digits.size(), request_id);
-    if (parsed.ec != std::errc{}
-        || parsed.ptr == digits.data()
-        || parsed.ptr == digits.data() + digits.size()
-        || *parsed.ptr != ','
-        || request_id == 0) {
-        return std::unexpected(SocketError::kProtocolError);
-    }
-
-    for (const auto result : {
-             ControlResult::kAccepted,
-             ControlResult::kRejected,
-             ControlResult::kUnavailable,
-             ControlResult::kCancelled,
-             ControlResult::kBusy,
-             ControlResult::kError,
-         }) {
-        const auto token = std::format(
-            R"("result":"{}")", control_result_name(result));
-        if (response.contains(token)) {
-            return ControlResponse{.request_id = request_id, .result = result};
-        }
-    }
-    return std::unexpected(SocketError::kProtocolError);
+    return ControlResponse{
+        .request_id = request_id,
+        .result = *result,
+        .reason = parsed["reason"].get<std::string>(),
+        .payload_json = parsed.contains("payload") ? parsed["payload"].dump() : "null",
+    };
 }
 
 } // namespace su::control

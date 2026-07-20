@@ -3,7 +3,6 @@ module;
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <wincrypt.h>
 #include <boost/asio.hpp>
 #include "utils/windows_security.h"
 
@@ -46,7 +45,6 @@ const char* ToString(AuthRequestType type) {
         case AuthRequestType::START_RECOGNITION: return "START_RECOGNITION";
         case AuthRequestType::CANCEL_RECOGNITION: return "CANCEL_RECOGNITION";
         case AuthRequestType::QUERY_STATUS: return "QUERY_STATUS";
-        case AuthRequestType::GET_PASSWORD: return "GET_PASSWORD";
         default: return "UNKNOWN";
     }
 }
@@ -72,14 +70,12 @@ std::string LastErrorText(const char* prefix) {
 // 使用统一 UDP 类的别名
 using UdpReceiverFromFR = ::smile2unlock::udp::StatusReceiver;
 using UdpSenderToCP = ::smile2unlock::udp::StatusSender;
-using UdpPasswordSenderToCP = ::smile2unlock::udp::PasswordSender;
 using UdpReceiverFromCP = ::smile2unlock::udp::AuthRequestReceiver;
 
 // 端口常量
 constexpr uint16_t kFrStatusPort = ::smile2unlock::udp::UdpPorts::kFrStatusPort;
 constexpr uint16_t kCpStatusPort = ::smile2unlock::udp::UdpPorts::kCpStatusPort;
 constexpr uint16_t kAuthRequestPort = ::smile2unlock::udp::UdpPorts::kAuthRequestPort;
-constexpr uint16_t kPasswordPort = ::smile2unlock::udp::UdpPorts::kPasswordPort;
 
 } // anonymous namespace
 } // namespace smile2unlock::managers
@@ -138,7 +134,6 @@ private:
     std::unique_ptr<UdpReceiverFromCP> udp_receiver_cp_;
     std::unique_ptr<UdpReceiverFromFR> udp_receiver_fr_;
     std::unique_ptr<UdpSenderToCP> udp_sender_;
-    std::unique_ptr<UdpPasswordSenderToCP> udp_password_sender_;
     std::unique_ptr<smile2unlock::managers::Database> database_;
     FaceRecognizerConfig config_;
 
@@ -583,7 +578,6 @@ bool FaceRecognition::Initialize(std::string& error_message) {
         udp_receiver_fr_->start();
 
         udp_sender_ = std::make_unique<UdpSenderToCP>("127.0.0.1", kCpStatusPort);
-        udp_password_sender_ = std::make_unique<UdpPasswordSenderToCP>("127.0.0.1", kPasswordPort);
         initialized_ = true;
         error_message = "人脸识别模块已初始化";
         return true;
@@ -1032,29 +1026,6 @@ void FaceRecognition::on_cp_request_received(AuthRequestType type, const std::st
                           << " last_username=" << (last_result_.username.empty() ? "(empty)" : last_result_.username)
                           << std::endl;
                 udp_sender_->send_status(current_status, last_result_.username, session_id);
-            }
-            break;
-        case AuthRequestType::GET_PASSWORD:
-            if (!udp_password_sender_ || !database_) {
-                std::cout << "[SU] GET_PASSWORD 依赖未初始化"
-                          << " session=" << session_id << std::endl;
-                break;
-            }
-            if (const auto user = database_->GetUserByUsername(username_hint); user.has_value()) {
-                const std::string decrypted_password = database_->DecryptPassword(user->encrypted_password);
-                std::cout << "[SU] GET_PASSWORD 查库完成"
-                          << " session=" << session_id
-                          << " lookup_username=" << username_hint
-                          << " resolved_username=" << user->username
-                          << " password_found=" << (!decrypted_password.empty() ? 1 : 0)
-                          << std::endl;
-                udp_password_sender_->send_password(session_id, user->username, decrypted_password, !decrypted_password.empty());
-            } else {
-                std::cout << "[SU] GET_PASSWORD 未找到用户"
-                          << " session=" << session_id
-                          << " lookup_username=" << (username_hint.empty() ? "(empty)" : username_hint)
-                          << std::endl;
-                udp_password_sender_->send_password(session_id, username_hint, "", false);
             }
             break;
         default:

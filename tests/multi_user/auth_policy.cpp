@@ -9,9 +9,15 @@ import su.core.types;
 
 namespace {
 
-void require(bool condition) {
+void require(
+    bool condition,
+    std::source_location location = std::source_location::current()) {
     if (!condition) {
-        std::println(stderr, "multi-user policy assertion failed");
+        std::println(
+            stderr,
+            "multi-user policy assertion failed at {}:{}",
+            location.file_name(),
+            location.line());
         std::abort();
     }
 }
@@ -45,7 +51,13 @@ void assert_peer_policy() {
     require(su::auth::peer_request_allowed(0, Type::kAuthenticate, 1001));
     require(su::auth::peer_request_allowed(0, Type::kStatus, std::nullopt));
     require(su::auth::peer_request_allowed(1000, Type::kAuthenticate, 1000));
+    require(su::auth::peer_request_allowed(1000, Type::kListProfiles, 1000));
+    require(su::auth::peer_request_allowed(1000, Type::kEnrollProfile, 1000));
+    require(su::auth::peer_request_allowed(1000, Type::kDeleteProfile, 1000));
+    require(su::auth::peer_request_allowed(1000, Type::kMigrateProfiles, 1000));
+    require(su::auth::peer_request_allowed(1000, Type::kVerifyProfile, 1000));
     require(!su::auth::peer_request_allowed(1000, Type::kAuthenticate, 1001));
+    require(!su::auth::peer_request_allowed(1000, Type::kListProfiles, 1001));
     require(!su::auth::peer_request_allowed(1000, Type::kAuthenticate, std::nullopt));
     require(!su::auth::peer_request_allowed(1000, Type::kStatus, std::nullopt));
     require(!su::auth::peer_request_allowed(1000, Type::kCancel, 1000));
@@ -58,7 +70,10 @@ void assert_path_isolation(const std::filesystem::path& root) {
     require(first.config != second.config);
     require(first.profiles != second.profiles);
     require(first.config.string().ends_with("user-a/.config/smile2unlock/config.toml"));
-    require(second.profiles.string().ends_with("user-b/.local/share/smile2unlock/profiles.json"));
+    require(first.legacy_profiles.string().ends_with("user-a/.local/share/smile2unlock/profiles.json"));
+    require(second.legacy_profiles.string().ends_with("user-b/.local/share/smile2unlock/profiles.json"));
+    require(first.profiles == "/var/lib/smile2unlock/users/1000/profiles.s2u");
+    require(second.profiles == "/var/lib/smile2unlock/users/1001/profiles.s2u");
     require(first.home == root / "user-a");
 }
 
@@ -80,7 +95,7 @@ void assert_file_policy(const std::filesystem::path& root) {
     require(!su::auth::open_user_file(paths, su::auth::UserFileKind::kProfiles, true).has_value());
     require(su::auth::open_user_file(paths, su::auth::UserFileKind::kConfig, false).has_value());
 
-    const auto file = paths.profiles;
+    const auto file = paths.legacy_profiles;
     const auto target = root / "target.json";
     const auto link = root / "profile-link.json";
     std::ofstream(target) << "{}\n";
@@ -122,6 +137,16 @@ void assert_file_policy(const std::filesystem::path& root) {
 
     std::filesystem::resize_file(file, 16 * 1024 * 1024 + 1);
     require(!su::auth::open_user_file(paths, su::auth::UserFileKind::kProfiles, true).has_value());
+
+    std::filesystem::remove(file);
+    std::ofstream(file) << "migrate me\n";
+    require(::chmod(file.c_str(), 0600) == 0);
+    auto migration_source = su::auth::open_user_file(
+        paths, su::auth::UserFileKind::kProfiles, true);
+    require(migration_source.has_value() && migration_source->has_value());
+    require(su::auth::remove_pinned_user_file(
+        paths, su::auth::UserFileKind::kProfiles, **migration_source).has_value());
+    require(!std::filesystem::exists(file));
 }
 
 void assert_rate_policy() {

@@ -16,7 +16,6 @@ struct FaceData {
 struct User {
     int id{};
     std::string username;
-    std::string encrypted_password;
     std::vector<FaceData> faces;
     std::string remark;
     std::string created_at;

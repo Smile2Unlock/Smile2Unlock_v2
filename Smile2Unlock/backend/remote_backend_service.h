@@ -2,6 +2,7 @@
 
 #include "models/gui_ipc_protocol.h"
 #include "ibackend_service.h"
+#include "logon_secret_client.h"
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -13,6 +14,35 @@
 #include <unordered_map>
 
 namespace smile2unlock {
+
+inline bool StoreCurrentWindowsPassword(
+    const std::string& password, std::string& error_message) {
+    if (password.empty() || password.find('\0') != std::string::npos) {
+        error_message = "密码不能为空或格式无效";
+        return false;
+    }
+    const auto required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, password.data(),
+        static_cast<int>(password.size()), nullptr, 0);
+    if (required <= 0 || required >= smile2unlock::logon_secret_ipc::kPasswordCapacity) {
+        error_message = "密码格式无效或长度超出限制";
+        return false;
+    }
+    auto wide_password = std::vector<wchar_t>(static_cast<std::size_t>(required));
+    const auto converted = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, password.data(),
+        static_cast<int>(password.size()), wide_password.data(), required);
+    const auto stored = converted == required
+        ? LogonSecretClient{}.store_for_current_user(wide_password)
+        : HRESULT_FROM_WIN32(GetLastError());
+    SecureZeroMemory(
+        wide_password.data(), wide_password.size() * sizeof(wide_password[0]));
+    if (FAILED(stored)) {
+        error_message = "Windows 登录凭据服务不可用，请确认认证服务已启动";
+        return false;
+    }
+    return true;
+}
 
 /**
  * @brief 远程后端服务 - 通过 IPC 连接到已运行的 Service
@@ -84,28 +114,38 @@ public:
     
     bool AddUser(const std::string& username, const std::string& password, 
                  const std::string& remark, std::string& error_message) override {
-        std::string payload = username + "|" + password + "|" + remark;
+        std::string payload = username + "||" + remark;
         auto response = std::make_unique<GuiIpcResponse>();
         
         if (!send_request(GuiIpcCommand::ADD_USER, payload, *response)) {
             error_message = response->payload;
             return false;
         }
-        error_message = response->payload;
-        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        if (response->status != static_cast<int32_t>(GuiIpcStatus::SUCCESS)) {
+            error_message = response->payload;
+            return false;
+        }
+        return StoreCurrentWindowsPassword(password, error_message);
     }
     
     bool UpdateUser(int user_id, const std::string& username, const std::string& password,
                     const std::string& remark, std::string& error_message) override {
-        std::string payload = std::to_string(user_id) + "|" + username + "|" + password + "|" + remark;
+        std::string payload = std::to_string(user_id) + "|" + username + "||" + remark;
         auto response = std::make_unique<GuiIpcResponse>();
         
         if (!send_request(GuiIpcCommand::UPDATE_USER, payload, *response)) {
             error_message = response->payload;
             return false;
         }
+        if (response->status != static_cast<int32_t>(GuiIpcStatus::SUCCESS)) {
+            error_message = response->payload;
+            return false;
+        }
+        if (!password.empty()) {
+            return StoreCurrentWindowsPassword(password, error_message);
+        }
         error_message = response->payload;
-        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        return true;
     }
     
     bool DeleteUser(int userId, std::string& error_message) override {
@@ -116,8 +156,16 @@ public:
             error_message = response->payload;
             return false;
         }
+        if (response->status != static_cast<int32_t>(GuiIpcStatus::SUCCESS)) {
+            error_message = response->payload;
+            return false;
+        }
+        if (FAILED(LogonSecretClient{}.clear_for_current_user())) {
+            error_message = "用户已删除，但无法清除已保存的 Windows 登录凭据";
+            return false;
+        }
         error_message = response->payload;
-        return response->status == static_cast<int32_t>(GuiIpcStatus::SUCCESS);
+        return true;
     }
     
     // ==================== 人脸管理 ====================
@@ -381,7 +429,7 @@ private:
                 switch (field) {
                     case 0: user.id = std::stoi(field_val); break;
                     case 1: user.username = field_val; break;
-                    case 2: /* encrypted_password 跳过 */ break;
+                    case 2: /* reserved field */ break;
                     case 3: user.remark = field_val; break;
                 }
                 prev = pos + 1;

@@ -437,6 +437,44 @@ int main(int argc, char** argv) {
             "good");
     });
 
+    window->on_migrate_profiles_requested([weak_window, controller, profiles, catalog] {
+        if (const auto window = weak_window.lock()) {
+            (*window)->set_busy(true);
+        }
+        std::thread([weak_window, controller, profiles, catalog] {
+            const auto migrated = controller->migrate_legacy_profiles();
+            auto rows = migrated
+                ? controller->list_face_profile_rows()
+                : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
+                    std::unexpected(migrated.error())};
+            slint::invoke_from_event_loop(
+                [weak_window, profiles, catalog, migrated, rows = std::move(rows)]() mutable {
+                    const auto window = weak_window.lock();
+                    if (!window) {
+                        return;
+                    }
+                    (*window)->set_busy(false);
+                    if (!migrated || !rows) {
+                        set_activity(
+                            *window,
+                            translated(*catalog, *window, "activity.migration_failed"),
+                            migrated ? rows.error() : migrated.error(),
+                            "bad");
+                        return;
+                    }
+                    update_profiles(profiles, *rows);
+                    set_activity(
+                        *window,
+                        translated(
+                            *catalog,
+                            *window,
+                            *migrated ? "activity.migration_done" : "activity.migration_none"),
+                        translated(*catalog, *window, "activity.refreshed_detail"),
+                        *migrated ? "good" : "neutral");
+                });
+        }).detach();
+    });
+
     window->on_save_settings_requested(
         [weak_window, controller, camera_indices, catalog](
             int camera_selection,

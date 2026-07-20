@@ -6,9 +6,13 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::SuStatus;
 use crate::embedding::{FaceEmbedding, embedding_from_face_sample};
+use crate::encrypted_store::{
+    AccountId, DataKind, EnvelopeError, decrypt_payload, encrypt_payload, profile_payload_format,
+};
 use crate::storage::atomic_write_private;
 
 pub const PROFILE_ID_CAP: usize = 64;
@@ -16,7 +20,7 @@ pub const PROFILE_LABEL_CAP: usize = 128;
 
 static PROFILE_STORE_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FaceProfile {
     pub id: String,
     pub label: String,
@@ -24,7 +28,7 @@ pub struct FaceProfile {
     pub created_at_unix: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProfileStore {
     pub version: u32,
     #[serde(default)]
@@ -71,8 +75,12 @@ pub fn load_store(path: &Path) -> Result<ProfileStore, SuStatus> {
     }
 
     let text = fs::read_to_string(path).map_err(|_| SuStatus::IoError)?;
+    parse_store(text.as_bytes())
+}
+
+fn parse_store(payload: &[u8]) -> Result<ProfileStore, SuStatus> {
     let mut store =
-        serde_json::from_str::<ProfileStore>(&text).map_err(|_| SuStatus::ParseError)?;
+        serde_json::from_slice::<ProfileStore>(payload).map_err(|_| SuStatus::ParseError)?;
 
     // Legacy stores created before the embedding_dim field carry no dimension.
     // Backfill from the first profile so the lock applies going forward; the
@@ -84,6 +92,184 @@ pub fn load_store(path: &Path) -> Result<ProfileStore, SuStatus> {
         return Err(SuStatus::ParseError);
     }
     Ok(store)
+}
+
+fn map_envelope_error(error: EnvelopeError) -> SuStatus {
+    match error {
+        EnvelopeError::AuthenticationFailed | EnvelopeError::KeyDerivationFailed => {
+            SuStatus::CryptoError
+        }
+        EnvelopeError::RandomUnavailable => SuStatus::KeyUnavailable,
+        EnvelopeError::InvalidAccount
+        | EnvelopeError::InvalidHeader
+        | EnvelopeError::UnsupportedVersion
+        | EnvelopeError::UnsupportedDataKind
+        | EnvelopeError::PayloadTooLarge => SuStatus::ParseError,
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct EncryptedProfileContext<'a> {
+    pub master_key: &'a [u8; 32],
+    pub key_version: u32,
+    pub account: AccountId,
+}
+
+pub(crate) fn load_encrypted_store(
+    path: &Path,
+    context: &EncryptedProfileContext<'_>,
+) -> Result<ProfileStore, SuStatus> {
+    if !path.exists() {
+        return Ok(ProfileStore::default());
+    }
+    let envelope = fs::read(path).map_err(|_| SuStatus::IoError)?;
+    let (metadata, payload) = decrypt_payload(
+        context.master_key,
+        &context.account,
+        DataKind::Profile,
+        &envelope,
+    )
+    .map_err(map_envelope_error)?;
+    if metadata.payload_format != profile_payload_format() || metadata.payload_version != 1 {
+        return Err(SuStatus::MigrationRequired);
+    }
+    parse_store(payload.as_slice())
+}
+
+pub(crate) fn save_encrypted_store(
+    path: &Path,
+    context: &EncryptedProfileContext<'_>,
+    store: &ProfileStore,
+) -> Result<(), SuStatus> {
+    if !valid_store(store) {
+        return Err(SuStatus::InvalidArgument);
+    }
+    let payload = Zeroizing::new(serde_json::to_vec(store).map_err(|_| SuStatus::WriteError)?);
+    let envelope = encrypt_payload(
+        context.master_key,
+        context.key_version,
+        &context.account,
+        DataKind::Profile,
+        profile_payload_format(),
+        store.version,
+        payload.as_slice(),
+    )
+    .map_err(map_envelope_error)?;
+    atomic_write_private(path, &envelope)
+}
+
+pub(crate) fn migrate_plaintext_store(
+    legacy_path: &Path,
+    encrypted_path: &Path,
+    context: &EncryptedProfileContext<'_>,
+    remove_source: bool,
+) -> Result<bool, SuStatus> {
+    let _guard = PROFILE_STORE_LOCK.lock().map_err(|_| SuStatus::IoError)?;
+    if encrypted_path.exists() {
+        load_encrypted_store(encrypted_path, context)?;
+        return Ok(false);
+    }
+    if !legacy_path.exists() {
+        return Ok(false);
+    }
+
+    let store = load_store(legacy_path)?;
+    save_encrypted_store(encrypted_path, context, &store)?;
+    if load_encrypted_store(encrypted_path, context)? != store {
+        return Err(SuStatus::CryptoError);
+    }
+    if remove_source {
+        fs::remove_file(legacy_path).map_err(|_| SuStatus::WriteError)?;
+        #[cfg(unix)]
+        if let Some(parent) = legacy_path.parent() {
+            fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| SuStatus::WriteError)?;
+        }
+    }
+    Ok(true)
+}
+
+pub(crate) fn enroll_profile_encrypted(
+    path: &Path,
+    context: &EncryptedProfileContext<'_>,
+    label: &str,
+    face_sample_source: &str,
+) -> Result<FaceProfile, SuStatus> {
+    let Some(embedding) = embedding_from_face_sample(face_sample_source) else {
+        return Err(SuStatus::InvalidArgument);
+    };
+    if label.is_empty() {
+        return Err(SuStatus::InvalidArgument);
+    }
+
+    let _guard = PROFILE_STORE_LOCK.lock().map_err(|_| SuStatus::IoError)?;
+    let mut store = load_encrypted_store(path, context)?;
+    lock_embedding_dimension(&mut store, embedding.len())?;
+    let profile = FaceProfile {
+        id: unique_profile_id(),
+        label: label.to_owned(),
+        embedding,
+        created_at_unix: now_unix(),
+    };
+    store.profiles.push(profile.clone());
+    save_encrypted_store(path, context, &store)?;
+    Ok(profile)
+}
+
+pub(crate) fn delete_profile_encrypted(
+    path: &Path,
+    context: &EncryptedProfileContext<'_>,
+    profile_id: &str,
+) -> Result<bool, SuStatus> {
+    if profile_id.is_empty() {
+        return Err(SuStatus::InvalidArgument);
+    }
+    let _guard = PROFILE_STORE_LOCK.lock().map_err(|_| SuStatus::IoError)?;
+    let mut store = load_encrypted_store(path, context)?;
+    let before = store.profiles.len();
+    store.profiles.retain(|profile| profile.id != profile_id);
+    let deleted = store.profiles.len() != before;
+    if deleted {
+        save_encrypted_store(path, context, &store)?;
+    }
+    Ok(deleted)
+}
+
+pub(crate) fn list_encrypted_profiles_json(
+    path: &Path,
+    context: &EncryptedProfileContext<'_>,
+) -> Result<String, SuStatus> {
+    #[derive(Serialize)]
+    struct ProfileSummary<'a> {
+        id: &'a str,
+        label: &'a str,
+        created_at_unix: u64,
+    }
+
+    let store = load_encrypted_store(path, context)?;
+    let summaries = store
+        .profiles
+        .iter()
+        .map(|profile| ProfileSummary {
+            id: &profile.id,
+            label: &profile.label,
+            created_at_unix: profile.created_at_unix,
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&summaries).map_err(|_| SuStatus::WriteError)
+}
+
+fn lock_embedding_dimension(
+    store: &mut ProfileStore,
+    embedding_len: usize,
+) -> Result<(), SuStatus> {
+    match store.embedding_dim {
+        None => store.embedding_dim = Some(embedding_len as u32),
+        Some(dim) if dim as usize != embedding_len => return Err(SuStatus::InvalidArgument),
+        Some(_) => {}
+    }
+    Ok(())
 }
 
 fn valid_store(store: &ProfileStore) -> bool {
@@ -129,13 +315,7 @@ pub fn enroll_profile(
     // Lock the embedding dimension at the first enrollment so a store never
     // mixes embeddings from incompatible backends (e.g. mock 32-dim and
     // SeetaFace ~512-dim). Subsequent enrollments must match the locked dim.
-    match store.embedding_dim {
-        None => store.embedding_dim = Some(embedding.len() as u32),
-        Some(dim) if dim as usize != embedding.len() => {
-            return Err(SuStatus::InvalidArgument);
-        }
-        Some(_) => {}
-    }
+    lock_embedding_dimension(&mut store, embedding.len())?;
 
     let profile = FaceProfile {
         id: unique_profile_id(),

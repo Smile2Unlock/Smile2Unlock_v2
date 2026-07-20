@@ -8,7 +8,9 @@
 mod auth;
 mod config;
 mod embedding;
+mod encrypted_store;
 mod ffi;
+mod password;
 mod pipeline;
 mod profile;
 mod protocol;
@@ -18,6 +20,7 @@ mod storage;
 mod tests;
 
 use profile::{PROFILE_ID_CAP, PROFILE_LABEL_CAP};
+use std::ffi::c_char;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +34,34 @@ pub enum SuStatus {
     WriteError = 6,
     InvalidArgument = 7,
     BufferTooSmall = 8,
+    CryptoError = 9,
+    KeyUnavailable = 10,
+    MigrationRequired = 11,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuAccountKind {
+    LinuxUid = 1,
+    WindowsSid = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuWindowsAccountKind {
+    Local = 1,
+    Microsoft = 2,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SuEncryptedStoreContext {
+    pub master_key: *const u8,
+    pub master_key_len: usize,
+    pub key_version: u32,
+    pub account_kind: u32,
+    pub linux_uid: u32,
+    pub windows_sid: *const c_char,
 }
 
 #[repr(C)]

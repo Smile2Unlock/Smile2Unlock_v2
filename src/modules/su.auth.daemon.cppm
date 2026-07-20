@@ -5,12 +5,14 @@ module;
 #include <sys/fsuid.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <nlohmann/json.hpp>
 
 export module su.auth.daemon;
 
 import std;
 import su.control.socket;
 import su.core.types;
+import su.auth.storage;
 import su.auth.user;
 import su.recognizer.service;
 
@@ -34,12 +36,14 @@ constexpr auto kAuthenticationRateLimit = std::chrono::seconds{1};
 struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
     std::string reason;
+    std::string payload_json = "null";
 };
 
 struct UserAuthData {
+    std::uint32_t uid = 0;
     su::app::CoreConfig config;
     std::size_t profile_count = 0;
-    su::auth::PinnedUserFile profiles;
+    std::string profiles_path;
 };
 
 std::string_view message_type_name(su::app::ControlMessageType type) {
@@ -47,6 +51,12 @@ std::string_view message_type_name(su::app::ControlMessageType type) {
     case su::app::ControlMessageType::kAuthenticate: return "authenticate";
     case su::app::ControlMessageType::kStatus: return "status";
     case su::app::ControlMessageType::kCancel: return "cancel";
+    case su::app::ControlMessageType::kStorageStatus: return "storage_status";
+    case su::app::ControlMessageType::kListProfiles: return "list_profiles";
+    case su::app::ControlMessageType::kEnrollProfile: return "enroll_profile";
+    case su::app::ControlMessageType::kDeleteProfile: return "delete_profile";
+    case su::app::ControlMessageType::kMigrateProfiles: return "migrate_profiles";
+    case su::app::ControlMessageType::kVerifyProfile: return "verify_profile";
     }
     std::unreachable();
 }
@@ -74,8 +84,12 @@ std::optional<std::string_view> peer_authorization_error(
     if (peer_uid == 0) {
         return std::nullopt;
     }
-    if (request.type != su::app::ControlMessageType::kAuthenticate) {
-        return "user peer may only authenticate";
+    if (request.type == su::app::ControlMessageType::kStatus
+        || request.type == su::app::ControlMessageType::kStorageStatus) {
+        return std::nullopt;
+    }
+    if (request.type == su::app::ControlMessageType::kCancel) {
+        return "user peer may not cancel another process request";
     }
     const auto paths = su::auth::paths_for_username(request.username);
     if (!paths || !su::auth::peer_request_allowed(peer_uid, request.type, paths->uid)) {
@@ -157,50 +171,56 @@ private:
     bool valid_ = false;
 };
 
-std::expected<UserAuthData, std::string> load_user_auth_data(const UserPaths& paths) {
-    // setfsuid is per-thread on Linux. All user-controlled path traversal and
-    // file reads run with the target user's filesystem permissions, then the
-    // daemon restores root before touching the camera device.
-    const auto fsuid = FsUidGuard{paths.uid};
-    if (!fsuid.valid()) {
-        return std::unexpected("failed to enter user filesystem context");
-    }
-    const auto config_file = su::auth::open_user_file(
-        paths, su::auth::UserFileKind::kConfig, false);
-    if (!config_file) {
-        return std::unexpected(config_file.error());
-    }
-    auto profile_file = su::auth::open_user_file(
-        paths, su::auth::UserFileKind::kProfiles, true);
-    if (!profile_file || !profile_file->has_value()) {
-        return std::unexpected(profile_file
-                ? "unsafe, inaccessible, or missing user data"
-                : profile_file.error());
-    }
-    const auto config = config_file->has_value()
-        ? su::app::load_config(config_file->value().proc_path())
-        : std::expected<su::app::CoreConfig, su::app::CoreError>{su::app::default_config()};
+std::expected<UserAuthData, std::string> load_user_auth_data(
+    const UserPaths& paths,
+    const MasterKey& master_key) {
+    // setfsuid is per-thread. Restrict only the user-owned config read; the
+    // encrypted profile store remains root-owned and is opened after restore.
+    const auto config = [&paths]() -> std::expected<su::app::CoreConfig, std::string> {
+        const auto fsuid = FsUidGuard{paths.uid};
+        if (!fsuid.valid()) {
+            return std::unexpected("failed to enter user filesystem context");
+        }
+        const auto config_file = su::auth::open_user_file(
+            paths, su::auth::UserFileKind::kConfig, false);
+        if (!config_file) {
+            return std::unexpected(config_file.error());
+        }
+        const auto loaded = config_file->has_value()
+            ? su::app::load_config(config_file->value().proc_path())
+            : std::expected<su::app::CoreConfig, su::app::CoreError>{su::app::default_config()};
+        if (!loaded) {
+            return std::unexpected("failed to load user config");
+        }
+        return *loaded;
+    }();
     if (!config) {
-        return std::unexpected("failed to load user config");
+        return std::unexpected(config.error());
     }
-    const auto profiles = su::app::list_face_profile_summaries(
-        profile_file->value().proc_path());
+    const auto profiles = su::app::list_encrypted_face_profile_summaries(
+        master_key.context_for_uid(paths.uid), paths.profiles.string());
     if (!profiles) {
-        return std::unexpected("failed to load face profiles");
+        return std::unexpected("failed to decrypt face profiles");
     }
     return UserAuthData{
+        .uid = paths.uid,
         .config = *config,
         .profile_count = profiles->size(),
-        .profiles = std::move(profile_file->value()),
+        .profiles_path = paths.profiles.string(),
     };
 }
 
 std::expected<su::app::FaceAuthReport, std::string> authenticate_user_sample(
     const UserAuthData& user_data,
+    const MasterKey& master_key,
     std::string_view sample,
     float threshold) {
-    const auto report = su::app::authenticate_face_sample_report(
-        user_data.profiles.proc_path(), sample, threshold, true);
+    const auto report = su::app::authenticate_encrypted_face_sample_report(
+        master_key.context_for_uid(user_data.uid),
+        user_data.profiles_path,
+        sample,
+        threshold,
+        true);
     if (!report) {
         return std::unexpected("face profile comparison failed");
     }
@@ -209,8 +229,19 @@ std::expected<su::app::FaceAuthReport, std::string> authenticate_user_sample(
 
 class AuthService {
 public:
+    explicit AuthService(std::optional<MasterKey> master_key)
+        : master_key_(std::move(master_key)) {}
+
     bool available() const {
-        return recognizer_.seetaface_available() && !recognizer_.enumerate_cameras().empty();
+        return master_key_.has_value()
+            && recognizer_.seetaface_available()
+            && !recognizer_.enumerate_cameras().empty();
+    }
+
+    std::string_view storage_status() const {
+        return master_key_
+            ? key_protection_name(master_key_->protection())
+            : "unavailable";
     }
 
     AttemptResult authenticate(std::uint64_t request_id, std::string_view username) {
@@ -222,6 +253,9 @@ public:
         const auto active_request = ActiveRequestGuard{
             active_request_, cancel_requested_, request_id};
         const auto deadline = std::chrono::steady_clock::now() + kAuthenticationTimeout;
+        if (!master_key_) {
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        }
 
         const auto paths = su::auth::paths_for_username(username);
         if (!paths) {
@@ -239,7 +273,7 @@ public:
             return {su::control::ControlResult::kBusy, "authentication rate limited"};
         }
         last_auth_started_[paths->uid] = now;
-        const auto user_data = load_user_auth_data(*paths);
+        const auto user_data = load_user_auth_data(*paths, *master_key_);
         if (!user_data) {
             return {su::control::ControlResult::kUnavailable, user_data.error()};
         }
@@ -287,6 +321,7 @@ public:
 
             const auto report = authenticate_user_sample(
                 *user_data,
+                *master_key_,
                 su::recognizer::embedding_sample_source(capture->feature),
                 config.recognition_threshold);
             if (!report) {
@@ -305,6 +340,156 @@ public:
             return {su::control::ControlResult::kRejected, "liveness check failed"};
         }
         return {su::control::ControlResult::kRejected, "face did not match"};
+    }
+
+    AttemptResult list_profiles(std::string_view username) const {
+        const auto paths = paths_for_request(username);
+        if (!paths) {
+            return {su::control::ControlResult::kRejected, paths.error()};
+        }
+        if (!master_key_) {
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        }
+        const auto profiles = su::app::list_encrypted_face_profiles_json(
+            master_key_->context_for_uid(paths->uid), paths->profiles.string());
+        return profiles
+            ? AttemptResult{su::control::ControlResult::kAccepted, "profiles listed", *profiles}
+            : AttemptResult{su::control::ControlResult::kUnavailable, "failed to decrypt profiles"};
+    }
+
+    AttemptResult enroll_profile(
+        std::string_view username,
+        std::string_view label,
+        std::string_view sample) const {
+        const auto paths = paths_for_request(username);
+        if (!paths) {
+            return {su::control::ControlResult::kRejected, paths.error()};
+        }
+        if (!master_key_) {
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        }
+        const auto enrolled = su::app::enroll_encrypted_face_profile(
+            master_key_->context_for_uid(paths->uid),
+            paths->profiles.string(),
+            label,
+            sample);
+        if (!enrolled) {
+            return {su::control::ControlResult::kUnavailable, "failed to encrypt face profile"};
+        }
+        return list_profiles(username);
+    }
+
+    AttemptResult delete_profile(
+        std::string_view username,
+        std::string_view profile_id) const {
+        const auto paths = paths_for_request(username);
+        if (!paths) {
+            return {su::control::ControlResult::kRejected, paths.error()};
+        }
+        if (!master_key_) {
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        }
+        const auto deleted = su::app::delete_encrypted_face_profile(
+            master_key_->context_for_uid(paths->uid),
+            paths->profiles.string(),
+            profile_id);
+        if (!deleted) {
+            return {su::control::ControlResult::kUnavailable, "failed to update encrypted profiles"};
+        }
+        if (!*deleted) {
+            return {su::control::ControlResult::kRejected, "profile not found"};
+        }
+        return list_profiles(username);
+    }
+
+    AttemptResult verify_profile(
+        std::string_view username,
+        std::string_view sample,
+        bool liveness_ok) const {
+        const auto paths = paths_for_request(username);
+        if (!paths) {
+            return {su::control::ControlResult::kRejected, paths.error()};
+        }
+        if (!master_key_) {
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        }
+        const auto user_data = load_user_auth_data(*paths, *master_key_);
+        if (!user_data) {
+            return {su::control::ControlResult::kUnavailable, user_data.error()};
+        }
+        const auto report = su::app::authenticate_encrypted_face_sample_report(
+            master_key_->context_for_uid(user_data->uid),
+            user_data->profiles_path,
+            sample,
+            user_data->config.recognition_threshold,
+            liveness_ok);
+        if (!report) {
+            return {su::control::ControlResult::kUnavailable, "face profile comparison failed"};
+        }
+        const auto payload = nlohmann::json{
+            {"accepted", report->accepted},
+            {"score", report->score},
+            {"threshold", report->threshold},
+            {"liveness_ok", report->liveness_ok},
+            {"profile_count", report->profile_count},
+            {"best_profile_id", report->best_profile_id},
+            {"best_profile_label", report->best_profile_label},
+            {"reason", report->reason},
+        }.dump();
+        return {
+            report->accepted
+                ? su::control::ControlResult::kAccepted
+                : su::control::ControlResult::kRejected,
+            report->accepted ? "face matched" : "face did not match",
+            payload,
+        };
+    }
+
+    AttemptResult migrate_profiles(std::string_view username) const {
+        const auto paths = paths_for_request(username);
+        if (!paths) {
+            return {su::control::ControlResult::kRejected, paths.error()};
+        }
+        if (!master_key_) {
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        }
+
+        auto legacy = std::optional<PinnedUserFile>{};
+        {
+            const auto fsuid = FsUidGuard{paths->uid};
+            if (!fsuid.valid()) {
+                return {su::control::ControlResult::kUnavailable, "failed to enter user filesystem context"};
+            }
+            auto opened = open_user_file(*paths, UserFileKind::kProfiles, false);
+            if (!opened) {
+                return {su::control::ControlResult::kUnavailable, opened.error()};
+            }
+            if (!opened->has_value()) {
+                return list_profiles(username);
+            }
+            legacy.emplace(std::move(opened->value()));
+        }
+
+        const auto migrated = su::app::migrate_plaintext_face_profiles(
+            master_key_->context_for_uid(paths->uid),
+            legacy->proc_path(),
+            paths->profiles.string());
+        if (!migrated) {
+            return {su::control::ControlResult::kUnavailable, "profile migration failed"};
+        }
+        {
+            const auto fsuid = FsUidGuard{paths->uid};
+            if (!fsuid.valid()) {
+                return {su::control::ControlResult::kUnavailable, "failed to restore user filesystem context"};
+            }
+            if (const auto removed = remove_pinned_user_file(
+                    *paths, UserFileKind::kProfiles, *legacy); !removed) {
+                return {su::control::ControlResult::kUnavailable, removed.error()};
+            }
+        }
+        auto listed = list_profiles(username);
+        listed.reason = *migrated ? "legacy profiles migrated" : "legacy profile removed";
+        return listed;
     }
 
     bool cancel(std::uint64_t target_request_id) {
@@ -385,6 +570,34 @@ public:
                 ? AttemptResult{su::control::ControlResult::kCancelled, "cancel requested"}
                 : AttemptResult{su::control::ControlResult::kUnavailable, "request not active"};
             break;
+        case su::app::ControlMessageType::kStorageStatus:
+            response = master_key_
+                ? AttemptResult{
+                    su::control::ControlResult::kAccepted,
+                    "encrypted storage available",
+                    nlohmann::json{{"protection", storage_status()}}.dump()}
+                : AttemptResult{
+                    su::control::ControlResult::kUnavailable,
+                    "encrypted storage key unavailable",
+                    nlohmann::json{{"protection", "unavailable"}}.dump()};
+            break;
+        case su::app::ControlMessageType::kListProfiles:
+            response = list_profiles(request->username);
+            break;
+        case su::app::ControlMessageType::kEnrollProfile:
+            response = enroll_profile(
+                request->username, request->label, request->face_sample_source);
+            break;
+        case su::app::ControlMessageType::kDeleteProfile:
+            response = delete_profile(request->username, request->profile_id);
+            break;
+        case su::app::ControlMessageType::kMigrateProfiles:
+            response = migrate_profiles(request->username);
+            break;
+        case su::app::ControlMessageType::kVerifyProfile:
+            response = verify_profile(
+                request->username, request->face_sample_source, request->liveness_ok);
+            break;
         }
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -401,7 +614,8 @@ public:
         const auto sent = connection.send_frame(su::control::make_response(
             request->request_id,
             response.result,
-            response.reason));
+            response.reason,
+            response.payload_json));
         if (!sent) {
             std::println(
                 stderr,
@@ -411,6 +625,15 @@ public:
     }
 
 private:
+    static std::expected<UserPaths, std::string> paths_for_request(std::string_view username) {
+        const auto paths = paths_for_username(username);
+        if (!paths) {
+            return std::unexpected(std::string(user_lookup_error_message(paths.error())));
+        }
+        return *paths;
+    }
+
+    std::optional<MasterKey> master_key_;
     su::recognizer::RecognizerService recognizer_;
     std::mutex auth_mutex_;
     std::atomic<std::uint64_t> active_request_{0};
@@ -441,12 +664,23 @@ int run_daemon(std::string_view socket_path) {
         return 1;
     }
 
-    auto service = AuthService{};
+    auto loaded_key = load_systemd_key_credential();
+    if (!loaded_key) {
+        std::println(
+            stderr,
+            "su_authd event=storage_unavailable reason={}",
+            key_provider_error_message(loaded_key.error()));
+    }
+    auto service = AuthService{
+        loaded_key
+            ? std::optional<MasterKey>{std::move(*loaded_key)}
+            : std::nullopt};
     std::println(
         stderr,
-        "su_authd event=listening socket={} available={}",
+        "su_authd event=listening socket={} available={} storage={}",
         socket_path,
-        service.available());
+        service.available(),
+        service.storage_status());
     while (true) {
         auto connection = listener->accept_one();
         if (!connection) {
