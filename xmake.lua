@@ -252,7 +252,10 @@ if is_plat("linux") then
     target("su_authd")
         apply_cpp_target("binary")
         add_files("src/platform/linux/authd/*.cpp", "src/app/core_bridge.cpp")
-        add_files("src/modules/su.auth.daemon.cppm", "src/modules/su.control.socket.cppm")
+        add_files(
+            "src/modules/su.auth.daemon.cppm",
+            "src/modules/su.auth.user.cppm",
+            "src/modules/su.control.socket.cppm")
         add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_deps("su_core", "su_recognizer")
@@ -269,6 +272,14 @@ if is_plat("linux") then
         apply_cpp_target("binary")
         add_files("tests/session/*.cpp", "src/modules/su.app.session.cppm")
         add_syslinks("systemd")
+        add_tests("default")
+
+    target("su_multi_user_auth_test")
+        apply_cpp_target("binary")
+        add_files(
+            "tests/multi_user/*.cpp",
+            "src/modules/su.auth.user.cppm",
+            "src/modules/su.core.types.cppm")
         add_tests("default")
 
     target("su_pam_integration_test")
