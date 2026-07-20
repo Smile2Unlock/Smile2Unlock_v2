@@ -3,6 +3,7 @@ module;
 #include "models/gui_ipc_protocol.h"
 #include "backend/ibackend_service.h"
 #include "exceptions.h"
+#include "logon_secret_client.h"
 
 export module smile2unlock.service;
 
@@ -71,21 +72,41 @@ namespace smile2unlock {
 
 namespace {
 
-std::string EncryptPasswordForPersistence(const std::string& password, std::string& error_message) {
+bool StorePasswordForCurrentAccount(
+    const std::string& password, std::string& error_message) {
     if (password.empty()) {
         error_message = "密码不能为空";
-        return {};
+        return false;
     }
-
-    const std::string encrypted_password = managers::EncryptPasswordForStorage(
-        password, smile2unlock::paths::GetDatabasePath().string());
-    if (encrypted_password.empty()) {
-        error_message = "密码加密失败";
-        return {};
+    if (password.find('\0') != std::string::npos) {
+        error_message = "密码格式无效";
+        return false;
     }
-
+    const auto required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, password.data(),
+        static_cast<int>(password.size()), nullptr, 0);
+    if (required <= 0 || required >= smile2unlock::logon_secret_ipc::kPasswordCapacity) {
+        error_message = "密码格式无效或长度超出限制";
+        return false;
+    }
+    auto wide_password = std::vector<wchar_t>(static_cast<std::size_t>(required));
+    if (MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS, password.data(),
+            static_cast<int>(password.size()), wide_password.data(), required) != required) {
+        SecureZeroMemory(
+            wide_password.data(), wide_password.size() * sizeof(wide_password[0]));
+        error_message = "密码格式转换失败";
+        return false;
+    }
+    const auto stored = LogonSecretClient{}.store_for_current_user(wide_password);
+    SecureZeroMemory(
+        wide_password.data(), wide_password.size() * sizeof(wide_password[0]));
+    if (FAILED(stored)) {
+        error_message = "Windows 登录凭据服务不可用，请确认认证服务已启动";
+        return false;
+    }
     error_message.clear();
-    return encrypted_password;
+    return true;
 }
 
 }
@@ -121,22 +142,21 @@ bool BackendService::AddUser(const std::string& username, const std::string& pas
         error_message = "用户名不能为空";
         return false;
     }
-    if (password.empty()) {
-        error_message = "密码不能为空";
-        return false;
-    }
     if (database_->UserExists(username)) {
         error_message = "用户名已存在";
         return false;
     }
     User new_user;
     new_user.username = username;
-    new_user.encrypted_password = EncryptPasswordForPersistence(password, error_message);
-    if (new_user.encrypted_password.empty()) {
-        return false;
-    }
     new_user.remark = remark;
     if (database_->AddUser(new_user)) {
+        if (!password.empty()
+            && !StorePasswordForCurrentAccount(password, error_message)) {
+            if (const auto inserted = database_->GetUserByUsername(username)) {
+                (void)database_->DeleteUser(inserted->id);
+            }
+            return false;
+        }
         error_message = "用户添加成功";
         return true;
     }
@@ -162,8 +182,7 @@ bool BackendService::UpdateUser(int user_id, const std::string& username, const 
     User updated_user = user.value();
     updated_user.username = username;
     if (!password.empty()) {
-        updated_user.encrypted_password = EncryptPasswordForPersistence(password, error_message);
-        if (updated_user.encrypted_password.empty()) {
+        if (!StorePasswordForCurrentAccount(password, error_message)) {
             return false;
         }
     }
@@ -178,6 +197,9 @@ bool BackendService::UpdateUser(int user_id, const std::string& username, const 
 
 bool BackendService::DeleteUser(int userId, std::string& error_message) {
     if (database_->DeleteUser(userId)) {
+        // In remote service mode this call is denied for LocalSystem; the GUI
+        // then clears its own SID directly. Standalone mode succeeds here.
+        (void)LogonSecretClient{}.clear_for_current_user();
         error_message = "用户删除成功";
         return true;
     }

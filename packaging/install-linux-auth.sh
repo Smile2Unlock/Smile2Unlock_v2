@@ -29,6 +29,8 @@ install -m 0755 "${build_dir}/su_authd" \
     "$(destination /usr/libexec/smile2unlock/su_authd)"
 install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" \
     "$(destination /usr/libexec/smile2unlock/install-dms-lock)"
+install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" \
+    "$(destination /usr/libexec/smile2unlock/setup-storage-key)"
 
 install -d -m 0755 "$(destination "${pam_module_dir}")"
 install -m 0755 "${build_dir}/pam_smile2unlock.so" \
@@ -82,6 +84,7 @@ install -m 0644 "${project_dir}/packaging/systemd/su-authd.service" \
     "$(destination "${systemd_unit_dir}/su-authd.service")"
 
 if [[ -z "${destination_root}" ]]; then
+    "${project_dir}/packaging/setup-storage-key.sh"
     systemctl daemon-reload
     systemctl enable --now su-authd.service
     echo "su-authd installed and started. Add pam_smile2unlock.so to the desired PAM stack."

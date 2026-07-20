@@ -19,6 +19,7 @@ struct UserPaths {
     std::uint32_t uid = 0;
     std::filesystem::path home;
     std::filesystem::path config;
+    std::filesystem::path legacy_profiles;
     std::filesystem::path profiles;
 };
 
@@ -47,9 +48,13 @@ public:
 private:
     friend std::expected<std::optional<PinnedUserFile>, std::string> open_user_file(
         const UserPaths&, UserFileKind, bool);
+    friend std::expected<void, std::string> remove_pinned_user_file(
+        const UserPaths&, UserFileKind, const PinnedUserFile&);
     explicit PinnedUserFile(int fd);
 
     int fd_ = -1;
+    std::uint64_t device_ = 0;
+    std::uint64_t inode_ = 0;
     std::string proc_path_;
 };
 
@@ -61,6 +66,10 @@ std::expected<std::optional<PinnedUserFile>, std::string> open_user_file(
     const UserPaths& paths,
     UserFileKind kind,
     bool required);
+std::expected<void, std::string> remove_pinned_user_file(
+    const UserPaths& paths,
+    UserFileKind kind,
+    const PinnedUserFile& pinned);
 
 bool peer_request_allowed(
     std::uint32_t peer_uid,
@@ -81,7 +90,9 @@ UserPaths paths_for_identity(std::uint32_t uid, const std::filesystem::path& hom
         .uid = uid,
         .home = home,
         .config = home / ".config" / "smile2unlock" / "config.toml",
-        .profiles = home / ".local" / "share" / "smile2unlock" / "profiles.json",
+        .legacy_profiles = home / ".local" / "share" / "smile2unlock" / "profiles.json",
+        .profiles = std::filesystem::path{"/var/lib/smile2unlock/users"}
+            / std::to_string(uid) / "profiles.s2u",
     };
 }
 
@@ -140,7 +151,13 @@ bool peer_request_allowed(
     if (peer_uid == 0) {
         return true;
     }
-    return message_type == su::app::ControlMessageType::kAuthenticate
+    const auto account_operation = message_type == su::app::ControlMessageType::kAuthenticate
+        || message_type == su::app::ControlMessageType::kListProfiles
+        || message_type == su::app::ControlMessageType::kEnrollProfile
+        || message_type == su::app::ControlMessageType::kDeleteProfile
+        || message_type == su::app::ControlMessageType::kMigrateProfiles
+        || message_type == su::app::ControlMessageType::kVerifyProfile;
+    return account_operation
         && target_uid.has_value()
         && *target_uid == peer_uid;
 }
@@ -233,7 +250,13 @@ std::uintmax_t max_file_size(UserFileKind kind) {
 } // namespace
 
 PinnedUserFile::PinnedUserFile(int fd)
-    : fd_(fd), proc_path_(std::format("/proc/self/fd/{}", fd)) {}
+    : fd_(fd), proc_path_(std::format("/proc/self/fd/{}", fd)) {
+    struct stat metadata {};
+    if (::fstat(fd_, &metadata) == 0) {
+        device_ = static_cast<std::uint64_t>(metadata.st_dev);
+        inode_ = static_cast<std::uint64_t>(metadata.st_ino);
+    }
+}
 
 PinnedUserFile::~PinnedUserFile() {
     if (fd_ >= 0) {
@@ -242,7 +265,10 @@ PinnedUserFile::~PinnedUserFile() {
 }
 
 PinnedUserFile::PinnedUserFile(PinnedUserFile&& other) noexcept
-    : fd_(std::exchange(other.fd_, -1)), proc_path_(std::move(other.proc_path_)) {}
+    : fd_(std::exchange(other.fd_, -1)),
+      device_(std::exchange(other.device_, 0)),
+      inode_(std::exchange(other.inode_, 0)),
+      proc_path_(std::move(other.proc_path_)) {}
 
 PinnedUserFile& PinnedUserFile::operator=(PinnedUserFile&& other) noexcept {
     if (this == &other) {
@@ -252,6 +278,8 @@ PinnedUserFile& PinnedUserFile::operator=(PinnedUserFile&& other) noexcept {
         (void)::close(fd_);
     }
     fd_ = std::exchange(other.fd_, -1);
+    device_ = std::exchange(other.device_, 0);
+    inode_ = std::exchange(other.inode_, 0);
     proc_path_ = std::move(other.proc_path_);
     return *this;
 }
@@ -305,6 +333,54 @@ std::expected<std::optional<PinnedUserFile>, std::string> open_user_file(
     }
     auto pinned = PinnedUserFile{file_fd};
     return std::optional<PinnedUserFile>{std::move(pinned)};
+}
+
+std::expected<void, std::string> remove_pinned_user_file(
+    const UserPaths& paths,
+    UserFileKind kind,
+    const PinnedUserFile& pinned) {
+    if (kind != UserFileKind::kProfiles || pinned.fd_ < 0
+        || pinned.device_ == 0 || pinned.inode_ == 0) {
+        return std::unexpected("invalid pinned user file");
+    }
+    const auto home_fd = open_beneath(
+        AT_FDCWD,
+        paths.home.c_str(),
+        O_PATH | O_DIRECTORY | O_CLOEXEC,
+        false);
+    if (home_fd < 0) {
+        return std::unexpected("unable to reopen user home safely");
+    }
+    const auto directory_fd = open_beneath(
+        home_fd,
+        ".local/share/smile2unlock",
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC,
+        true);
+    const auto directory_error = errno;
+    (void)::close(home_fd);
+    if (directory_fd < 0) {
+        return std::unexpected(std::format(
+            "unable to reopen user data directory safely (errno={})", directory_error));
+    }
+
+    struct stat current {};
+    const auto matches = ::fstatat(
+        directory_fd, "profiles.json", &current, AT_SYMLINK_NOFOLLOW) == 0
+        && S_ISREG(current.st_mode)
+        && static_cast<std::uint64_t>(current.st_dev) == pinned.device_
+        && static_cast<std::uint64_t>(current.st_ino) == pinned.inode_;
+    if (!matches) {
+        (void)::close(directory_fd);
+        return std::unexpected("legacy profile changed during migration");
+    }
+    if (::unlinkat(directory_fd, "profiles.json", 0) != 0 || ::fsync(directory_fd) != 0) {
+        const auto saved_errno = errno;
+        (void)::close(directory_fd);
+        return std::unexpected(std::format(
+            "failed to remove migrated profile (errno={})", saved_errno));
+    }
+    (void)::close(directory_fd);
+    return {};
 }
 
 bool authentication_rate_limited(

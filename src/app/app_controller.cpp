@@ -1,13 +1,98 @@
+module;
+
+#include <nlohmann/json.hpp>
+
 module su.app.controller;
 import std;
 import su.recognizer.service;
 import su.recognizer.image;
+import su.control.socket;
+import su.app.user;
 
 namespace su::app {
 
 namespace {
 
 constexpr std::string_view kImageSourcePrefix = "image:";
+constexpr std::string_view kControlSocketPath = su::control::kDefaultSocketPath;
+
+std::uint64_t next_request_id() {
+    static auto sequence = std::atomic<std::uint64_t>{1};
+    return sequence.fetch_add(1, std::memory_order_relaxed);
+}
+
+std::expected<su::control::ControlResponse, std::string> send_control_request(
+    std::string_view request) {
+    auto connection = su::control::Connection::connect_to(kControlSocketPath);
+    if (!connection) {
+        return std::unexpected("authentication service is unavailable");
+    }
+    if (const auto sent = connection->send_frame(request); !sent) {
+        return std::unexpected("failed to send request to authentication service");
+    }
+    const auto response = connection->receive_frame();
+    if (!response) {
+        return std::unexpected("authentication service did not respond");
+    }
+    const auto parsed = su::control::parse_response(*response);
+    if (!parsed) {
+        return std::unexpected("authentication service returned an invalid response");
+    }
+    return *parsed;
+}
+
+std::expected<std::vector<FaceProfileSummary>, std::string> profile_rows_from_json(
+    std::string_view payload) {
+    const auto parsed = nlohmann::json::parse(payload, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_array()) {
+        return std::unexpected("authentication service returned invalid profile data");
+    }
+    auto profiles = std::vector<FaceProfileSummary>{};
+    profiles.reserve(parsed.size());
+    for (const auto& item : parsed) {
+        if (!item.is_object()
+            || !item.contains("id") || !item["id"].is_string()
+            || !item.contains("label") || !item["label"].is_string()
+            || !item.contains("created_at_unix") || !item["created_at_unix"].is_number_unsigned()) {
+            return std::unexpected("authentication service returned invalid profile data");
+        }
+        profiles.push_back(FaceProfileSummary{
+            .id = item["id"].get<std::string>(),
+            .label = item["label"].get<std::string>(),
+            .created_at_unix = item["created_at_unix"].get<std::uint64_t>(),
+        });
+    }
+    return profiles;
+}
+
+std::expected<FaceAuthReport, std::string> auth_report_from_json(std::string_view payload) {
+    const auto parsed = nlohmann::json::parse(payload, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()
+        || !parsed.contains("accepted") || !parsed["accepted"].is_boolean()
+        || !parsed.contains("score") || !parsed["score"].is_number()
+        || !parsed.contains("threshold") || !parsed["threshold"].is_number()
+        || !parsed.contains("liveness_ok") || !parsed["liveness_ok"].is_boolean()
+        || !parsed.contains("profile_count") || !parsed["profile_count"].is_number_unsigned()
+        || !parsed.contains("best_profile_id") || !parsed["best_profile_id"].is_string()
+        || !parsed.contains("best_profile_label") || !parsed["best_profile_label"].is_string()
+        || !parsed.contains("reason") || !parsed["reason"].is_string()) {
+        return std::unexpected("authentication service returned invalid authentication data");
+    }
+    return FaceAuthReport{
+        .accepted = parsed["accepted"].get<bool>(),
+        .score = parsed["score"].get<float>(),
+        .threshold = parsed["threshold"].get<float>(),
+        .liveness_ok = parsed["liveness_ok"].get<bool>(),
+        .profile_count = parsed["profile_count"].get<std::uint32_t>(),
+        .best_profile_id = parsed["best_profile_id"].get<std::string>(),
+        .best_profile_label = parsed["best_profile_label"].get<std::string>(),
+        .reason = parsed["reason"].get<std::string>(),
+    };
+}
+
+std::string current_account_name() {
+    return current_username("");
+}
 
 // RAII guard: closes the recognizer camera when leaving scope.
 struct [[nodiscard]] CameraGuard {
@@ -108,13 +193,8 @@ std::string AppController::config_path() const {
 }
 
 std::string AppController::profile_store_path() const {
-    if (const auto* xdg_data_home = std::getenv("XDG_DATA_HOME")) {
-        return (std::filesystem::path(xdg_data_home) / "smile2unlock" / "profiles.json").string();
-    }
-    if (const auto* home = std::getenv("HOME")) {
-        return (std::filesystem::path(home) / ".local" / "share" / "smile2unlock" / "profiles.json").string();
-    }
-    return (std::filesystem::temp_directory_path() / "smile2unlock" / "profiles.json").string();
+    return (std::filesystem::path{"/var/lib/smile2unlock/users"}
+        / std::to_string(current_uid()) / "profiles.s2u").string();
 }
 
 std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
@@ -124,13 +204,17 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         return std::unexpected(std::format("failed to load config from Rust core: {}", path));
     }
     const auto store_path = profile_store_path();
-    const auto profiles = list_face_profile_summaries(store_path);
-    if (!profiles) {
-        return std::unexpected(std::format("failed to list face profiles: {}", profile_store_path()));
-    }
-    const auto profiles_json = list_face_profiles_json(store_path);
-    if (!profiles_json) {
-        return std::unexpected(std::format("failed to list face profiles json: {}", store_path));
+    auto profiles = std::vector<FaceProfileSummary>{};
+    auto profiles_json = std::string{"[]"};
+    if (const auto loaded_profiles = list_face_profile_rows(); loaded_profiles) {
+        profiles = *loaded_profiles;
+        if (const auto loaded_json = list_face_profiles(); loaded_json) {
+            profiles_json = *loaded_json;
+        }
+    } else {
+        // Keep the UI available for diagnostics and password fallback while
+        // su_authd is stopped or its encrypted key is unavailable.
+        std::println(stderr, "[storage] profile list unavailable: {}", loaded_profiles.error());
     }
 
     return AppSnapshot{
@@ -139,8 +223,8 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         .config = *loaded_config,
         .config_path = path,
         .profile_store_path = store_path,
-        .profiles = *profiles,
-        .profiles_json = *profiles_json,
+        .profiles = std::move(profiles),
+        .profiles_json = std::move(profiles_json),
         .slint_enabled = SU_HAS_SLINT != 0,
         .seetaface_available = recognizer_.seetaface_available(),
     };
@@ -202,16 +286,19 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
         return std::unexpected(resolved.error());
     }
 
-    const auto store_path = profile_store_path();
-    if (const auto enrolled = enroll_face_profile(store_path, label, *resolved); !enrolled) {
-        return std::unexpected(std::format("failed to enroll face profile: {}", store_path));
+    const auto username = current_account_name();
+    if (username.empty()) {
+        return std::unexpected("failed to resolve current account");
     }
-
-    const auto profiles = list_face_profiles_json(store_path);
-    if (!profiles) {
-        return std::unexpected(std::format("failed to list face profiles: {}", store_path));
+    const auto response = send_control_request(su::control::make_enroll_profile_request(
+        next_request_id(), username, label, *resolved));
+    if (!response) {
+        return std::unexpected(response.error());
     }
-    return *profiles;
+    if (response->result != su::control::ControlResult::kAccepted) {
+        return std::unexpected(response->reason);
+    }
+    return response->payload_json;
 }
 
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_current_frame(
@@ -247,45 +334,31 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
         return std::unexpected(resolved.error());
     }
 
-    const auto store_path = profile_store_path();
-    const auto config = load_config(config_path());
-    if (!config) {
-        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    const auto username = current_account_name();
+    if (username.empty()) {
+        return std::unexpected("failed to resolve current account");
     }
-
-    // Single FFI auth call: authenticate_face_sample_report returns the full
-    // decision + report in one round-trip (decision fields: accepted, score,
-    // profile_count; report fields: threshold, liveness_ok, best_profile, etc.)
-    const auto auth_report = authenticate_face_sample_report(
-        store_path,
-        *resolved,
-        config->recognition_threshold,
-        liveness_ok);
+    const auto response = send_control_request(su::control::make_verify_profile_request(
+        next_request_id(), username, *resolved, liveness_ok));
+    if (!response) {
+        return std::unexpected(response.error());
+    }
+    if (response->result != su::control::ControlResult::kAccepted
+        && response->result != su::control::ControlResult::kRejected) {
+        return std::unexpected(response->reason);
+    }
+    const auto auth_report = auth_report_from_json(response->payload_json);
     if (!auth_report) {
-        return std::unexpected(std::format("failed to authenticate face sample: {}", store_path));
+        return std::unexpected(auth_report.error());
     }
-
-    const auto profiles_json = list_face_profiles_json(store_path);
-    if (!profiles_json) {
-        return std::unexpected(std::format("failed to list face profiles: {}", store_path));
-    }
-    const auto profile_rows = list_face_profile_summaries(store_path);
+    const auto profile_rows = list_face_profile_rows();
     if (!profile_rows) {
-        return std::unexpected(std::format("failed to list face profile summaries: {}", store_path));
+        return std::unexpected(profile_rows.error());
     }
-
-    // Single FFI JSON call for the full report (includes best_profile_label,
-    // reason, threshold, liveness_ok, etc.).
-    const auto report_json = authenticate_face_sample_report_json(
-        store_path,
-        *resolved,
-        config->recognition_threshold,
-        liveness_ok);
-    if (!report_json) {
-        return std::unexpected(std::format("failed to build face auth report JSON: {}", store_path));
+    const auto profiles_json = list_face_profiles();
+    if (!profiles_json) {
+        return std::unexpected(profiles_json.error());
     }
-
-    // Build the decision from the report struct to avoid a separate FFI call.
     const auto decision = FaceAuthDecision{
         .accepted = auth_report->accepted,
         .score = auth_report->score,
@@ -295,7 +368,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     return FaceDemoSnapshot{
         .profiles = *profile_rows,
         .profiles_json = *profiles_json,
-        .auth_report_json = *report_json,
+        .auth_report_json = response->payload_json,
         .decision = decision,
         .report = *auth_report,
     };
@@ -328,30 +401,63 @@ void AppController::cancel_camera_operation() {
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {
-    const auto store_path = profile_store_path();
-    const auto profiles = list_face_profiles_json(store_path);
-    if (!profiles) {
-        return std::unexpected(std::format("failed to list face profiles: {}", store_path));
+    const auto username = current_account_name();
+    if (username.empty()) {
+        return std::unexpected("failed to resolve current account");
     }
-    return *profiles;
+    const auto response = send_control_request(su::control::make_list_profiles_request(
+        next_request_id(), username));
+    if (!response) {
+        return std::unexpected(response.error());
+    }
+    if (response->result != su::control::ControlResult::kAccepted) {
+        return std::unexpected(response->reason);
+    }
+    return response->payload_json;
 }
 
 std::expected<std::vector<FaceProfileSummary>, std::string> AppController::list_face_profile_rows() {
-    const auto store_path = profile_store_path();
-    const auto profiles = list_face_profile_summaries(store_path);
+    const auto profiles = list_face_profiles();
     if (!profiles) {
-        return std::unexpected(std::format("failed to list face profile summaries: {}", store_path));
+        return std::unexpected(profiles.error());
     }
-    return *profiles;
+    return profile_rows_from_json(*profiles);
 }
 
 std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::string_view profile_id) {
-    const auto store_path = profile_store_path();
-    const auto deleted = delete_face_profile(store_path, profile_id);
-    if (!deleted) {
-        return std::unexpected(std::format("failed to delete face profile: {}", store_path));
+    const auto username = current_account_name();
+    if (username.empty()) {
+        return std::unexpected("failed to resolve current account");
     }
-    return *deleted;
+    const auto response = send_control_request(su::control::make_delete_profile_request(
+        next_request_id(), username, profile_id));
+    if (!response) {
+        return std::unexpected(response.error());
+    }
+    if (response->result == su::control::ControlResult::kRejected
+        && response->reason == "profile not found") {
+        return false;
+    }
+    if (response->result != su::control::ControlResult::kAccepted) {
+        return std::unexpected(response->reason);
+    }
+    return true;
+}
+
+std::expected<bool, std::string> AppController::migrate_legacy_profiles() {
+    const auto username = current_account_name();
+    if (username.empty()) {
+        return std::unexpected("failed to resolve current account");
+    }
+    const auto response = send_control_request(su::control::make_migrate_profiles_request(
+        next_request_id(), username));
+    if (!response) {
+        return std::unexpected(response.error());
+    }
+    if (response->result != su::control::ControlResult::kAccepted) {
+        return std::unexpected(response->reason);
+    }
+    return response->reason == "legacy profiles migrated";
 }
 
 }  // namespace su::app

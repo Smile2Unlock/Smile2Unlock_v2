@@ -20,6 +20,7 @@
 #include <shlguid.h>
 #include <propkey.h>
 #include <memory>
+#include <cstdint>
 #include <atomic>
 #include <thread>
 #include <mutex>
@@ -157,6 +158,10 @@ public:
     bool                                    _fFaceRecognitionRunning;                       // 标记识别是否运行中
     bool                                    _fWarmupModeEnabled;                            // 启用预热模式（智能检测）
     bool                                    _fHideCredentialInputFields;                    // 识别成功后隐藏用户名/密码输入框
+    bool                                    _fFaceCredentialReady;                         // 人脸通过，等待一次性序列化
+    bool                                    _fLastSerializationUsedStoredSecret;            // ReportResult 只失效自动提交的密码
+    std::uint64_t                           _lastSecretRequestId;
+    std::uint32_t                           _lastSecretSessionId;
     CSampleProvider                         *_pProvider;                                    // Provider指针，用于通知凭证准备好
 
     // 辅助函数
@@ -164,7 +169,7 @@ public:
     HRESULT TerminateSmile2UnlockService(); // 终止 Smile2Unlock 进程
     HRESULT SendAuthRequestToSmile2Unlock(AuthRequestType request_type); // 发送认证请求到SU
     HRESULT WaitForFaceRecognitionResult(); // 等待识别结果
-    HRESULT RequestAndDecryptPasswordFromSU(PWSTR* ppwszPassword); // 请求 SU 密码并在本地解密
+    HRESULT RequestOneTimeLogonSecret(PWSTR* ppwszPassword);
     HRESULT StartFaceRecognitionAsync();    // 异步启动人脸识别
     void StopFaceRecognition();             // 停止人脸识别
     bool IsProcessStillRunning();           // 检查进程是否仍在运行

@@ -185,3 +185,41 @@ Linux `su_authd` 和未来 Windows LocalSystem auth service 成为唯一 storage
 - Windows 密码错误后不重复自动提交，用户可以回到系统密码 tile。
 - 本地账户和 Microsoft 账户能以系统解析的规范身份完成登录 / 解锁；未验收的域账户和 `CPUS_CREDUI` 不读取或提交已保存密码。
 - GUI 和 PAM / Credential Provider 不直接访问 master key 文件。
+
+## Implementation Status (2026-07-20)
+
+Completed in source and automated tests:
+
+- Rust XChaCha20-Poly1305 envelope, HKDF account/data-kind separation,
+  versioned payloads, zeroization, tamper rejection and Windows password stale
+  state.
+- Linux systemd credential key provider with TPM2-bound and host-key modes,
+  root-owned per-UID profile stores, daemon-only profile management and explicit
+  legacy JSON migration.
+- Linux GUI/PAM IPC migration, storage diagnostics, packaging, systemd unit and
+  tarball staging.
+- Windows CNG TPM wrapping with machine-DPAPI fallback only when the platform
+  provider is unavailable, SYSTEM-only ACL enforcement and a LocalSystem SCM
+  service.
+- Windows current-user store/clear pipe operations, LocalSystem-only one-time
+  prepare/stale operations and Credential Provider LOGON/UNLOCK serialization.
+- Removal of the legacy SQLite/AES-CBC and UDP password-return path. Existing
+  SQLite password fields are retired without decryption and require the user to
+  enter the current Windows password again.
+- MinGW builds for `Smile2UnlockAuthService.exe` and the full Credential
+  Provider DLL, including a Windows Rust static library. Linux `xmake build`,
+  all nine Xmake tests and the release tarball staging pass.
+
+Still requires platform acceptance before release:
+
+- Run the service on physical Windows TPM and non-TPM machines and verify CNG,
+  machine DPAPI, ACLs, service restart and installer upgrade/uninstall behavior.
+- Exercise local and Microsoft accounts through cold boot, lock/unlock, offline
+  login, wrong/stale password and password-change flows. Domain/Entra accounts
+  remain disabled.
+- Add Windows system-service ownership of encrypted face profiles; the current
+  completed profile daemon/storage integration is Linux-only.
+- Implement an administrator-driven key rotation/re-encryption command and the
+  documented clear-and-re-enroll recovery workflow for a lost TPM/machine key.
+- Validate the PowerShell staging script and `setup.iss` with native Windows
+  tooling; the Linux development host does not provide PowerShell or Inno Setup.

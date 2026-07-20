@@ -201,6 +201,7 @@ export component AppWindow inherits Window {
     callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
+    callback migrate_profiles_requested();
     callback start_preview_requested();
     callback stop_preview_requested();
     callback save_settings_requested(int, float, bool, float, int);
@@ -839,7 +840,7 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
-                        height: 176px;
+                        height: 226px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: #d7dfdc;
@@ -862,6 +863,12 @@ export component AppWindow inherits Window {
                                 spacing: 3px;
                                 Text { text: root.translate("overview.face_samples", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
                                 Text { text: root.profile_store_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                            }
+                            ActionButton {
+                                width: 176px;
+                                label: root.translate("action.import_legacy", root.language_index);
+                                enabled: root.control_socket_present && !root.busy;
+                                activated => { root.migrate_profiles_requested(); }
                             }
                         }
                     }

@@ -190,6 +190,9 @@ target("su_app")
     add_files("src/modules/su.core.*.cppm")
     add_files("src/modules/su.app.controller.cppm")
     add_files("src/modules/su.app.user.cppm")
+    if is_plat("linux") then
+        add_files("src/modules/su.control.socket.cppm")
+    end
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint", "nlohmann_json")
@@ -247,6 +250,7 @@ if is_plat("linux") then
         set_prefixname("")
         add_files("src/platform/linux/pam/*.cpp")
         add_files("src/modules/su.control.socket.cppm")
+        add_packages("nlohmann_json")
         add_headerfiles("src/platform/linux/pam/*.h")
         add_syslinks("pam")
 
@@ -255,10 +259,12 @@ if is_plat("linux") then
         add_files("src/platform/linux/authd/*.cpp", "src/app/core_bridge.cpp")
         add_files(
             "src/modules/su.auth.daemon.cppm",
+            "src/modules/su.auth.storage.cppm",
             "src/modules/su.auth.user.cppm",
             "src/modules/su.control.socket.cppm")
         add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
+        add_packages("nlohmann_json")
         add_deps("su_core", "su_recognizer")
         add_rpathdirs("/usr/lib/smile2unlock")
         add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
@@ -267,6 +273,7 @@ if is_plat("linux") then
     target("su_control_socket_smoke_test")
         apply_cpp_target("binary")
         add_files("tests/control/*.cpp", "src/modules/su.control.socket.cppm")
+        add_packages("nlohmann_json")
         add_tests("default")
 
     target("su_session_lock_monitor_smoke_test")
@@ -288,10 +295,17 @@ if is_plat("linux") then
         apply_cpp_target("binary")
         add_files("tests/pam/*.cpp", "src/modules/su.control.socket.cppm")
         add_deps("pam_smile2unlock")
+        add_packages("nlohmann_json")
         add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
             os.projectdir(), "build", get_config("plat"), get_config("arch"),
             get_config("mode"), "pam_smile2unlock.so")) .. "\"")
         add_syslinks("pam")
+        add_tests("default")
+
+    target("su_key_provider_test")
+        apply_cpp_target("binary")
+        add_files("tests/storage/*.cpp")
+        add_files("src/modules/su.auth.storage.cppm", "src/modules/su.core.types.cppm")
         add_tests("default")
 
     target("su_pam_acceptance")
@@ -299,6 +313,7 @@ if is_plat("linux") then
         add_files("src/platform/linux/pam_acceptance/*.cpp")
         add_files("src/modules/su.control.socket.cppm")
         add_deps("pam_smile2unlock")
+        add_packages("nlohmann_json")
         add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
             os.projectdir(), "build", get_config("plat"), get_config("arch"),
             get_config("mode"), "pam_smile2unlock.so")) .. "\"")
@@ -306,6 +321,16 @@ if is_plat("linux") then
         add_tests("help", {
             runargs = {"--help"}
         })
+end
+
+if is_plat("windows", "mingw") then
+    target("su_windows_storage")
+        apply_cpp_target("static")
+        set_default(false)
+        set_toolchains("mingw")
+        add_files("src/platform/windows/security/*.cpp")
+        add_headerfiles("src/platform/windows/security/*.h")
+        add_syslinks("ncrypt", "bcrypt", "crypt32", "shell32", "ole32")
 end
 
 target("su_face_auth_smoke_test")

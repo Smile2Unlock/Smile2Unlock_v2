@@ -33,7 +33,8 @@ int main() {
             connection->send_frame(su::control::make_response(
                 7,
                 su::control::ControlResult::kAccepted,
-                "smoke test"))
+                "smoke test",
+                R"({"protection":"host-key"})"))
                 .has_value(),
             std::memory_order_release);
     });
@@ -51,6 +52,14 @@ int main() {
     server.join();
     return result && result->request_id == 7
             && result->result == su::control::ControlResult::kAccepted
+            && result->reason == "smoke test"
+            && result->payload_json == R"({"protection":"host-key"})"
+            && su::control::make_enroll_profile_request(
+                8, "test-user", "Front", "embedding:1,0")
+                .contains(R"("msg_type":"enroll_profile")")
+            && su::control::make_verify_profile_request(
+                9, "test-user", "embedding:1,0", false)
+                .contains(R"("liveness_ok":false)")
             && server_ok.load(std::memory_order_acquire)
         ? 0
         : 1;

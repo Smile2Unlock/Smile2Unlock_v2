@@ -6,7 +6,8 @@ use serde::Serialize;
 use crate::SuStatus;
 use crate::embedding::{cosine_similarity, embedding_from_face_sample};
 use crate::profile::{
-    FaceProfile, PROFILE_ID_CAP, PROFILE_LABEL_CAP, copy_str_to_fixed, load_store,
+    EncryptedProfileContext, FaceProfile, PROFILE_ID_CAP, PROFILE_LABEL_CAP, ProfileStore,
+    copy_str_to_fixed, load_encrypted_store, load_store,
 };
 
 #[repr(C)]
@@ -78,6 +79,27 @@ pub fn authenticate_sample_with_liveness(
     threshold: f32,
     liveness_ok: bool,
 ) -> Result<FaceAuthReport, SuStatus> {
+    let store = load_store(store_path)?;
+    authenticate_store_with_liveness(&store, face_sample_source, threshold, liveness_ok)
+}
+
+pub(crate) fn authenticate_encrypted_sample_with_liveness(
+    store_path: &Path,
+    context: &EncryptedProfileContext<'_>,
+    face_sample_source: &str,
+    threshold: f32,
+    liveness_ok: bool,
+) -> Result<FaceAuthReport, SuStatus> {
+    let store = load_encrypted_store(store_path, context)?;
+    authenticate_store_with_liveness(&store, face_sample_source, threshold, liveness_ok)
+}
+
+fn authenticate_store_with_liveness(
+    store: &ProfileStore,
+    face_sample_source: &str,
+    threshold: f32,
+    liveness_ok: bool,
+) -> Result<FaceAuthReport, SuStatus> {
     if !threshold.is_finite() || threshold <= 0.0 || threshold > 1.0 {
         return Err(SuStatus::InvalidArgument);
     }
@@ -85,7 +107,6 @@ pub fn authenticate_sample_with_liveness(
         return Err(SuStatus::InvalidArgument);
     };
 
-    let store = load_store(store_path)?;
     if store.profiles.is_empty() {
         return Ok(FaceAuthReport {
             accepted: false,

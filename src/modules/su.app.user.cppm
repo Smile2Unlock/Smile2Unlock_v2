@@ -11,6 +11,7 @@ import std;
 export namespace su::app {
 
 std::optional<std::string> username_for_uid(std::uint32_t uid);
+std::uint32_t current_uid();
 std::string current_username(std::string_view fallback);
 
 } // namespace su::app
@@ -45,10 +46,14 @@ std::optional<std::string> username_for_uid(std::uint32_t uid) {
 }
 
 std::string current_username(std::string_view fallback) {
-    if (const auto username = username_for_uid(static_cast<std::uint32_t>(::getuid()))) {
+    if (const auto username = username_for_uid(current_uid())) {
         return *username;
     }
     return std::string(fallback);
+}
+
+std::uint32_t current_uid() {
+    return static_cast<std::uint32_t>(::getuid());
 }
 
 } // namespace su::app

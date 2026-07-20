@@ -42,6 +42,7 @@ public:
         } catch (const std::exception& e) {
             response.set_error(e.what());
         }
+        SecureZeroMemory(payload.data(), payload.size());
     }
 
 private:
@@ -265,8 +266,9 @@ private:
         std::ostringstream ss;
         
         for (const auto& user : users) {
-            ss << user.id << "\t" << user.username << "\t" 
-               << user.encrypted_password << "\t" << user.remark << "\n";
+            // Keep the reserved field empty for compatibility with older GUIs.
+            ss << user.id << "\t" << user.username << "\t\t"
+               << user.remark << "\n";
         }
 
         set_response_text(response, GuiIpcStatus::SUCCESS, ss.str());
@@ -287,6 +289,7 @@ private:
         
         std::string error;
         bool success = backend_->AddUser(username, password, remark, error);
+        SecureZeroMemory(password.data(), password.size());
 
         set_response_text(
             response,
@@ -316,6 +319,7 @@ private:
 
         std::string error;
         bool success = backend_->UpdateUser(user_id, username, password, remark, error);
+        SecureZeroMemory(password.data(), password.size());
 
         set_response_text(
             response,
