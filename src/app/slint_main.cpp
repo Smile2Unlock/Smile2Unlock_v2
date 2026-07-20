@@ -3,6 +3,7 @@
 import std;
 import su.app.controller;
 import su.app.i18n;
+import su.app.user;
 import su.core.types;
 import su.app.preview;
 import su.app.session;
@@ -20,16 +21,6 @@ std::string camera_summary(const su::app::AppSnapshot& snapshot) {
         return snapshot.cameras.front().name;
     }
     return {};
-}
-
-std::string current_username(std::string_view fallback) {
-    if (const auto* username = std::getenv("USER"); username != nullptr && *username != '\0') {
-        return username;
-    }
-    if (const auto* username = std::getenv("LOGNAME"); username != nullptr && *username != '\0') {
-        return username;
-    }
-    return std::string(fallback);
 }
 
 std::string username_initial(std::string_view username) {
@@ -126,6 +117,18 @@ std::filesystem::path executable_directory(const char* argument_zero) {
     return error ? std::filesystem::current_path() : executable.parent_path();
 }
 
+std::filesystem::path language_directory(const std::filesystem::path& executable_dir) {
+    const auto candidates = std::array{
+        executable_dir / "assets" / "i18n",
+        executable_dir / ".." / "share" / "smile2unlock" / "i18n",
+    };
+    const auto found = std::ranges::find_if(candidates, [](const auto& candidate) {
+        auto error = std::error_code{};
+        return std::filesystem::is_directory(candidate, error);
+    });
+    return found == candidates.end() ? candidates.front() : *found;
+}
+
 std::filesystem::path ui_preference_path() {
     if (const auto* config_home = std::getenv("XDG_CONFIG_HOME");
         config_home != nullptr && *config_home != '\0') {
@@ -149,9 +152,9 @@ std::string system_locale() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const auto language_directory = executable_directory(argc > 0 ? argv[0] : "su_app")
-        / "assets" / "i18n";
-    auto loaded_catalog = su::app::LanguageCatalog::load(language_directory);
+    const auto language_path = language_directory(
+        executable_directory(argc > 0 ? argv[0] : "su_app"));
+    auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
     if (!loaded_catalog) {
         std::cerr << "su_app failed to load language packs: " << loaded_catalog.error() << '\n';
         return 1;
@@ -237,7 +240,8 @@ int main(int argc, char** argv) {
         camera_indices.push_back(camera.index);
     }
 
-    const auto username = current_username(catalog->translate(selected_language, "common.current_user"));
+    const auto username = su::app::current_username(
+        catalog->translate(selected_language, "common.current_user"));
     window->set_title_text(slint::SharedString(snapshot->title));
     window->set_username(slint::SharedString(username));
     window->set_username_initial(slint::SharedString(username_initial(username)));
