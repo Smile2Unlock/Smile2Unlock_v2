@@ -1,6 +1,5 @@
 module;
 
-#include <pwd.h>
 #include <cerrno>
 #include <cstdio>
 #include <sys/fsuid.h>
@@ -30,6 +29,7 @@ namespace {
 constexpr auto kAuthenticationTimeout = std::chrono::seconds{6};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
+constexpr auto kAuthenticationRateLimit = std::chrono::seconds{1};
 
 struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
@@ -39,6 +39,7 @@ struct AttemptResult {
 struct UserAuthData {
     su::app::CoreConfig config;
     std::size_t profile_count = 0;
+    su::auth::PinnedUserFile profiles;
 };
 
 std::string_view message_type_name(su::app::ControlMessageType type) {
@@ -67,32 +68,6 @@ std::string log_value(std::string_view value, std::size_t limit = 160) {
     return output;
 }
 
-std::expected<UserPaths, std::string> paths_for_user(std::string_view username) {
-    auto buffer_size = ::sysconf(_SC_GETPW_R_SIZE_MAX);
-    if (buffer_size < 1024) {
-        buffer_size = 16 * 1024;
-    }
-    auto buffer = std::vector<char>(static_cast<std::size_t>(buffer_size));
-    auto entry = passwd{};
-    auto* result = static_cast<passwd*>(nullptr);
-    const auto owned_username = std::string(username);
-    if (::getpwnam_r(
-            owned_username.c_str(),
-            &entry,
-            buffer.data(),
-            buffer.size(),
-            &result) != 0
-        || result == nullptr
-        || entry.pw_dir == nullptr
-        || entry.pw_dir[0] == '\0') {
-        return std::unexpected("unknown PAM user");
-    }
-
-    return su::auth::paths_for_identity(
-        static_cast<std::uint32_t>(entry.pw_uid),
-        std::filesystem::path(entry.pw_dir));
-}
-
 std::optional<std::string_view> peer_authorization_error(
     std::uint32_t peer_uid,
     const su::app::ControlRequest& request) {
@@ -102,7 +77,7 @@ std::optional<std::string_view> peer_authorization_error(
     if (request.type != su::app::ControlMessageType::kAuthenticate) {
         return "user peer may only authenticate";
     }
-    const auto paths = paths_for_user(request.username);
+    const auto paths = su::auth::paths_for_username(request.username);
     if (!paths || !su::auth::peer_request_allowed(peer_uid, request.type, paths->uid)) {
         return "peer identity does not match requested user";
     }
@@ -190,34 +165,42 @@ std::expected<UserAuthData, std::string> load_user_auth_data(const UserPaths& pa
     if (!fsuid.valid()) {
         return std::unexpected("failed to enter user filesystem context");
     }
-    if (!su::auth::secure_user_file(paths.config, paths.uid, false)
-        || !su::auth::secure_user_file(paths.profiles, paths.uid, true)) {
-        return std::unexpected("unsafe, inaccessible, or missing user data");
+    const auto config_file = su::auth::open_user_file(
+        paths, su::auth::UserFileKind::kConfig, false);
+    if (!config_file) {
+        return std::unexpected(config_file.error());
     }
-    const auto config = su::app::load_config(paths.config.string());
+    auto profile_file = su::auth::open_user_file(
+        paths, su::auth::UserFileKind::kProfiles, true);
+    if (!profile_file || !profile_file->has_value()) {
+        return std::unexpected(profile_file
+                ? "unsafe, inaccessible, or missing user data"
+                : profile_file.error());
+    }
+    const auto config = config_file->has_value()
+        ? su::app::load_config(config_file->value().proc_path())
+        : std::expected<su::app::CoreConfig, su::app::CoreError>{su::app::default_config()};
     if (!config) {
         return std::unexpected("failed to load user config");
     }
-    const auto profiles = su::app::list_face_profile_summaries(paths.profiles.string());
+    const auto profiles = su::app::list_face_profile_summaries(
+        profile_file->value().proc_path());
     if (!profiles) {
         return std::unexpected("failed to load face profiles");
     }
-    return UserAuthData{.config = *config, .profile_count = profiles->size()};
+    return UserAuthData{
+        .config = *config,
+        .profile_count = profiles->size(),
+        .profiles = std::move(profile_file->value()),
+    };
 }
 
 std::expected<su::app::FaceAuthReport, std::string> authenticate_user_sample(
-    const UserPaths& paths,
+    const UserAuthData& user_data,
     std::string_view sample,
     float threshold) {
-    const auto fsuid = FsUidGuard{paths.uid};
-    if (!fsuid.valid()) {
-        return std::unexpected("failed to enter user filesystem context");
-    }
-    if (!su::auth::secure_user_file(paths.profiles, paths.uid, true)) {
-        return std::unexpected("unsafe, inaccessible, or missing face profiles");
-    }
     const auto report = su::app::authenticate_face_sample_report(
-        paths.profiles.string(), sample, threshold, true);
+        user_data.profiles.proc_path(), sample, threshold, true);
     if (!report) {
         return std::unexpected("face profile comparison failed");
     }
@@ -240,10 +223,22 @@ public:
             active_request_, cancel_requested_, request_id};
         const auto deadline = std::chrono::steady_clock::now() + kAuthenticationTimeout;
 
-        const auto paths = paths_for_user(username);
+        const auto paths = su::auth::paths_for_username(username);
         if (!paths) {
-            return {su::control::ControlResult::kRejected, paths.error()};
+            const auto result = paths.error() == su::auth::UserLookupError::kUnknown
+                ? su::control::ControlResult::kRejected
+                : su::control::ControlResult::kUnavailable;
+            return {result, std::string(su::auth::user_lookup_error_message(paths.error()))};
         }
+        const auto now = std::chrono::steady_clock::now();
+        const auto last_started = last_auth_started_.contains(paths->uid)
+            ? std::optional{last_auth_started_.at(paths->uid)}
+            : std::nullopt;
+        if (su::auth::authentication_rate_limited(
+                last_started, now, kAuthenticationRateLimit)) {
+            return {su::control::ControlResult::kBusy, "authentication rate limited"};
+        }
+        last_auth_started_[paths->uid] = now;
         const auto user_data = load_user_auth_data(*paths);
         if (!user_data) {
             return {su::control::ControlResult::kUnavailable, user_data.error()};
@@ -291,7 +286,7 @@ public:
             saw_live_face = true;
 
             const auto report = authenticate_user_sample(
-                *paths,
+                *user_data,
                 su::recognizer::embedding_sample_source(capture->feature),
                 config.recognition_threshold);
             if (!report) {
@@ -420,6 +415,8 @@ private:
     std::mutex auth_mutex_;
     std::atomic<std::uint64_t> active_request_{0};
     std::atomic<bool> cancel_requested_{false};
+    std::unordered_map<std::uint32_t, std::chrono::steady_clock::time_point>
+        last_auth_started_;
 };
 
 } // namespace
