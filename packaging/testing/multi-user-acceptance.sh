@@ -126,6 +126,10 @@ expect_biometric_decision() {
     echo "ok: ${label} (exit ${actual})"
 }
 
+wait_for_auth_window() {
+    sleep 1.1
+}
+
 expect_status 3 "new user without profiles is unavailable" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
 expect_status 2 "new user cannot request source user" \
@@ -133,6 +137,8 @@ expect_status 2 "new user cannot request source user" \
 
 install -o "${test_user}" -g "${test_user}" -m 0600 "${source_config}" "${test_config}"
 install -o "${test_user}" -g "${test_user}" -m 0600 "${source_profiles}" "${test_profiles}"
+# Keep each filesystem case outside the daemon's per-user rate window.
+wait_for_auth_window
 expect_biometric_decision "new user reaches biometric decision with its copied enrollment" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
 
@@ -141,27 +147,32 @@ ln -s "${source_profiles}" "${test_profiles}"
 expect_status 3 "profile symlink is rejected" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
 
+wait_for_auth_window
 rm -f "${test_profiles}"
 install -m 0600 "${source_profiles}" "${test_profiles}"
 expect_status 3 "profile owned by the wrong uid is rejected" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
 
+wait_for_auth_window
 chown "${test_user}:${test_user}" "${test_profiles}"
 chmod 0666 "${test_profiles}"
 expect_status 3 "world-writable profile is rejected" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
 
+wait_for_auth_window
 chmod 0600 "${test_profiles}"
 printf '%s\n' '{not-json}' > "${test_profiles}"
 expect_status 3 "corrupt profile is unavailable" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
 
+wait_for_auth_window
 install -o "${test_user}" -g "${test_user}" -m 0600 "${source_profiles}" "${test_profiles}"
 chmod 0000 "${test_home}"
 expect_status 3 "inaccessible home is unavailable" \
     "${acceptance}" --user "${test_user}"
 chmod 0700 "${test_home}"
 
+wait_for_auth_window
 rm -f "${test_profiles}"
 expect_status 3 "removed user's profile is unavailable" \
     as_test_user "${test_acceptance}" --module "${test_module}" --user "${test_user}"
