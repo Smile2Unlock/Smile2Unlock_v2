@@ -83,6 +83,22 @@ Keep an authenticated root shell open while testing the real display manager.
 An accepted result proves the PAM module, socket, daemon, target user's data,
 camera, models, liveness check, and face comparison worked in one request.
 
+To repeat the multi-user isolation matrix, first build the project, keep the
+installed daemon synchronized with that build, and run the root-only harness
+with an existing enrolled desktop user as its data source:
+
+```bash
+sudo SOURCE_USER="$USER" packaging/testing/multi-user-acceptance.sh
+```
+
+The harness creates a PID-suffixed local account, verifies missing data and
+cross-user rejection, copies the source enrollment as test-user-owned data,
+and checks symlink, owner, mode, corruption, inaccessible-home, and removed-file
+failures. It compares the source files' hashes without printing their contents
+and removes the account, home, and private runtime directory on exit. This is a
+daemon/PAM isolation test; enrollment and deletion in a second graphical desktop
+session remain manual checks.
+
 ## Enable a PAM entry point
 
 Add this before the password module in the PAM service that should allow face

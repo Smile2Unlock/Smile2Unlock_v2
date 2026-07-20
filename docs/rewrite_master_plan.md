@@ -4,11 +4,11 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-07-18)
+## Current Status (2026-07-20)
 
 Phase 0, 1, 2 — **全部完成**。Phase 3 — **实现完成、部署验证待完成**（Rust control protocol、root `su_authd`、Unix control socket、PAM client、systemd unit 均已实现并通过构建/自动测试；尚未修改本机 PAM 栈并重启验证真实开机登录）。Phase 4, 5 — 未开始。
 
-已构建 13 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 6 个 C++ 集成/smoke test 均通过）。
+已构建 14 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 7 个 C++ 集成/smoke test 均通过，共 8 个 Xmake test case）。
 
 重写后的第一阶段目标：
 
@@ -648,6 +648,7 @@ Slint 是唯一计划内 GUI。
 - ✅ Rust control protocol — version/msg_type/request_id 校验及 authenticate/status/cancel typed request
 - ✅ control socket smoke test — listener/client/framing/response 自动测试通过
 - ✅ Linux-PAM 集成测试 — 通过 `pam_start_confdir` 加载真实模块，覆盖 accepted/rejected/unavailable 和 request ID 不匹配
+- ✅ Linux 多用户隔离测试 — 策略测试和一次性本地账户系统验收覆盖 peer uid、独立 home、权限、符号链接、损坏档案和不可访问 home
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
 ### Phase 4: Windows compatibility ❌ 未开始

@@ -8,12 +8,12 @@
 
 本计划是 `docs/rewrite_master_plan.md` 中 Linux Phase 3 的后续落地计划。Windows compatibility、可选 SIMD / Zig 扩展和 DMS Monet 配色分别保留在原计划及 `docs/dms_monet_theme_plan.md` 中，不阻塞 Linux 第一版跑通。
 
-## Current Status (2026-07-19)
+## Current Status (2026-07-20)
 
-Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入和摄像头协调已实现但真实锁屏仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5、6、7 尚未开始。
+Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入和摄像头协调已实现但真实锁屏仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5 的 daemon 多用户隔离和临时账户系统验收已完成，第二个图形会话中的 GUI 操作仍待现场验证；Phase 6、7 尚未开始。
 
 - `xmake build` 已通过。
-- 7 个 Xmake test case 和 33 个 Rust unit test 已通过。
+- 8 个 Xmake test case 和 33 个 Rust unit test 已通过。
 - 临时 PAM 验收入口已覆盖真实 accepted、rejected 和 unavailable 结果，未修改 `/etc/pam.d`。
 - accepted 请求已贯通 PAM module、root socket、已安装 daemon、目标用户档案、V4L2、SeetaFace、活体检测和特征比对。
 - Release 与已安装的 daemon / PAM module 哈希一致。
@@ -211,6 +211,14 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 - 缺少配置或档案的账户安全回退密码。
 - 不支持的 home 类型给出可诊断的 unavailable 结果，不会导致 daemon 或其他用户认证异常。
 
+### Result (2026-07-20)
+
+- 新增独立策略测试，覆盖 root / 本人 / 跨 uid 请求授权、每用户路径隔离、缺失文件、符号链接、错误所有者、目录和组 / 全局可写文件。
+- 使用一次性本地账户完成真实 PAM / daemon 系统验收：无档案安全回退、跨用户请求被拒绝，复制为该账户所有的档案后能够进入生物识别判定。
+- 符号链接、错误所有者、全局可写、损坏和删除后的 profile，以及不可访问的 home 均返回 unavailable；源用户配置和档案哈希保持不变。
+- 系统测试发现并修复了 user file 检查发生在 root filesystem context 的问题；当前路径检查和文件读取均在目标用户 `fsuid` 下执行。
+- 一次性账户、home 和 runtime 目录已由脚本清理并复核不存在。第二个用户的图形会话、GUI 录入 / 删除和真实 DMS 锁屏仍需人工验收。
+
 ## Phase 6: Security And Reliability Hardening
 
 - 为认证请求增加合理的频率限制和连续失败策略，同时避免与发行版 `pam_faillock` 产生不可预测的双重锁定。
@@ -283,4 +291,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 仍需在合适时间注销和重启验证。DMS `lockPamPath`、普通用户 PAM 验收和摄像头协调代码已经完成；下一步进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 释放测试。之后执行 Phase 5 的双用户路径 / 权限自动测试，再处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用。
+P2 仍需在合适时间注销和重启验证。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调和 Phase 5 的多用户路径 / 权限系统测试已经完成；下一步进行真实锁屏的人脸成功、密码回退、daemon 不可用和 GUI preview 释放测试，并在第二个图形会话中验证 GUI 录入 / 删除。之后处理 Phase 6 的 profile 读取竞态、认证频率限制和运行时资源占用。
