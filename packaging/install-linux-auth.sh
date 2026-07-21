@@ -86,7 +86,8 @@ install -m 0644 "${project_dir}/packaging/systemd/su-authd.service" \
 if [[ -z "${destination_root}" ]]; then
     "${project_dir}/packaging/setup-storage-key.sh"
     systemctl daemon-reload
-    systemctl enable --now su-authd.service
+    systemctl enable su-authd.service
+    systemctl restart su-authd.service
     echo "su-authd installed and started. Add pam_smile2unlock.so to the desired PAM stack."
 else
     echo "su-authd staged under ${destination_root}."
