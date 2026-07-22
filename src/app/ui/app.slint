@@ -1,5 +1,38 @@
 import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
 
+global UiTheme {
+    out property <color> canvas: #f3f6f5;
+    out property <color> surface: #ffffff;
+    out property <color> surface-subtle: #edf3f1;
+    out property <color> surface-selected: #dcece7;
+    out property <color> border: #d6dfdc;
+    out property <color> divider: #e2e8e6;
+
+    out property <color> text-primary: #182d27;
+    out property <color> text-secondary: #65746f;
+    out property <color> text-tertiary: #75827e;
+
+    out property <color> primary: #155447;
+    out property <color> primary-hover: #1c6655;
+    out property <color> primary-pressed: #0e3a30;
+    out property <color> on-primary: #ffffff;
+
+    out property <color> success-surface: #d8eee5;
+    out property <color> success-text: #165c46;
+    out property <color> warning-surface: #f5e7c5;
+    out property <color> warning-text: #775514;
+    out property <color> danger-surface: #f5dcdc;
+    out property <color> danger-hover: #fff1f1;
+    out property <color> danger-text: #983535;
+    out property <color> disabled-surface: #e8edeb;
+    out property <color> disabled-text: #8b9894;
+
+    out property <color> preview-surface: #101816;
+    out property <color> preview-overlay: #15201ecc;
+    out property <color> preview-text: #e8f6f1;
+    out property <color> face-indicator: #4dd3a7;
+}
+
 export struct ProfileRow {
     id: string,
     label: string,
@@ -13,14 +46,14 @@ component NavButton inherits Rectangle {
 
     height: 44px;
     border-radius: 6px;
-    background: selected ? #dcece7 : nav-touch.has-hover ? #edf3f1 : transparent;
+    background: selected ? UiTheme.surface-selected : nav-touch.has-hover ? UiTheme.surface-subtle : transparent;
 
     Text {
         x: 14px;
         width: parent.width - 28px;
         height: parent.height;
         text: root.label;
-        color: root.selected ? #123e34 : #40534e;
+        color: root.selected ? UiTheme.primary : UiTheme.text-secondary;
         font-size: 14px;
         font-weight: root.selected ? 700 : 500;
         vertical-alignment: center;
@@ -42,20 +75,20 @@ component ActionButton inherits Rectangle {
     min-width: 104px;
     border-radius: 6px;
     border-width: primary ? 0px : 1px;
-    border-color: danger ? #d9a4a4 : #b9c8c3;
-    background: !enabled ? #e9eeec
-        : primary ? (button-touch.pressed ? #0e3a30 : button-touch.has-hover ? #1c594a : #164b3f)
-        : danger ? (button-touch.has-hover ? #fff1f1 : #fff8f8)
-        : button-touch.has-hover ? #edf3f1 : #ffffff;
+    border-color: danger ? UiTheme.danger-surface : UiTheme.border;
+    background: !enabled ? UiTheme.disabled-surface
+        : primary ? (button-touch.pressed ? UiTheme.primary-pressed : button-touch.has-hover ? UiTheme.primary-hover : UiTheme.primary)
+        : danger ? (button-touch.has-hover ? UiTheme.danger-hover : UiTheme.surface)
+        : button-touch.has-hover ? UiTheme.surface-subtle : UiTheme.surface;
 
     Text {
         width: parent.width;
         height: parent.height;
         text: root.label;
-        color: !root.enabled ? #8b9894
-            : root.primary ? #ffffff
-            : root.danger ? #a53333
-            : #243b35;
+        color: !root.enabled ? UiTheme.disabled-text
+            : root.primary ? UiTheme.on-primary
+            : root.danger ? UiTheme.danger-text
+            : UiTheme.text-primary;
         font-size: 14px;
         font-weight: 600;
         horizontal-alignment: center;
@@ -74,20 +107,20 @@ component StatusPill inherits Rectangle {
 
     height: 26px;
     border-radius: 13px;
-    background: tone == "good" ? #d8eee5
-        : tone == "warn" ? #f5e7c5
-        : tone == "bad" ? #f5dcdc
-        : #e8eeec;
+    background: tone == "good" ? UiTheme.success-surface
+        : tone == "warn" ? UiTheme.warning-surface
+        : tone == "bad" ? UiTheme.danger-surface
+        : UiTheme.disabled-surface;
 
     Text {
         x: 11px;
         width: parent.width - 22px;
         height: parent.height;
         text: root.label;
-        color: root.tone == "good" ? #165c46
-            : root.tone == "warn" ? #775514
-            : root.tone == "bad" ? #983535
-            : #52635e;
+        color: root.tone == "good" ? UiTheme.success-text
+            : root.tone == "warn" ? UiTheme.warning-text
+            : root.tone == "bad" ? UiTheme.danger-text
+            : UiTheme.text-secondary;
         font-size: 12px;
         font-weight: 600;
         horizontal-alignment: center;
@@ -128,19 +161,19 @@ component MetricBlock inherits Rectangle {
     in property <string> value;
     in property <string> detail;
 
-    height: 104px;
+    height: 100px;
     border-radius: 6px;
     border-width: 1px;
-    border-color: #d7dfdc;
-    background: #ffffff;
+    border-color: UiTheme.border;
+    background: UiTheme.surface;
 
     VerticalLayout {
         padding: 15px;
         spacing: 5px;
 
-        Text { text: root.label; color: #64736f; font-size: 12px; }
-        Text { text: root.value; color: #162b25; font-size: 22px; font-weight: 700; }
-        Text { text: root.detail; color: #73817d; font-size: 12px; overflow: elide; }
+        Text { text: root.label; color: UiTheme.text-secondary; font-size: 12px; }
+        Text { text: root.value; color: UiTheme.text-primary; font-size: 20px; font-weight: 700; }
+        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
     }
 }
 
@@ -153,9 +186,20 @@ component SectionTitle inherits HorizontalLayout {
 
     VerticalLayout {
         spacing: 3px;
-        Text { text: root.title; color: #182d27; font-size: 16px; font-weight: 700; }
-        Text { text: root.detail; color: #71807c; font-size: 12px; overflow: elide; }
+        Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; }
+        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
     }
+}
+
+component PageHeader inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+
+    height: 58px;
+    spacing: 5px;
+
+    Text { text: root.title; color: UiTheme.text-primary; font-size: 25px; font-weight: 800; }
+    Text { text: root.detail; color: UiTheme.text-secondary; font-size: 13px; overflow: elide; }
 }
 
 export component AppWindow inherits Window {
@@ -212,21 +256,25 @@ export component AppWindow inherits Window {
     init => { Palette.color-scheme = ColorScheme.light; }
 
     title: title_text;
-    width: 1180px;
-    height: 760px;
-    background: #f4f7f6;
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 920px;
+    min-height: 640px;
+    background: UiTheme.canvas;
+
+    private property <length> page-padding: 28px;
 
     HorizontalLayout {
         spacing: 0px;
 
         Rectangle {
-            width: 232px;
-            background: #ffffff;
+            width: 216px;
+            background: UiTheme.surface;
             border-width: 0px;
 
             VerticalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
+                padding-left: 16px;
+                padding-right: 16px;
                 padding-top: 24px;
                 padding-bottom: 20px;
                 spacing: 8px;
@@ -234,8 +282,8 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     height: 72px;
                     spacing: 4px;
-                    Text { text: "Smile2Unlock"; color: #123e34; font-size: 19px; font-weight: 800; }
-                    Text { text: root.translate("app.subtitle", root.language_index); color: #74827e; font-size: 12px; }
+                    Text { text: "Smile2Unlock"; color: UiTheme.primary; font-size: 19px; font-weight: 800; }
+                    Text { text: root.translate("app.subtitle", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
                 }
 
                 NavButton {
@@ -264,17 +312,17 @@ export component AppWindow inherits Window {
                 Rectangle {
                     height: 66px;
                     border-radius: 6px;
-                    background: #eef4f2;
+                    background: UiTheme.surface-subtle;
 
                     VerticalLayout {
                         padding: 12px;
                         spacing: 3px;
-                        Text { text: root.username; color: #18352d; font-size: 14px; font-weight: 700; overflow: elide; }
+                        Text { text: root.username; color: UiTheme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
                         Text {
                             text: root.profiles.length == 0
                                 ? root.translate("account.enrollment_required", root.language_index)
                                 : root.translate("account.enabled", root.language_index);
-                            color: root.profiles.length == 0 ? #8b651b : #32715e;
+                            color: root.profiles.length == 0 ? UiTheme.warning-text : UiTheme.success-text;
                             font-size: 11px;
                         }
                     }
@@ -285,36 +333,30 @@ export component AppWindow inherits Window {
                 x: parent.width - 1px;
                 width: 1px;
                 height: parent.height;
-                background: #dce3e1;
+                background: UiTheme.border;
             }
         }
 
         Rectangle {
             horizontal-stretch: 1;
-            background: #f4f7f6;
+            background: UiTheme.canvas;
 
             if root.current_page == 0: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 636px;
+                viewport-height: 614px;
 
                 overview-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.overview", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text {
-                            text: root.translate_value("overview.status_for", root.language_index, root.username);
-                            color: #6e7d78;
-                            font-size: 13px;
-                        }
+                    PageHeader {
+                        title: root.translate("nav.overview", root.language_index);
+                        detail: root.translate_value("overview.status_for", root.language_index, root.username);
                     }
 
                     HorizontalLayout {
-                        height: 104px;
+                        height: 100px;
                         spacing: 12px;
                         MetricBlock {
                             horizontal-stretch: 1;
@@ -352,8 +394,8 @@ export component AppWindow inherits Window {
                         height: 196px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
 
                         VerticalLayout {
                             padding-left: 20px;
@@ -373,12 +415,12 @@ export component AppWindow inherits Window {
                                     width: 52px;
                                     height: 52px;
                                     border-radius: 6px;
-                                    background: #dcece7;
+                                    background: UiTheme.surface-selected;
                                     Text {
                                         width: parent.width;
                                         height: parent.height;
                                         text: root.username_initial;
-                                        color: #174b3f;
+                                        color: UiTheme.primary;
                                         font-size: 22px;
                                         font-weight: 800;
                                         horizontal-alignment: center;
@@ -388,12 +430,12 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 4px;
-                                    Text { text: root.username; color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text { text: root.username; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
                                     Text {
                                         text: root.profiles.length == 0
                                             ? root.translate("account.no_samples", root.language_index)
                                             : root.translate_value("account.sample_count", root.language_index, root.profiles.length);
-                                        color: #697873;
+                                        color: UiTheme.text-secondary;
                                         font-size: 13px;
                                     }
                                 }
@@ -414,13 +456,13 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
 
                             HorizontalLayout {
                                 height: 26px;
                                 spacing: 12px;
-                                Text { text: root.translate("overview.last_check", root.language_index); color: #65746f; font-size: 12px; vertical-alignment: center; }
-                                Text { text: root.activity_title; color: #243a34; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                Text { text: root.translate("overview.last_check", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                Text { text: root.activity_title; color: UiTheme.text-primary; font-size: 13px; font-weight: 600; vertical-alignment: center; overflow: elide; }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                                 StatusPill {
                                     width: 92px;
@@ -441,8 +483,8 @@ export component AppWindow inherits Window {
                         height: 144px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
 
                         HorizontalLayout {
                             padding: 20px;
@@ -453,12 +495,12 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 50px;
                                     spacing: 7px;
-                                    Text { text: root.translate("overview.verify_account", root.language_index); color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text { text: root.translate("overview.verify_account", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; }
                                     Text {
                                         text: root.activity_detail == ""
                                             ? root.translate("overview.verify_hint", root.language_index)
                                             : root.activity_detail;
-                                        color: #6c7b76;
+                                        color: UiTheme.text-secondary;
                                         font-size: 13px;
                                         wrap: word-wrap;
                                     }
@@ -482,33 +524,27 @@ export component AppWindow inherits Window {
             if root.current_page == 1: ScrollView {
                 viewport-width: self.width;
                 viewport-height: root.profiles.length == 0
-                    ? 692px
-                    : 578px + root.profiles.length * 86px;
+                    ? 674px
+                    : 560px + root.profiles.length * 82px;
 
                 enrollment-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.enrollment", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text {
-                            text: root.translate_value("enrollment.manage_for", root.language_index, root.username);
-                            color: #6e7d78;
-                            font-size: 13px;
-                        }
+                    PageHeader {
+                        title: root.translate("nav.enrollment", root.language_index);
+                        detail: root.translate_value("enrollment.manage_for", root.language_index, root.username);
                     }
 
                     HorizontalLayout {
-                        height: 360px;
-                        spacing: 20px;
+                        height: 352px;
+                        spacing: 18px;
 
                         preview-frame := Rectangle {
                             horizontal-stretch: 1;
                             border-radius: 6px;
-                            background: #101816;
+                            background: UiTheme.preview-surface;
                             clip: true;
                             property <length> fitted_width: root.preview_source_width > 0 && root.preview_source_height > 0
                                 ? Math.min(self.width, self.height * root.preview_source_width / root.preview_source_height)
@@ -534,23 +570,23 @@ export component AppWindow inherits Window {
                                 width: root.face_box_w * preview-frame.source_scale * 1px;
                                 height: root.face_box_h * preview-frame.source_scale * 1px;
                                 visible: root.face_box_visible;
-                                border-color: #4dd3a7;
+                                border-color: UiTheme.face-indicator;
                                 border-width: 2px;
                                 background: transparent;
                             }
                             Rectangle {
                                 x: 14px;
                                 y: parent.height - 42px;
-                                width: 180px;
+                                width: Math.min(220px, parent.width - 28px);
                                 height: 28px;
                                 border-radius: 4px;
-                                background: #15201ecc;
+                                background: UiTheme.preview-overlay;
                                 Text {
                                     x: 10px;
                                     width: parent.width - 20px;
                                     height: parent.height;
                                     text: root.preview_status_text;
-                                    color: #e8f6f1;
+                                    color: UiTheme.preview-text;
                                     font-size: 12px;
                                     vertical-alignment: center;
                                     overflow: elide;
@@ -559,11 +595,11 @@ export component AppWindow inherits Window {
                         }
 
                         Rectangle {
-                            width: 300px;
+                            width: 284px;
                             border-radius: 6px;
                             border-width: 1px;
-                            border-color: #d7dfdc;
-                            background: #ffffff;
+                            border-color: UiTheme.border;
+                            background: UiTheme.surface;
 
                             VerticalLayout {
                                 padding: 20px;
@@ -576,11 +612,11 @@ export component AppWindow inherits Window {
                                             ? root.camera_text
                                             : root.translate_value("camera.count", root.language_index, root.camera_count);
                                 }
-                                Text { text: root.translate("enrollment.sample_name", root.language_index); color: #53635e; font-size: 12px; font-weight: 600; }
+                                Text { text: root.translate("enrollment.sample_name", root.language_index); color: UiTheme.text-secondary; font-size: 12px; font-weight: 600; }
                                 LineEdit { text <=> root.enroll_label_text; enabled: !root.busy; }
                                 HorizontalLayout {
                                     spacing: 8px;
-                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy; activated => { root.start_preview_requested(); } }
+                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy && root.camera_count > 0; activated => { root.start_preview_requested(); } }
                                     ActionButton { horizontal-stretch: 1; label: root.translate("action.stop", root.language_index); enabled: !root.busy; activated => { root.stop_preview_requested(); } }
                                 }
                                 ActionButton {
@@ -588,11 +624,11 @@ export component AppWindow inherits Window {
                                         ? root.translate("status.capturing", root.language_index)
                                         : root.translate("action.capture_sample", root.language_index);
                                     primary: true;
-                                    enabled: !root.busy && root.seetaface_available;
+                                    enabled: !root.busy && root.seetaface_available && root.control_socket_present && root.camera_count > 0;
                                     activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
-                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? #a23c3c : #64736f; font-size: 12px; wrap: word-wrap; }
+                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? UiTheme.danger-text : UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; max-height: 42px; }
                             }
                         }
                     }
@@ -608,17 +644,17 @@ export component AppWindow inherits Window {
                         height: 92px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
-                        Text { width: parent.width; height: parent.height; text: root.translate("enrollment.empty", root.language_index); color: #77847f; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        Text { width: parent.width; height: parent.height; text: root.translate("enrollment.empty", root.language_index); color: UiTheme.text-tertiary; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     for profile in root.profiles: Rectangle {
                         height: 64px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
 
                         HorizontalLayout {
                             padding-left: 16px;
@@ -627,7 +663,7 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 width: 8px;
                                 Rectangle { vertical-stretch: 1; background: transparent; }
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3a9d7c; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: UiTheme.success-text; }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
                             VerticalLayout {
@@ -636,8 +672,8 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 37px;
                                     spacing: 3px;
-                                    Text { text: profile.label; color: #203730; font-size: 14px; font-weight: 700; overflow: elide; }
-                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: #75827e; font-size: 11px; }
+                                    Text { text: profile.label; color: UiTheme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
+                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: UiTheme.text-tertiary; font-size: 11px; }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
@@ -655,26 +691,24 @@ export component AppWindow inherits Window {
 
             if root.current_page == 2: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 710px;
+                viewport-height: 692px;
 
                 settings-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.settings", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text { text: root.translate("settings.subtitle", root.language_index); color: #6e7d78; font-size: 13px; }
+                    PageHeader {
+                        title: root.translate("nav.settings", root.language_index);
+                        detail: root.translate("settings.subtitle", root.language_index);
                     }
 
                     Rectangle {
                         height: 214px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
                             spacing: 12px;
@@ -685,13 +719,13 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 12px;
                                 ComboBox { horizontal-stretch: 1; model: root.camera_options; current-index <=> root.selected_camera; }
-                                Text { width: 90px; text: root.translate("settings.preview_fps", root.language_index); color: #53635e; font-size: 12px; vertical-alignment: center; }
+                                Text { width: 84px; text: root.translate("settings.preview_fps", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
                                 SpinBox { width: 100px; minimum: 1; maximum: 60; value <=> root.preview_fps; }
                             }
-                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                Text { width: 90px; text: root.translate("settings.language", root.language_index); color: #53635e; font-size: 12px; vertical-alignment: center; }
+                                Text { width: 84px; text: root.translate("settings.language", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
                                 ComboBox {
                                     horizontal-stretch: 1;
                                     model: root.language_names;
@@ -711,8 +745,8 @@ export component AppWindow inherits Window {
                         height: 260px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
                             spacing: 14px;
@@ -725,12 +759,12 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 6px;
-                                    Text { text: root.translate("settings.recognition_threshold", root.language_index); color: #30463f; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.recognition_threshold", root.language_index); color: UiTheme.text-primary; font-size: 13px; font-weight: 600; }
                                     Slider { minimum: 0.35; maximum: 0.95; value <=> root.recognition_threshold; }
                                 }
                                 StatusPill { width: 70px; label: Math.round(root.recognition_threshold * 100) + "%"; tone: root.recognition_threshold < 0.5 ? "warn" : "neutral"; }
                             }
-                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
                             Switch {
                                 text: root.translate("settings.liveness_enabled", root.language_index);
                                 checked <=> root.liveness_enabled;
@@ -741,7 +775,7 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 6px;
-                                    Text { text: root.translate("settings.liveness_threshold", root.language_index); color: #30463f; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.liveness_threshold", root.language_index); color: root.liveness_enabled ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
                                     Slider { enabled: root.liveness_enabled; minimum: 0.2; maximum: 0.95; value <=> root.liveness_threshold; }
                                 }
                                 StatusPill { width: 70px; label: Math.round(root.liveness_threshold * 100) + "%"; tone: "neutral"; }
@@ -752,7 +786,7 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         height: 44px;
                         spacing: 12px;
-                        Text { text: root.settings_status; color: #63726d; font-size: 12px; vertical-alignment: center; }
+                        Text { text: root.settings_status; color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
                         Rectangle { horizontal-stretch: 1; background: transparent; }
                         ActionButton {
                             width: 128px;
@@ -774,64 +808,62 @@ export component AppWindow inherits Window {
 
             if root.current_page == 3: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 678px;
+                viewport-height: 660px;
 
                 diagnostics-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.diagnostics", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text { text: root.translate("diagnostics.subtitle", root.language_index); color: #6e7d78; font-size: 13px; }
+                    PageHeader {
+                        title: root.translate("nav.diagnostics", root.language_index);
+                        detail: root.translate("diagnostics.subtitle", root.language_index);
                     }
 
                     Rectangle {
                         height: 192px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
                             spacing: 14px;
                             SectionTitle { title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
                             HorizontalLayout {
                                 height: 20px;
-                                Text { width: 180px; text: root.translate("diagnostics.auth_service", root.language_index); color: #65746f; font-size: 13px; }
+                                Text { width: 164px; text: root.translate("diagnostics.auth_service", root.language_index); color: UiTheme.text-secondary; font-size: 13px; }
                                 Text {
                                     text: root.control_socket_present
                                         ? root.translate("diagnostics.socket_available", root.language_index)
                                         : root.translate("diagnostics.socket_unavailable", root.language_index);
-                                    color: root.control_socket_present ? #277159 : #a13b3b;
+                                    color: root.control_socket_present ? UiTheme.success-text : UiTheme.danger-text;
                                     font-size: 13px;
                                     font-weight: 600;
                                 }
                             }
                             HorizontalLayout {
                                 height: 20px;
-                                Text { width: 180px; text: root.translate("diagnostics.recognizer", root.language_index); color: #65746f; font-size: 13px; }
+                                Text { width: 164px; text: root.translate("diagnostics.recognizer", root.language_index); color: UiTheme.text-secondary; font-size: 13px; }
                                 Text {
                                     text: root.seetaface_available
                                         ? root.translate("status.available", root.language_index)
                                         : root.translate("status.unavailable", root.language_index);
-                                    color: root.seetaface_available ? #277159 : #a13b3b;
+                                    color: root.seetaface_available ? UiTheme.success-text : UiTheme.danger-text;
                                     font-size: 13px;
                                     font-weight: 600;
                                 }
                             }
                             HorizontalLayout {
                                 height: 20px;
-                                Text { width: 180px; text: root.translate("settings.camera", root.language_index); color: #65746f; font-size: 13px; }
+                                Text { width: 164px; text: root.translate("settings.camera", root.language_index); color: UiTheme.text-secondary; font-size: 13px; }
                                 Text {
                                     text: root.camera_count == 0
                                         ? root.translate("camera.none", root.language_index)
                                         : root.camera_count == 1
                                             ? root.camera_text
                                             : root.translate_value("camera.count", root.language_index, root.camera_count);
-                                    color: #263c36;
+                                    color: UiTheme.text-primary;
                                     font-size: 13px;
                                     overflow: elide;
                                 }
@@ -843,8 +875,8 @@ export component AppWindow inherits Window {
                         height: 226px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding-left: 20px;
                             padding-right: 20px;
@@ -855,20 +887,24 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 height: 36px;
                                 spacing: 3px;
-                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
-                                Text { text: root.config_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
+                                Text { text: root.config_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
                             }
                             VerticalLayout {
                                 height: 36px;
                                 spacing: 3px;
-                                Text { text: root.translate("overview.face_samples", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
-                                Text { text: root.profile_store_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                                Text { text: root.translate("overview.face_samples", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
+                                Text { text: root.profile_store_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
                             }
-                            ActionButton {
-                                width: 176px;
-                                label: root.translate("action.import_legacy", root.language_index);
-                                enabled: root.control_socket_present && !root.busy;
-                                activated => { root.migrate_profiles_requested(); }
+                            HorizontalLayout {
+                                height: 40px;
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                                ActionButton {
+                                    width: 176px;
+                                    label: root.translate("action.import_legacy", root.language_index);
+                                    enabled: root.control_socket_present && !root.busy;
+                                    activated => { root.migrate_profiles_requested(); }
+                                }
                             }
                         }
                     }
@@ -877,8 +913,8 @@ export component AppWindow inherits Window {
                         height: 118px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         HorizontalLayout {
                             padding: 20px;
                             spacing: 16px;
@@ -888,8 +924,8 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 44px;
                                     spacing: 6px;
-                                    Text { text: root.translate("diagnostics.auth_check", root.language_index); color: #203730; font-size: 15px; font-weight: 700; }
-                                    Text { text: root.activity_title; color: #6d7b77; font-size: 12px; overflow: elide; }
+                                    Text { text: root.translate("diagnostics.auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
+                                    Text { text: root.activity_title; color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
@@ -899,7 +935,7 @@ export component AppWindow inherits Window {
                                     ? root.translate("status.checking", root.language_index)
                                     : root.translate("action.run_check", root.language_index);
                                 primary: true;
-                                enabled: !root.busy && root.profiles.length > 0;
+                                enabled: !root.busy && root.profiles.length > 0 && root.control_socket_present && root.seetaface_available && root.camera_count > 0;
                                 activated => { root.current_frame_auth_requested(); }
                             }
                         }
