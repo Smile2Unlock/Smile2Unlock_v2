@@ -16,6 +16,8 @@ using ProfileModel = slint::VectorModel<ui::ProfileRow>;
 using WindowHandle = slint::ComponentHandle<ui::AppWindow>;
 using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
 
+constexpr std::string_view xdg_app_id = "smile2unlock";
+
 std::string camera_summary(const su::app::AppSnapshot& snapshot) {
     if (snapshot.cameras.size() == 1) {
         return snapshot.cameras.front().name;
@@ -152,6 +154,7 @@ std::string system_locale() {
 }  // namespace
 
 int main(int argc, char** argv) {
+    slint::set_xdg_app_id(xdg_app_id);
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
