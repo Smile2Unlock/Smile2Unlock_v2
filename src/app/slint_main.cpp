@@ -7,6 +7,7 @@ import su.app.user;
 import su.core.types;
 import su.app.preview;
 import su.app.session;
+import su.app.theme;
 
 namespace {
 
@@ -23,6 +24,47 @@ std::string camera_summary(const su::app::AppSnapshot& snapshot) {
         return snapshot.cameras.front().name;
     }
     return {};
+}
+
+slint::Color slint_color(su::app::ThemeColor color) {
+    return slint::Color::from_argb_uint8(color.alpha, color.red, color.green, color.blue);
+}
+
+void apply_theme(const WindowHandle& window, const su::app::AppTheme& snapshot) {
+    const auto& theme = window->global<ui::UiTheme>();
+    theme.set_canvas(slint_color(snapshot.canvas));
+    theme.set_surface(slint_color(snapshot.surface));
+    theme.set_surface_subtle(slint_color(snapshot.surface_subtle));
+    theme.set_surface_selected(slint_color(snapshot.surface_selected));
+    theme.set_border(slint_color(snapshot.border));
+    theme.set_divider(slint_color(snapshot.divider));
+    theme.set_text_primary(slint_color(snapshot.text_primary));
+    theme.set_text_secondary(slint_color(snapshot.text_secondary));
+    theme.set_text_tertiary(slint_color(snapshot.text_tertiary));
+    theme.set_primary(slint_color(snapshot.primary));
+    theme.set_primary_hover(slint_color(snapshot.primary_hover));
+    theme.set_primary_pressed(slint_color(snapshot.primary_pressed));
+    theme.set_on_primary(slint_color(snapshot.on_primary));
+    theme.set_success_surface(slint_color(snapshot.success_surface));
+    theme.set_success_text(slint_color(snapshot.success_text));
+    theme.set_warning_surface(slint_color(snapshot.warning_surface));
+    theme.set_warning_text(slint_color(snapshot.warning_text));
+    theme.set_danger_surface(slint_color(snapshot.danger_surface));
+    theme.set_danger_hover(slint_color(snapshot.danger_hover));
+    theme.set_danger_text(slint_color(snapshot.danger_text));
+    theme.set_disabled_surface(slint_color(snapshot.disabled_surface));
+    theme.set_disabled_text(slint_color(snapshot.disabled_text));
+    theme.set_preview_surface(slint_color(snapshot.preview_surface));
+    theme.set_preview_overlay(slint_color(snapshot.preview_overlay));
+    theme.set_preview_text(slint_color(snapshot.preview_text));
+    theme.set_face_indicator(slint_color(snapshot.face_indicator));
+    theme.set_dark_mode(snapshot.mode == su::app::ThemeMode::dark);
+}
+
+void log_theme_diagnostics(const std::vector<std::string>& diagnostics) {
+    for (const auto& diagnostic : diagnostics) {
+        std::println(stderr, "[theme] {}", diagnostic);
+    }
 }
 
 std::string username_initial(std::string_view username) {
@@ -155,6 +197,10 @@ std::string system_locale() {
 
 int main(int argc, char** argv) {
     slint::set_xdg_app_id(xdg_app_id);
+    const auto theme_paths = su::app::default_theme_paths();
+    const auto theme_commands = su::app::system_theme_command_runner();
+    auto initial_theme = su::app::load_desktop_theme(theme_paths, theme_commands);
+    log_theme_diagnostics(initial_theme.diagnostics);
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
@@ -182,7 +228,21 @@ int main(int argc, char** argv) {
     }
 
     auto window = ui::AppWindow::create();
+    apply_theme(window, initial_theme.snapshot.theme);
     const WeakWindowHandle weak_window(window);
+    const auto theme_monitor = std::make_unique<su::app::ThemeMonitor>(
+        theme_paths,
+        theme_commands,
+        initial_theme.snapshot,
+        [weak_window](su::app::ThemeLoadResult loaded) {
+            log_theme_diagnostics(loaded.diagnostics);
+            slint::invoke_from_event_loop(
+                [weak_window, snapshot = std::move(loaded.snapshot)] {
+                    if (const auto window = weak_window.lock()) {
+                        apply_theme(*window, snapshot.theme);
+                    }
+                });
+        });
     const auto profiles = std::make_shared<ProfileModel>(profile_rows(snapshot->profiles));
     const auto session_lock_monitor = std::make_unique<su::app::SessionLockMonitor>(
         [weak_window, controller, preview, catalog] {

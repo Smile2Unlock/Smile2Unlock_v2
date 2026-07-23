@@ -201,6 +201,7 @@ target("su_app")
         add_files("src/modules/su.app.preview.cppm")
         add_files("src/modules/su.app.session.cppm")
         add_files("src/modules/su.app.i18n.cppm")
+        add_files("src/modules/su.app.theme.cppm")
         if is_plat("linux") then
             add_syslinks("systemd")
         end
@@ -343,6 +344,12 @@ target("su_face_auth_smoke_test")
     add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
+    add_tests("default")
+
+target("su_theme_test")
+    apply_cpp_target("binary")
+    add_files("tests/theme/*.cpp", "src/modules/su.app.theme.cppm")
+    add_packages("nlohmann_json")
     add_tests("default")
 
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
