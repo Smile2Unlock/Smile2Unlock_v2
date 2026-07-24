@@ -160,9 +160,10 @@ therefore continues to DMS password authentication.
 Keep DMS's `loginctlLockIntegration` enabled (its default). The desktop app
 listens to the current logind session's standard `Lock` signal, stops preview or
 an in-progress capture, and releases V4L2 before lock-screen authentication.
-The daemon also retries camera acquisition for up to 1.2 seconds within its
-six-second authentication budget. Preview remains stopped after unlock until
-the user explicitly starts it again.
+The daemon also retries camera acquisition for up to 1.2 seconds. Authentication
+uses a six-second budget normally and a twelve-second budget when liveness
+detection is enabled. Preview remains stopped after unlock until the user
+explicitly starts it again.
 
 Before removing the PAM service, reset DMS to its automatically resolved stack
 as the desktop user, then remove the file as root:

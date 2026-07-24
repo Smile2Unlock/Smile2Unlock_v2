@@ -26,9 +26,10 @@ namespace su::auth {
 
 namespace {
 
-// DMS abandons a stalled unlock request after eight seconds. Leave enough
-// time for the face result to return and its password stack to take over.
 constexpr auto kAuthenticationTimeout = std::chrono::seconds{6};
+// Liveness needs a sequence of frames; keep its budget below the socket's
+// 15-second deadline so PAM still has time to receive the result.
+constexpr auto kLivenessAuthenticationTimeout = std::chrono::seconds{12};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
 constexpr auto kAuthenticationRateLimit = std::chrono::seconds{1};
@@ -252,7 +253,6 @@ public:
 
         const auto active_request = ActiveRequestGuard{
             active_request_, cancel_requested_, request_id};
-        const auto deadline = std::chrono::steady_clock::now() + kAuthenticationTimeout;
         if (!master_key_) {
             return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
         }
@@ -281,6 +281,10 @@ public:
             return {su::control::ControlResult::kRejected, "no enrolled face profiles"};
         }
         const auto& config = user_data->config;
+        const auto authentication_timeout = config.liveness_detection
+            ? kLivenessAuthenticationTimeout
+            : kAuthenticationTimeout;
+        const auto deadline = std::chrono::steady_clock::now() + authentication_timeout;
         if (!recognizer_.seetaface_available()) {
             return {su::control::ControlResult::kUnavailable, "face models unavailable"};
         }
