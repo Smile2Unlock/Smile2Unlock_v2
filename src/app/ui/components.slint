@@ -126,6 +126,45 @@ export component StatusPill inherits Rectangle {
     }
 }
 
+// Compact state indicator for dense rows. Unlike StatusPill, it does not fill a
+// large area with a status color; the accent is limited to the leading marker.
+export component InlineStatus inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> tone: "neutral";
+
+    height: 28px;
+    spacing: 8px;
+
+    VerticalLayout {
+        width: 8px;
+        Rectangle { vertical-stretch: 1; background: transparent; }
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.tone == "accent" ? UiTheme.primary
+                : root.tone == "good" ? UiTheme.success-text
+                : root.tone == "warn" ? UiTheme.warning-text
+                : root.tone == "bad" ? UiTheme.danger-text
+                : UiTheme.text-tertiary;
+        }
+        Rectangle { vertical-stretch: 1; background: transparent; }
+    }
+
+    Text {
+        horizontal-stretch: 1;
+        text: root.label;
+        color: root.tone == "accent" ? UiTheme.primary
+            : root.tone == "warn" ? UiTheme.warning-text
+            : root.tone == "bad" ? UiTheme.danger-text
+            : UiTheme.text-secondary;
+        font-size: 12px;
+        font-weight: root.tone == "accent" ? 600 : 500;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 export component CenteredActionButton inherits VerticalLayout {
     in property <string> label;
     in property <bool> primary: false;

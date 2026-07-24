@@ -1,7 +1,7 @@
 import { Switch } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import {
-    CenteredActionButton, CenteredStatusPill, SectionTitle, StatusPill,
+    CenteredActionButton, InlineStatus, SectionTitle,
 } from "components.slint";
 
 export struct DeploymentTargetRow {
@@ -34,7 +34,7 @@ export component DeploymentPanel inherits Rectangle {
     private property <string> pending_target: "";
     private property <string> pending_action: "";
 
-    height: root.targets.length == 0 ? 190px : 142px + root.targets.length * 80px;
+    height: root.targets.length == 0 ? 180px : 112px + root.targets.length * 96px;
     border-radius: 6px;
     border-width: 1px;
     border-color: UiTheme.border;
@@ -42,11 +42,11 @@ export component DeploymentPanel inherits Rectangle {
 
     VerticalLayout {
         padding: 20px;
-        spacing: 8px;
+        spacing: 0px;
 
         HorizontalLayout {
-            height: 48px;
-            spacing: 12px;
+            height: 52px;
+            spacing: 20px;
             SectionTitle {
                 horizontal-stretch: 1;
                 title: root.translate("deployment.title", root.language_index);
@@ -54,13 +54,13 @@ export component DeploymentPanel inherits Rectangle {
                     ? root.translate("deployment.helper_ready", root.language_index)
                     : root.translate("deployment.helper_missing", root.language_index);
             }
-            if root.runtime_ready: CenteredStatusPill {
-                width: 156px;
+            if root.runtime_ready: InlineStatus {
+                width: 112px;
                 label: root.translate("status.ready", root.language_index);
-                tone: "good";
+                tone: "accent";
             }
-            if !root.runtime_ready && !root.helper_available: CenteredStatusPill {
-                width: 156px;
+            if !root.runtime_ready && !root.helper_available: InlineStatus {
+                width: 148px;
                 label: root.translate("deployment.helper_required", root.language_index);
                 tone: "warn";
             }
@@ -74,7 +74,7 @@ export component DeploymentPanel inherits Rectangle {
         }
 
         if root.targets.length == 0: Rectangle {
-            height: 50px;
+            height: 56px;
             background: UiTheme.surface-subtle;
             border-radius: 4px;
             Text {
@@ -89,134 +89,147 @@ export component DeploymentPanel inherits Rectangle {
             }
         }
 
-        for target in root.targets: Rectangle {
-            height: 72px;
+        for target[index] in root.targets: Rectangle {
+            height: 96px;
             background: transparent;
             property <bool> wallet_selected: target.wallet_enabled;
 
-            HorizontalLayout {
-                spacing: 12px;
-                VerticalLayout {
-                    width: 176px;
-                    spacing: 4px;
-                    Text {
-                        text: target.service;
-                        color: UiTheme.text-primary;
-                        font-size: 13px;
-                        font-weight: 700;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: target.role == "login"
-                            ? root.translate("deployment.role_login", root.language_index)
-                            : target.role == "lock"
-                                ? root.translate("deployment.role_lock", root.language_index)
-                                : root.translate("deployment.role_both", root.language_index);
-                        color: UiTheme.text-tertiary;
-                        font-size: 11px;
-                        overflow: elide;
-                    }
+            VerticalLayout {
+                spacing: 0px;
+
+                if index > 0: Rectangle {
+                    height: 1px;
+                    background: UiTheme.divider;
                 }
 
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text {
-                        text: target.effective_path;
-                        color: UiTheme.text-secondary;
-                        font-size: 12px;
-                        overflow: elide;
+                HorizontalLayout {
+                    padding-top: 12px;
+                    padding-bottom: 12px;
+                    spacing: 20px;
+
+                    VerticalLayout {
+                        width: 212px;
+                        spacing: 5px;
+                        Text {
+                            text: target.service;
+                            color: UiTheme.text-primary;
+                            font-size: 14px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: target.role == "login"
+                                ? root.translate("deployment.role_login", root.language_index)
+                                : target.role == "lock"
+                                    ? root.translate("deployment.role_lock", root.language_index)
+                                    : root.translate("deployment.role_both", root.language_index);
+                            color: UiTheme.text-tertiary;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
                     }
-                    Text {
-                        text: target.password_fallback
-                            ? root.translate("deployment.password_fallback_ready", root.language_index)
-                            : root.translate("deployment.password_fallback_unknown", root.language_index);
-                        color: target.password_fallback ? UiTheme.success-text : UiTheme.warning-text;
-                        font-size: 11px;
-                        overflow: elide;
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 5px;
+                        Text {
+                            text: target.effective_path;
+                            color: UiTheme.text-secondary;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: target.password_fallback
+                                ? root.translate("deployment.password_fallback_ready", root.language_index)
+                                : root.translate("deployment.password_fallback_unknown", root.language_index);
+                            color: target.password_fallback ? UiTheme.text-secondary : UiTheme.warning-text;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
                     }
-                }
 
-                StatusPill {
-                    width: 100px;
-                    label: target.state == "supported"
-                        ? root.translate("deployment.state_supported", root.language_index)
-                        : target.state == "managed"
-                            ? root.translate("deployment.state_managed", root.language_index)
-                            : target.state == "external"
-                                ? root.translate("deployment.state_external", root.language_index)
-                                : target.state == "conflict"
-                                    ? root.translate("deployment.state_conflict", root.language_index)
-                                    : root.translate("deployment.state_unsupported", root.language_index);
-                    tone: target.configured ? "good"
-                        : target.configurable ? "neutral"
-                        : target.state == "conflict" ? "bad" : "warn";
-                }
+                    VerticalLayout {
+                        width: 160px;
+                        spacing: 4px;
+                        InlineStatus {
+                            label: target.state == "supported"
+                                ? root.translate("deployment.state_supported", root.language_index)
+                                : target.state == "managed"
+                                    ? root.translate("deployment.state_managed", root.language_index)
+                                    : target.state == "external"
+                                        ? root.translate("deployment.state_external", root.language_index)
+                                        : target.state == "conflict"
+                                            ? root.translate("deployment.state_conflict", root.language_index)
+                                            : root.translate("deployment.state_unsupported", root.language_index);
+                            tone: target.managed ? "accent"
+                                : target.state == "conflict" ? "bad"
+                                : target.configurable || target.state == "external" ? "neutral"
+                                : "warn";
+                        }
 
-                if target.wallet_available: Switch {
-                    width: 118px;
-                    text: root.translate("deployment.wallet", root.language_index);
-                    checked <=> wallet_selected;
-                    enabled: target.wallet_available && !target.managed && !root.busy;
-                }
-                if !target.wallet_available: Text {
-                    width: 118px;
-                    text: target.wallet_enabled
-                        ? root.translate("status.configured", root.language_index)
-                        : root.translate("deployment.wallet_unavailable", root.language_index);
-                    color: UiTheme.disabled-text;
-                    font-size: 11px;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
+                        if target.wallet_available: Switch {
+                            text: root.translate("deployment.wallet", root.language_index);
+                            checked <=> wallet_selected;
+                            enabled: target.wallet_available && !target.managed && !root.busy;
+                        }
+                        if !target.wallet_available: Text {
+                            text: target.wallet_enabled
+                                ? root.translate("status.configured", root.language_index)
+                                : root.translate("deployment.wallet_unavailable", root.language_index);
+                            color: UiTheme.text-tertiary;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
 
-                if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
-                    width: 112px;
-                    label: root.pending_target == target.id
-                        ? target.managed
-                            ? root.translate("deployment.confirm_rollback", root.language_index)
-                            : root.translate("deployment.apply", root.language_index)
-                        : target.managed
-                            ? root.translate("deployment.review_rollback", root.language_index)
-                            : root.translate("deployment.review", root.language_index);
-                    primary: root.pending_target == target.id && !target.managed;
-                    danger: target.managed;
-                    enabled: root.helper_available && !root.busy
-                        && (target.managed || target.configurable);
-                    activated => {
-                        if (root.pending_target != target.id) {
-                            root.pending_target = target.id;
-                            root.pending_action = target.managed ? "rollback" : "configure";
-                        } else {
-                            root.pending_target = "";
-                            root.pending_action = "";
-                            if (target.managed) {
-                                root.rollback_requested(target.id);
+                    if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
+                        width: 128px;
+                        label: root.pending_target == target.id
+                            ? target.managed
+                                ? root.translate("deployment.confirm_rollback", root.language_index)
+                                : root.translate("deployment.apply", root.language_index)
+                            : target.managed
+                                ? root.translate("deployment.review_rollback", root.language_index)
+                                : root.translate("deployment.review", root.language_index);
+                        primary: root.pending_target == target.id && !target.managed;
+                        danger: target.managed;
+                        enabled: root.helper_available && !root.busy
+                            && (target.managed || target.configurable);
+                        activated => {
+                            if (root.pending_target != target.id) {
+                                root.pending_target = target.id;
+                                root.pending_action = target.managed ? "rollback" : "configure";
                             } else {
-                                root.configure_requested(target.id, wallet_selected);
+                                root.pending_target = "";
+                                root.pending_action = "";
+                                if (target.managed) {
+                                    root.rollback_requested(target.id);
+                                } else {
+                                    root.configure_requested(target.id, wallet_selected);
+                                }
                             }
                         }
                     }
-                }
-                if !root.helper_available && (target.managed || target.configurable): Text {
-                    width: 112px;
-                    text: root.translate("deployment.helper_required", root.language_index);
-                    color: UiTheme.warning-text;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                }
-                if !target.managed && !target.configurable: Text {
-                    width: 112px;
-                    text: target.state == "external"
-                        ? root.translate("deployment.external_read_only", root.language_index)
-                        : root.translate("deployment.not_available", root.language_index);
-                    color: UiTheme.text-tertiary;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
+                    if !root.helper_available && (target.managed || target.configurable): Text {
+                        width: 128px;
+                        text: root.translate("deployment.helper_required", root.language_index);
+                        color: UiTheme.warning-text;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    if !target.managed && !target.configurable: Text {
+                        width: 128px;
+                        text: target.state == "external"
+                            ? root.translate("deployment.external_read_only", root.language_index)
+                            : root.translate("deployment.not_available", root.language_index);
+                        color: UiTheme.text-tertiary;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }
