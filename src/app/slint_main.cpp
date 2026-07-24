@@ -6,6 +6,7 @@ import su.app.i18n;
 import su.app.user;
 import su.core.types;
 import su.app.preview;
+import su.app.preferences;
 import su.app.session;
 import su.app.theme;
 
@@ -193,13 +194,79 @@ std::string system_locale() {
     return "en";
 }
 
+int theme_preference_index(su::app::ThemePreference preference) {
+    switch (preference) {
+        case su::app::ThemePreference::system:
+            return 0;
+        case su::app::ThemePreference::light:
+            return 1;
+        case su::app::ThemePreference::dark:
+            return 2;
+    }
+    return 0;
+}
+
+std::optional<su::app::ThemePreference> theme_preference_at(int index) {
+    switch (index) {
+        case 0:
+            return su::app::ThemePreference::system;
+        case 1:
+            return su::app::ThemePreference::light;
+        case 2:
+            return su::app::ThemePreference::dark;
+        default:
+            return std::nullopt;
+    }
+}
+
+int window_controls_preference_index(su::app::WindowControlsPreference preference) {
+    switch (preference) {
+        case su::app::WindowControlsPreference::automatic:
+            return 0;
+        case su::app::WindowControlsPreference::visible:
+            return 1;
+        case su::app::WindowControlsPreference::hidden:
+            return 2;
+    }
+    return 0;
+}
+
+std::optional<su::app::WindowControlsPreference> window_controls_preference_at(int index) {
+    switch (index) {
+        case 0:
+            return su::app::WindowControlsPreference::automatic;
+        case 1:
+            return su::app::WindowControlsPreference::visible;
+        case 2:
+            return su::app::WindowControlsPreference::hidden;
+        default:
+            return std::nullopt;
+    }
+}
+
+void persist_ui_preferences(
+    const std::filesystem::path& path,
+    const su::app::UiPreferences& preferences) {
+    if (const auto saved = su::app::save_ui_preferences(path, preferences); !saved) {
+        std::println(stderr, "[preferences] {}", saved.error());
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     slint::set_xdg_app_id(xdg_app_id);
+    const auto preference_path = ui_preference_path();
+    auto preferences = std::make_shared<su::app::UiPreferences>();
+    if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
+        *preferences = std::move(*loaded);
+    } else {
+        std::println(stderr, "[preferences] {}", loaded.error());
+    }
     const auto theme_paths = su::app::default_theme_paths();
     const auto theme_commands = su::app::system_theme_command_runner();
-    auto initial_theme = su::app::load_desktop_theme(theme_paths, theme_commands);
+    auto initial_theme = su::app::load_desktop_theme(
+        theme_paths, theme_commands, preferences->theme);
     log_theme_diagnostics(initial_theme.diagnostics);
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
@@ -209,15 +276,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     const auto catalog = std::make_shared<const su::app::LanguageCatalog>(std::move(*loaded_catalog));
-    const auto preference_path = ui_preference_path();
-    auto loaded_preference = su::app::load_language_preference(preference_path);
-    std::optional<std::string> preferred_language;
-    if (loaded_preference) {
-        preferred_language = std::move(*loaded_preference);
-    } else {
-        std::println(stderr, "[i18n] {}", loaded_preference.error());
-    }
-    const auto selected_language = catalog->select_language(preferred_language, system_locale());
+    const auto selected_language = catalog->select_language(preferences->language, system_locale());
 
     auto controller = std::make_shared<su::app::AppController>();
     auto preview = std::make_shared<su::app::PreviewController>();
@@ -230,10 +289,11 @@ int main(int argc, char** argv) {
     auto window = ui::AppWindow::create();
     apply_theme(window, initial_theme.snapshot.theme);
     const WeakWindowHandle weak_window(window);
-    const auto theme_monitor = std::make_unique<su::app::ThemeMonitor>(
+    const auto theme_monitor = std::make_shared<su::app::ThemeMonitor>(
         theme_paths,
         theme_commands,
         initial_theme.snapshot,
+        preferences->theme,
         [weak_window](su::app::ThemeLoadResult loaded) {
             log_theme_diagnostics(loaded.diagnostics);
             slint::invoke_from_event_loop(
@@ -279,16 +339,41 @@ int main(int argc, char** argv) {
     window->set_language_names(
         std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(language_names)));
     window->set_language_index(static_cast<int>(selected_language));
-    window->on_language_selected([catalog, preference_path](int index) {
+    window->set_theme_mode_index(theme_preference_index(preferences->theme));
+    window->set_window_controls_index(
+        window_controls_preference_index(preferences->window_controls));
+    window->set_window_frame_visible(su::app::window_controls_visible(
+        preferences->window_controls, theme_paths.desktop));
+    window->on_language_selected([catalog, preference_path, preferences](int index) {
         if (index < 0 || static_cast<std::size_t>(index) >= catalog->size()) {
             return;
         }
-        if (const auto saved = su::app::save_language_preference(
-                preference_path, catalog->language_code(static_cast<std::size_t>(index)));
-            !saved) {
-            std::println(stderr, "[i18n] {}", saved.error());
-        }
+        preferences->language = catalog->language_code(static_cast<std::size_t>(index));
+        persist_ui_preferences(preference_path, *preferences);
     });
+    window->on_theme_mode_selected(
+        [preference_path, preferences, theme_monitor](int index) {
+            const auto selected = theme_preference_at(index);
+            if (!selected) {
+                return;
+            }
+            preferences->theme = *selected;
+            persist_ui_preferences(preference_path, *preferences);
+            theme_monitor->set_theme_preference(*selected);
+        });
+    window->on_window_controls_selected(
+        [weak_window, preference_path, preferences, desktop = theme_paths.desktop](int index) {
+            const auto selected = window_controls_preference_at(index);
+            if (!selected) {
+                return;
+            }
+            preferences->window_controls = *selected;
+            persist_ui_preferences(preference_path, *preferences);
+            if (const auto window = weak_window.lock()) {
+                (*window)->set_window_frame_visible(
+                    su::app::window_controls_visible(*selected, desktop));
+            }
+        });
 
     std::vector<slint::SharedString> camera_names;
     std::vector<int> camera_indices;

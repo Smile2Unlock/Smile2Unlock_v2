@@ -1,11 +1,14 @@
 import std;
+import su.app.preferences;
 import su.app.theme;
 
 namespace {
 
 using su::app::ThemeColor;
 using su::app::ThemeMode;
+using su::app::ThemePreference;
 using su::app::ThemeSource;
+using su::app::WindowControlsPreference;
 
 struct MaterialRole {
     std::string name;
@@ -180,6 +183,127 @@ void test_palette_mapping_and_validation() {
     require(matugen->primary == dark->primary, "DMS and Matugen mappings should agree");
 }
 
+void test_ui_preferences(const std::filesystem::path& root) {
+    const auto path = root / "ui.json";
+    write_file(path, R"({"language":"zh-CN"})");
+    const auto legacy = su::app::load_ui_preferences(path);
+    require(legacy.has_value(), "legacy language-only preferences should load");
+    require(legacy->language == "zh-CN", "legacy language should be retained");
+    require(legacy->theme == ThemePreference::system, "legacy theme should default to system");
+    require(
+        legacy->window_controls == WindowControlsPreference::automatic,
+        "legacy window controls should default to automatic");
+
+    auto updated = *legacy;
+    updated.theme = ThemePreference::dark;
+    updated.window_controls = WindowControlsPreference::hidden;
+    require(
+        su::app::save_ui_preferences(path, updated).has_value(),
+        "complete UI preferences should save");
+    const auto reloaded = su::app::load_ui_preferences(path);
+    require(reloaded == updated, "saving appearance settings must retain language");
+
+    write_file(path, R"({"theme_mode":7})");
+    require(!su::app::load_ui_preferences(path), "non-string theme mode should fail");
+    write_file(path, R"({"window_controls":"sometimes"})");
+    require(!su::app::load_ui_preferences(path), "unknown window controls mode should fail");
+    write_file(path, R"({"language":false})");
+    require(!su::app::load_ui_preferences(path), "non-string language should fail");
+}
+
+void test_window_controls_policy() {
+    const auto niri = su::app::DesktopEnvironment{
+        .current_desktop = "niri", .session_desktop = {}, .desktop_session = {}};
+    const auto dwm = su::app::DesktopEnvironment{
+        .current_desktop = {}, .session_desktop = {}, .desktop_session = "dwm"};
+    const auto gnome = su::app::DesktopEnvironment{
+        .current_desktop = "GNOME", .session_desktop = {}, .desktop_session = {}};
+    const auto kde = su::app::DesktopEnvironment{
+        .current_desktop = "KDE:Plasma", .session_desktop = {}, .desktop_session = {}};
+    const auto unknown = su::app::DesktopEnvironment{};
+
+    require(su::app::is_standalone_window_manager(niri), "Niri should be detected as a standalone WM");
+    require(su::app::is_standalone_window_manager(dwm), "dwm should be detected as a standalone WM");
+    require(
+        !su::app::window_controls_visible(WindowControlsPreference::automatic, niri),
+        "automatic controls should be hidden under Niri");
+    require(
+        !su::app::window_controls_visible(WindowControlsPreference::automatic, dwm),
+        "automatic controls should be hidden under dwm");
+    require(
+        su::app::window_controls_visible(WindowControlsPreference::automatic, gnome),
+        "automatic controls should be visible under GNOME");
+    require(
+        su::app::window_controls_visible(WindowControlsPreference::automatic, kde),
+        "automatic controls should be visible under KDE Plasma");
+    require(
+        su::app::window_controls_visible(WindowControlsPreference::automatic, unknown),
+        "unknown desktops should preserve native window controls");
+    require(
+        su::app::window_controls_visible(WindowControlsPreference::visible, niri),
+        "show should override the standalone WM default");
+    require(
+        !su::app::window_controls_visible(WindowControlsPreference::hidden, gnome),
+        "hide should override the desktop environment default");
+}
+
+void test_explicit_theme_mode(const std::filesystem::path& root) {
+    const auto paths = su::app::ThemePaths{
+        .dms_palette = root / "dms-colors.json",
+        .dms_session = root / "session.json",
+    };
+    write_file(paths.dms_palette, dms_palette());
+    auto mode_calls = 0;
+    const auto runner = [&mode_calls](const std::vector<std::string>& arguments, auto, auto)
+        -> std::expected<std::string, std::string> {
+        if (arguments == std::vector<std::string>{"dms", "ipc", "call", "theme", "getMode"}) {
+            ++mode_calls;
+            return "dark";
+        }
+        return std::unexpected("unavailable");
+    };
+
+    const auto system = su::app::load_desktop_theme(paths, runner, ThemePreference::system);
+    require(system.snapshot.theme.mode == ThemeMode::dark, "system mode should use DMS mode");
+    require(mode_calls == 1, "system mode should query the desktop mode");
+
+    const auto light = su::app::load_desktop_theme(paths, runner, ThemePreference::light);
+    require(light.snapshot.theme.mode == ThemeMode::light, "explicit light should select the light scheme");
+    require(light.snapshot.theme.primary == color("#525a92"), "explicit light should use light colors");
+    require(mode_calls == 1, "explicit mode should not query the desktop mode");
+}
+
+void test_gnome_wallpaper_fallback(const std::filesystem::path& root) {
+    const auto wallpaper = root / "GNOME wallpaper.png";
+    write_file(wallpaper, "fixture");
+    const auto paths = su::app::ThemePaths{
+        .dms_palette = root / "missing-palette.json",
+        .dms_session = root / "missing-session.json",
+        .desktop = su::app::DesktopEnvironment{.current_desktop = "GNOME"},
+    };
+    auto encoded = wallpaper.string();
+    for (auto position = encoded.find(' '); position != std::string::npos;
+         position = encoded.find(' ', position + 3)) {
+        encoded.replace(position, 1, "%20");
+    }
+    auto matugen_path = std::string{};
+    const auto runner = [&](const std::vector<std::string>& arguments, auto, auto)
+        -> std::expected<std::string, std::string> {
+        if (arguments.size() == 4 && arguments[0] == "gsettings"
+            && arguments[3] == "picture-uri-dark") {
+            return std::format("'file://{}'", encoded);
+        }
+        if (!arguments.empty() && arguments[0] == "matugen") {
+            matugen_path = arguments[2];
+            return matugen_palette();
+        }
+        return std::unexpected("unavailable");
+    };
+    const auto loaded = su::app::load_desktop_theme(paths, runner, ThemePreference::dark);
+    require(loaded.snapshot.source == ThemeSource::matugen, "GNOME wallpaper should feed Matugen");
+    require(matugen_path == wallpaper.string(), "GNOME file URI should be percent-decoded safely");
+}
+
 void test_source_priority_and_fallback(const std::filesystem::path& root) {
     const auto paths = su::app::ThemePaths{
         .dms_palette = root / "cache" / "dms-colors.json",
@@ -265,6 +389,7 @@ void test_live_refresh(const std::filesystem::path& root) {
         paths,
         runner,
         initial.snapshot,
+        ThemePreference::system,
         [&](su::app::ThemeLoadResult loaded) {
             {
                 const auto lock = std::lock_guard(mutex);
@@ -297,6 +422,44 @@ void test_live_refresh(const std::filesystem::path& root) {
     }
 }
 
+void test_runtime_theme_preference(const std::filesystem::path& root) {
+    const auto paths = su::app::ThemePaths{
+        .dms_palette = root / "live-cache" / "dms-colors.json",
+        .dms_session = root / "live-state" / "session.json",
+    };
+    write_file(paths.dms_palette, dms_palette());
+    write_file(paths.dms_session, R"({"isLightMode":false})");
+    const auto runner = [](const std::vector<std::string>& arguments, auto, auto)
+        -> std::expected<std::string, std::string> {
+        if (arguments.size() >= 5 && arguments[0] == "dms" && arguments[4] == "getMode") {
+            return "dark";
+        }
+        return std::unexpected("unavailable");
+    };
+    const auto initial = su::app::load_desktop_theme(paths, runner);
+    auto mutex = std::mutex{};
+    auto changed = std::condition_variable{};
+    auto mode = std::optional<ThemeMode>{};
+    auto monitor = su::app::ThemeMonitor(
+        paths,
+        runner,
+        initial.snapshot,
+        ThemePreference::system,
+        [&](su::app::ThemeLoadResult loaded) {
+            {
+                const auto lock = std::lock_guard(mutex);
+                mode = loaded.snapshot.theme.mode;
+            }
+            changed.notify_one();
+        });
+    monitor.set_theme_preference(ThemePreference::light);
+    auto lock = std::unique_lock(mutex);
+    require(
+        changed.wait_for(lock, std::chrono::seconds{2}, [&] { return mode.has_value(); }),
+        "runtime theme preference should trigger an immediate reload");
+    require(mode == ThemeMode::light, "runtime preference should apply the selected scheme");
+}
+
 }  // namespace
 
 int main() {
@@ -308,8 +471,13 @@ int main() {
     try {
         test_color_and_mode_parsing();
         test_palette_mapping_and_validation();
+        test_ui_preferences(root / "preferences");
+        test_window_controls_policy();
+        test_explicit_theme_mode(root / "explicit-mode");
+        test_gnome_wallpaper_fallback(root / "gnome");
         test_source_priority_and_fallback(root / "sources");
         test_live_refresh(root / "monitor");
+        test_runtime_theme_preference(root / "runtime-preference");
         return 0;
     } catch (const std::exception& failure) {
         std::cerr << "theme test failed: " << failure.what() << '\n';
