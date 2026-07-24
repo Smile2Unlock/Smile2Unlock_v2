@@ -203,6 +203,47 @@ component PageHeader inherits VerticalLayout {
     Text { text: root.detail; color: UiTheme.text-secondary; font-size: 13px; overflow: elide; }
 }
 
+component SegmentedSelector inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> current-index: 0;
+    callback selected(int);
+
+    height: 36px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: UiTheme.border;
+    background: UiTheme.surface-subtle;
+    clip: true;
+
+    HorizontalLayout {
+        spacing: 0px;
+        for option[index] in root.options: Rectangle {
+            horizontal-stretch: 1;
+            background: root.current-index == index
+                ? UiTheme.surface-selected
+                : option-touch.has-hover ? UiTheme.surface : transparent;
+
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: option;
+                color: root.current-index == index ? UiTheme.primary : UiTheme.text-secondary;
+                font-size: 12px;
+                font-weight: root.current-index == index ? 700 : 500;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            option-touch := TouchArea {
+                clicked => {
+                    root.current-index = index;
+                    root.selected(index);
+                }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     in property <string> title_text: "Smile2Unlock";
     in property <string> username: "";
@@ -230,6 +271,9 @@ export component AppWindow inherits Window {
 
     in-out property <int> current_page: 0;
     in-out property <int> language_index: 0;
+    in-out property <int> theme_mode_index: 0;
+    in-out property <int> window_controls_index: 0;
+    in property <bool> window_frame_visible: true;
     in-out property <string> enroll_label_text: "";
     in-out property <string> activity_title: "";
     in-out property <string> activity_detail: "";
@@ -251,6 +295,8 @@ export component AppWindow inherits Window {
     callback stop_preview_requested();
     callback save_settings_requested(int, float, bool, float, int);
     callback language_selected(int);
+    callback theme_mode_selected(int);
+    callback window_controls_selected(int);
     pure callback translate(string, int) -> string;
     pure callback translate_value(string, int, string) -> string;
 
@@ -262,6 +308,7 @@ export component AppWindow inherits Window {
     }
 
     title: title_text;
+    no-frame: !root.window_frame_visible;
     preferred-width: 1180px;
     preferred-height: 760px;
     min-width: 920px;
@@ -697,7 +744,7 @@ export component AppWindow inherits Window {
 
             if root.current_page == 2: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 692px;
+                viewport-height: 896px;
 
                 settings-content := VerticalLayout {
                     width: parent.width;
@@ -742,6 +789,62 @@ export component AppWindow inherits Window {
                                         root.settings_status = root.translate("settings.saved", root.language_index);
                                         root.language_selected(root.language_index);
                                     }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 184px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            SectionTitle {
+                                title: root.translate("settings.appearance", root.language_index);
+                                detail: root.translate("settings.appearance_detail", root.language_index);
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text {
+                                    width: 132px;
+                                    text: root.translate("settings.theme_mode", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                SegmentedSelector {
+                                    horizontal-stretch: 1;
+                                    options: [
+                                        root.translate("settings.theme_system", root.language_index),
+                                        root.translate("settings.theme_light", root.language_index),
+                                        root.translate("settings.theme_dark", root.language_index),
+                                    ];
+                                    current-index <=> root.theme_mode_index;
+                                    selected(index) => { root.theme_mode_selected(index); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text {
+                                    width: 132px;
+                                    text: root.translate("settings.window_controls", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                SegmentedSelector {
+                                    horizontal-stretch: 1;
+                                    options: [
+                                        root.translate("settings.window_controls_auto", root.language_index),
+                                        root.translate("settings.window_controls_show", root.language_index),
+                                        root.translate("settings.window_controls_hide", root.language_index),
+                                    ];
+                                    current-index <=> root.window_controls_index;
+                                    selected(index) => { root.window_controls_selected(index); }
                                 }
                             }
                         }

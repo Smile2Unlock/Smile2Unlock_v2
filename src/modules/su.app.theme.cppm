@@ -7,6 +7,7 @@ module;
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/eventfd.h>
 #include <sys/inotify.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -15,6 +16,7 @@ module;
 export module su.app.theme;
 
 import std;
+import su.app.preferences;
 
 export namespace su::app {
 
@@ -80,6 +82,7 @@ struct ThemeSnapshot {
 struct ThemePaths {
     std::filesystem::path dms_palette;
     std::filesystem::path dms_session;
+    DesktopEnvironment desktop{};
 };
 
 struct ThemeLoadResult {
@@ -104,7 +107,8 @@ std::expected<AppTheme, std::string> parse_material_theme(
 [[nodiscard]] ThemeCommandRunner system_theme_command_runner();
 [[nodiscard]] ThemeLoadResult load_desktop_theme(
     const ThemePaths& paths,
-    const ThemeCommandRunner& run_command);
+    const ThemeCommandRunner& run_command,
+    ThemePreference preference = ThemePreference::system);
 
 class ThemeMonitor {
 public:
@@ -114,6 +118,7 @@ public:
         ThemePaths paths,
         ThemeCommandRunner run_command,
         ThemeSnapshot initial,
+        ThemePreference preference,
         UpdateCallback callback);
     ~ThemeMonitor();
     ThemeMonitor(const ThemeMonitor&) = delete;
@@ -122,6 +127,7 @@ public:
     ThemeMonitor& operator=(ThemeMonitor&&) = delete;
 
     [[nodiscard]] bool available() const;
+    void set_theme_preference(ThemePreference preference);
 
 private:
     class Impl;
@@ -381,6 +387,78 @@ std::expected<std::filesystem::path, std::string> wallpaper_from_ipc(std::string
         return std::filesystem::path(stripped.substr(1, stripped.size() - 2));
     }
     return std::filesystem::path(stripped);
+}
+
+std::expected<std::filesystem::path, std::string> wallpaper_from_gsettings(
+    std::string_view output) {
+    auto value = trim(output);
+    if (value.size() >= 2
+        && ((value.front() == '\'' && value.back() == '\'')
+            || (value.front() == '"' && value.back() == '"'))) {
+        value = value.substr(1, value.size() - 2);
+    }
+    if (!value.starts_with("file://")) {
+        return std::unexpected("GNOME wallpaper setting is not a local file URI");
+    }
+
+    auto encoded_path = std::string_view(value).substr(7);
+    if (encoded_path.starts_with("localhost/")) {
+        encoded_path.remove_prefix(std::string_view("localhost").size());
+    }
+    auto decoded = std::string{};
+    decoded.reserve(encoded_path.size());
+    for (auto index = std::size_t{0}; index < encoded_path.size();) {
+        if (encoded_path[index] == '%' && index + 2 < encoded_path.size()) {
+            if (const auto byte = parse_hex_byte(encoded_path.substr(index + 1, 2))) {
+                decoded.push_back(static_cast<char>(*byte));
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push_back(encoded_path[index]);
+        ++index;
+    }
+    if (decoded.empty() || decoded.front() != '/') {
+        return std::unexpected("GNOME wallpaper URI has no absolute path");
+    }
+    return std::filesystem::path(decoded);
+}
+
+std::optional<ThemeMode> preferred_theme_mode(ThemePreference preference) {
+    switch (preference) {
+        case ThemePreference::light:
+            return ThemeMode::light;
+        case ThemePreference::dark:
+            return ThemeMode::dark;
+        case ThemePreference::system:
+            return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> gnome_wallpaper(
+    const ThemePaths& paths,
+    const ThemeCommandRunner& run_command,
+    ThemeMode mode) {
+    if (!uses_gnome_desktop(paths.desktop)) {
+        return std::nullopt;
+    }
+    const auto keys = mode == ThemeMode::dark
+        ? std::array<std::string_view, 2>{"picture-uri-dark", "picture-uri"}
+        : std::array<std::string_view, 2>{"picture-uri", "picture-uri-dark"};
+    for (const auto key : keys) {
+        const auto output = run_command(
+            {"gsettings", "get", "org.gnome.desktop.background", std::string(key)},
+            dms_ipc_timeout,
+            64 * 1024);
+        if (!output) {
+            continue;
+        }
+        if (const auto parsed = wallpaper_from_gsettings(*output); parsed) {
+            return *parsed;
+        }
+    }
+    return std::nullopt;
 }
 
 std::string source_name(ThemeSource source) {
@@ -723,6 +801,7 @@ ThemePaths default_theme_paths() {
     return ThemePaths{
         .dms_palette = cache / "DankMaterialShell" / "dms-colors.json",
         .dms_session = state / "DankMaterialShell" / "session.json",
+        .desktop = current_desktop_environment(),
     };
 }
 
@@ -740,20 +819,23 @@ ThemeCommandRunner system_theme_command_runner() {
 
 ThemeLoadResult load_desktop_theme(
     const ThemePaths& paths,
-    const ThemeCommandRunner& run_command) {
+    const ThemeCommandRunner& run_command,
+    ThemePreference preference) {
     auto diagnostics = std::vector<std::string>{};
     auto session_text = read_file_limited(paths.dms_session);
 
-    auto mode = std::optional<ThemeMode>{};
-    if (const auto ipc = run_command(
+    auto mode = preferred_theme_mode(preference);
+    if (!mode) {
+        const auto ipc = run_command(
             {"dms", "ipc", "call", "theme", "getMode"},
             dms_ipc_timeout,
             64 * 1024);
-        ipc) {
-        if (const auto parsed = parse_dms_mode(*ipc); parsed) {
-            mode = *parsed;
-        } else {
-            diagnostics.push_back(std::format("DMS mode IPC: {}", parsed.error()));
+        if (ipc) {
+            if (const auto parsed = parse_dms_mode(*ipc); parsed) {
+                mode = *parsed;
+            } else {
+                diagnostics.push_back(std::format("DMS mode IPC: {}", parsed.error()));
+            }
         }
     }
     if (!mode && session_text) {
@@ -804,6 +886,9 @@ ThemeLoadResult load_desktop_theme(
             wallpaper = *parsed;
         }
     }
+    if (!wallpaper) {
+        wallpaper = gnome_wallpaper(paths, run_command, selected_mode);
+    }
     auto file_error = std::error_code{};
     if (wallpaper && std::filesystem::is_regular_file(*wallpaper, file_error)) {
         const auto generated = run_command(
@@ -841,18 +926,40 @@ public:
         ThemePaths paths,
         ThemeCommandRunner run_command,
         ThemeSnapshot initial,
+        ThemePreference preference,
         UpdateCallback callback)
         : paths_(std::move(paths)),
           run_command_(std::move(run_command)),
           current_(std::move(initial)),
+          preference_(preference),
           callback_(std::move(callback)),
+          wake_descriptor_(::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)),
           thread_([this](std::stop_token stop) { run(stop); }) {}
+
+    ~Impl() {
+        thread_.request_stop();
+        wake();
+    }
 
     [[nodiscard]] bool available() const {
         return available_.load(std::memory_order_acquire);
     }
 
+    void set_theme_preference(ThemePreference preference) {
+        preference_.store(preference, std::memory_order_release);
+        reload_requested_.store(true, std::memory_order_release);
+        wake();
+    }
+
 private:
+    void wake() const {
+        if (wake_descriptor_ < 0) {
+            return;
+        }
+        constexpr auto value = std::uint64_t{1};
+        (void)::write(wake_descriptor_, &value, sizeof(value));
+    }
+
     bool relevant_event(const inotify_event& event) const {
         if (event.len == 0) {
             return false;
@@ -863,7 +970,8 @@ private:
     }
 
     void reload() {
-        auto loaded = load_desktop_theme(paths_, run_command_);
+        auto loaded = load_desktop_theme(
+            paths_, run_command_, preference_.load(std::memory_order_acquire));
         if (source_priority(loaded.snapshot.source) < source_priority(current_.source)) {
             return;
         }
@@ -879,7 +987,7 @@ private:
 
     void run(std::stop_token stop) {
         const auto descriptor = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
-        if (descriptor < 0) {
+        if (descriptor < 0 && wake_descriptor_ < 0) {
             return;
         }
         auto directories = std::vector{
@@ -891,30 +999,46 @@ private:
 
         auto watches = 0;
         constexpr auto mask = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE | IN_DELETE | IN_ATTRIB;
-        for (const auto& directory : directories) {
-            if (::inotify_add_watch(descriptor, directory.c_str(), mask) >= 0) {
-                ++watches;
+        if (descriptor >= 0) {
+            for (const auto& directory : directories) {
+                if (::inotify_add_watch(descriptor, directory.c_str(), mask) >= 0) {
+                    ++watches;
+                }
             }
         }
-        if (watches == 0) {
-            ::close(descriptor);
-            return;
-        }
-
-        available_.store(true, std::memory_order_release);
+        available_.store(watches > 0, std::memory_order_release);
         auto pending = false;
         auto reload_at = std::chrono::steady_clock::time_point{};
         auto buffer = std::array<char, 16 * 1024>{};
         while (!stop.stop_requested()) {
-            auto timeout = 250;
+            if (reload_requested_.exchange(false, std::memory_order_acq_rel)) {
+                reload();
+            }
+            auto timeout = wake_descriptor_ >= 0 ? -1 : 250;
             if (pending) {
                 const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                     reload_at - std::chrono::steady_clock::now());
                 timeout = static_cast<int>(std::clamp(remaining.count(), 0L, 250L));
             }
-            pollfd poll_descriptor{.fd = descriptor, .events = POLLIN, .revents = 0};
-            const auto polled = ::poll(&poll_descriptor, 1, timeout);
-            if (polled > 0 && (poll_descriptor.revents & POLLIN) != 0) {
+            auto poll_descriptors = std::array<pollfd, 2>{};
+            auto descriptor_count = nfds_t{0};
+            if (wake_descriptor_ >= 0) {
+                poll_descriptors[descriptor_count++] = pollfd{
+                    .fd = wake_descriptor_, .events = POLLIN, .revents = 0};
+            }
+            const auto inotify_index = descriptor_count;
+            if (descriptor >= 0 && watches > 0) {
+                poll_descriptors[descriptor_count++] = pollfd{
+                    .fd = descriptor, .events = POLLIN, .revents = 0};
+            }
+            const auto polled = ::poll(poll_descriptors.data(), descriptor_count, timeout);
+            if (wake_descriptor_ >= 0 && polled > 0
+                && (poll_descriptors[0].revents & POLLIN) != 0) {
+                auto value = std::uint64_t{};
+                while (::read(wake_descriptor_, &value, sizeof(value)) > 0) {}
+            }
+            if (descriptor >= 0 && watches > 0 && polled > 0
+                && (poll_descriptors[inotify_index].revents & POLLIN) != 0) {
                 const auto count = ::read(descriptor, buffer.data(), buffer.size());
                 auto offset = std::size_t{0};
                 while (count > 0 && offset + sizeof(inotify_event) <= static_cast<std::size_t>(count)) {
@@ -932,14 +1056,23 @@ private:
             }
         }
         available_.store(false, std::memory_order_release);
-        ::close(descriptor);
+        if (descriptor >= 0) {
+            ::close(descriptor);
+        }
+        if (wake_descriptor_ >= 0) {
+            ::close(wake_descriptor_);
+            wake_descriptor_ = -1;
+        }
     }
 
     ThemePaths paths_;
     ThemeCommandRunner run_command_;
     ThemeSnapshot current_;
+    std::atomic<ThemePreference> preference_;
     UpdateCallback callback_;
+    std::atomic<bool> reload_requested_{false};
     std::atomic<bool> available_{false};
+    int wake_descriptor_ = -1;
     std::jthread thread_;
 };
 
@@ -947,8 +1080,68 @@ private:
 
 class ThemeMonitor::Impl {
 public:
-    Impl(ThemePaths, ThemeCommandRunner, ThemeSnapshot, UpdateCallback) {}
+    Impl(
+        ThemePaths paths,
+        ThemeCommandRunner run_command,
+        ThemeSnapshot initial,
+        ThemePreference preference,
+        UpdateCallback callback)
+        : paths_(std::move(paths)),
+          run_command_(std::move(run_command)),
+          current_(std::move(initial)),
+          preference_(preference),
+          callback_(std::move(callback)),
+          thread_([this](std::stop_token stop) { run(stop); }) {}
+
+    ~Impl() {
+        thread_.request_stop();
+        changed_.notify_all();
+    }
+
     [[nodiscard]] bool available() const { return false; }
+
+    void set_theme_preference(ThemePreference preference) {
+        preference_.store(preference, std::memory_order_release);
+        reload_requested_.store(true, std::memory_order_release);
+        changed_.notify_one();
+    }
+
+private:
+    void run(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            auto lock = std::unique_lock(mutex_);
+            changed_.wait_for(lock, std::chrono::milliseconds{250}, [this, &stop] {
+                return stop.stop_requested()
+                    || reload_requested_.load(std::memory_order_acquire);
+            });
+            if (stop.stop_requested()) {
+                break;
+            }
+            if (!reload_requested_.exchange(false, std::memory_order_acq_rel)) {
+                continue;
+            }
+            lock.unlock();
+            auto loaded = load_desktop_theme(
+                paths_, run_command_, preference_.load(std::memory_order_acquire));
+            if (loaded.snapshot == current_) {
+                continue;
+            }
+            current_ = loaded.snapshot;
+            if (callback_) {
+                callback_(std::move(loaded));
+            }
+        }
+    }
+
+    ThemePaths paths_;
+    ThemeCommandRunner run_command_;
+    ThemeSnapshot current_;
+    std::atomic<ThemePreference> preference_;
+    UpdateCallback callback_;
+    std::atomic<bool> reload_requested_{false};
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::jthread thread_;
 };
 
 #endif
@@ -957,17 +1150,23 @@ ThemeMonitor::ThemeMonitor(
     ThemePaths paths,
     ThemeCommandRunner run_command,
     ThemeSnapshot initial,
+    ThemePreference preference,
     UpdateCallback callback)
     : impl_(std::make_unique<Impl>(
           std::move(paths),
           std::move(run_command),
           std::move(initial),
+          preference,
           std::move(callback))) {}
 
 ThemeMonitor::~ThemeMonitor() = default;
 
 bool ThemeMonitor::available() const {
     return impl_->available();
+}
+
+void ThemeMonitor::set_theme_preference(ThemePreference preference) {
+    impl_->set_theme_preference(preference);
 }
 
 }  // namespace su::app

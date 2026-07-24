@@ -39,12 +39,6 @@ private:
     std::size_t fallback_index_ = 0;
 };
 
-std::expected<std::optional<std::string>, std::string> load_language_preference(
-    const std::filesystem::path& path);
-std::expected<void, std::string> save_language_preference(
-    const std::filesystem::path& path,
-    std::string_view language_code);
-
 }  // namespace su::app
 
 namespace su::app {
@@ -225,51 +219,6 @@ std::string LanguageCatalog::translate_value(
     std::string_view key,
     std::string_view value) const {
     return replace_value(translate(index, key), value);
-}
-
-std::expected<std::optional<std::string>, std::string> load_language_preference(
-    const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) {
-        return std::optional<std::string>{};
-    }
-    try {
-        auto stream = std::ifstream(path);
-        const auto document = nlohmann::json::parse(stream);
-        if (!document.contains("language") || !document["language"].is_string()) {
-            return std::unexpected(std::format("invalid UI preference file: {}", path.string()));
-        }
-        return std::optional{document["language"].get<std::string>()};
-    } catch (const std::exception& error) {
-        return std::unexpected(std::format("failed to load {}: {}", path.string(), error.what()));
-    }
-}
-
-std::expected<void, std::string> save_language_preference(
-    const std::filesystem::path& path,
-    std::string_view language_code) {
-    try {
-        std::filesystem::create_directories(path.parent_path());
-        auto temporary = path;
-        temporary += ".tmp";
-        {
-            auto stream = std::ofstream(temporary, std::ios::binary | std::ios::trunc);
-            if (!stream) {
-                return std::unexpected(std::format("cannot write {}", temporary.string()));
-            }
-            stream << nlohmann::json{{"language", language_code}}.dump(2) << '\n';
-            if (!stream) {
-                return std::unexpected(std::format("failed to write {}", temporary.string()));
-            }
-        }
-        std::filesystem::permissions(
-            temporary,
-            std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-            std::filesystem::perm_options::replace);
-        std::filesystem::rename(temporary, path);
-        return {};
-    } catch (const std::exception& error) {
-        return std::unexpected(std::format("failed to save {}: {}", path.string(), error.what()));
-    }
 }
 
 }  // namespace su::app

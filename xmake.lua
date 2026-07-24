@@ -201,6 +201,7 @@ target("su_app")
         add_files("src/modules/su.app.preview.cppm")
         add_files("src/modules/su.app.session.cppm")
         add_files("src/modules/su.app.i18n.cppm")
+        add_files("src/modules/su.app.preferences.cppm")
         add_files("src/modules/su.app.theme.cppm")
         if is_plat("linux") then
             add_syslinks("systemd")
@@ -348,7 +349,10 @@ target("su_face_auth_smoke_test")
 
 target("su_theme_test")
     apply_cpp_target("binary")
-    add_files("tests/theme/*.cpp", "src/modules/su.app.theme.cppm")
+    add_files(
+        "tests/theme/*.cpp",
+        "src/modules/su.app.preferences.cppm",
+        "src/modules/su.app.theme.cppm")
     add_packages("nlohmann_json")
     add_tests("default")
 
