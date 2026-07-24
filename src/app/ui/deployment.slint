@@ -59,13 +59,16 @@ export component DeploymentPanel inherits Rectangle {
                 label: root.translate("status.ready", root.language_index);
                 tone: "good";
             }
-            if !root.runtime_ready: CenteredActionButton {
+            if !root.runtime_ready && !root.helper_available: CenteredStatusPill {
                 width: 156px;
-                label: root.helper_available
-                    ? root.translate("deployment.initialize", root.language_index)
-                    : root.translate("deployment.install_helper", root.language_index);
-                primary: root.helper_available;
-                enabled: root.helper_available && !root.busy;
+                label: root.translate("deployment.helper_required", root.language_index);
+                tone: "warn";
+            }
+            if !root.runtime_ready && root.helper_available: CenteredActionButton {
+                width: 156px;
+                label: root.translate("deployment.initialize", root.language_index);
+                primary: true;
+                enabled: !root.busy;
                 activated => { root.initialize_requested(); }
             }
         }
@@ -167,17 +170,15 @@ export component DeploymentPanel inherits Rectangle {
                     overflow: elide;
                 }
 
-                if target.managed || target.configurable: CenteredActionButton {
+                if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
                     width: 112px;
-                    label: !root.helper_available
-                        ? root.translate("deployment.install_helper", root.language_index)
-                        : root.pending_target == target.id
-                            ? target.managed
-                                ? root.translate("deployment.confirm_rollback", root.language_index)
-                                : root.translate("deployment.apply", root.language_index)
-                            : target.managed
-                                ? root.translate("deployment.review_rollback", root.language_index)
-                                : root.translate("deployment.review", root.language_index);
+                    label: root.pending_target == target.id
+                        ? target.managed
+                            ? root.translate("deployment.confirm_rollback", root.language_index)
+                            : root.translate("deployment.apply", root.language_index)
+                        : target.managed
+                            ? root.translate("deployment.review_rollback", root.language_index)
+                            : root.translate("deployment.review", root.language_index);
                     primary: root.pending_target == target.id && !target.managed;
                     danger: target.managed;
                     enabled: root.helper_available && !root.busy
@@ -196,6 +197,15 @@ export component DeploymentPanel inherits Rectangle {
                             }
                         }
                     }
+                }
+                if !root.helper_available && (target.managed || target.configurable): Text {
+                    width: 112px;
+                    text: root.translate("deployment.helper_required", root.language_index);
+                    color: UiTheme.warning-text;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
                 }
                 if !target.managed && !target.configurable: Text {
                     width: 112px;
