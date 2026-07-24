@@ -193,10 +193,14 @@ void test_ui_preferences(const std::filesystem::path& root) {
     require(
         legacy->window_controls == WindowControlsPreference::automatic,
         "legacy window controls should default to automatic");
+    require(
+        !legacy->desktop_auth_test_passed,
+        "legacy authentication test state should default to incomplete");
 
     auto updated = *legacy;
     updated.theme = ThemePreference::dark;
     updated.window_controls = WindowControlsPreference::hidden;
+    updated.desktop_auth_test_passed = true;
     require(
         su::app::save_ui_preferences(path, updated).has_value(),
         "complete UI preferences should save");
@@ -209,6 +213,10 @@ void test_ui_preferences(const std::filesystem::path& root) {
     require(!su::app::load_ui_preferences(path), "unknown window controls mode should fail");
     write_file(path, R"({"language":false})");
     require(!su::app::load_ui_preferences(path), "non-string language should fail");
+    write_file(path, R"({"desktop_auth_test_passed":"yes"})");
+    require(
+        !su::app::load_ui_preferences(path),
+        "non-boolean authentication test state should fail");
 }
 
 void test_window_controls_policy() {

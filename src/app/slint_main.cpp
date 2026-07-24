@@ -354,13 +354,23 @@ int main(int argc, char** argv) {
         window_controls_preference_index(preferences->window_controls));
     window->set_window_frame_visible(su::app::window_controls_visible(
         preferences->window_controls, theme_paths.desktop));
-    window->on_language_selected([catalog, preference_path, preferences](int index) {
-        if (index < 0 || static_cast<std::size_t>(index) >= catalog->size()) {
-            return;
-        }
-        preferences->language = catalog->language_code(static_cast<std::size_t>(index));
-        persist_ui_preferences(preference_path, *preferences);
-    });
+    window->on_language_selected(
+        [weak_window, preview, catalog, preference_path, preferences](int index) {
+            if (index < 0 || static_cast<std::size_t>(index) >= catalog->size()) {
+                return;
+            }
+            preferences->language = catalog->language_code(static_cast<std::size_t>(index));
+            persist_ui_preferences(preference_path, *preferences);
+            if (const auto window = weak_window.lock()) {
+                if (!preview->is_running()) {
+                    set_preview_idle(*window, *catalog);
+                }
+                if ((*window)->get_desktop_auth_passed()) {
+                    (*window)->set_activity_title(slint::SharedString(
+                        translated(*catalog, *window, "activity.auth_passed")));
+                }
+            }
+        });
     window->on_theme_mode_selected(
         [preference_path, preferences, theme_monitor](int index) {
             const auto selected = theme_preference_at(index);
@@ -415,13 +425,18 @@ int main(int argc, char** argv) {
     window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
     window->set_seetaface_available(snapshot->seetaface_available);
     apply_system_status(window, controller->load_system_status());
+    window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
     window->set_selected_camera(selected_camera);
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
     set_preview_idle(window, *catalog);
-    window->set_activity_title(slint::SharedString(catalog->translate(selected_language, "activity.not_checked")));
+    window->set_activity_title(slint::SharedString(catalog->translate(
+        selected_language,
+        preferences->desktop_auth_test_passed
+            ? "activity.auth_passed"
+            : "activity.not_checked")));
     window->set_settings_status(slint::SharedString(catalog->translate(selected_language, "settings.saved")));
 
     window->on_refresh_system_status_requested([weak_window, controller] {
@@ -485,7 +500,14 @@ int main(int argc, char** argv) {
             }).detach();
         });
 
-    window->on_current_frame_auth_requested([weak_window, controller, preview, profiles, catalog] {
+    window->on_current_frame_auth_requested([
+        weak_window,
+        controller,
+        preview,
+        profiles,
+        catalog,
+        preference_path,
+        preferences] {
         if (auto window = weak_window.lock()) {
             preview->stop();
             set_preview_idle(*window, *catalog);
@@ -497,10 +519,22 @@ int main(int argc, char** argv) {
                 true);
         }
 
-        std::thread([weak_window, controller, profiles, catalog] {
+        std::thread([
+            weak_window,
+            controller,
+            profiles,
+            catalog,
+            preference_path,
+            preferences] {
             auto result = controller->authenticate_current_frame();
             slint::invoke_from_event_loop(
-                [weak_window, profiles, catalog, result = std::move(result)]() mutable {
+                [
+                    weak_window,
+                    profiles,
+                    catalog,
+                    preference_path,
+                    preferences,
+                    result = std::move(result)]() mutable {
                     const auto window = weak_window.lock();
                     if (!window) {
                         return;
@@ -515,7 +549,11 @@ int main(int argc, char** argv) {
                     }
 
                     update_profiles(profiles, result->profiles);
-                    (*window)->set_desktop_auth_passed(result->decision.accepted);
+                    if (result->decision.accepted) {
+                        (*window)->set_desktop_auth_passed(true);
+                        preferences->desktop_auth_test_passed = true;
+                        persist_ui_preferences(preference_path, *preferences);
+                    }
                     const auto detail = result->report.best_profile_label.empty()
                         ? translated_value(
                             *catalog,

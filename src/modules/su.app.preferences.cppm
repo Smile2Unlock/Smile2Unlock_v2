@@ -24,6 +24,7 @@ struct UiPreferences {
     std::optional<std::string> language;
     ThemePreference theme = ThemePreference::system;
     WindowControlsPreference window_controls = WindowControlsPreference::automatic;
+    bool desktop_auth_test_passed = false;
 
     auto operator<=>(const UiPreferences&) const = default;
 };
@@ -256,6 +257,13 @@ std::expected<UiPreferences, std::string> load_ui_preferences(
             }
             preferences.window_controls = *parsed;
         }
+        if (document.contains("desktop_auth_test_passed")) {
+            if (!document["desktop_auth_test_passed"].is_boolean()) {
+                return std::unexpected("desktop_auth_test_passed preference must be a boolean");
+            }
+            preferences.desktop_auth_test_passed =
+                document["desktop_auth_test_passed"].get<bool>();
+        }
         return preferences;
     } catch (const std::exception& error) {
         return std::unexpected(std::format("failed to load {}: {}", path.string(), error.what()));
@@ -270,6 +278,7 @@ std::expected<void, std::string> save_ui_preferences(
         auto document = Json{
             {"theme_mode", theme_preference_name(preferences.theme)},
             {"window_controls", window_controls_preference_name(preferences.window_controls)},
+            {"desktop_auth_test_passed", preferences.desktop_auth_test_passed},
         };
         if (preferences.language) {
             document["language"] = *preferences.language;
