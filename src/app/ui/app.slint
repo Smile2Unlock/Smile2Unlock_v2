@@ -1,248 +1,12 @@
 import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
-
-export global UiTheme {
-    in-out property <bool> dark-mode: false;
-    in-out property <color> canvas: #f3f6f5;
-    in-out property <color> surface: #ffffff;
-    in-out property <color> surface-subtle: #edf3f1;
-    in-out property <color> surface-selected: #dcece7;
-    in-out property <color> border: #d6dfdc;
-    in-out property <color> divider: #e2e8e6;
-
-    in-out property <color> text-primary: #182d27;
-    in-out property <color> text-secondary: #65746f;
-    in-out property <color> text-tertiary: #75827e;
-
-    in-out property <color> primary: #155447;
-    in-out property <color> primary-hover: #1c6655;
-    in-out property <color> primary-pressed: #0e3a30;
-    in-out property <color> on-primary: #ffffff;
-
-    in-out property <color> success-surface: #d8eee5;
-    in-out property <color> success-text: #165c46;
-    in-out property <color> warning-surface: #f5e7c5;
-    in-out property <color> warning-text: #775514;
-    in-out property <color> danger-surface: #f5dcdc;
-    in-out property <color> danger-hover: #fff1f1;
-    in-out property <color> danger-text: #983535;
-    in-out property <color> disabled-surface: #e8edeb;
-    in-out property <color> disabled-text: #8b9894;
-
-    in-out property <color> preview-surface: #101816;
-    in-out property <color> preview-overlay: #15201ecc;
-    in-out property <color> preview-text: #e8f6f1;
-    in-out property <color> face-indicator: #4dd3a7;
-}
-
-export struct ProfileRow {
-    id: string,
-    label: string,
-    enrolled_at: string,
-}
-
-component NavButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> selected: false;
-    callback activated();
-
-    height: 44px;
-    border-radius: 6px;
-    background: selected ? UiTheme.surface-selected : nav-touch.has-hover ? UiTheme.surface-subtle : transparent;
-
-    Text {
-        x: 14px;
-        width: parent.width - 28px;
-        height: parent.height;
-        text: root.label;
-        color: root.selected ? UiTheme.primary : UiTheme.text-secondary;
-        font-size: 14px;
-        font-weight: root.selected ? 700 : 500;
-        vertical-alignment: center;
-    }
-
-    nav-touch := TouchArea {
-        clicked => { root.activated(); }
-    }
-}
-
-component ActionButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> primary: false;
-    in property <bool> danger: false;
-    in property <bool> enabled: true;
-    callback activated();
-
-    height: 40px;
-    min-width: 104px;
-    border-radius: 6px;
-    border-width: primary ? 0px : 1px;
-    border-color: danger ? UiTheme.danger-surface : UiTheme.border;
-    background: !enabled ? UiTheme.disabled-surface
-        : primary ? (button-touch.pressed ? UiTheme.primary-pressed : button-touch.has-hover ? UiTheme.primary-hover : UiTheme.primary)
-        : danger ? (button-touch.has-hover ? UiTheme.danger-hover : UiTheme.surface)
-        : button-touch.has-hover ? UiTheme.surface-subtle : UiTheme.surface;
-
-    Text {
-        width: parent.width;
-        height: parent.height;
-        text: root.label;
-        color: !root.enabled ? UiTheme.disabled-text
-            : root.primary ? UiTheme.on-primary
-            : root.danger ? UiTheme.danger-text
-            : UiTheme.text-primary;
-        font-size: 14px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    button-touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.activated(); }
-    }
-}
-
-component StatusPill inherits Rectangle {
-    in property <string> label;
-    in property <string> tone: "neutral";
-
-    height: 26px;
-    border-radius: 13px;
-    background: tone == "good" ? UiTheme.success-surface
-        : tone == "warn" ? UiTheme.warning-surface
-        : tone == "bad" ? UiTheme.danger-surface
-        : UiTheme.disabled-surface;
-
-    Text {
-        x: 11px;
-        width: parent.width - 22px;
-        height: parent.height;
-        text: root.label;
-        color: root.tone == "good" ? UiTheme.success-text
-            : root.tone == "warn" ? UiTheme.warning-text
-            : root.tone == "bad" ? UiTheme.danger-text
-            : UiTheme.text-secondary;
-        font-size: 12px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-component CenteredActionButton inherits VerticalLayout {
-    in property <string> label;
-    in property <bool> primary: false;
-    in property <bool> danger: false;
-    in property <bool> enabled: true;
-    callback activated();
-
-    Rectangle { vertical-stretch: 1; background: transparent; }
-    ActionButton {
-        width: parent.width;
-        label: root.label;
-        primary: root.primary;
-        danger: root.danger;
-        enabled: root.enabled;
-        activated => { root.activated(); }
-    }
-    Rectangle { vertical-stretch: 1; background: transparent; }
-}
-
-component CenteredStatusPill inherits VerticalLayout {
-    in property <string> label;
-    in property <string> tone: "neutral";
-
-    Rectangle { vertical-stretch: 1; background: transparent; }
-    StatusPill { width: parent.width; label: root.label; tone: root.tone; }
-    Rectangle { vertical-stretch: 1; background: transparent; }
-}
-
-component MetricBlock inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    in property <string> detail;
-
-    height: 100px;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: UiTheme.border;
-    background: UiTheme.surface;
-
-    VerticalLayout {
-        padding: 15px;
-        spacing: 5px;
-
-        Text { text: root.label; color: UiTheme.text-secondary; font-size: 12px; }
-        Text { text: root.value; color: UiTheme.text-primary; font-size: 20px; font-weight: 700; }
-        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
-    }
-}
-
-component SectionTitle inherits HorizontalLayout {
-    in property <string> title;
-    in property <string> detail;
-
-    height: 48px;
-    spacing: 12px;
-
-    VerticalLayout {
-        spacing: 3px;
-        Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; }
-        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
-    }
-}
-
-component PageHeader inherits VerticalLayout {
-    in property <string> title;
-    in property <string> detail;
-
-    height: 58px;
-    spacing: 5px;
-
-    Text { text: root.title; color: UiTheme.text-primary; font-size: 25px; font-weight: 800; }
-    Text { text: root.detail; color: UiTheme.text-secondary; font-size: 13px; overflow: elide; }
-}
-
-component SegmentedSelector inherits Rectangle {
-    in property <[string]> options;
-    in-out property <int> current-index: 0;
-    callback selected(int);
-
-    height: 36px;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: UiTheme.border;
-    background: UiTheme.surface-subtle;
-    clip: true;
-
-    HorizontalLayout {
-        spacing: 0px;
-        for option[index] in root.options: Rectangle {
-            horizontal-stretch: 1;
-            background: root.current-index == index
-                ? UiTheme.surface-selected
-                : option-touch.has-hover ? UiTheme.surface : transparent;
-
-            Text {
-                width: parent.width;
-                height: parent.height;
-                text: option;
-                color: root.current-index == index ? UiTheme.primary : UiTheme.text-secondary;
-                font-size: 12px;
-                font-weight: root.current-index == index ? 700 : 500;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-            option-touch := TouchArea {
-                clicked => {
-                    root.current-index = index;
-                    root.selected(index);
-                }
-            }
-        }
-    }
-}
+export { UiTheme } from "theme.slint";
+export { ProfileRow } from "components.slint";
+import { UiTheme } from "theme.slint";
+import {
+    ActionButton, CenteredActionButton, CenteredStatusPill, DiagnosticRow,
+    MetricBlock, NavButton, PageHeader, ProfileRow, SectionTitle,
+    SegmentedSelector, SetupStep, StatusPill,
+} from "components.slint";
 
 export component AppWindow inherits Window {
     in property <string> title_text: "Smile2Unlock";
@@ -254,7 +18,12 @@ export component AppWindow inherits Window {
     in property <string> camera_text: "";
     in property <int> camera_count: 0;
     in property <bool> seetaface_available: false;
-    in property <bool> control_socket_present: false;
+    in property <bool> service_available: false;
+    in property <int> storage_protection_index: 0;
+    in property <bool> pam_status_known: false;
+    in property <bool> pam_configured: false;
+    in property <string> pam_service: "";
+    in-out property <bool> desktop_auth_passed: false;
     in property <[ProfileRow]> profiles;
     in property <[string]> camera_options;
     in property <[string]> language_names;
@@ -290,7 +59,7 @@ export component AppWindow inherits Window {
     callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
-    callback migrate_profiles_requested();
+    callback refresh_system_status_requested();
     callback start_preview_requested();
     callback stop_preview_requested();
     callback save_settings_requested(int, float, bool, float, int);
@@ -309,19 +78,24 @@ export component AppWindow inherits Window {
 
     title: title_text;
     no-frame: !root.window_frame_visible;
-    preferred-width: 1180px;
-    preferred-height: 760px;
-    min-width: 920px;
-    min-height: 640px;
+    preferred-width: 1400px;
+    preferred-height: 820px;
+    min-width: 1180px;
+    min-height: 700px;
     background: UiTheme.canvas;
 
-    private property <length> page-padding: 28px;
+    private property <bool> compact-layout: root.width < 1020px;
+    private property <bool> storage-ready: root.storage_protection_index == 1 || root.storage_protection_index == 2;
+    private property <bool> auth-ready: root.service_available && root.seetaface_available && root.camera_count > 0;
+    private property <bool> runtime-ready: root.auth-ready && root.storage-ready;
+    private property <bool> setup-complete: root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured;
+    private property <length> page-padding: 18px;
 
     HorizontalLayout {
         spacing: 0px;
 
         Rectangle {
-            width: 216px;
+            width: 176px;
             background: UiTheme.surface;
             border-width: 0px;
 
@@ -396,7 +170,9 @@ export component AppWindow inherits Window {
 
             if root.current_page == 0: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 614px;
+                viewport-height: root.setup-complete
+                    ? (root.compact-layout ? 826px : 614px)
+                    : (root.compact-layout ? 1196px : 984px);
 
                 overview-content := VerticalLayout {
                     width: parent.width;
@@ -408,17 +184,17 @@ export component AppWindow inherits Window {
                         detail: root.translate_value("overview.status_for", root.language_index, root.username);
                     }
 
-                    HorizontalLayout {
+                    if !root.compact-layout: HorizontalLayout {
                         height: 100px;
                         spacing: 12px;
                         MetricBlock {
                             horizontal-stretch: 1;
                             label: root.translate("overview.system_auth", root.language_index);
-                            value: root.control_socket_present
+                            value: root.service_available
                                 ? root.translate("status.online", root.language_index)
                                 : root.translate("status.offline", root.language_index);
-                            detail: root.control_socket_present
-                                ? root.translate("overview.socket_available", root.language_index)
+                            detail: root.service_available
+                                ? root.translate("overview.service_available", root.language_index)
                                 : root.translate("overview.service_unavailable", root.language_index);
                         }
                         MetricBlock {
@@ -440,6 +216,120 @@ export component AppWindow inherits Window {
                                 : root.camera_count == 1
                                     ? root.camera_text
                                     : root.translate_value("camera.count", root.language_index, root.camera_count);
+                        }
+                    }
+
+                    if root.compact-layout: VerticalLayout {
+                        height: 312px;
+                        spacing: 6px;
+                        MetricBlock {
+                            label: root.translate("overview.system_auth", root.language_index);
+                            value: root.service_available
+                                ? root.translate("status.online", root.language_index)
+                                : root.translate("status.offline", root.language_index);
+                            detail: root.service_available
+                                ? root.translate("overview.service_available", root.language_index)
+                                : root.translate("overview.service_unavailable", root.language_index);
+                        }
+                        MetricBlock {
+                            label: root.translate("overview.face_samples", root.language_index);
+                            value: root.profiles.length;
+                            detail: root.profiles.length == 1
+                                ? root.translate("overview.one_sample", root.language_index)
+                                : root.translate_value("overview.sample_count", root.language_index, root.profiles.length);
+                        }
+                        MetricBlock {
+                            label: root.translate("overview.recognizer", root.language_index);
+                            value: root.seetaface_available
+                                ? root.translate("status.ready", root.language_index)
+                                : root.translate("status.unavailable", root.language_index);
+                            detail: root.camera_count == 0
+                                ? root.translate("camera.none", root.language_index)
+                                : root.camera_count == 1
+                                    ? root.camera_text
+                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
+                        }
+                    }
+
+                    if !root.setup-complete: Rectangle {
+                        height: 356px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            SectionTitle {
+                                title: root.translate("onboarding.title", root.language_index);
+                                detail: root.translate("onboarding.subtitle", root.language_index);
+                            }
+                            SetupStep {
+                                number: "1";
+                                title: root.translate("onboarding.service", root.language_index);
+                                detail: root.service_available && root.storage-ready
+                                    ? root.translate("onboarding.service_ready", root.language_index)
+                                    : root.translate("onboarding.service_action", root.language_index);
+                                status: root.service_available && root.storage-ready
+                                    ? root.translate("status.ready", root.language_index)
+                                    : root.translate("status.action_required", root.language_index);
+                                tone: root.service_available && root.storage-ready ? "good" : "warn";
+                                action-label: root.translate("action.review", root.language_index);
+                                activated => { root.current_page = 3; }
+                            }
+                            SetupStep {
+                                number: "2";
+                                title: root.translate("onboarding.hardware", root.language_index);
+                                detail: root.seetaface_available && root.camera_count > 0
+                                    ? root.translate("onboarding.hardware_ready", root.language_index)
+                                    : root.translate("onboarding.hardware_action", root.language_index);
+                                status: root.seetaface_available && root.camera_count > 0
+                                    ? root.translate("status.ready", root.language_index)
+                                    : root.translate("status.action_required", root.language_index);
+                                tone: root.seetaface_available && root.camera_count > 0 ? "good" : "warn";
+                                action-label: root.translate("action.review", root.language_index);
+                                activated => { root.current_page = 3; }
+                            }
+                            SetupStep {
+                                number: "3";
+                                title: root.translate("onboarding.enrollment", root.language_index);
+                                detail: root.profiles.length > 0
+                                    ? root.translate("onboarding.enrollment_ready", root.language_index)
+                                    : root.translate("onboarding.enrollment_action", root.language_index);
+                                status: root.profiles.length > 0
+                                    ? root.translate("status.ready", root.language_index)
+                                    : root.translate("status.action_required", root.language_index);
+                                tone: root.profiles.length > 0 ? "good" : "warn";
+                                action-label: root.translate("action.enroll_face", root.language_index);
+                                activated => { root.current_page = 1; }
+                            }
+                            SetupStep {
+                                number: "4";
+                                title: root.translate("onboarding.desktop_test", root.language_index);
+                                detail: root.desktop_auth_passed
+                                    ? root.translate("onboarding.desktop_test_ready", root.language_index)
+                                    : root.translate("onboarding.desktop_test_action", root.language_index);
+                                status: root.desktop_auth_passed
+                                    ? root.translate("status.passed", root.language_index)
+                                    : root.translate("status.not_tested", root.language_index);
+                                tone: root.desktop_auth_passed ? "good" : "warn";
+                                action-label: root.translate("action.test_auth", root.language_index);
+                                action-enabled: root.auth-ready && root.profiles.length > 0 && !root.busy;
+                                activated => { root.current_frame_auth_requested(); }
+                            }
+                            SetupStep {
+                                number: "5";
+                                title: root.translate("onboarding.pam", root.language_index);
+                                detail: root.pam_configured
+                                    ? root.translate_value("onboarding.pam_ready", root.language_index, root.pam_service)
+                                    : root.translate("onboarding.pam_action", root.language_index);
+                                status: root.pam_configured
+                                    ? root.translate("status.configured", root.language_index)
+                                    : root.translate("status.not_configured", root.language_index);
+                                tone: root.pam_configured ? "good" : "warn";
+                                action-label: root.translate("action.review", root.language_index);
+                                activated => { root.current_page = 3; }
+                            }
                         }
                     }
 
@@ -566,7 +456,7 @@ export component AppWindow inherits Window {
                                     ? root.translate("status.checking", root.language_index)
                                     : root.translate("action.test_auth", root.language_index);
                                 primary: true;
-                                enabled: !root.busy && root.profiles.length > 0;
+                                enabled: !root.busy && root.auth-ready && root.profiles.length > 0;
                                 activated => { root.current_frame_auth_requested(); }
                             }
                         }
@@ -677,7 +567,7 @@ export component AppWindow inherits Window {
                                         ? root.translate("status.capturing", root.language_index)
                                         : root.translate("action.capture_sample", root.language_index);
                                     primary: true;
-                                    enabled: !root.busy && root.seetaface_available && root.control_socket_present && root.camera_count > 0;
+                                    enabled: !root.busy && root.auth-ready;
                                     activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
@@ -917,7 +807,7 @@ export component AppWindow inherits Window {
 
             if root.current_page == 3: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 660px;
+                viewport-height: 908px;
 
                 diagnostics-content := VerticalLayout {
                     width: parent.width;
@@ -930,58 +820,77 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
-                        height: 192px;
+                        height: 394px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
                         background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
-                            spacing: 14px;
-                            SectionTitle { title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
+                            spacing: 6px;
                             HorizontalLayout {
-                                height: 20px;
-                                Text { width: 164px; text: root.translate("diagnostics.auth_service", root.language_index); color: UiTheme.text-secondary; font-size: 13px; }
-                                Text {
-                                    text: root.control_socket_present
-                                        ? root.translate("diagnostics.socket_available", root.language_index)
-                                        : root.translate("diagnostics.socket_unavailable", root.language_index);
-                                    color: root.control_socket_present ? UiTheme.success-text : UiTheme.danger-text;
-                                    font-size: 13px;
-                                    font-weight: 600;
+                                height: 48px;
+                                SectionTitle { horizontal-stretch: 1; title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
+                                CenteredActionButton {
+                                    width: 112px;
+                                    label: root.translate("action.refresh", root.language_index);
+                                    enabled: !root.busy;
+                                    activated => { root.refresh_system_status_requested(); }
                                 }
                             }
-                            HorizontalLayout {
-                                height: 20px;
-                                Text { width: 164px; text: root.translate("diagnostics.recognizer", root.language_index); color: UiTheme.text-secondary; font-size: 13px; }
-                                Text {
-                                    text: root.seetaface_available
-                                        ? root.translate("status.available", root.language_index)
-                                        : root.translate("status.unavailable", root.language_index);
-                                    color: root.seetaface_available ? UiTheme.success-text : UiTheme.danger-text;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.auth_service", root.language_index);
+                                status: root.service_available ? root.translate("status.online", root.language_index) : root.translate("status.offline", root.language_index);
+                                detail: root.service_available ? root.translate("diagnostics.service_ready_detail", root.language_index) : root.translate("diagnostics.service_action", root.language_index);
+                                tone: root.service_available ? "good" : "bad";
                             }
-                            HorizontalLayout {
-                                height: 20px;
-                                Text { width: 164px; text: root.translate("settings.camera", root.language_index); color: UiTheme.text-secondary; font-size: 13px; }
-                                Text {
-                                    text: root.camera_count == 0
-                                        ? root.translate("camera.none", root.language_index)
-                                        : root.camera_count == 1
-                                            ? root.camera_text
-                                            : root.translate_value("camera.count", root.language_index, root.camera_count);
-                                    color: UiTheme.text-primary;
-                                    font-size: 13px;
-                                    overflow: elide;
-                                }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.storage", root.language_index);
+                                status: root.storage_protection_index == 2
+                                    ? root.translate("diagnostics.storage_tpm", root.language_index)
+                                    : root.storage_protection_index == 1
+                                        ? root.translate("diagnostics.storage_host", root.language_index)
+                                        : root.storage_protection_index == 3
+                                            ? root.translate("status.unknown", root.language_index)
+                                            : root.translate("status.unavailable", root.language_index);
+                                detail: root.storage-ready ? root.translate("diagnostics.storage_ready_detail", root.language_index) : root.translate("diagnostics.storage_action", root.language_index);
+                                tone: root.storage-ready ? "good" : "bad";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.recognizer", root.language_index);
+                                status: root.seetaface_available ? root.translate("status.available", root.language_index) : root.translate("status.unavailable", root.language_index);
+                                detail: root.seetaface_available ? root.translate("diagnostics.recognizer_ready_detail", root.language_index) : root.translate("diagnostics.recognizer_action", root.language_index);
+                                tone: root.seetaface_available ? "good" : "bad";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("settings.camera", root.language_index);
+                                status: root.camera_count == 0 ? root.translate("camera.none", root.language_index) : root.camera_text;
+                                detail: root.camera_count == 0 ? root.translate("diagnostics.camera_action", root.language_index) : root.translate("diagnostics.camera_ready_detail", root.language_index);
+                                tone: root.camera_count > 0 ? "good" : "bad";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("overview.face_samples", root.language_index);
+                                status: root.profiles.length == 0 ? root.translate("enrollment.no_samples", root.language_index) : root.translate_value("enrollment.sample_count", root.language_index, root.profiles.length);
+                                detail: root.profiles.length == 0 ? root.translate("diagnostics.profiles_action", root.language_index) : root.translate("diagnostics.profiles_ready_detail", root.language_index);
+                                tone: root.profiles.length > 0 ? "good" : "warn";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.pam", root.language_index);
+                                status: !root.pam_status_known
+                                    ? root.translate("status.unknown", root.language_index)
+                                    : root.pam_configured
+                                        ? root.translate("status.configured", root.language_index)
+                                        : root.translate("status.not_configured", root.language_index);
+                                detail: root.pam_configured
+                                    ? root.translate_value("diagnostics.pam_ready_detail", root.language_index, root.pam_service)
+                                    : root.translate("diagnostics.pam_action", root.language_index);
+                                tone: root.pam_configured ? "good" : "warn";
                             }
                         }
                     }
 
                     Rectangle {
-                        height: 226px;
+                        height: 170px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
@@ -1005,16 +914,6 @@ export component AppWindow inherits Window {
                                 Text { text: root.translate("overview.face_samples", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
                                 Text { text: root.profile_store_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
                             }
-                            HorizontalLayout {
-                                height: 40px;
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
-                                ActionButton {
-                                    width: 176px;
-                                    label: root.translate("action.import_legacy", root.language_index);
-                                    enabled: root.control_socket_present && !root.busy;
-                                    activated => { root.migrate_profiles_requested(); }
-                                }
-                            }
                         }
                     }
 
@@ -1033,8 +932,8 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 44px;
                                     spacing: 6px;
-                                    Text { text: root.translate("diagnostics.auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
-                                    Text { text: root.activity_title; color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
+                                    Text { text: root.translate("diagnostics.desktop_auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
+                                    Text { text: root.translate("diagnostics.desktop_auth_detail", root.language_index); color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
@@ -1044,7 +943,7 @@ export component AppWindow inherits Window {
                                     ? root.translate("status.checking", root.language_index)
                                     : root.translate("action.run_check", root.language_index);
                                 primary: true;
-                                enabled: !root.busy && root.profiles.length > 0 && root.control_socket_present && root.seetaface_available && root.camera_count > 0;
+                                enabled: !root.busy && root.auth-ready && root.profiles.length > 0;
                                 activated => { root.current_frame_auth_requested(); }
                             }
                         }
