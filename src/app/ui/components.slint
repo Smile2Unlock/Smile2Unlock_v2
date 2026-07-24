@@ -1,0 +1,309 @@
+import { UiTheme } from "theme.slint";
+
+export struct ProfileRow {
+    id: string,
+    label: string,
+    enrolled_at: string,
+}
+
+export component NavButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    callback activated();
+
+    height: 44px;
+    border-radius: 6px;
+    border-width: nav-focus.has-focus ? 2px : 0px;
+    border-color: UiTheme.primary;
+    background: selected ? UiTheme.surface-selected : nav-touch.has-hover ? UiTheme.surface-subtle : transparent;
+    forward-focus: nav-focus;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+
+    Text {
+        x: 14px;
+        width: parent.width - 28px;
+        height: parent.height;
+        text: root.label;
+        color: root.selected ? UiTheme.primary : UiTheme.text-secondary;
+        font-size: 14px;
+        font-weight: root.selected ? 700 : 500;
+        vertical-alignment: center;
+    }
+
+    nav-touch := TouchArea { clicked => { root.activated(); } }
+    nav-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback activated();
+
+    height: 40px;
+    min-width: 104px;
+    border-radius: 6px;
+    border-width: primary ? 0px : 1px;
+    border-color: button-focus.has-focus ? UiTheme.primary : danger ? UiTheme.danger-surface : UiTheme.border;
+    background: !enabled ? UiTheme.disabled-surface
+        : primary ? (button-touch.pressed ? UiTheme.primary-pressed : button-touch.has-hover ? UiTheme.primary-hover : UiTheme.primary)
+        : danger ? (button-touch.has-hover ? UiTheme.danger-hover : UiTheme.surface)
+        : button-touch.has-hover ? UiTheme.surface-subtle : UiTheme.surface;
+    forward-focus: button-focus;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: !root.enabled ? UiTheme.disabled-text
+            : root.primary ? UiTheme.on-primary
+            : root.danger ? UiTheme.danger-text
+            : UiTheme.text-primary;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    button-touch := TouchArea { enabled: root.enabled; clicked => { root.activated(); } }
+    button-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+export component StatusPill inherits Rectangle {
+    in property <string> label;
+    in property <string> tone: "neutral";
+
+    height: 26px;
+    border-radius: 13px;
+    background: tone == "good" ? UiTheme.success-surface
+        : tone == "warn" ? UiTheme.warning-surface
+        : tone == "bad" ? UiTheme.danger-surface
+        : UiTheme.disabled-surface;
+
+    Text {
+        x: 11px;
+        width: parent.width - 22px;
+        height: parent.height;
+        text: root.label;
+        color: root.tone == "good" ? UiTheme.success-text
+            : root.tone == "warn" ? UiTheme.warning-text
+            : root.tone == "bad" ? UiTheme.danger-text
+            : UiTheme.text-secondary;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+export component CenteredActionButton inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback activated();
+
+    Rectangle { vertical-stretch: 1; background: transparent; }
+    ActionButton {
+        width: parent.width;
+        label: root.label;
+        primary: root.primary;
+        danger: root.danger;
+        enabled: root.enabled;
+        activated => { root.activated(); }
+    }
+    Rectangle { vertical-stretch: 1; background: transparent; }
+}
+
+export component CenteredStatusPill inherits VerticalLayout {
+    in property <string> label;
+    in property <string> tone: "neutral";
+
+    Rectangle { vertical-stretch: 1; background: transparent; }
+    StatusPill { width: parent.width; label: root.label; tone: root.tone; }
+    Rectangle { vertical-stretch: 1; background: transparent; }
+}
+
+export component MetricBlock inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> detail;
+
+    height: 100px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: UiTheme.border;
+    background: UiTheme.surface;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 5px;
+        Text { text: root.label; color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
+        Text { text: root.value; color: UiTheme.text-primary; font-size: 20px; font-weight: 700; overflow: elide; }
+        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+    }
+}
+
+export component SetupStep inherits Rectangle {
+    in property <string> number;
+    in property <string> title;
+    in property <string> detail;
+    in property <string> status;
+    in property <string> tone: "neutral";
+    in property <string> action-label;
+    in property <bool> action-enabled: true;
+    callback activated();
+
+    height: 52px;
+    background: transparent;
+    HorizontalLayout {
+        spacing: 12px;
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            border-radius: 14px;
+            background: root.tone == "good" ? UiTheme.success-surface : UiTheme.surface-subtle;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.number;
+                color: root.tone == "good" ? UiTheme.success-text : UiTheme.text-secondary;
+                font-size: 12px;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            Text { text: root.title; color: UiTheme.text-primary; font-size: 13px; font-weight: 700; overflow: elide; }
+            Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 11px; overflow: elide; }
+        }
+        CenteredStatusPill { width: 92px; label: root.status; tone: root.tone; }
+        CenteredActionButton {
+            width: 112px;
+            label: root.action-label;
+            enabled: root.action-enabled;
+            activated => { root.activated(); }
+        }
+    }
+}
+
+export component DiagnosticRow inherits Rectangle {
+    in property <string> label;
+    in property <string> status;
+    in property <string> detail;
+    in property <string> tone: "neutral";
+
+    height: 44px;
+    background: transparent;
+    HorizontalLayout {
+        spacing: 14px;
+        Text { width: 150px; text: root.label; color: UiTheme.text-secondary; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            Text {
+                text: root.status;
+                color: root.tone == "good" ? UiTheme.success-text : root.tone == "bad" ? UiTheme.danger-text : UiTheme.warning-text;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 11px; overflow: elide; }
+        }
+    }
+}
+
+export component SectionTitle inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> detail;
+
+    height: 48px;
+    spacing: 12px;
+    VerticalLayout {
+        spacing: 3px;
+        Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
+        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+    }
+}
+
+export component PageHeader inherits VerticalLayout {
+    in property <string> title;
+    in property <string> detail;
+
+    height: 58px;
+    spacing: 5px;
+    Text { text: root.title; color: UiTheme.text-primary; font-size: 25px; font-weight: 800; overflow: elide; }
+    Text { text: root.detail; color: UiTheme.text-secondary; font-size: 13px; overflow: elide; }
+}
+
+export component SegmentedSelector inherits Rectangle {
+    in property <[string]> options;
+    in-out property <int> current-index: 0;
+    callback selected(int);
+
+    height: 36px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: UiTheme.border;
+    background: UiTheme.surface-subtle;
+    clip: true;
+    HorizontalLayout {
+        spacing: 0px;
+        for option[index] in root.options: Rectangle {
+            horizontal-stretch: 1;
+            background: root.current-index == index
+                ? UiTheme.surface-selected
+                : option-touch.has-hover ? UiTheme.surface : transparent;
+            Text {
+                width: parent.width;
+                height: parent.height;
+                text: option;
+                color: root.current-index == index ? UiTheme.primary : UiTheme.text-secondary;
+                font-size: 12px;
+                font-weight: root.current-index == index ? 700 : 500;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            option-touch := TouchArea {
+                clicked => {
+                    root.current-index = index;
+                    root.selected(index);
+                }
+            }
+        }
+    }
+}

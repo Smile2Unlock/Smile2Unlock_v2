@@ -252,6 +252,16 @@ void persist_ui_preferences(
     }
 }
 
+void apply_system_status(
+    const WindowHandle& window,
+    const su::app::SystemStatus& status) {
+    window->set_service_available(status.service_available);
+    window->set_storage_protection_index(static_cast<int>(status.storage_protection));
+    window->set_pam_status_known(status.pam_status_known);
+    window->set_pam_configured(status.pam_configured);
+    window->set_pam_service(slint::SharedString(status.pam_service));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -404,7 +414,7 @@ int main(int argc, char** argv) {
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
     window->set_seetaface_available(snapshot->seetaface_available);
-    window->set_control_socket_present(std::filesystem::exists("/run/smile2unlock/control.sock"));
+    apply_system_status(window, controller->load_system_status());
     window->set_selected_camera(selected_camera);
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
     window->set_liveness_enabled(snapshot->config.liveness_detection);
@@ -413,6 +423,17 @@ int main(int argc, char** argv) {
     set_preview_idle(window, *catalog);
     window->set_activity_title(slint::SharedString(catalog->translate(selected_language, "activity.not_checked")));
     window->set_settings_status(slint::SharedString(catalog->translate(selected_language, "settings.saved")));
+
+    window->on_refresh_system_status_requested([weak_window, controller] {
+        std::thread([weak_window, controller] {
+            const auto status = controller->load_system_status();
+            slint::invoke_from_event_loop([weak_window, status] {
+                if (const auto window = weak_window.lock()) {
+                    apply_system_status(*window, status);
+                }
+            });
+        }).detach();
+    });
 
     window->on_enroll_current_frame_requested(
         [weak_window, controller, preview, profiles, catalog](slint::SharedString requested_label) {
@@ -494,6 +515,7 @@ int main(int argc, char** argv) {
                     }
 
                     update_profiles(profiles, result->profiles);
+                    (*window)->set_desktop_auth_passed(result->decision.accepted);
                     const auto detail = result->report.best_profile_label.empty()
                         ? translated_value(
                             *catalog,
@@ -583,44 +605,6 @@ int main(int argc, char** argv) {
             translated(*catalog, *window, "activity.refreshed"),
             translated(*catalog, *window, "activity.refreshed_detail"),
             "good");
-    });
-
-    window->on_migrate_profiles_requested([weak_window, controller, profiles, catalog] {
-        if (const auto window = weak_window.lock()) {
-            (*window)->set_busy(true);
-        }
-        std::thread([weak_window, controller, profiles, catalog] {
-            const auto migrated = controller->migrate_legacy_profiles();
-            auto rows = migrated
-                ? controller->list_face_profile_rows()
-                : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
-                    std::unexpected(migrated.error())};
-            slint::invoke_from_event_loop(
-                [weak_window, profiles, catalog, migrated, rows = std::move(rows)]() mutable {
-                    const auto window = weak_window.lock();
-                    if (!window) {
-                        return;
-                    }
-                    (*window)->set_busy(false);
-                    if (!migrated || !rows) {
-                        set_activity(
-                            *window,
-                            translated(*catalog, *window, "activity.migration_failed"),
-                            migrated ? rows.error() : migrated.error(),
-                            "bad");
-                        return;
-                    }
-                    update_profiles(profiles, *rows);
-                    set_activity(
-                        *window,
-                        translated(
-                            *catalog,
-                            *window,
-                            *migrated ? "activity.migration_done" : "activity.migration_none"),
-                        translated(*catalog, *window, "activity.refreshed_detail"),
-                        *migrated ? "good" : "neutral");
-                });
-        }).detach();
     });
 
     window->on_save_settings_requested(

@@ -15,6 +15,10 @@ namespace {
 
 constexpr std::string_view kImageSourcePrefix = "image:";
 constexpr std::string_view kControlSocketPath = su::control::kDefaultSocketPath;
+constexpr auto kPamServicePaths = std::array{
+    std::string_view{"/etc/pam.d/dankshell-smile2unlock"},
+    std::string_view{"/etc/pam.d/greetd"},
+};
 
 std::uint64_t next_request_id() {
     static auto sequence = std::atomic<std::uint64_t>{1};
@@ -39,6 +43,49 @@ std::expected<su::control::ControlResponse, std::string> send_control_request(
         return std::unexpected("authentication service returned an invalid response");
     }
     return *parsed;
+}
+
+StorageProtection storage_protection_from_response(
+    const su::control::ControlResponse& response) {
+    if (response.result != su::control::ControlResult::kAccepted) {
+        return StorageProtection::kUnavailable;
+    }
+    const auto payload = nlohmann::json::parse(response.payload_json, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object()
+        || !payload.contains("protection") || !payload["protection"].is_string()) {
+        return StorageProtection::kUnknown;
+    }
+    const auto protection = payload["protection"].get<std::string>();
+    if (protection == "host+tpm2" || protection == "TPM2-bound" || protection == "tpm2") {
+        return StorageProtection::kHostTpm2;
+    }
+    if (protection == "host-key" || protection == "host") {
+        return StorageProtection::kHostKey;
+    }
+    if (protection == "unavailable") {
+        return StorageProtection::kUnavailable;
+    }
+    return StorageProtection::kUnknown;
+}
+
+std::pair<bool, std::string> configured_pam_service() {
+    for (const auto path_text : kPamServicePaths) {
+        const auto path = std::filesystem::path{path_text};
+        auto input = std::ifstream{path};
+        if (!input) {
+            continue;
+        }
+        for (auto line = std::string{}; std::getline(input, line);) {
+            const auto first = line.find_first_not_of(" \t");
+            if (first == std::string::npos || line[first] == '#') {
+                continue;
+            }
+            if (line.find("pam_smile2unlock.so", first) != std::string::npos) {
+                return {true, path.filename().string()};
+            }
+        }
+    }
+    return {false, {}};
 }
 
 std::expected<std::vector<FaceProfileSummary>, std::string> profile_rows_from_json(
@@ -444,20 +491,29 @@ std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::s
     return true;
 }
 
-std::expected<bool, std::string> AppController::migrate_legacy_profiles() {
-    const auto username = current_account_name();
-    if (username.empty()) {
-        return std::unexpected("failed to resolve current account");
+SystemStatus AppController::load_system_status() {
+    auto status = SystemStatus{};
+    if (const auto response = send_control_request(
+            su::control::make_status_request(next_request_id())); response) {
+        status.service_available = response->result == su::control::ControlResult::kAccepted;
+        status.service_reason = response->reason;
+    } else {
+        status.service_reason = response.error();
     }
-    const auto response = send_control_request(su::control::make_migrate_profiles_request(
-        next_request_id(), username));
-    if (!response) {
-        return std::unexpected(response.error());
+
+    if (const auto response = send_control_request(
+            su::control::make_storage_status_request(next_request_id())); response) {
+        status.storage_protection = storage_protection_from_response(*response);
     }
-    if (response->result != su::control::ControlResult::kAccepted) {
-        return std::unexpected(response->reason);
+
+    std::error_code error;
+    status.pam_status_known = std::filesystem::is_directory("/etc/pam.d", error) && !error;
+    if (status.pam_status_known) {
+        auto [configured, service] = configured_pam_service();
+        status.pam_configured = configured;
+        status.pam_service = std::move(service);
     }
-    return response->reason == "legacy profiles migrated";
+    return status;
 }
 
 }  // namespace su::app
