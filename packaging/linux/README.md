@@ -20,9 +20,10 @@ Create the portable archive:
 packaging/linux/package.sh --format tar.gz
 ```
 
-The archive contains `su_app`, `su_authd`, the PAM module, bundled Slint and
-SeetaFace libraries, models, language packs, the systemd unit, desktop entry,
-icon, DMS lock-screen PAM template and installer, and license files.
+The archive contains `su_app`, `su_authd`, the restricted deployment helper,
+the PAM module, bundled Slint and SeetaFace libraries, models, language packs,
+systemd, D-Bus and Polkit integration, the desktop entry, DMS PAM resources,
+and license files.
 
 ## Native packages
 
@@ -41,9 +42,9 @@ packaging/linux/package.sh --format rpm
 ```
 
 The package layout is the same for every format. DEB dependencies default to
-`libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0`;
+`libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0,dbus,polkitd`;
 RPM dependencies default to
-`glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs`. Override
+`glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs,dbus,polkit`. Override
 `PACKAGE_DEPENDS` when a target distribution uses different package names:
 
 ```bash
@@ -65,8 +66,12 @@ PAM_MODULE_DIR=/lib/x86_64-linux-gnu/security \
 ```
 
 The package never enables `su-authd.service` and never edits `/etc/pam.d`.
-Install the package first, initialize the machine storage key, then start the
-service:
+Install the package, open `su_app`, then use the Desktop Integration section to
+initialize storage and configure a detected login or lock-screen target. The
+GUI requests administrator authorization through the restricted deployment
+helper and shows password fallback before applying a PAM change.
+
+For headless recovery, storage initialization remains available directly:
 
 ```bash
 sudo /usr/libexec/smile2unlock/setup-storage-key
@@ -75,13 +80,14 @@ sudo systemctl enable --now su-authd.service
 
 The setup command preserves an existing key. It selects TPM2-bound protection
 when TPM2 is available and the systemd host-key fallback otherwise; it never
-falls back to plaintext. Then follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
-to enable and validate the desired PAM entry point.
+falls back to plaintext. Follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
+for manual diagnostics or recovery.
 
 ## DMS lock screen
 
-After installing the package and starting `su-authd.service`, install the
-dedicated PAM service as root:
+The GUI detects the DMS command-line API and configures both the root-owned PAM
+service and the current user's `lockPamPath`. The following commands are kept
+for headless recovery:
 
 ```bash
 sudo /usr/libexec/smile2unlock/install-dms-lock
@@ -116,6 +122,7 @@ Verify generated native packages on the matching distribution family:
 ```bash
 packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3.deb
 packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3.rpm
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3-x86_64.tar.gz
 ```
 
 DEB verification requires `dpkg-deb` and `patchelf`. RPM verification requires
