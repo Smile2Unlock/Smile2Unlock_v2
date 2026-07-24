@@ -78,6 +78,7 @@ require_file() {
 
 require_file "${build_dir}/su_app"
 require_file "${build_dir}/su_authd"
+require_file "${build_dir}/su_deploy_helper"
 require_file "${build_dir}/pam_smile2unlock.so"
 require_file "${build_dir}/assets/i18n/en.json"
 require_file "${build_dir}/assets/i18n/zh-CN.json"
@@ -97,6 +98,9 @@ mkdir -p \
     "${root_dir}${pam_module_dir}" \
     "${root_dir}/usr/lib/smile2unlock" \
     "${root_dir}/usr/lib/systemd/system" \
+    "${root_dir}/usr/share/dbus-1/system-services" \
+    "${root_dir}/usr/share/dbus-1/system.d" \
+    "${root_dir}/usr/share/polkit-1/actions" \
     "${root_dir}/usr/share/applications" \
     "${root_dir}/usr/share/icons/hicolor/128x128/apps" \
     "${root_dir}/usr/share/smile2unlock/i18n" \
@@ -108,6 +112,8 @@ mkdir -p \
 install -m 0755 "${build_dir}/su_app" "${root_dir}/usr/bin/su_app"
 install -m 0755 "${build_dir}/su_authd" \
     "${root_dir}/usr/libexec/smile2unlock/su_authd"
+install -m 0755 "${build_dir}/su_deploy_helper" \
+    "${root_dir}/usr/libexec/smile2unlock/su_deploy_helper"
 install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" \
     "${root_dir}/usr/libexec/smile2unlock/install-dms-lock"
 install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" \
@@ -116,6 +122,14 @@ install -m 0644 "${build_dir}/pam_smile2unlock.so" \
     "${root_dir}${pam_module_dir}/pam_smile2unlock.so"
 install -m 0644 "${project_dir}/packaging/systemd/su-authd.service" \
     "${root_dir}/usr/lib/systemd/system/su-authd.service"
+install -m 0644 "${project_dir}/packaging/systemd/su-deploy-helper.service" \
+    "${root_dir}/usr/lib/systemd/system/su-deploy-helper.service"
+install -m 0644 "${project_dir}/packaging/dbus/io.github.smile2unlock.Deployment1.service" \
+    "${root_dir}/usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service"
+install -m 0644 "${project_dir}/packaging/dbus/io.github.smile2unlock.Deployment1.conf" \
+    "${root_dir}/usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf"
+install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployment.policy" \
+    "${root_dir}/usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy"
 install -m 0644 "${project_dir}/packaging/linux/smile2unlock.desktop" \
     "${root_dir}/usr/share/applications/smile2unlock.desktop"
 install -m 0644 "${project_dir}/common/resources/img/Smile2Unlock.png" \
@@ -186,7 +200,7 @@ cp -a "${root_dir}" "$package_root"
 
 build_tarball() {
     local output="${output_dir}/${package_name}-${version}-${architecture}.tar.gz"
-    tar -C "${work_dir}" -czf "$output" "${package_name}-${version}"
+    tar -C "${work_dir}" --owner=0 --group=0 -czf "$output" "${package_name}-${version}"
     echo "created ${output}"
 }
 
@@ -204,7 +218,7 @@ pkgdesc='Local face authentication enrollment and diagnostics'
 arch=('${architecture}')
 license=('MIT')
 options=('!debug')
-depends=('pam' 'libyuv' 'libjpeg-turbo' 'systemd-libs' 'gcc-libs')
+depends=('pam' 'libyuv' 'libjpeg-turbo' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
 _stage_root='${root_dir}'
 
 package() {
@@ -229,10 +243,10 @@ build_fpm() {
     local default_depends
     case "$target" in
         deb)
-            default_depends="libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0"
+            default_depends="libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0,dbus,polkitd"
             ;;
         rpm)
-            default_depends="glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs"
+            default_depends="glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs,dbus,polkit"
             ;;
     esac
     local -a depends=()

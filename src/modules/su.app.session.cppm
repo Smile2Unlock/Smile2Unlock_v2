@@ -117,17 +117,61 @@ public:
     }
 
 private:
+    void notify_lock() {
+        if (running_.load(std::memory_order_acquire) && callback_) {
+            callback_();
+        }
+    }
+
     static int on_lock(sd_bus_message*, void* userdata, sd_bus_error*) {
         auto* self = static_cast<Impl*>(userdata);
-        if (self->running_.load(std::memory_order_acquire) && self->callback_) {
-            self->callback_();
+        self->notify_lock();
+        return 0;
+    }
+
+    static int on_prepare_for_sleep(sd_bus_message* message, void* userdata, sd_bus_error*) {
+        auto going_to_sleep = 0;
+        if (::sd_bus_message_read(message, "b", &going_to_sleep) >= 0 && going_to_sleep != 0) {
+            static_cast<Impl*>(userdata)->notify_lock();
         }
+        return 0;
+    }
+
+    static int on_properties_changed(sd_bus_message* message, void* userdata, sd_bus_error*) {
+        const char* interface = nullptr;
+        if (::sd_bus_message_read_basic(message, 's', &interface) < 0
+            || interface == nullptr
+            || std::string_view(interface) != "org.freedesktop.login1.Session"
+            || ::sd_bus_message_enter_container(message, 'a', "{sv}") < 0) {
+            return 0;
+        }
+        while (::sd_bus_message_enter_container(message, 'e', "sv") > 0) {
+            const char* property = nullptr;
+            if (::sd_bus_message_read_basic(message, 's', &property) < 0
+                || ::sd_bus_message_enter_container(message, 'v', nullptr) < 0) {
+                (void)::sd_bus_message_exit_container(message);
+                continue;
+            }
+            if (property != nullptr && std::string_view(property) == "LockedHint") {
+                auto locked = 0;
+                if (::sd_bus_message_read_basic(message, 'b', &locked) >= 0 && locked != 0) {
+                    static_cast<Impl*>(userdata)->notify_lock();
+                }
+            } else {
+                (void)::sd_bus_message_skip(message, nullptr);
+            }
+            (void)::sd_bus_message_exit_container(message);
+            (void)::sd_bus_message_exit_container(message);
+        }
+        (void)::sd_bus_message_exit_container(message);
         return 0;
     }
 
     void run() {
         sd_bus* bus = nullptr;
         sd_bus_slot* lock_slot = nullptr;
+        sd_bus_slot* properties_slot = nullptr;
+        sd_bus_slot* sleep_slot = nullptr;
         if (::sd_bus_open_system(&bus) < 0) {
             std::println(stderr, "[session] failed to connect to the system bus");
             return;
@@ -152,6 +196,35 @@ private:
             ::sd_bus_unref(bus);
             return;
         }
+        if (::sd_bus_match_signal(
+                bus,
+                &properties_slot,
+                "org.freedesktop.login1",
+                session_path->c_str(),
+                "org.freedesktop.DBus.Properties",
+                "PropertiesChanged",
+                &Impl::on_properties_changed,
+                this) < 0) {
+            std::println(stderr, "[session] failed to subscribe to logind LockedHint");
+            ::sd_bus_slot_unref(lock_slot);
+            ::sd_bus_unref(bus);
+            return;
+        }
+        if (::sd_bus_match_signal(
+                bus,
+                &sleep_slot,
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "PrepareForSleep",
+                &Impl::on_prepare_for_sleep,
+                this) < 0) {
+            std::println(stderr, "[session] failed to subscribe to logind PrepareForSleep");
+            ::sd_bus_slot_unref(properties_slot);
+            ::sd_bus_slot_unref(lock_slot);
+            ::sd_bus_unref(bus);
+            return;
+        }
 
         available_.store(true, std::memory_order_release);
         std::println(stderr, "[session] monitoring logind Lock on {}", *session_path);
@@ -165,6 +238,8 @@ private:
             }
         }
         available_.store(false, std::memory_order_release);
+        ::sd_bus_slot_unref(sleep_slot);
+        ::sd_bus_slot_unref(properties_slot);
         ::sd_bus_slot_unref(lock_slot);
         ::sd_bus_unref(bus);
     }

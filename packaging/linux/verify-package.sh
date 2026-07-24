@@ -6,7 +6,7 @@ version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
 verify_dir="${project_dir}/build/packages/.verify"
 
 usage() {
-    echo "Usage: packaging/linux/verify-package.sh PACKAGE.deb|PACKAGE.rpm [...]" >&2
+    echo "Usage: packaging/linux/verify-package.sh PACKAGE.tar.gz|PACKAGE.deb|PACKAGE.rpm [...]" >&2
 }
 
 [[ $# -gt 0 ]] || { usage; exit 64; }
@@ -17,9 +17,14 @@ required_paths=(
     usr/lib/smile2unlock/libslint_cpp.so
     usr/lib/smile2unlock/libSeetaFaceDetector600.so
     usr/libexec/smile2unlock/su_authd
+    usr/libexec/smile2unlock/su_deploy_helper
     usr/libexec/smile2unlock/install-dms-lock
     usr/libexec/smile2unlock/setup-storage-key
     usr/lib/systemd/system/su-authd.service
+    usr/lib/systemd/system/su-deploy-helper.service
+    usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
+    usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf
+    usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy
     usr/share/applications/smile2unlock.desktop
     usr/share/icons/hicolor/128x128/apps/smile2unlock.png
     usr/share/smile2unlock/i18n/en.json
@@ -57,17 +62,23 @@ verify_tree() {
     for path in \
         usr/bin/su_app \
         usr/libexec/smile2unlock/su_authd \
+        usr/libexec/smile2unlock/su_deploy_helper \
         usr/libexec/smile2unlock/install-dms-lock \
         usr/libexec/smile2unlock/setup-storage-key; do
         require_mode "$root" 755 "$path"
     done
     require_mode "$root" 644 usr/lib/security/pam_smile2unlock.so
     require_mode "$root" 644 usr/lib/systemd/system/su-authd.service
+    require_mode "$root" 644 usr/lib/systemd/system/su-deploy-helper.service
+    require_mode "$root" 644 usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
+    require_mode "$root" 644 usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf
+    require_mode "$root" 644 usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy
     require_mode "$root" 644 usr/share/smile2unlock/pam/dankshell-smile2unlock
 
-    local app_rpath authd_rpath
+    local app_rpath authd_rpath helper_rpath
     app_rpath="$(patchelf --print-rpath "${root}/usr/bin/su_app")"
     authd_rpath="$(patchelf --print-rpath "${root}/usr/libexec/smile2unlock/su_authd")"
+    helper_rpath="$(patchelf --print-rpath "${root}/usr/libexec/smile2unlock/su_deploy_helper")"
     [[ "$app_rpath" == '$ORIGIN/../lib/smile2unlock' ]] || {
         echo "unexpected su_app RPATH: ${app_rpath}" >&2
         exit 1
@@ -76,10 +87,28 @@ verify_tree() {
         echo "unexpected su_authd RPATH: ${authd_rpath}" >&2
         exit 1
     }
-    if [[ "$app_rpath$authd_rpath" == *"/home/"* || "$app_rpath$authd_rpath" == *".xmake"* ]]; then
+    [[ -z "$helper_rpath" ]] || {
+        echo "unexpected su_deploy_helper RPATH: ${helper_rpath}" >&2
+        exit 1
+    }
+    if [[ "$app_rpath$authd_rpath$helper_rpath" == *"/home/"* \
+        || "$app_rpath$authd_rpath$helper_rpath" == *".xmake"* ]]; then
         echo "package contains a development-machine RPATH" >&2
         exit 1
     fi
+}
+
+verify_tarball() {
+    local package="$1"
+    if ! tar --numeric-owner -tvzf "$package" | awk '$2 != "0/0" { exit 1 }'; then
+        echo "tarball contains files not owned by root" >&2
+        exit 1
+    fi
+    local root="${verify_dir}/tar-root"
+    rm -rf "$root"
+    mkdir -p "$root"
+    tar -xzf "$package" -C "$root"
+    verify_tree "${root}/smile2unlock-${version}"
 }
 
 verify_deb() {
@@ -139,6 +168,7 @@ mkdir -p "$verify_dir"
 for package in "$@"; do
     [[ -f "$package" ]] || { echo "package not found: ${package}" >&2; exit 1; }
     case "$package" in
+        *.tar.gz) verify_tarball "$package" ;;
         *.deb) verify_deb "$package" ;;
         *.rpm) verify_rpm "$package" ;;
         *) echo "unsupported package type: ${package}" >&2; exit 64 ;;

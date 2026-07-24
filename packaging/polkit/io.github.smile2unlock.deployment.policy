@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Smile2Unlock</vendor>
+  <vendor_url>https://github.com/Smile2Unlock/Smile2Unlock_v2</vendor_url>
+
+  <action id="io.github.smile2unlock.deployment.initialize-runtime">
+    <description>Initialize Smile2Unlock secure storage and authentication service</description>
+    <description xml:lang="zh_CN">初始化 Smile2Unlock 加密存储和认证服务</description>
+    <message>Authentication is required to initialize Smile2Unlock system services</message>
+    <message xml:lang="zh_CN">初始化 Smile2Unlock 系统服务需要管理员认证</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.smile2unlock.deployment.configure-pam">
+    <description>Configure Smile2Unlock desktop authentication</description>
+    <description xml:lang="zh_CN">配置 Smile2Unlock 桌面认证</description>
+    <message>Authentication is required to change the system login configuration</message>
+    <message xml:lang="zh_CN">更改系统登录配置需要管理员认证</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.smile2unlock.deployment.rollback-pam">
+    <description>Restore the previous desktop authentication configuration</description>
+    <description xml:lang="zh_CN">恢复之前的 Smile2Unlock 桌面认证配置</description>
+    <message>Authentication is required to restore the system login configuration</message>
+    <message xml:lang="zh_CN">恢复系统登录配置需要管理员认证</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

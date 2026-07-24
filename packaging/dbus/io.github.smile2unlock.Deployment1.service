@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.github.smile2unlock.Deployment1
+SystemdService=su-deploy-helper.service
+User=root
