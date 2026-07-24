@@ -15,6 +15,7 @@ namespace {
 namespace ui = su::app::ui;
 
 using ProfileModel = slint::VectorModel<ui::ProfileRow>;
+using DeploymentTargetModel = slint::VectorModel<ui::DeploymentTargetRow>;
 using WindowHandle = slint::ComponentHandle<ui::AppWindow>;
 using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
 
@@ -112,6 +113,28 @@ void update_profiles(
     const std::shared_ptr<ProfileModel>& model,
     const std::vector<su::app::FaceProfileSummary>& profiles) {
     model->set_vector(profile_rows(profiles));
+}
+
+std::vector<ui::DeploymentTargetRow> deployment_target_rows(
+    const std::vector<su::app::DeploymentTargetStatus>& targets) {
+    auto rows = std::vector<ui::DeploymentTargetRow>{};
+    rows.reserve(targets.size());
+    for (const auto& target : targets) {
+        rows.push_back(ui::DeploymentTargetRow{
+            .id = slint::SharedString(target.id),
+            .service = slint::SharedString(target.service),
+            .effective_path = slint::SharedString(target.effective_path),
+            .role = slint::SharedString(target.role),
+            .state = slint::SharedString(target.state),
+            .password_fallback = target.password_fallback,
+            .configured = target.configured,
+            .configurable = target.configurable,
+            .managed = target.managed,
+            .wallet_available = target.wallet_available,
+            .wallet_enabled = target.wallet_enabled,
+        });
+    }
+    return rows;
 }
 
 void set_activity(
@@ -254,12 +277,65 @@ void persist_ui_preferences(
 
 void apply_system_status(
     const WindowHandle& window,
-    const su::app::SystemStatus& status) {
+    const su::app::SystemStatus& status,
+    const std::shared_ptr<DeploymentTargetModel>& deployment_targets) {
     window->set_service_available(status.service_available);
     window->set_storage_protection_index(static_cast<int>(status.storage_protection));
     window->set_pam_status_known(status.pam_status_known);
     window->set_pam_configured(status.pam_configured);
     window->set_pam_service(slint::SharedString(status.pam_service));
+    window->set_deployment_helper_available(status.deployment_helper_available);
+    window->set_login_pam_configured(status.login_pam_configured);
+    window->set_lock_pam_configured(status.lock_pam_configured);
+    deployment_targets->set_vector(deployment_target_rows(status.deployment_targets));
+}
+
+using DeploymentOperation = std::function<std::expected<std::string, std::string>()>;
+
+void start_deployment_operation(
+    const WeakWindowHandle& weak_window,
+    const std::shared_ptr<su::app::AppController>& controller,
+    const std::shared_ptr<DeploymentTargetModel>& deployment_targets,
+    const std::shared_ptr<const su::app::LanguageCatalog>& catalog,
+    std::string success_key,
+    DeploymentOperation operation) {
+    if (const auto window = weak_window.lock()) {
+        (*window)->set_busy(true);
+        (*window)->set_deployment_operation_status(slint::SharedString(
+            translated(*catalog, *window, "deployment.operation_working")));
+    }
+    std::thread([
+        weak_window,
+        controller,
+        deployment_targets,
+        catalog,
+        success_key = std::move(success_key),
+        operation = std::move(operation)]() mutable {
+        auto result = operation();
+        auto status = controller->load_system_status();
+        slint::invoke_from_event_loop([
+            weak_window,
+            deployment_targets,
+            catalog,
+            success_key = std::move(success_key),
+            result = std::move(result),
+            status = std::move(status)]() mutable {
+            const auto window = weak_window.lock();
+            if (!window) {
+                return;
+            }
+            apply_system_status(*window, status, deployment_targets);
+            (*window)->set_busy(false);
+            (*window)->set_deployment_operation_status(slint::SharedString(
+                result
+                    ? translated(*catalog, *window, success_key)
+                    : translated_value(
+                        *catalog,
+                        *window,
+                        "deployment.operation_failed",
+                        result.error())));
+        });
+    }).detach();
 }
 
 }  // namespace
@@ -314,6 +390,7 @@ int main(int argc, char** argv) {
                 });
         });
     const auto profiles = std::make_shared<ProfileModel>(profile_rows(snapshot->profiles));
+    const auto deployment_targets = std::make_shared<DeploymentTargetModel>();
     const auto session_lock_monitor = std::make_unique<su::app::SessionLockMonitor>(
         [weak_window, controller, preview, catalog] {
             slint::invoke_from_event_loop([weak_window, controller, preview, catalog] {
@@ -420,11 +497,12 @@ int main(int argc, char** argv) {
     window->set_config_path_text(slint::SharedString(snapshot->config_path));
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profiles(profiles);
+    window->set_deployment_targets(deployment_targets);
     window->set_camera_options(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(camera_names)));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
     window->set_seetaface_available(snapshot->seetaface_available);
-    apply_system_status(window, controller->load_system_status());
+    apply_system_status(window, controller->load_system_status(), deployment_targets);
     window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
     window->set_selected_camera(selected_camera);
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
@@ -439,16 +517,55 @@ int main(int argc, char** argv) {
             : "activity.not_checked")));
     window->set_settings_status(slint::SharedString(catalog->translate(selected_language, "settings.saved")));
 
-    window->on_refresh_system_status_requested([weak_window, controller] {
-        std::thread([weak_window, controller] {
+    window->on_refresh_system_status_requested([weak_window, controller, deployment_targets] {
+        std::thread([weak_window, controller, deployment_targets] {
             const auto status = controller->load_system_status();
-            slint::invoke_from_event_loop([weak_window, status] {
+            slint::invoke_from_event_loop([weak_window, deployment_targets, status] {
                 if (const auto window = weak_window.lock()) {
-                    apply_system_status(*window, status);
+                    apply_system_status(*window, status, deployment_targets);
                 }
             });
         }).detach();
     });
+
+    window->on_initialize_system_deployment_requested(
+        [weak_window, controller, deployment_targets, catalog] {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.initialize_success",
+                [controller] { return controller->initialize_system_deployment(); });
+        });
+
+    window->on_configure_desktop_target_requested(
+        [weak_window, controller, deployment_targets, catalog](
+            slint::SharedString target,
+            bool wallet_token) {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.configure_success",
+                [controller, target = std::string(target), wallet_token] {
+                    return controller->configure_desktop_target(target, wallet_token);
+                });
+        });
+
+    window->on_rollback_desktop_target_requested(
+        [weak_window, controller, deployment_targets, catalog](slint::SharedString target) {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.rollback_success",
+                [controller, target = std::string(target)] {
+                    return controller->rollback_desktop_target(target);
+                });
+        });
 
     window->on_enroll_current_frame_requested(
         [weak_window, controller, preview, profiles, catalog](slint::SharedString requested_label) {
