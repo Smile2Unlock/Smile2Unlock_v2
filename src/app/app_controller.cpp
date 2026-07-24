@@ -1,6 +1,8 @@
 module;
 
 #include <nlohmann/json.hpp>
+#include "platform/linux/deploy/deployment.h"
+#include "platform/linux/deploy_client/deployment_client.h"
 
 module su.app.controller;
 import std;
@@ -15,11 +17,6 @@ namespace {
 
 constexpr std::string_view kImageSourcePrefix = "image:";
 constexpr std::string_view kControlSocketPath = su::control::kDefaultSocketPath;
-constexpr auto kPamServicePaths = std::array{
-    std::string_view{"/etc/pam.d/dankshell-smile2unlock"},
-    std::string_view{"/etc/pam.d/greetd"},
-};
-
 std::uint64_t next_request_id() {
     static auto sequence = std::atomic<std::uint64_t>{1};
     return sequence.fetch_add(1, std::memory_order_relaxed);
@@ -68,24 +65,14 @@ StorageProtection storage_protection_from_response(
     return StorageProtection::kUnknown;
 }
 
-std::pair<bool, std::string> configured_pam_service() {
-    for (const auto path_text : kPamServicePaths) {
-        const auto path = std::filesystem::path{path_text};
-        auto input = std::ifstream{path};
-        if (!input) {
-            continue;
-        }
-        for (auto line = std::string{}; std::getline(input, line);) {
-            const auto first = line.find_first_not_of(" \t");
-            if (first == std::string::npos || line[first] == '#') {
-                continue;
-            }
-            if (line.find("pam_smile2unlock.so", first) != std::string::npos) {
-                return {true, path.filename().string()};
-            }
-        }
-    }
-    return {false, {}};
+bool role_has_login(su::deploy::TargetRole role) {
+    return role == su::deploy::TargetRole::kLogin
+        || role == su::deploy::TargetRole::kLoginAndLock;
+}
+
+bool role_has_lock(su::deploy::TargetRole role) {
+    return role == su::deploy::TargetRole::kLock
+        || role == su::deploy::TargetRole::kLoginAndLock;
 }
 
 std::expected<std::vector<FaceProfileSummary>, std::string> profile_rows_from_json(
@@ -506,14 +493,91 @@ SystemStatus AppController::load_system_status() {
         status.storage_protection = storage_protection_from_response(*response);
     }
 
-    std::error_code error;
-    status.pam_status_known = std::filesystem::is_directory("/etc/pam.d", error) && !error;
-    if (status.pam_status_known) {
-        auto [configured, service] = configured_pam_service();
-        status.pam_configured = configured;
-        status.pam_service = std::move(service);
+    const auto deployment_client = su::deploy::DeploymentClient{};
+    const auto deployment = su::deploy::inspect_deployment();
+    status.pam_status_known = deployment.has_value();
+    status.deployment_helper_available = deployment_client.inspect().has_value();
+    if (deployment) {
+        auto configured_services = std::vector<std::string>{};
+        auto has_login_target = false;
+        auto has_lock_target = false;
+        for (const auto& target : deployment->targets) {
+            if (target.state == su::deploy::TargetState::kAbsent) {
+                if (target.kind == su::deploy::TargetKind::kDms
+                    && deployment_client.dms_available()) {
+                    has_lock_target = true;
+                    status.deployment_targets.push_back(DeploymentTargetStatus{
+                        .id = "dms",
+                        .service = target.service,
+                        .effective_path = "/etc/pam.d/dankshell-smile2unlock",
+                        .role = "lock",
+                        .state = "supported",
+                        .detail = "DMS command-line API detected",
+                        .password_fallback = true,
+                        .configured = false,
+                        .configurable = true,
+                        .managed = false,
+                        .wallet_available = false,
+                        .wallet_enabled = false,
+                    });
+                }
+                continue;
+            }
+            const auto configured = target.state == su::deploy::TargetState::kManaged
+                || target.state == su::deploy::TargetState::kExternal;
+            const auto login = role_has_login(target.role);
+            const auto lock = role_has_lock(target.role);
+            has_login_target = has_login_target || login;
+            has_lock_target = has_lock_target || lock;
+            status.login_pam_configured = status.login_pam_configured || (login && configured);
+            status.lock_pam_configured = status.lock_pam_configured || (lock && configured);
+            if (configured) {
+                configured_services.push_back(target.service);
+            }
+            status.deployment_targets.push_back(DeploymentTargetStatus{
+                .id = std::string(su::deploy::target_id(target.kind)),
+                .service = target.service,
+                .effective_path = target.effective_path.string(),
+                .role = target.role == su::deploy::TargetRole::kLogin ? "login"
+                    : target.role == su::deploy::TargetRole::kLock ? "lock"
+                    : "login-and-lock",
+                .state = std::string(su::deploy::target_state_id(target.state)),
+                .detail = target.detail,
+                .password_fallback = target.password_fallback,
+                .configured = configured,
+                .configurable = target.state == su::deploy::TargetState::kSupported
+                    && target.kind != su::deploy::TargetKind::kGreetd,
+                .managed = target.state == su::deploy::TargetState::kManaged,
+                // Module presence alone cannot prove that the display manager
+                // inherits a usable boot key from root.
+                .wallet_available = false,
+                .wallet_enabled = target.wallet_token_enabled,
+            });
+        }
+        status.pam_configured = (!has_login_target || status.login_pam_configured)
+            && (!has_lock_target || status.lock_pam_configured)
+            && (has_login_target || has_lock_target);
+        status.pam_service = configured_services.empty()
+            ? std::string{}
+            : configured_services | std::views::join_with(std::string_view{", "})
+                | std::ranges::to<std::string>();
     }
     return status;
+}
+
+std::expected<std::string, std::string> AppController::initialize_system_deployment() {
+    return su::deploy::DeploymentClient{}.initialize_runtime();
+}
+
+std::expected<std::string, std::string> AppController::configure_desktop_target(
+    std::string_view target,
+    bool wallet_token) {
+    return su::deploy::DeploymentClient{}.configure_target(target, wallet_token);
+}
+
+std::expected<std::string, std::string> AppController::rollback_desktop_target(
+    std::string_view target) {
+    return su::deploy::DeploymentClient{}.rollback_target(target);
 }
 
 }  // namespace su::app

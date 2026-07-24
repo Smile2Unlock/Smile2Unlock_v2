@@ -1,7 +1,9 @@
 import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
 export { UiTheme } from "theme.slint";
 export { ProfileRow } from "components.slint";
+export { DeploymentTargetRow } from "deployment.slint";
 import { UiTheme } from "theme.slint";
+import { DeploymentPanel, DeploymentTargetRow } from "deployment.slint";
 import {
     ActionButton, CenteredActionButton, CenteredStatusPill, DiagnosticRow,
     MetricBlock, NavButton, PageHeader, ProfileRow, SectionTitle,
@@ -23,6 +25,11 @@ export component AppWindow inherits Window {
     in property <bool> pam_status_known: false;
     in property <bool> pam_configured: false;
     in property <string> pam_service: "";
+    in property <bool> deployment_helper_available: false;
+    in property <bool> login_pam_configured: false;
+    in property <bool> lock_pam_configured: false;
+    in property <[DeploymentTargetRow]> deployment_targets;
+    in-out property <string> deployment_operation_status: "";
     in-out property <bool> desktop_auth_passed: false;
     in property <[ProfileRow]> profiles;
     in property <[string]> camera_options;
@@ -60,6 +67,9 @@ export component AppWindow inherits Window {
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
     callback refresh_system_status_requested();
+    callback initialize_system_deployment_requested();
+    callback configure_desktop_target_requested(string, bool);
+    callback rollback_desktop_target_requested(string);
     callback start_preview_requested();
     callback stop_preview_requested();
     callback save_settings_requested(int, float, bool, float, int);
@@ -807,7 +817,7 @@ export component AppWindow inherits Window {
 
             if root.current_page == 3: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 908px;
+                viewport-height: 1100px + root.deployment_targets.length * 80px;
 
                 diagnostics-content := VerticalLayout {
                     width: parent.width;
@@ -819,8 +829,25 @@ export component AppWindow inherits Window {
                         detail: root.translate("diagnostics.subtitle", root.language_index);
                     }
 
+                    DeploymentPanel {
+                        targets: root.deployment_targets;
+                        helper_available: root.deployment_helper_available;
+                        runtime_ready: root.runtime-ready;
+                        busy: root.busy;
+                        language_index: root.language_index;
+                        operation_status: root.deployment_operation_status;
+                        translate(key, index) => { root.translate(key, index) }
+                        initialize_requested => { root.initialize_system_deployment_requested(); }
+                        configure_requested(target, wallet) => {
+                            root.configure_desktop_target_requested(target, wallet);
+                        }
+                        rollback_requested(target) => {
+                            root.rollback_desktop_target_requested(target);
+                        }
+                    }
+
                     Rectangle {
-                        height: 394px;
+                        height: 438px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
@@ -875,16 +902,28 @@ export component AppWindow inherits Window {
                                 tone: root.profiles.length > 0 ? "good" : "warn";
                             }
                             DiagnosticRow {
-                                label: root.translate("diagnostics.pam", root.language_index);
+                                label: root.translate("diagnostics.login_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
-                                    : root.pam_configured
+                                    : root.login_pam_configured
                                         ? root.translate("status.configured", root.language_index)
                                         : root.translate("status.not_configured", root.language_index);
-                                detail: root.pam_configured
-                                    ? root.translate_value("diagnostics.pam_ready_detail", root.language_index, root.pam_service)
-                                    : root.translate("diagnostics.pam_action", root.language_index);
-                                tone: root.pam_configured ? "good" : "warn";
+                                detail: root.login_pam_configured
+                                    ? root.translate("diagnostics.login_pam_ready", root.language_index)
+                                    : root.translate("diagnostics.login_pam_action", root.language_index);
+                                tone: root.login_pam_configured ? "good" : "warn";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.lock_pam", root.language_index);
+                                status: !root.pam_status_known
+                                    ? root.translate("status.unknown", root.language_index)
+                                    : root.lock_pam_configured
+                                        ? root.translate("status.configured", root.language_index)
+                                        : root.translate("status.not_configured", root.language_index);
+                                detail: root.lock_pam_configured
+                                    ? root.translate("diagnostics.lock_pam_ready", root.language_index)
+                                    : root.translate("diagnostics.lock_pam_action", root.language_index);
+                                tone: root.lock_pam_configured ? "good" : "warn";
                             }
                         }
                     }
