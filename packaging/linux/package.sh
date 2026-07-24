@@ -23,7 +23,7 @@ Options:
   --help                Show this help
 
 Environment:
-  PACKAGE_DEPENDS      Comma-separated fpm dependencies for deb/rpm
+  PACKAGE_DEPENDS      Override comma-separated fpm dependencies for deb/rpm
 USAGE
 }
 
@@ -226,9 +226,18 @@ build_fpm() {
         echo "fpm is not installed; skipping ${target} output" >&2
         return 2
     }
+    local default_depends
+    case "$target" in
+        deb)
+            default_depends="libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0"
+            ;;
+        rpm)
+            default_depends="glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs"
+            ;;
+    esac
     local -a depends=()
     local dependency
-    IFS=',' read -r -a configured_depends <<< "${PACKAGE_DEPENDS:-pam}"
+    IFS=',' read -r -a configured_depends <<< "${PACKAGE_DEPENDS:-$default_depends}"
     for dependency in "${configured_depends[@]}"; do
         [[ -n "$dependency" ]] && depends+=(--depends "$dependency")
     done
@@ -237,9 +246,12 @@ build_fpm() {
     fpm -s dir -t "$target" \
         -n "$package_name" \
         -v "$version" \
+        --force \
         --architecture "$fpm_arch" \
         --description "Local face authentication enrollment and diagnostics" \
         --license MIT \
+        --maintainer "Smile2Unlock Project" \
+        --vendor "Smile2Unlock" \
         --url "https://github.com/Smile2Unlock/Smile2Unlock_v2" \
         "${depends[@]}" \
         -C "$root_dir" \
