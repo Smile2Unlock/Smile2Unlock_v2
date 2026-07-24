@@ -8,12 +8,12 @@
 
 本计划是 `docs/rewrite_master_plan.md` 中 Linux Phase 3 的后续落地计划。Windows compatibility、可选 SIMD / Zig 扩展和 DMS Monet 配色分别保留在原计划及 `docs/dms_monet_theme_plan.md` 中，不阻塞 Linux 第一版跑通。
 
-## Current Status (2026-07-20)
+## Current Status (2026-07-24)
 
-Phase 1 已完成，Phase 2 等待真实注销和冷启动验证，Phase 3 的 DMS PAM 接入和摄像头协调已实现但真实锁屏仍待现场验证，Phase 4 的打包基础设施已完成并验证；Phase 5 的 daemon 隔离、第二账户 GUI 启动 / 加载 / 删除和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成，隐私威胁建模及加密策略尚未完成；Phase 7 尚未开始。
+Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS 锁屏和摄像头恢复矩阵按当前决定暂缓；Phase 4 打包基础设施已完成，DEB / RPM 实包验证仍待完成；Phase 5 多用户隔离和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成；Phase 7 的 UI 重写、国际化基础和 DMS / Monet Phase 1-5 已完成，发布级诊断和首次使用流程仍待完成。
 
 - `xmake build` 已通过。
-- 8 个 Xmake test case 和 33 个 Rust unit test 已通过。
+- 10 个 Xmake test case 和 42 个 Rust unit test 已通过。
 - 临时 PAM 验收入口已覆盖真实 accepted、rejected 和 unavailable 结果，未修改 `/etc/pam.d`。
 - accepted 请求已贯通 PAM module、root socket、已安装 daemon、目标用户档案、V4L2、SeetaFace、活体检测和特征比对。
 - Release 与已安装的 daemon / PAM module 哈希一致。
@@ -35,7 +35,7 @@ Phase 2 必须通过真实 display manager 注销和重启完成，不能由进�
 - `su_authd.service` 已安装、启用并能够创建 `/run/smile2unlock/control.sock`。
 - PAM 模块和 daemon 的已安装文件与当前 Release 构建产物一致。
 - 当前 greetd PAM 栈已经包含 `pam_smile2unlock.so`，密码认证仍保留为回退路径。
-- 用户配置和人脸档案使用私有权限保存，daemon 能按 PAM 用户名解析对应 home。
+- 用户配置保存在当前用户 XDG config；人脸档案由 daemon 加密保存到 system-owned per-UID store。
 - 自动测试已经覆盖 Rust core、control socket、真实 PAM module 加载和 SeetaFace pipeline smoke。
 
 当前尚未形成充分证据证明：安装后的人脸认证已经在真实 greetd 登录、重启后的开机登录及 DMS 锁屏中完整成功。因此，现状定义为“实现和部署基本完成，真实系统验收未完成”。
@@ -63,7 +63,7 @@ Linux 第一版不要求：
 - 在第一版同时发布所有 Linux 发行版的软件包。
 - 使用人脸认证自动解锁需要登录密码的桌面 keyring。
 - 完成 Windows Credential Provider 重写。
-- 完成 Monet 动态配色、PipeWire 摄像头或可选 recognizer 进程拆分。
+- 完成 PipeWire 摄像头或可选 recognizer 进程拆分。
 
 ## Phase 1: Real PAM Acceptance
 
@@ -246,12 +246,12 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 该阶段不阻塞真实认证闭环，但影响正式发布质量：
 
-- 根据 `docs/dms_monet_theme_plan.md` 接入 DMS / Monet 配色及内置回退主题。
-- 完成窄窗口、高 DPI、长翻译文本和键盘导航检查。
-- 增加更多语言包时只新增 JSON，不修改 C++ / Slint 业务逻辑。
-- 在 GUI 中区分“桌面测试认证”和“系统 PAM 服务可用”。
-- 为摄像头、模型、档案、服务和 PAM 集成显示可执行的诊断状态。
-- 为首次使用建立明确的录入、测试和启用系统认证流程。
+- [x] 根据 `docs/dms_monet_theme_plan.md` 接入 DMS / Monet 配色及内置回退主题。
+- [ ] 完成窄窗口、高 DPI、长翻译文本和键盘导航检查。
+- [x] 语言包使用外部 JSON；增加语言不需要修改 C++ / Slint 业务逻辑。
+- [ ] 在 GUI 中区分“桌面测试认证”和“系统 PAM 服务可用”。
+- [ ] 为摄像头、模型、档案、服务和 PAM 集成显示可执行的诊断状态。
+- [ ] 为首次使用建立明确的录入、测试和启用系统认证流程。
 
 ## Test Matrix
 
@@ -302,4 +302,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试按当前决定暂缓。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、第二账户 GUI 数据隔离，以及 Phase 6 的 fd 读取、限流、模型恢复和 sandbox 已完成；profile / Windows 密码的隐私、完整性、TPM2 和无 TPM2 回退威胁建模已写入 `docs/credential_storage_encryption_plan.md`。下一步按该计划实现 Rust encrypted envelope 和 Linux key provider，再迁移 daemon / GUI storage IPC；Phase 7 Linux UX 可随后继续。
+P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试按当前决定暂缓。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、多用户隔离、system-owned encrypted profile store、TPM2 / host-key provider、限流、模型恢复、sandbox，以及 DMS / Monet Phase 1-5 均已完成。下一步完成 Phase 7 的发布级诊断、首次使用流程和响应式 / 键盘可用性检查；Windows 主线随后进入 Rust Credential Provider Phase 0。
