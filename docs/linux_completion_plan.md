@@ -10,7 +10,7 @@
 
 ## Current Status (2026-07-24)
 
-Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS 锁屏和摄像头恢复矩阵按当前决定暂缓；Phase 4 打包基础设施已完成，DEB / RPM 实包验证仍待完成；Phase 5 多用户隔离和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成；Phase 7 的 UI 重写、国际化、DMS / Monet Phase 1-5、发布级诊断、首次使用流程和键盘可用性均已完成。
+Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS 锁屏和摄像头恢复矩阵按当前决定暂缓；Phase 4 打包基础设施及 DEB / RPM 实包验证已完成；Phase 5 多用户隔离和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成；Phase 7 的 UI 重写、国际化、DMS / Monet Phase 1-5、发布级诊断、首次使用流程和键盘可用性均已完成。
 
 - `xmake build` 已通过。
 - 10 个 Xmake test case 和 42 个 Rust unit test 已通过。
@@ -21,7 +21,7 @@ Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷�
 - accepted 日志结果为 `face matched`，本次请求耗时 2621 ms。
 - `tar.gz` 和 Arch `pkg.tar.zst` 均已生成，包内 GUI / daemon RPATH 已改为包内相对路径。
 - 打包 staging 已包含 GUI、PAM、daemon、模型、语言包、Slint / SeetaFace runtime、systemd、桌面入口、图标和许可证。
-- DEB / RPM 的 fpm 入口已实现；当前开发机未安装 fpm，因此只验证了缺失工具时的明确跳过行为。
+- `smile2unlock-2.1.3.deb` 和 `smile2unlock-2.1.3.rpm` 已真实生成，并分别在 Debian / Fedora 容器中通过元数据、root 所有权、文件清单、权限、相对 RPATH 和无维护脚本验证。
 
 Phase 2 必须通过真实 display manager 注销和重启完成，不能由进程内 PAM 测试替代。
 
@@ -76,7 +76,7 @@ Linux 第一版不要求：
 - 增加或整理一个专用的 PAM 验收入口，避免第一次验证只能通过注销或重启进行。
 - 验证 PAM 请求中的用户名与 daemon 读取的目标用户一致。
 - 验证有效人脸返回 `PAM_SUCCESS`。
-- 验证无脸、错误人脸、活体检测失败和八秒超时返回失败，并继续进入密码认证。
+- 验证无脸、错误人脸、活体检测失败和认证超时返回失败，并继续进入密码认证。
 - 验证 daemon 停止、socket 缺失、模型缺失、摄像头不可用、无档案和不安全文件权限均不会绕过认证。
 - 保留 PAM 配置备份和已登录 root shell，记录恢复步骤。
 - 给 daemon 增加足够的结构化诊断日志，至少区分请求开始、accepted、rejected、busy 和 unavailable；不得记录特征向量或图像。
@@ -157,7 +157,7 @@ Linux 第一版不要求：
 - 已通过普通用户 PAM subprocess 完成本人真实人脸认证，并确认同一用户跨 uid 请求被 daemon 拒绝。
 - 真实 DMS 锁屏 UI 中的人脸成功和密码回退仍需在用户可配合锁屏时完成现场验收。
 - GUI 通过标准 logind `Lock` 信号停止 preview、取消录入 / 测试认证并释放 V4L2，不依赖 DMS 私有 IPC；解锁后不自动重启 preview。
-- daemon 在六秒认证总时限内为摄像头释放竞态保留最多 1.2 秒的有界重试，失败后返回 unavailable 并进入密码回退。
+- daemon 为摄像头释放竞态保留最多 1.2 秒的有界重试；普通认证总时限为 6 秒，启用活体检测时为 12 秒，失败后返回 unavailable 并进入密码回退。
 - logind 会话解析和 `Lock` 信号订阅已由独立 Xmake smoke test 覆盖；GUI preview 开启后的真实 DMS 锁屏仍需现场验收。
 
 ## Phase 4: Linux GUI Installation And Packaging
@@ -184,6 +184,13 @@ Linux 第一版不要求：
 - GUI 可以找到语言资源、模型和动态库。
 - systemd service、PAM module 和 GUI 可以独立升级。
 - 卸载后不残留启用的 PAM 引用或失效的 systemd unit。
+
+### Result (2026-07-24)
+
+- DEB / RPM 通过 fpm 使用各自发行版包名声明 libc、C++ runtime、PAM、libyuv、libjpeg、OpenMP 和 systemd runtime 依赖。
+- 新增独立包验证脚本，覆盖元数据、root 所有权、安装清单、关键权限、相对 RPATH 和维护脚本缺失检查。
+- Debian 与 Fedora 容器验证均通过；宿主机未安装 RPM / fpm 工具。
+- 发行包必须在对应发行版家族的最低支持版本构建；在 Arch 上构建后封装为 DEB / RPM 不保证兼容更旧的 glibc。
 
 ## Phase 5: Multi-user Behavior
 
@@ -302,4 +309,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试按当前决定暂缓。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、多用户隔离、system-owned encrypted profile store、TPM2 / host-key provider、限流、模型恢复、sandbox、Linux UX Phase 7，以及 DMS / Monet Phase 1-5 均已完成。下一步完成 DEB / RPM 实包验证；Windows 主线随后进入 Rust Credential Provider Phase 0。
+P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试按当前决定暂缓。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、多用户隔离、system-owned encrypted profile store、TPM2 / host-key provider、限流、模型恢复、sandbox、Linux UX Phase 7、DMS / Monet Phase 1-5，以及 DEB / RPM 实包验证均已完成。下一步可进入 Windows Rust Credential Provider Phase 0。
