@@ -10,7 +10,7 @@
 
 ## Implementation Status
 
-Phase 1 至 Phase 5 已完成：Slint 使用应用自身的语义主题角色，Linux 端会优先加载 DMS Material 3 色板，支持 DMS 会话模式、目录级实时刷新，以及通过受控参数调用 Matugen 的壁纸取色回退。所有外部来源不可用时使用内置主题。
+Phase 1 至 Phase 5 已完成：Slint 使用应用自身的语义主题角色，Linux 端会优先加载 DMS Material 3 色板，支持 DMS 会话模式、目录级实时刷新，以及通过受控参数调用 Matugen 的壁纸取色回退。成功、提醒和错误状态分别使用 Material 3 的 tertiary、secondary 和 error 容器角色，并进行前景对比度校正；不再在动态主题中固定使用绿色或黄色。所有外部来源不可用时使用内置主题。
 
 设置页现已提供 `跟随系统 / 浅色 / 深色` 和 `自动 / 显示 / 隐藏` 原生窗口按键偏好。自动模式在 Niri、Sway、Hyprland、i3、dwm 等独立窗口管理器下隐藏窗口装饰，在 GNOME、KDE Plasma 等完整桌面环境和未知环境下保留原生最小化、最大化、关闭按键。当前实现不会修改 DMS 或桌面配置。
 

@@ -8,12 +8,12 @@
 
 本计划是 `docs/rewrite_master_plan.md` 中 Linux Phase 3 的后续落地计划。Windows compatibility、可选 SIMD / Zig 扩展和 DMS Monet 配色分别保留在原计划及 `docs/dms_monet_theme_plan.md` 中，不阻塞 Linux 第一版跑通。
 
-## Current Status (2026-07-24)
+## Current Status (2026-07-26)
 
-Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS 锁屏和摄像头恢复矩阵按当前决定暂缓；Phase 4 打包基础设施及 DEB / RPM 实包验证已完成；Phase 5 多用户隔离和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成；Phase 7 的 UI 重写、国际化、DMS / Monet Phase 1-5、发布级诊断、首次使用流程和键盘可用性均已完成。
+Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS 锁屏和摄像头恢复矩阵按当前决定暂缓；Phase 4 打包基础设施及 DEB / RPM 实包验证已完成，源码树内的完整 Release 构建现在还可从 GUI 通过 `pkexec` 安装缺失的系统组件，但真实密码弹窗和安装后状态切换仍待现场验收；Phase 5 多用户隔离和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成；Phase 7 的 UI 重写、国际化、DMS / Monet Phase 1-5、发布级诊断、首次使用流程和键盘可用性均已完成。
 
 - `xmake build` 已通过。
-- 10 个 Xmake test case 和 42 个 Rust unit test 已通过。
+- 当前配置包含 19 个 Xmake target；12 个 Xmake test case 和 42 个 Rust unit test 已通过。
 - 临时 PAM 验收入口已覆盖真实 accepted、rejected 和 unavailable 结果，未修改 `/etc/pam.d`。
 - accepted 请求已贯通 PAM module、root socket、已安装 daemon、目标用户档案、V4L2、SeetaFace、活体检测和特征比对。
 - Release 与已安装的 daemon / PAM module 哈希一致。
@@ -191,6 +191,8 @@ Linux 第一版不要求：
 - 新增独立包验证脚本，覆盖元数据、root 所有权、安装清单、关键权限、相对 RPATH 和维护脚本缺失检查。
 - Debian 与 Fedora 容器验证均通过；宿主机未安装 RPM / fpm 工具。
 - 发行包必须在对应发行版家族的最低支持版本构建；在 Arch 上构建后封装为 DEB / RPM 不保证兼容更旧的 glibc。
+- 源码树内的完整 Release 构建缺少已安装 helper 时，诊断页会显示“安装部署助手”；点击后通过 `pkexec` 请求管理员密码，运行固定安装脚本，自动探测常见 PAM 模块目录，重载 systemd / D-Bus，并在 GUI 中重新验证 helper。
+- 上述 GUI 自举已经通过构建、自动测试和 `DESTDIR` 暂存布局验证；真实 Polkit 密码弹窗和本机系统安装没有作为自动测试执行。
 
 ## Phase 5: Multi-user Behavior
 
@@ -254,7 +256,7 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 该阶段不阻塞真实认证闭环，但影响正式发布质量：
 
 - [x] 根据 `docs/dms_monet_theme_plan.md` 接入 DMS / Monet 配色及内置回退主题。
-- [x] 完成窗口尺寸、高 DPI、长翻译文本和键盘导航检查；自定义导航与操作按钮支持焦点、Enter 和 Space，窗口默认使用更宽的 `1400x820` 首选尺寸与 `1180x700` 下限。
+- [x] 完成窗口尺寸、高 DPI、长翻译文本和键盘导航检查；自定义导航与操作按钮支持焦点、Enter 和 Space，窗口默认使用更宽的 `1560x880` 首选尺寸与 `1180x700` 下限。
 - [x] 语言包使用外部 JSON；增加语言不需要修改 C++ / Slint 业务逻辑。
 - [x] 在 GUI 中区分“桌面测试认证”和“系统 PAM 服务可用”。
 - [x] 为摄像头、模型、加密档案、daemon、密钥保护和 PAM 集成显示可执行的诊断状态；服务状态通过真实 control request 获取，不再用 socket 文件存在性代替。
@@ -309,4 +311,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试按当前决定暂缓。DMS `lockPamPath`、普通用户 PAM 验收、摄像头协调、多用户隔离、system-owned encrypted profile store、TPM2 / host-key provider、限流、模型恢复、sandbox、Linux UX Phase 7、DMS / Monet Phase 1-5，以及 DEB / RPM 实包验证均已完成。下一步可进入 Windows Rust Credential Provider Phase 0。
+先现场验证诊断页的 GUI 提权部署闭环：点击安装、完成 Polkit 密码认证、确认 helper 立即可用并继续执行初始化和桌面目标配置。随后优先补齐结构化 PAM fixture / 提交前隔离验证与自动回滚，以及安装升级和卸载生命周期。P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试仍按当前决定暂缓；这些 Linux 发布缺口处理后再进入 Windows Rust Credential Provider Phase 0。

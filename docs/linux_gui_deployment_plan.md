@@ -2,24 +2,33 @@
 
 ## Status
 
-Implementation in progress, updated 2026-07-25. The restricted helper,
-Polkit/D-Bus activation, deployment client, GUI target controls and package
-staging are implemented. VM acceptance, automatic wallet-token eligibility,
-SELinux policy and lifecycle failure testing remain open. It depends on the
-desktop PAM design in `linux_desktop_pam_integration_plan.md`.
+Implementation in progress, updated 2026-07-26. The restricted helper,
+Polkit/D-Bus activation, deployment client, GUI target controls, package
+staging and direct `pkexec` bootstrap from a complete source-tree Release build are
+implemented. The GUI now offers an install action when the helper is absent,
+reloads systemd and D-Bus, and verifies that the helper responds before
+enabling privileged integration actions. Real interactive Polkit acceptance,
+VM coverage, automatic wallet-token eligibility, SELinux policy and lifecycle
+failure testing remain open. This plan depends on the desktop PAM design in
+`linux_desktop_pam_integration_plan.md`.
 
 ## Product Boundary
 
 The native package manager remains responsible for installing the application
-itself because the GUI cannot run before it exists. After package installation,
-the user should be able to complete storage initialization, service activation,
-desktop integration, enrollment, acceptance testing, rollback and removal of
-authentication integration without opening a terminal.
+itself because the GUI cannot run before it exists. Native packages already
+contain the helper, PAM module, systemd units, D-Bus policy and Polkit actions.
+After package installation, the user should be able to complete storage
+initialization, service activation, desktop integration, enrollment, acceptance
+testing and rollback without opening a terminal.
 
-A later portable-build installer may invoke the same trusted deployment helper,
-but the privileged helper must never copy binaries from an arbitrary source or
-developer build directory. Source-tree deployment remains a developer workflow,
-not a production GUI feature.
+For the developer source-tree Release workflow, a running GUI may bootstrap the
+same system components directly. The client resolves the project `xmake.lua`,
+fixed installer and a complete set of Release artifacts relative to the running
+executable, invokes that installer through `pkexec` without a shell command
+string, reloads systemd and D-Bus, and verifies the helper protocol before
+exposing further actions. This path is an explicit administrator-authorized
+deployment of the current build; production distribution and a future
+standalone portable installer remain separate work.
 
 ## Goals
 
@@ -293,8 +302,11 @@ but must never delete an externally modified PAM file.
 
 ### Phase 6: Packaging and lifecycle
 
-- [ ] Package the helper, D-Bus service, Polkit policies, PAM resources and
-  optional SELinux policy for Arch, DEB and RPM outputs.
+- [x] Package the helper, D-Bus service, Polkit policies and PAM resources for
+  Arch, DEB and RPM outputs.
+- [x] Add direct GUI bootstrap for a complete source-tree Release build using `pkexec`,
+  followed by systemd/D-Bus reload and helper verification.
+- [ ] Package and validate an optional SELinux policy for Fedora.
 - [x] Verify ownership, modes, policy identifiers and absence of maintainer
   scripts that silently enable authentication.
 - [ ] Add safe upgrade, downgrade refusal, rollback and uninstall behavior.
