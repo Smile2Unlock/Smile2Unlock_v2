@@ -34,18 +34,14 @@ export component DeploymentPanel inherits Rectangle {
     private property <string> pending_target: "";
     private property <string> pending_action: "";
 
-    height: root.targets.length == 0 ? 180px : 112px + root.targets.length * 96px;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: UiTheme.border;
-    background: UiTheme.surface;
+    height: root.targets.length == 0 ? 150px : 84px + root.targets.length * 122px;
+    background: transparent;
 
     VerticalLayout {
-        padding: 20px;
-        spacing: 0px;
+        spacing: 10px;
 
         HorizontalLayout {
-            height: 52px;
+            height: 56px;
             spacing: 20px;
             SectionTitle {
                 horizontal-stretch: 1;
@@ -76,6 +72,8 @@ export component DeploymentPanel inherits Rectangle {
         if root.targets.length == 0: Rectangle {
             height: 56px;
             background: UiTheme.surface-subtle;
+            border-width: 1px;
+            border-color: UiTheme.border;
             border-radius: 4px;
             Text {
                 x: 14px;
@@ -89,28 +87,27 @@ export component DeploymentPanel inherits Rectangle {
             }
         }
 
-        for target[index] in root.targets: Rectangle {
-            height: 96px;
-            background: transparent;
+        for target in root.targets: Rectangle {
+            height: 112px;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.pending_target == target.id ? UiTheme.primary : UiTheme.border;
+            background: root.pending_target == target.id ? UiTheme.surface-selected : UiTheme.surface;
             property <bool> wallet_selected: target.wallet_enabled;
 
-            VerticalLayout {
-                spacing: 0px;
+            HorizontalLayout {
+                padding: 16px;
+                spacing: 24px;
 
-                if index > 0: Rectangle {
-                    height: 1px;
-                    background: UiTheme.divider;
-                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 7px;
 
-                HorizontalLayout {
-                    padding-top: 12px;
-                    padding-bottom: 12px;
-                    spacing: 20px;
-
-                    VerticalLayout {
-                        width: 212px;
-                        spacing: 5px;
+                    HorizontalLayout {
+                        height: 24px;
+                        spacing: 12px;
                         Text {
+                            horizontal-stretch: 1;
                             text: target.service;
                             color: UiTheme.text-primary;
                             font-size: 14px;
@@ -118,6 +115,7 @@ export component DeploymentPanel inherits Rectangle {
                             overflow: elide;
                         }
                         Text {
+                            width: 142px;
                             text: target.role == "login"
                                 ? root.translate("deployment.role_login", root.language_index)
                                 : target.role == "lock"
@@ -125,33 +123,37 @@ export component DeploymentPanel inherits Rectangle {
                                     : root.translate("deployment.role_both", root.language_index);
                             color: UiTheme.text-tertiary;
                             font-size: 11px;
+                            horizontal-alignment: right;
                             overflow: elide;
                         }
                     }
 
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: 5px;
-                        Text {
-                            text: target.effective_path;
-                            color: UiTheme.text-secondary;
-                            font-size: 12px;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: target.password_fallback
-                                ? root.translate("deployment.password_fallback_ready", root.language_index)
-                                : root.translate("deployment.password_fallback_unknown", root.language_index);
-                            color: target.password_fallback ? UiTheme.text-secondary : UiTheme.warning-text;
-                            font-size: 11px;
-                            overflow: elide;
-                        }
+                    Text {
+                        height: 20px;
+                        text: target.effective_path;
+                        color: UiTheme.text-secondary;
+                        font-size: 12px;
+                        overflow: elide;
                     }
 
-                    VerticalLayout {
-                        width: 160px;
-                        spacing: 4px;
+                    InlineStatus {
+                        height: 22px;
+                        label: target.password_fallback
+                            ? root.translate("deployment.password_fallback_ready", root.language_index)
+                            : root.translate("deployment.password_fallback_unknown", root.language_index);
+                        tone: target.password_fallback ? "good" : "warn";
+                    }
+                }
+
+                VerticalLayout {
+                    width: 300px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        height: 40px;
+                        spacing: 16px;
                         InlineStatus {
+                            horizontal-stretch: 1;
                             label: target.state == "supported"
                                 ? root.translate("deployment.state_supported", root.language_index)
                                 : target.state == "managed"
@@ -167,68 +169,71 @@ export component DeploymentPanel inherits Rectangle {
                                 : "warn";
                         }
 
-                        if target.wallet_available: Switch {
-                            text: root.translate("deployment.wallet", root.language_index);
-                            checked <=> wallet_selected;
-                            enabled: target.wallet_available && !target.managed && !root.busy;
-                        }
-                        if !target.wallet_available: Text {
-                            text: target.wallet_enabled
-                                ? root.translate("status.configured", root.language_index)
-                                : root.translate("deployment.wallet_unavailable", root.language_index);
-                            color: UiTheme.text-tertiary;
-                            font-size: 11px;
-                            overflow: elide;
-                        }
-                    }
-
-                    if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
-                        width: 128px;
-                        label: root.pending_target == target.id
-                            ? target.managed
-                                ? root.translate("deployment.confirm_rollback", root.language_index)
-                                : root.translate("deployment.apply", root.language_index)
-                            : target.managed
-                                ? root.translate("deployment.review_rollback", root.language_index)
-                                : root.translate("deployment.review", root.language_index);
-                        primary: root.pending_target == target.id && !target.managed;
-                        danger: target.managed;
-                        enabled: root.helper_available && !root.busy
-                            && (target.managed || target.configurable);
-                        activated => {
-                            if (root.pending_target != target.id) {
-                                root.pending_target = target.id;
-                                root.pending_action = target.managed ? "rollback" : "configure";
-                            } else {
-                                root.pending_target = "";
-                                root.pending_action = "";
-                                if (target.managed) {
-                                    root.rollback_requested(target.id);
+                        if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
+                            width: 128px;
+                            label: root.pending_target == target.id
+                                ? target.managed
+                                    ? root.translate("deployment.confirm_rollback", root.language_index)
+                                    : root.translate("deployment.apply", root.language_index)
+                                : target.managed
+                                    ? root.translate("deployment.review_rollback", root.language_index)
+                                    : root.translate("deployment.review", root.language_index);
+                            primary: root.pending_target == target.id && !target.managed;
+                            danger: target.managed;
+                            enabled: root.helper_available && !root.busy
+                                && (target.managed || target.configurable);
+                            activated => {
+                                if (root.pending_target != target.id) {
+                                    root.pending_target = target.id;
+                                    root.pending_action = target.managed ? "rollback" : "configure";
                                 } else {
-                                    root.configure_requested(target.id, wallet_selected);
+                                    root.pending_target = "";
+                                    root.pending_action = "";
+                                    if (target.managed) {
+                                        root.rollback_requested(target.id);
+                                    } else {
+                                        root.configure_requested(target.id, wallet_selected);
+                                    }
                                 }
                             }
                         }
+                        if !root.helper_available && (target.managed || target.configurable): Text {
+                            width: 128px;
+                            text: root.translate("deployment.helper_required", root.language_index);
+                            color: UiTheme.warning-text;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        if !target.managed && !target.configurable: Text {
+                            width: 128px;
+                            text: target.state == "external"
+                                ? root.translate("deployment.external_read_only", root.language_index)
+                                : root.translate("deployment.not_available", root.language_index);
+                            color: UiTheme.text-tertiary;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
                     }
-                    if !root.helper_available && (target.managed || target.configurable): Text {
-                        width: 128px;
-                        text: root.translate("deployment.helper_required", root.language_index);
-                        color: UiTheme.warning-text;
-                        font-size: 11px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        wrap: word-wrap;
+
+                    if target.wallet_available: Switch {
+                        height: 28px;
+                        text: root.translate("deployment.wallet", root.language_index);
+                        checked <=> wallet_selected;
+                        enabled: target.wallet_available && !target.managed && !root.busy;
                     }
-                    if !target.managed && !target.configurable: Text {
-                        width: 128px;
-                        text: target.state == "external"
-                            ? root.translate("deployment.external_read_only", root.language_index)
-                            : root.translate("deployment.not_available", root.language_index);
+                    if !target.wallet_available: Text {
+                        height: 28px;
+                        text: target.wallet_enabled
+                            ? root.translate("status.configured", root.language_index)
+                            : root.translate("deployment.wallet_unavailable", root.language_index);
                         color: UiTheme.text-tertiary;
                         font-size: 11px;
-                        horizontal-alignment: center;
                         vertical-alignment: center;
-                        wrap: word-wrap;
+                        overflow: elide;
                     }
                 }
             }
