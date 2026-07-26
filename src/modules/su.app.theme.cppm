@@ -776,11 +776,27 @@ std::expected<AppTheme, std::string> parse_material_theme(
     theme.disabled_surface = *surface_high;
     theme.disabled_text = safe_foreground(*outline, *surface_high, 3.0);
 
-    // Status colors keep their authentication meaning instead of following the accent hue.
-    theme.success_surface = fallback.success_surface;
-    theme.success_text = fallback.success_text;
-    theme.warning_surface = fallback.warning_surface;
-    theme.warning_text = fallback.warning_text;
+    const auto success_surface = optional_role(
+        document, mode, "tertiary_container", *primary_container);
+    const auto success_text = optional_role(
+        document, mode, "on_tertiary_container", *on_surface);
+    const auto warning_surface = optional_role(
+        document, mode, "secondary_container", *surface_high);
+    const auto warning_text = optional_role(
+        document, mode, "on_secondary_container", *on_surface_variant);
+    for (const auto* result : {
+             &success_surface,
+             &success_text,
+             &warning_surface,
+             &warning_text}) {
+        if (!*result) {
+            return std::unexpected(result->error());
+        }
+    }
+    theme.success_surface = *success_surface;
+    theme.success_text = safe_foreground(*success_text, *success_surface, 4.5);
+    theme.warning_surface = *warning_surface;
+    theme.warning_text = safe_foreground(*warning_text, *warning_surface, 4.5);
     theme.face_indicator = fallback.face_indicator;
     return theme;
 }

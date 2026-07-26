@@ -34,6 +34,10 @@ std::vector<MaterialRole> material_roles(std::string primary = "#bbc3ff") {
         {"primary", std::move(primary), "#525a92"},
         {"primary_container", "#3a4379", "#dee0ff"},
         {"on_primary", "#232c61", "#ffffff"},
+        {"secondary_container", "#45465f", "#e0e1ff"},
+        {"on_secondary_container", "#e0e1ff", "#191a2c"},
+        {"tertiary_container", "#5b3f5f", "#f9d8ff"},
+        {"on_tertiary_container", "#f9d8ff", "#241028"},
         {"on_surface", "#e4e1e9", "#1b1b21"},
         {"on_surface_variant", "#c7c5d0", "#46464f"},
         {"error", "#ffb4ab", "#ba1a1a"},
@@ -44,7 +48,8 @@ std::vector<MaterialRole> material_roles(std::string primary = "#bbc3ff") {
 
 std::string dms_palette(
     std::string primary = "#bbc3ff",
-    bool include_optional_roles = true) {
+    bool include_optional_roles = true,
+    bool include_status_roles = true) {
     auto roles = material_roles(std::move(primary));
     if (!include_optional_roles) {
         std::erase_if(roles, [](const auto& role) {
@@ -52,6 +57,12 @@ std::string dms_palette(
                 || role.name == "surface_container_high"
                 || role.name == "surface_container_lowest"
                 || role.name == "outline_variant";
+        });
+    }
+    if (!include_status_roles) {
+        std::erase_if(roles, [](const auto& role) {
+            return role.name.starts_with("secondary_")
+                || role.name.starts_with("tertiary_");
         });
     }
     auto output = std::string{"{\"colors\":{"};
@@ -149,7 +160,15 @@ void test_palette_mapping_and_validation() {
     require(dark->canvas == color("#131318"), "background role should map to canvas");
     require(dark->surface == color("#0d0e13"), "lowest surface should map to panel surface");
     require(dark->primary == color("#bbc3ff"), "primary role should map to accent");
-    require(dark->success_text == color("#8fe2c1"), "success must keep a semantic color");
+    require(
+        dark->success_surface == color("#5b3f5f"),
+        "tertiary container should map to the success surface");
+    require(
+        dark->success_text == color("#f9d8ff"),
+        "tertiary container text should map to the success foreground");
+    require(
+        dark->warning_surface == color("#45465f"),
+        "secondary container should map to the warning surface");
 
     const auto light = su::app::parse_material_theme(dms_palette(), ThemeMode::light);
     require(light.has_value() && light->mode == ThemeMode::light, "light scheme should parse");
@@ -159,6 +178,16 @@ void test_palette_mapping_and_validation() {
         dms_palette("#bbc3ff", false), ThemeMode::dark);
     require(fallback.has_value(), "optional Material roles should have same-level fallbacks");
     require(fallback->surface == color("#131318"), "surface fallback should use Material surface");
+
+    const auto sparse = su::app::parse_material_theme(
+        dms_palette("#bbc3ff", true, false), ThemeMode::dark);
+    require(sparse.has_value(), "status roles should have palette-derived fallbacks");
+    require(
+        sparse->success_surface == color("#3a4379"),
+        "success fallback should use the primary container");
+    require(
+        sparse->warning_surface == color("#29292f"),
+        "warning fallback should use the elevated surface");
 
     require(
         !su::app::parse_material_theme(R"({"colors":{"dark":{}}})", ThemeMode::dark),

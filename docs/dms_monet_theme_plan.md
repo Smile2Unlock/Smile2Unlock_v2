@@ -129,7 +129,7 @@ JSON 解析应使用项目已有的结构化解析能力；如果现有依赖不
 | `danger` | `error` | 失败和危险操作 |
 | `danger_container` | `error_container` | 错误提示背景 |
 
-成功、警告和识别失败状态不能简单映射到 `primary`。第一阶段保留经过对比度验证的语义色，并根据当前 surface 调整前景 / 容器色；后续只有在 Material 3 扩展色板提供稳定角色时才切换到动态扩展色。
+成功、警告和识别失败状态不能全部简单映射到 `primary`。当前实现使用 Material 3 的 `tertiary_container` / `on_tertiary_container` 表示成功，使用 `secondary_container` / `on_secondary_container` 表示提醒，并继续使用 `error_container` 表示失败；每组前景色都会进行对比度校正。色板缺少扩展角色时，分别回退到同一色板的 `primary_container` 和高层级 surface，不再回退到固定的绿色或黄色。
 
 ### Slint Theme Global
 
@@ -185,7 +185,7 @@ C++ 负责把完整 `AppTheme` 一次性投递到 Slint 事件循环。更新过
 - DMS IPC 超时：快速失败并进入回退路径，不能阻塞 UI 启动。
 - 壁纸路径不可读：跳过 Matugen，使用内置主题。
 - `matugen` 未安装或退出失败：使用内置主题。
-- 动态颜色对比度不足：替换问题角色为内置语义色，而不是拒绝所有动态颜色。
+- 动态颜色对比度不足：为问题角色选择高对比度前景色，而不是拒绝整张动态色板。
 - 运行中外部来源消失：保留当前主题；只有用户模式变化或下一次有效主题出现时再更新。
 
 日志中只记录来源类型、失败阶段和必要的文件路径，不输出无关环境变量或完整外部命令行。
