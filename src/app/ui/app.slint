@@ -26,6 +26,7 @@ export component AppWindow inherits Window {
     in property <bool> pam_configured: false;
     in property <string> pam_service: "";
     in property <bool> deployment_helper_available: false;
+    in property <bool> deployment_installer_available: false;
     in property <bool> login_pam_configured: false;
     in property <bool> lock_pam_configured: false;
     in property <[DeploymentTargetRow]> deployment_targets;
@@ -67,6 +68,7 @@ export component AppWindow inherits Window {
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
     callback refresh_system_status_requested();
+    callback install_deployment_helper_requested();
     callback initialize_system_deployment_requested();
     callback configure_desktop_target_requested(string, bool);
     callback rollback_desktop_target_requested(string);
@@ -832,12 +834,14 @@ export component AppWindow inherits Window {
                     DeploymentPanel {
                         targets: root.deployment_targets;
                         helper_available: root.deployment_helper_available;
+                        installer_available: root.deployment_installer_available;
                         runtime_ready: root.runtime-ready;
                         busy: root.busy;
                         language_index: root.language_index;
                         operation_status: root.deployment_operation_status;
                         translate(key, index) => { root.translate(key, index) }
                         initialize_requested => { root.initialize_system_deployment_requested(); }
+                        install_helper_requested => { root.install_deployment_helper_requested(); }
                         configure_requested(target, wallet) => {
                             root.configure_desktop_target_requested(target, wallet);
                         }

@@ -71,6 +71,13 @@ initialize storage and configure a detected login or lock-screen target. The
 GUI requests administrator authorization through the restricted deployment
 helper and shows password fallback before applying a PAM change.
 
+When running `su_app` directly from a complete Release build, the same section
+can bootstrap missing system components through `pkexec`. The GUI accepts only
+the installer and artifacts found beside that build, requests administrator
+authorization, reloads systemd and D-Bus, and verifies the helper response
+before enabling integration actions. An installed application with missing
+package files instead asks the user to repair the native package.
+
 For headless recovery, storage initialization remains available directly:
 
 ```bash

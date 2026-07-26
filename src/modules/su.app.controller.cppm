@@ -57,6 +57,7 @@ struct SystemStatus {
     bool pam_configured = false;
     std::string pam_service;
     bool deployment_helper_available = false;
+    bool deployment_installer_available = false;
     bool login_pam_configured = false;
     bool lock_pam_configured = false;
     std::vector<DeploymentTargetStatus> deployment_targets;
@@ -87,6 +88,7 @@ public:
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
     SystemStatus load_system_status();
+    std::expected<std::string, std::string> install_deployment_helper();
     std::expected<std::string, std::string> initialize_system_deployment();
     std::expected<std::string, std::string> configure_desktop_target(
         std::string_view target,

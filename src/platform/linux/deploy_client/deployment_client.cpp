@@ -5,11 +5,14 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <span>
 #include <string>
+#include <thread>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -22,6 +25,99 @@ namespace {
 constexpr std::string_view kBusName = "io.github.smile2unlock.Deployment1";
 constexpr std::string_view kObjectPath = "/io/github/smile2unlock/Deployment1";
 constexpr std::string_view kInterface = "io.github.smile2unlock.Deployment1";
+
+struct InstallerSource {
+    std::filesystem::path script;
+    std::filesystem::path build_directory;
+};
+
+bool regular_file(const std::filesystem::path& path) {
+    auto error = std::error_code{};
+    return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+std::optional<InstallerSource> installer_source() {
+    auto error = std::error_code{};
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (error || executable.empty()) {
+        return std::nullopt;
+    }
+    const auto build_directory = executable.parent_path();
+    for (auto directory = build_directory; !directory.empty();) {
+        const auto script = directory / "packaging" / "install-linux-auth.sh";
+        if (regular_file(directory / "xmake.lua") && regular_file(script)
+            && ::access(script.c_str(), X_OK) == 0
+            && regular_file(build_directory / "su_authd")
+            && regular_file(build_directory / "su_deploy_helper")
+            && regular_file(build_directory / "pam_smile2unlock.so")) {
+            return InstallerSource{
+                .script = script,
+                .build_directory = build_directory,
+            };
+        }
+        const auto parent = directory.parent_path();
+        if (parent == directory) {
+            break;
+        }
+        directory = parent;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> pkexec_executable() {
+    for (const auto* candidate : {"/usr/bin/pkexec", "/bin/pkexec"}) {
+        if (::access(candidate, X_OK) == 0) {
+            return std::filesystem::path(candidate);
+        }
+    }
+    return std::nullopt;
+}
+
+std::expected<void, std::string> run_installer(const InstallerSource& source) {
+    const auto pkexec = pkexec_executable();
+    if (!pkexec) {
+        return std::unexpected("pkexec is unavailable; install Polkit first");
+    }
+    const auto child = ::fork();
+    if (child < 0) {
+        return std::unexpected("failed to start the deployment helper installer");
+    }
+    if (child == 0) {
+        auto executable = pkexec->string();
+        auto script = source.script.string();
+        auto build_directory = source.build_directory.string();
+        char* const arguments[] = {
+            executable.data(),
+            script.data(),
+            build_directory.data(),
+            nullptr,
+        };
+        ::execv(pkexec->c_str(), arguments);
+        _exit(127);
+    }
+
+    auto status = 0;
+    while (::waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) {
+            return std::unexpected("failed to wait for the deployment helper installer");
+        }
+    }
+    if (!WIFEXITED(status)) {
+        return std::unexpected("deployment helper installation was interrupted");
+    }
+    switch (WEXITSTATUS(status)) {
+        case 0:
+            return {};
+        case 126:
+            return std::unexpected("administrator authorization was cancelled");
+        case 127:
+            return std::unexpected("administrator authorization failed");
+        default:
+            return std::unexpected(std::format(
+                "deployment helper installer exited with status {}",
+                WEXITSTATUS(status)));
+    }
+}
 
 std::string bus_error(const sd_bus_error& error, std::string_view fallback) {
     return error.message != nullptr ? std::string(error.message) : std::string(fallback);
@@ -299,6 +395,10 @@ bool DeploymentClient::dms_available() const {
     return dms_executable().has_value();
 }
 
+bool DeploymentClient::installer_available() const {
+    return installer_source().has_value() && pkexec_executable().has_value();
+}
+
 std::expected<std::string, std::string> DeploymentClient::inspect() const {
     auto payload = call_string_method("Inspect");
     if (!payload) {
@@ -309,6 +409,25 @@ std::expected<std::string, std::string> DeploymentClient::inspect() const {
         return std::unexpected("deployment helper protocol is incompatible");
     }
     return payload;
+}
+
+std::expected<std::string, std::string> DeploymentClient::install_helper() const {
+    const auto source = installer_source();
+    if (!source) {
+        return std::unexpected(
+            "complete release artifacts are unavailable; reinstall the system package");
+    }
+    if (const auto installed = run_installer(*source); !installed) {
+        return std::unexpected(installed.error());
+    }
+    for (auto attempt = 0; attempt < 10; ++attempt) {
+        if (inspect()) {
+            return "deployment helper installed";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return std::unexpected(
+        "deployment helper was installed but did not become available");
 }
 
 std::expected<std::string, std::string> DeploymentClient::initialize_runtime() const {
