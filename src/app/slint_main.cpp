@@ -285,6 +285,7 @@ void apply_system_status(
     window->set_pam_configured(status.pam_configured);
     window->set_pam_service(slint::SharedString(status.pam_service));
     window->set_deployment_helper_available(status.deployment_helper_available);
+    window->set_deployment_installer_available(status.deployment_installer_available);
     window->set_login_pam_configured(status.login_pam_configured);
     window->set_lock_pam_configured(status.lock_pam_configured);
     deployment_targets->set_vector(deployment_target_rows(status.deployment_targets));
@@ -537,6 +538,17 @@ int main(int argc, char** argv) {
                 catalog,
                 "deployment.initialize_success",
                 [controller] { return controller->initialize_system_deployment(); });
+        });
+
+    window->on_install_deployment_helper_requested(
+        [weak_window, controller, deployment_targets, catalog] {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.install_helper_success",
+                [controller] { return controller->install_deployment_helper(); });
         });
 
     window->on_configure_desktop_target_requested(

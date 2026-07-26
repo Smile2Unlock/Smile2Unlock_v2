@@ -3,12 +3,26 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="${1:-${project_dir}/build/linux/x86_64/release}"
-pam_module_dir="${PAM_MODULE_DIR:-/usr/lib/security}"
+pam_module_dir="${PAM_MODULE_DIR:-}"
 systemd_unit_dir="${SYSTEMD_UNIT_DIR:-/usr/lib/systemd/system}"
 dbus_service_dir="${DBUS_SERVICE_DIR:-/usr/share/dbus-1/system-services}"
 dbus_policy_dir="${DBUS_POLICY_DIR:-/usr/share/dbus-1/system.d}"
 polkit_action_dir="${POLKIT_ACTION_DIR:-/usr/share/polkit-1/actions}"
 destination_root="${DESTDIR:-}"
+
+if [[ -z "${pam_module_dir}" ]]; then
+    for candidate in \
+        /usr/lib/security \
+        /usr/lib64/security \
+        /lib/x86_64-linux-gnu/security \
+        /usr/lib/x86_64-linux-gnu/security; do
+        if [[ -f "${candidate}/pam_unix.so" ]]; then
+            pam_module_dir="${candidate}"
+            break
+        fi
+    done
+    pam_module_dir="${pam_module_dir:-/usr/lib/security}"
+fi
 
 if [[ -z "${destination_root}" && "${EUID}" -ne 0 ]]; then
     echo "install-linux-auth.sh must run as root" >&2
@@ -105,6 +119,11 @@ install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployme
 
 if [[ -z "${destination_root}" ]]; then
     systemctl daemon-reload
+    busctl --system call \
+        org.freedesktop.DBus \
+        /org/freedesktop/DBus \
+        org.freedesktop.DBus \
+        ReloadConfig >/dev/null
     echo "Smile2Unlock system components installed. Open the GUI to initialize and configure authentication."
 else
     echo "su-authd staged under ${destination_root}."

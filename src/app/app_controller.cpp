@@ -497,6 +497,7 @@ SystemStatus AppController::load_system_status() {
     const auto deployment = su::deploy::inspect_deployment();
     status.pam_status_known = deployment.has_value();
     status.deployment_helper_available = deployment_client.inspect().has_value();
+    status.deployment_installer_available = deployment_client.installer_available();
     if (deployment) {
         auto configured_services = std::vector<std::string>{};
         auto has_login_target = false;
@@ -563,6 +564,10 @@ SystemStatus AppController::load_system_status() {
                 | std::ranges::to<std::string>();
     }
     return status;
+}
+
+std::expected<std::string, std::string> AppController::install_deployment_helper() {
+    return su::deploy::DeploymentClient{}.install_helper();
 }
 
 std::expected<std::string, std::string> AppController::initialize_system_deployment() {

@@ -21,12 +21,14 @@ export struct DeploymentTargetRow {
 export component DeploymentPanel inherits Rectangle {
     in property <[DeploymentTargetRow]> targets;
     in property <bool> helper_available: false;
+    in property <bool> installer_available: false;
     in property <bool> runtime_ready: false;
     in property <bool> busy: false;
     in property <int> language_index: 0;
     in property <string> operation_status: "";
 
     callback initialize_requested();
+    callback install_helper_requested();
     callback configure_requested(string, bool);
     callback rollback_requested(string);
     pure callback translate(string, int) -> string;
@@ -48,17 +50,26 @@ export component DeploymentPanel inherits Rectangle {
                 title: root.translate("deployment.title", root.language_index);
                 detail: root.helper_available
                     ? root.translate("deployment.helper_ready", root.language_index)
-                    : root.translate("deployment.helper_missing", root.language_index);
+                    : root.installer_available
+                        ? root.translate("deployment.helper_installable", root.language_index)
+                        : root.translate("deployment.helper_missing", root.language_index);
             }
             if root.runtime_ready: InlineStatus {
                 width: 112px;
                 label: root.translate("status.ready", root.language_index);
                 tone: "accent";
             }
-            if !root.runtime_ready && !root.helper_available: InlineStatus {
+            if !root.runtime_ready && !root.helper_available && !root.installer_available: InlineStatus {
                 width: 148px;
                 label: root.translate("deployment.helper_required", root.language_index);
                 tone: "warn";
+            }
+            if !root.helper_available && root.installer_available: CenteredActionButton {
+                width: 168px;
+                label: root.translate("deployment.install_helper", root.language_index);
+                primary: true;
+                enabled: !root.busy;
+                activated => { root.install_helper_requested(); }
             }
             if !root.runtime_ready && root.helper_available: CenteredActionButton {
                 width: 156px;
