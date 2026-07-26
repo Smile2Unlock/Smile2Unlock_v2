@@ -186,7 +186,7 @@ Linux `su_authd` 和未来 Windows LocalSystem auth service 成为唯一 storage
 - 本地账户和 Microsoft 账户能以系统解析的规范身份完成登录 / 解锁；未验收的域账户和 `CPUS_CREDUI` 不读取或提交已保存密码。
 - GUI 和 PAM / Credential Provider 不直接访问 master key 文件。
 
-## Implementation Status (2026-07-24)
+## Implementation Status (2026-07-26)
 
 Completed in source and automated tests:
 
@@ -206,9 +206,10 @@ Completed in source and automated tests:
 - Removal of the legacy SQLite/AES-CBC and UDP password-return path. Existing
   SQLite password fields are retired without decryption and require the user to
   enter the current Windows password again.
-- MinGW builds for `Smile2UnlockAuthService.exe` and the full Credential
+- MinGW builds for `Smile2UnlockAuthService.exe` and the current C++ Credential
   Provider DLL, including a Windows Rust static library. Linux `xmake build`,
-  all 10 Xmake tests and the release tarball staging pass.
+  all 12 Xmake tests and the release tarball staging pass. The planned pure
+  Rust Credential Provider remains a separate, not-yet-started rewrite.
 
 Still requires platform acceptance before release:
 

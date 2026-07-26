@@ -4,11 +4,11 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-07-24)
+## Current Status (2026-07-26)
 
-Phase 0、1、2 — **全部完成**。Phase 3 — **代码、部署和自动验收完成，剩余现场矩阵按当前决定暂缓**。Phase 4 — **Windows 加密密码存储和 LocalSystem 认证服务已实现，Rust Credential Provider 重写尚未开始**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
+Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 加密密码存储和 LocalSystem 认证服务已实现，Rust Credential Provider 重写尚未开始**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
 
-当前 Linux 配置可构建 16 个 Xmake target；`xmake build` 和 10 个 Xmake test case 已通过，其中 Rust core 包含 42 个单元测试。
+当前 Linux 配置包含 19 个 Xmake target；`xmake build` 和 12 个 Xmake test case 已通过，其中 Rust core 包含 42 个单元测试。Linux GUI 已支持 DMS / Matugen Monet 配色、外部语言包、system-owned 加密档案、桌面 PAM 目标管理，以及在 helper 缺失时通过 `pkexec` 直接安装源码树内完整 Release 构建的系统组件。
 
 重写后的第一阶段目标：
 
