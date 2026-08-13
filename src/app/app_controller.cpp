@@ -227,8 +227,19 @@ std::string AppController::config_path() const {
 }
 
 std::string AppController::profile_store_path() const {
+#if defined(_WIN32)
+    const std::filesystem::path root = [] {
+        if (const auto* program_data = std::getenv("PROGRAMDATA")) {
+            return std::filesystem::path(program_data);
+        }
+        return std::filesystem::path{"C:/ProgramData"};
+    }();
+    return (root / "smile2unlock" / "users"
+        / std::to_string(current_uid()) / "profiles.s2u").string();
+#else
     return (std::filesystem::path{"/var/lib/smile2unlock/users"}
         / std::to_string(current_uid()) / "profiles.s2u").string();
+#endif
 }
 
 std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {

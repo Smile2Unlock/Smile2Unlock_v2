@@ -1,0 +1,7 @@
+LIBRARY su_credential_provider
+
+EXPORTS
+    DllCanUnloadNow                                 PRIVATE
+    DllGetClassObject                               PRIVATE
+    DllRegisterServer                               PRIVATE
+    DllUnregisterServer                             PRIVATE

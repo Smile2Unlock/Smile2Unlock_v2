@@ -19,6 +19,17 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
+// The windows-gnu std links ntdll (NtReadFile/NtCreateFile/...) and userenv
+// (GetUserProfileDirectoryW) directly. Declare them here so both the xmake
+// C++ link path and the standalone cdylib link resolve these symbols.
+#[cfg(target_os = "windows")]
+#[link(name = "ntdll")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "windows")]
+#[link(name = "userenv")]
+unsafe extern "C" {}
+
 use profile::{PROFILE_ID_CAP, PROFILE_LABEL_CAP};
 use std::ffi::c_char;
 

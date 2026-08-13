@@ -9,7 +9,11 @@ add_requires("libyuv")
 
 set_encodings("utf-8")
 set_languages("c++26")
-set_toolchains("gcc")
+if is_plat("linux") then
+    set_toolchains("gcc")
+elseif is_plat("mingw") then
+    set_toolchains("mingw")
+end
 
 option("with_slint")
     set_default(true)
@@ -108,7 +112,7 @@ local function apply_cpp_target(kind)
         add_syslinks("pthread", "dl")
     elseif is_plat("windows", "mingw") then
         add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
-        add_syslinks("ws2_32", "advapi32")
+        add_syslinks("ws2_32", "advapi32", "ntdll", "userenv")
     end
 end
 
@@ -128,12 +132,21 @@ target("su_core")
             "--manifest-path", manifest,
             "--target-dir", path.join(os.projectdir(), "build", "cargo")
         }
+        local cargo_target = nil
+        if is_plat("mingw") then
+            cargo_target = "x86_64-pc-windows-gnu"
+            table.insert(cargo_args, "--target")
+            table.insert(cargo_args, cargo_target)
+        end
         if is_mode("release") then
             table.insert(cargo_args, "--release")
         end
         os.mkdir(outdir)
         os.execv("cargo", cargo_args)
-        os.cp(path.join(os.projectdir(), "build", "cargo", cargo_mode, "libsu_core.a"), path.join(outdir, "libsu_core.a"))
+        local cargo_out = cargo_target
+            and path.join(os.projectdir(), "build", "cargo", cargo_target, cargo_mode, "libsu_core.a")
+            or path.join(os.projectdir(), "build", "cargo", cargo_mode, "libsu_core.a")
+        os.cp(cargo_out, path.join(outdir, "libsu_core.a"))
     end)
 
 target("su_platform_zig")
@@ -151,13 +164,19 @@ target("su_recognizer")
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
     add_files("src/recognizer/image/*.cpp")
-    add_files("src/recognizer/camera/*.cpp")
+    if is_plat("linux") then
+        add_files("src/recognizer/camera/v4l2_camera.cpp")
+    else
+        add_files("src/recognizer/camera/windows_camera_stub.cpp")
+    end
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
     add_packages("cimg")
     add_packages("libyuv")
     if is_plat("linux") then
         add_syslinks("jpeg")  -- libyuv MJPEG decode links libjpeg
+    elseif is_plat("mingw") then
+        add_files("src/platform/windows/print_shim.cpp")
     end
     if has_config("with_seetaface") then
         add_defines("SU_HAS_SEETAFACE=1", { public = true })
@@ -177,10 +196,14 @@ target("su_recognizer")
 
     target("su_app")
     apply_cpp_target("binary")
-    add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     add_includedirs("src/core-rs/include", {public = true})
     add_packages("nlohmann_json")
     add_deps("su_core", "su_recognizer")
+    if is_plat("linux") then
+        add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
+    else
+        add_files("src/app/windows_app_controller.cpp", "src/app/core_bridge.cpp")
+    end
     if has_config("with_zig") then
         add_deps("su_platform_zig")
         add_defines("SU_HAS_ZIG_PLATFORM=1")
@@ -191,12 +214,16 @@ target("su_recognizer")
     add_files("src/modules/su.core.*.cppm")
     add_files("src/modules/su.app.controller.cppm")
     add_files("src/modules/su.app.user.cppm")
+    if not is_plat("linux") then
+        add_files("src/platform/windows/user/user_windows.cpp")
+    end
     if is_plat("linux") then
         add_files("src/modules/su.control.socket.cppm")
         add_files("src/platform/linux/deploy_client/*.cpp")
         add_deps("su_deploy")
     end
     if has_config("with_slint") then
+        set_policy("check.target_package_licenses", false)
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
         add_files("src/app/slint_main.cpp")
@@ -208,6 +235,9 @@ target("su_recognizer")
         add_files("src/modules/su.app.theme.cppm")
         if is_plat("linux") then
             add_syslinks("systemd")
+        elseif is_plat("windows", "mingw") then
+            -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32")
         end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
@@ -313,6 +343,9 @@ if is_plat("linux") then
             "src/modules/su.auth.user.cppm",
             "src/modules/su.app.user.cppm",
             "src/modules/su.core.types.cppm")
+        if not is_plat("linux") then
+            add_files("src/platform/windows/user/user_windows.cpp")
+        end
         add_tests("default")
 
     target("su_pam_integration_test")
