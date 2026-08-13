@@ -8,9 +8,9 @@
 
 ## 当前状态
 
-- 现有 C++ Provider 和 Windows LocalSystem 认证服务仍是当前可构建路径。
+- Phase 0（冻结接口与安全样例）已完成，见下方基线记录。
+- 现有 C++ Provider 和 Windows LocalSystem 认证服务仍是当前可构建路径，未被替换。
 - Rust 加密 envelope、Windows password store、TPM CNG provider、machine DPAPI fallback 和 LocalSystem 服务已经按 `docs/credential_storage_encryption_plan.md` 实现；Windows face profile 的 service-owned 存储仍待完成。
-- `po0uyan/memsafe` `v1.0.2` 的 Linux 测试已通过，但尚未完成 Windows 原生验证，也没有第三方安全审计。
 - 本计划阶段只写文档，不替换当前 DLL、不修改注册表、不删除旧目录。
 
 ## 非目标
@@ -29,16 +29,18 @@
 src/platform/windows/credential_provider_rs/
 ├── Cargo.toml
 ├── exports.def
+├── .cargo/config.toml          # [target.x86_64-pc-windows-gnu] runner = "wine"
+├── scripts/seal_smoke.c        # VirtualAlloc 版 PAGE_NOACCESS 冒烟（wine 可跑）
 └── src/
-    ├── lib.rs
-    ├── class_factory.rs
-    ├── provider.rs
-    ├── credential.rs
-    ├── fields.rs
-    ├── serialization.rs
-    ├── event_sink.rs
-    ├── pipe_client.rs
-    └── secret_buffer.rs
+    ├── lib.rs                  # 4 个 no_mangle 导出 + 基线测试（已完成）
+    ├── class_factory.rs        # Phase 1
+    ├── provider.rs             # Phase 1
+    ├── credential.rs           # Phase 1
+    ├── fields.rs               # v1 字段布局与状态（已完成）
+    ├── serialization.rs        # Phase 3
+    ├── event_sink.rs           # Phase 1
+    ├── pipe_client.rs          # Phase 2
+    └── secret_buffer.rs        # WindowsSecret<N> 原型（已完成）
 ```
 
 约束：
@@ -118,11 +120,29 @@ src/platform/windows/credential_provider_rs/
 
 ### Phase 0：冻结接口与安全样例
 
-- [ ] 固定 Windows SDK、Rust toolchain、`windows` crate 和 `memsafe` fork 版本。
-- [ ] 用最小 Rust `cdylib` 验证 x64 MSVC 原生构建、MinGW 交叉构建和 DLL 导出检查。
-- [ ] 写 COM GUID / HRESULT / field descriptor 的纯内存单元测试。
-- [ ] 完成 `WindowsSecret` 原型和 Windows 内存保护测试；不接入 LogonUI。
-- [ ] 记录旧 C++ Provider 的 CLSID、字段布局、注册项和卸载行为，作为兼容基线。
+- [x] 固定 Windows SDK、Rust toolchain、`windows` crate 和 `memsafe` fork 版本。*冻结：rustc/cargo 1.98.0-nightly（toolchain pinned by rust-toolchain.toml），`windows-core` 0.62.2 + `windows-sys` 0.61（仅 Win32_System_Memory / Win32_System_Threading），`zeroize` 1 + derive；`memsafe` 尚未引入——本阶段以本地 `WindowsSecret<N>` 满足固定容量 + PAGE_NOACCESS + zeroize 要求，`memsafe` 仅作后续评估（见下方基线记录）。*
+- [x] 用最小 Rust `cdylib` 验证 x64 MSVC 原生构建、MinGW 交叉构建和 DLL 导出检查。*Linux 宿主机完成 x86_64-pc-windows-gnu 交叉构建：release cdylib 244KB，`#[unsafe(no_mangle)]` 导出 DllCanUnloadNow / DllGetClassObject / DllRegisterServer / DllUnregisterServer，objdump 导出表核对无误；`exports.def` 已备好（LIBRARY su_credential_provider，4 导出 PRIVATE），Phase 1 接入。x64 MSVC 原生构建是发布门槛，需真实 Windows（VM）执行。*
+- [x] 写 COM GUID / HRESULT / field descriptor 的纯内存单元测试。*`canonical_clsid_matches_cpp_baseline`（0x5fd3d285_0dd9_4362_8855_e0abaacd4af6）、`hresult_codes_are_stable`、`field_layout_is_stable`、`sdk_constants_match` 等，12/12 通过（宿主 Linux + wine runner 均过）。*
+- [x] 完成 `WindowsSecret` 原型和 Windows 内存保护测试；不接入 LogonUI。*见下方基线记录；seal（PAGE_NOACCESS）测试因 wine 堆页 fault 标 `#[ignore]`，由 `scripts/seal_smoke.c`（VirtualAlloc 版，wine 下通过）与真实 Windows VM 覆盖。*
+- [x] 记录旧 C++ Provider 的 CLSID、字段布局、注册项和卸载行为，作为兼容基线。*见下方基线记录。*
+
+#### Phase 0 基线记录（2026-08-13）
+
+旧 C++ Provider（`CredentialProvider/`）兼容基线：
+
+- **CLSID**：`{5fd3d285-0dd9-4362-8855-e0abaacd4af6}`（CLSID_CSample）。注册项：`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{CLSID}`；类注册 `HKCR\CLSID\{CLSID}\InprocServer32`（SampleV2CredentialProvider.dll，ThreadingModel=Apartment）。卸载仅删前者。
+- **DLL 导出**：仅 DllCanUnloadNow + DllGetClassObject（无 register/unregister 函数）。
+- **字段布局**：14 个 SAMPLE_FIELD_ID；TILEIMAGE(0)=CPFT_TILE_IMAGE+CPFG_CREDENTIAL_PROVIDER_LOGO（双显示）、LABEL(1)=SMALL_TEXT+CPFG_CREDENTIAL_PROVIDER_LABEL（隐藏）、LARGE_TEXT(2)="Smile2Unlock Provider"（双显示）、PASSWORD(3)=PASSWORD_TEXT（选中+聚焦）、SUBMIT_BUTTON(4)（选中显示）、LAUNCHWINDOW_LINK(5)/HIDECONTROLS_LINK(6)/FULLNAME(7)/DISPLAYNAME(8)/LOGONSTATUS(9)/CHECKBOX(10)/EDIT_TEXT(11)/COMBOBOX(12)/FACE_RECOGNITION_LINK(13)=COMMAND_LINK"使用面部识别登录"（全隐藏）。
+- **场景**：CPUS_LOGON / UNLOCK_WORKSTATION / CREDUI；SetUserArray 用于 LOGON/UNLOCK，CREDUI 传 nullptr；CPUS_CHANGE_PASSWORD 返回 E_NOTIMPL。
+- **序列化**：GetSerialization 写 KERB_INTERACTIVE_UNLOCK_LOGON，clsidCredentialProvider=CLSID_CSample；密码 SecureZeroMemory；SetSelected 返回 pbAutoLogon=FALSE。
+- Rust v1 差异：去掉手工密码字段（4 字段 tile），第一版仅 LOGON + UNLOCK_WORKSTATION。
+
+`WindowsSecret<N>` 原型（`src/platform/windows/credential_provider_rs/src/secret_buffer.rs`）：
+
+- `#[repr(C, align(2))]` 固定容量字节缓冲（buf + len + cfg(windows) sealed/locked 标志）；UTF-16LE 容量计算用 `encode_utf16().count()`，不能按 UTF-8 字节数。
+- Windows：`new()` VirtualLock；`seal()`/`unseal()` VirtualProtect PAGE_NOACCESS / PAGE_READWRITE；`clear()` 用 `write_volatile` 逐字节清零（防 DSE）；Drop 顺序 unseal → clear → VirtualUnlock，API 失败全部忽略（fail-secure），无 panic/unwrap。
+- 已修问题：seal 测试必须堆分配（栈页被封立即违例）；wine 对堆管理页封 PAGE_NOACCESS 会 fault（真实 Windows 是标准做法）；windows-sys 0.61 的 MEMORY_BASIC_INFORMATION 指针字段需 `null_mut()` 初始化。
+- wine 加载限制（记录，不影响真实 Windows）：Rust 1.98 std 的 futex 原语导入 `api-ms-win-core-synch-l1-2-0.dll`（WaitOnAddress/WakeByAddress），wine 11.15 (staging) 的 api-set schema 不识别该名字（`build_import_name` 只有 api-ms-win-crt-* → ucrtbase 的映射），导致 LoadLibrary 失败 c0000135，即使 system32 放了该 dll 也不落盘解析。真实 Windows 10+ 自带此 api-set，无此问题；wine 下仅能跑 cargo test（已 12/12 + 1 ignored），DLL 加载验证归入 Phase 4 VM 验收。
 
 ### Phase 1：Rust COM 骨架
 

@@ -1,0 +1,26 @@
+[package]
+name = "su-credential-provider-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Rust Windows Credential Provider for Smile2Unlock (COM adapter only)"
+
+[lib]
+name = "su_credential_provider"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows-core = "0.62.2"
+zeroize = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# Windows-native only for now; the windows crate COM surface is added in Phase 1.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }

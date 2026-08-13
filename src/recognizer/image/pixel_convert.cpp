@@ -1,7 +1,12 @@
 module;
 #include <libyuv.h>
-#include <linux/videodev2.h>
 #include <cstddef>
+#if defined(__linux__)
+#include <linux/videodev2.h>
+#else
+constexpr int V4L2_PIX_FMT_YUYV = 0x56595559;   // 'YUYV'
+constexpr int V4L2_PIX_FMT_MJPEG = 0x47504A4D;  // 'MJPG'
+#endif
 
 module su.recognizer.image;
 

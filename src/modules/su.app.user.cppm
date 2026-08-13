@@ -1,8 +1,18 @@
 module;
 
+#if defined(_WIN32)
+// Windows API implementations live in user_windows.cpp (plain TU); winnt.h
+// wraps <x86intrin.h> in `extern "C"`, which conflicts with the declarations
+// imported via `import std;` when compiled as a module unit.
+extern "C" {
+int su_win_username_for_uid(char* out, unsigned long cap);
+unsigned int su_win_current_uid();
+}
+#else
 #include <pwd.h>
 #include <cerrno>
 #include <unistd.h>
+#endif
 
 export module su.app.user;
 
@@ -17,6 +27,22 @@ std::string current_username(std::string_view fallback);
 } // namespace su::app
 
 namespace su::app {
+
+#if defined(_WIN32)
+
+std::optional<std::string> username_for_uid(std::uint32_t) {
+    char name[256] = {};
+    if (su_win_username_for_uid(name, sizeof(name)) != 0 || name[0] == '\0') {
+        return std::nullopt;
+    }
+    return std::string(name);
+}
+
+std::uint32_t current_uid() {
+    return static_cast<std::uint32_t>(su_win_current_uid());
+}
+
+#else
 
 std::optional<std::string> username_for_uid(std::uint32_t uid) {
     auto buffer_size = ::sysconf(_SC_GETPW_R_SIZE_MAX);
@@ -45,15 +71,17 @@ std::optional<std::string> username_for_uid(std::uint32_t uid) {
     return std::nullopt;
 }
 
+std::uint32_t current_uid() {
+    return static_cast<std::uint32_t>(::getuid());
+}
+
+#endif
+
 std::string current_username(std::string_view fallback) {
     if (const auto username = username_for_uid(current_uid())) {
         return *username;
     }
     return std::string(fallback);
-}
-
-std::uint32_t current_uid() {
-    return static_cast<std::uint32_t>(::getuid());
 }
 
 } // namespace su::app
