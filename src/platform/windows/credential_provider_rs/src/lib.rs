@@ -20,10 +20,14 @@ mod credential;
 #[cfg(windows)]
 mod event_sink;
 #[cfg(windows)]
+mod pipe_client;
+#[cfg(windows)]
 mod provider;
 
 pub use fields::{FieldId, FieldState, FieldStatePair};
 pub use secret_buffer::{CapacityError, WindowsSecret};
+#[cfg(windows)]
+pub use pipe_client::{current_user_sid, PipeClient, PreparedPipePassword};
 
 use windows_core::HRESULT;
 

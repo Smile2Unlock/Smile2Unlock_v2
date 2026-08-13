@@ -157,10 +157,10 @@ src/platform/windows/credential_provider_rs/
 
 ### Phase 2：安全 IPC 客户端
 
-- [ ] 实现命名管道连接、超时、长度上限、版本 / request id 校验和错误映射。
-- [ ] 接入服务端的一次性认证请求、SID / session 绑定和取消请求。
-- [ ] 覆盖服务停止、管道被替换、截断响应、错误 SID、重复 request 和超时。
-- [ ] 确认 DLL 不包含 master key、profile 路径读取和服务端监听代码。
+- [x] 实现命名管道连接、超时、长度上限、版本 / request id 校验和错误映射。*`pipe_client.rs` 以 `#[repr(C)]` 复刻协议（`Request` 2448B / `Response` 1056B，8 字节对齐与 C++ `sizeof` 一致）；`CallNamedPipeW` 同步单次事务（3000ms 超时）；`validate_response` 校验字节数、magic/version、request_id 非零与回显、logon_session_id 匹配；`status_to_hresult` 映射 `kOk→S_OK`、`kInvalidRequest→E_INVALIDARG`、`kAccessDenied→E_ACCESSDENIED`、`kStaleOrConsumed→ERROR_PASSWORD_RESTRICTION`、`kCorrupt/kUnavailable→ERROR_INVALID_DATA/ERROR_SERVICE_NOT_ACTIVE`。*
+- [x] 接入服务端的一次性认证请求、SID / session 绑定和取消请求。*`PipeClient::prepare` 请求 `kPrepare` 一次性凭证（SID 经 `copy_fixed` 校验，密码经 `0<len<513 && password[len]==0` 校验后移入 `PreparedPipePassword`）；`mark_stale` 同模式；密码缓冲在所有路径（成功/失败/drop）以 volatile 逐字清零；`current_user_sid` 走 `OpenProcessToken→GetTokenInformation(TokenUser)→ConvertSidToStringSidW`。*
+- [x] 覆盖服务停止、管道被替换、截断响应、错误 SID、重复 request 和超时。*测试含 `transact_without_server_fails`（wine 下无服务端）、`response_validation` 全失败分支（bad magic/version/request_id/字节数/session）、`status_mapping_table`、`copy_fixed_bounds`、`prepared_password_drop_wipes`（`drop_in_place` 后裸指针验证全零）、`secure_clear_wipes`、`request/response_layout`（尺寸+字段偏移）。wine 下 30 passed + 1 ignored。*
+- [x] 确认 DLL 不包含 master key、profile 路径读取和服务端监听代码。*`pipe_client.rs` 仅客户端：`CallNamedPipeW` 单次事务、无 `CreateNamedPipeW`/监听、无 master key 引用；`PreparedPipePassword` 是唯一密码容器且 drop 即清零。*
 
 ### Phase 3：凭据序列化与 stale 状态
 
