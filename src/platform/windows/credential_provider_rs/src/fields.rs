@@ -33,12 +33,14 @@ pub enum InteractiveState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)] // reserved: the v1 tile carries no password/link fields
 pub enum FieldType {
-    TileImage = 0,      // CPFT_TILE_IMAGE
-    SmallText = 1,      // CPFT_SMALL_TEXT
-    LargeText = 2,      // CPFT_LARGE_TEXT
-    PasswordText = 3,   // CPFT_PASSWORD_TEXT (unused in v1)
-    SubmitButton = 4,   // CPFT_SUBMIT_BUTTON
-    CommandLink = 5,    // CPFT_COMMAND_LINK
+    // ABI values from wincred.h (the windows crate 0.62.2 bindings are wrong
+    // here: CPFT_TILE_IMAGE=6, CPFT_SUBMIT_BUTTON=9, etc.).
+    TileImage = 1,      // CPFT_TILE_IMAGE
+    SmallText = 2,      // CPFT_SMALL_TEXT
+    LargeText = 3,      // CPFT_LARGE_TEXT
+    PasswordText = 4,   // CPFT_PASSWORD_TEXT (unused in v1)
+    SubmitButton = 6,   // CPFT_SUBMIT_BUTTON
+    CommandLink = 7,    // CPFT_COMMAND_LINK
 }
 
 /// Provisional v1 field ids. Finalized in Phase 1.
@@ -78,6 +80,39 @@ pub fn state_pairs() -> [FieldStatePair; FIELD_COUNT] {
     ]
 }
 
+/// CREDENTIAL_PROVIDER_FIELD_TYPE for each field id (GetFieldDescriptorAt).
+pub fn field_type(id: FieldId) -> FieldType {
+    match id {
+        FieldId::TileImage => FieldType::TileImage,
+        FieldId::LargeText => FieldType::LargeText,
+        FieldId::FaceStatus => FieldType::SmallText,
+        FieldId::SubmitButton => FieldType::SubmitButton,
+    }
+}
+
+/// CPFG_* field-type GUID data for a field that carries one.
+/// Returns (data1, data2, data3, data4) in Windows GUID layout; zeroed for
+/// plain fields. Kept dependency-free so the layout stays testable on Linux.
+pub fn field_type_guid(id: FieldId) -> (u32, u16, u16, [u8; 8]) {
+    match id {
+        // CPFG_CREDENTIAL_PROVIDER_LOGO
+        FieldId::TileImage => (0x2d837775, 0xf6cd, 0x464e, [0xa7, 0x45, 0x48, 0x2f, 0xd0, 0xb4, 0x74, 0x93]),
+        // CPFG_CREDENTIAL_PROVIDER_LABEL
+        FieldId::LargeText => (0x286bbff3, 0xbad4, 0x438f, [0xb0, 0x07, 0x79, 0xb7, 0x26, 0x7c, 0x3d, 0x48]),
+        _ => (0, 0, 0, [0; 8]),
+    }
+}
+
+/// Field label for GetFieldDescriptorAt's pszLabel.
+pub fn label(id: FieldId) -> &'static str {
+    match id {
+        FieldId::TileImage => "Smile2Unlock",
+        FieldId::LargeText => "Smile2Unlock",
+        FieldId::FaceStatus => "Face authentication",
+        FieldId::SubmitButton => "Sign in",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,9 +122,11 @@ mod tests {
         assert_eq!(FieldState::Hidden as i32, 0);
         assert_eq!(FieldState::DisplayInBoth as i32, 3);
         assert_eq!(InteractiveState::Focused as i32, 2);
-        assert_eq!(FieldType::TileImage as i32, 0);
-        assert_eq!(FieldType::SubmitButton as i32, 4);
-        assert_eq!(FieldType::CommandLink as i32, 5);
+        assert_eq!(FieldType::TileImage as i32, 1);
+        assert_eq!(FieldType::SmallText as i32, 2);
+        assert_eq!(FieldType::LargeText as i32, 3);
+        assert_eq!(FieldType::SubmitButton as i32, 6);
+        assert_eq!(FieldType::CommandLink as i32, 7);
     }
 
     #[test]
