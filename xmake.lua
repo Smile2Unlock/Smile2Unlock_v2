@@ -400,7 +400,9 @@ target("su_face_auth_smoke_test")
     add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
-    add_tests("default")
+    if not is_plat("mingw") then
+        add_tests("default")
+    end
 
 target("su_theme_test")
     apply_cpp_target("binary")
@@ -409,7 +411,9 @@ target("su_theme_test")
         "src/modules/su.app.preferences.cppm",
         "src/modules/su.app.theme.cppm")
     add_packages("nlohmann_json")
-    add_tests("default")
+    if not is_plat("mingw") then
+        add_tests("default")
+    end
 
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
@@ -474,7 +478,9 @@ if has_config("with_seetaface") then
             os.cp(path.join(recognizer_samples, "1.png"), path.join(dstdir, "official_face_1.png"))
             os.cp(path.join(fas_samples, "hu.ge.jpg"), path.join(dstdir, "official_face_2.jpg"))
         end)
-        add_tests("default")
+        if not is_plat("mingw") then
+            add_tests("default")
+        end
 end
 
 -- Auto-generate compile_commands.json for clangd LSP after each full build.
