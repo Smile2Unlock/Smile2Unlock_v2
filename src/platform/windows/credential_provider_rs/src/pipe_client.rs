@@ -1,3 +1,8 @@
+// Wire constants mirror the C++ protocol-header naming (kMagic, kSidCapacity,
+// ...) so the mapping to common/windows/logon_secret_protocol.h stays
+// greppable; the casing lint is disabled for this module.
+#![allow(non_upper_case_globals)]
+
 //! Named-pipe client for the LocalSystem Smile2Unlock logon-secret service.
 //!
 //! Wire format: fixed-size binary structs shared with the C++ service
@@ -28,11 +33,13 @@ pub fn win32_error(code: u32) -> Error {
 
 pub const kMagic: u32 = 0x5332_5350; // "S2SP"
 pub const kVersion: u16 = 1;
-pub const kPipeName: &str = r"\\.\pipe\Smile2Unlock.LogonSecret.v1";
+pub const kPipeName: PCWSTR = windows_core::w!(r"\\.\pipe\Smile2Unlock.LogonSecret.v1");
 
 pub const kOperationPrepare: u16 = 1;
 pub const kOperationMarkStale: u16 = 2;
+#[allow(dead_code)] // Phase 5 (store/clear flow)
 pub const kOperationStore: u16 = 3;
+#[allow(dead_code)] // Phase 5 (store/clear flow)
 pub const kOperationClear: u16 = 4;
 
 pub const kStatusOk: u32 = 0;
@@ -296,14 +303,15 @@ impl PipeClient {
     fn transact(&self, request: &mut Request, response: &mut Response) -> Result<(), Error> {
         // Safety: buffers are valid for the full duration of the blocking
         // call; sizes match the protocol structs.
+        let mut bytes_read: u32 = 0;
         let ok = unsafe {
             CallNamedPipeW(
-                PCWSTR::from_raw(windows_core::w!(r"\\.\pipe\Smile2Unlock.LogonSecret.v1").as_ptr()),
+                kPipeName,
                 Some(request.request_bytes().as_ptr().cast()),
                 core::mem::size_of::<Request>() as u32,
                 Some(response.response_bytes_mut().as_mut_ptr().cast()),
                 core::mem::size_of::<Response>() as u32,
-                &mut 0u32,
+                &mut bytes_read,
                 3000,
             )
         };
@@ -311,6 +319,9 @@ impl PipeClient {
             let code = unsafe { GetLastError().0 };
             return Err(win32_error(code));
         }
+        // Every response must round-trip the request identity before the
+        // caller may consume its payload (magic/version/request_id/session).
+        validate_response(response, request, bytes_read)?;
         Ok(())
     }
 }
