@@ -23,27 +23,38 @@ mod event_sink;
 mod pipe_client;
 #[cfg(windows)]
 mod provider;
+#[cfg(windows)]
+mod serialization;
 
 pub use fields::{FieldId, FieldState, FieldStatePair};
 pub use secret_buffer::{CapacityError, WindowsSecret};
 #[cfg(windows)]
 pub use pipe_client::{current_user_sid, PipeClient, PreparedPipePassword};
+#[cfg(windows)]
+pub use serialization::{
+    kerb_interactive_unlock_logon_init, kerb_interactive_unlock_logon_pack, protect_password,
+    retrieve_negotiate_auth_package, split_domain_and_username, CPUS_LOGON,
+    CPUS_UNLOCK_WORKSTATION,
+};
 
-use windows_core::HRESULT;
+pub(crate) use windows_core::HRESULT;
 
 /// ABI-stable HRESULT values (windows-core 0.62 does not re-export these).
 pub(crate) const E_NOTIMPL: HRESULT = HRESULT(0x80004001u32 as i32);
 pub(crate) const E_NOINTERFACE: HRESULT = HRESULT(0x80004002u32 as i32);
 pub(crate) const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
+pub(crate) const E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
 pub(crate) const E_OUTOFMEMORY: HRESULT = HRESULT(0x8007000eu32 as i32);
 pub(crate) const E_INVALIDARG: HRESULT = HRESULT(0x80070057u32 as i32);
+#[cfg(windows)]
+pub(crate) use pipe_client::win32_error;
 
 
 /// CLSID of the legacy C++ provider ({5fd3d285-0dd9-4362-8855-e0abaacd4af6}).
 /// Phase 5 decides between reusing it and switching to a new CLSID; the Rust
 /// build must keep the same value until then so LogonUI finds the tile.
 #[cfg(windows)]
-const CLSID_SU_PROVIDER: windows_core::GUID = windows_core::GUID {
+pub(crate) const CLSID_SU_PROVIDER: windows_core::GUID = windows_core::GUID {
     data1: 0x5fd3d285,
     data2: 0x0dd9,
     data3: 0x4362,

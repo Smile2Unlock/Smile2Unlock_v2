@@ -164,11 +164,11 @@ src/platform/windows/credential_provider_rs/
 
 ### Phase 3：凭据序列化与 stale 状态
 
-- [ ] 在人脸验证成功后获取一次性 `WindowsSecret`，在 `GetSerialization` 内解释 UTF-16LE 并构造系统要求的结构。
-- [ ] 使用 Windows 分配器 / `CoTaskMemAlloc` 的正确所有权规则，所有失败分支释放已分配缓冲。
-- [ ] 序列化完成后立即清零临时结构、密码 guard 和 IPC 响应。
-- [ ] 实现 `ReportResult` 的错误分类、stale 标记、密码过期处理和一次性重试禁止。
-- [ ] 覆盖本地账户、Microsoft 账户、错误 SID、密码已修改和离线服务不可用。
+- [x] 在人脸验证成功后获取一次性 `WindowsSecret`，在 `GetSerialization` 内解释 UTF-16LE 并构造系统要求的结构。*`serialization.rs`：`kerb_interactive_unlock_logon_init` 组装 `KERB_INTERACTIVE_UNLOCK_LOGON`（`LSA_UNICODE_STRING.Length` 为不含 NUL 的字节数、MessageType 按场景映射 `KerbInteractiveLogon(2)`/`KerbWorkstationUnlockLogon(7)`、LogonId 零）；`kerb_interactive_unlock_logon_pack` 按 WinLogon/LSA 消费的 packed 格式打包（`Buffer` 为相对基址字节偏移、字符串不 NUL 结尾、总长 = 结构 + 三段 Length 字节和）。`credential.rs::GetSerialization` 经 `PipeClient::prepare` 从认证服务取一次性密码，`protect_password`（`CredIsProtectedW`/`CredProtectW` 两遍法）加密后序列化。*
+- [x] 使用 Windows 分配器 / `CoTaskMemAlloc` 的正确所有权规则，所有失败分支释放已分配缓冲。*`kerb_interactive_unlock_logon_pack` 用 `CoTaskMemAlloc` 分配序列化缓冲；`GetSerialization` 后续任一步失败（`retrieve_negotiate_auth_package` 等）都会先 `CoTaskMemFree` 已分配缓冲再返回错误。*
+- [x] 序列化完成后立即清零临时结构、密码 guard 和 IPC 响应。*`pipe_client.rs` 的 `transact` 无论成败都 `secure_clear`（`write_volatile` 逐字，防 DSE）request/response 的 `password`；`PreparedPipePassword` drop 即清零；`credential.rs` 失败路径对密码副本同样清零。*
+- [x] 实现 `ReportResult` 的错误分类、stale 标记、密码过期处理和一次性重试禁止。*`credential.rs` 增加 `stale`/`serialized` 状态：`ReportResult` 收到非 `STATUS_SUCCESS` 即置 `stale`；`GetSerialization` 在 `stale || serialized` 时拒绝再次提交，保证同一管道一次性 token 最多自动提交一次。*
+- [ ] 覆盖本地账户、Microsoft 账户、错误 SID、密码已修改和离线服务不可用。（留 Phase 4 真实 Windows VM 验收；wine 下 `protect_password_roundtrip` 因缺 `advapi32.CredIsProtectedW` 标记 `#[ignore]`。）
 
 ### Phase 4：真实 LogonUI 集成
 

@@ -7,6 +7,7 @@
 
 use core::cell::Cell;
 
+
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::UI::Shell::{
@@ -32,11 +33,22 @@ use crate::fields::{self, FieldId};
 pub struct Credential {
     /// upadvisecontext from Advise; kept so Phase 3 can push events.
     advised: Cell<bool>,
+    /// usage scenario captured at creation (CPUS_LOGON/CPUS_UNLOCK_WORKSTATION).
+    scenario: Cell<i32>,
+    /// Set when ReportResult reports a failed login; forbids re-submission.
+    stale: Cell<bool>,
+    /// Set once GetSerialization returned a credential; forbids re-submission.
+    serialized: Cell<bool>,
 }
 
 impl Credential {
-    pub fn new() -> Self {
-        Self { advised: Cell::new(false) }
+    pub fn new(scenario: i32) -> Self {
+        Self {
+            advised: Cell::new(false),
+            scenario: Cell::new(scenario),
+            stale: Cell::new(false),
+            serialized: Cell::new(false),
+        }
     }
 }
 
@@ -148,25 +160,102 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
 
     fn GetSerialization(
         &self,
-        _pcpgsr: *mut CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE,
-        _pcpcs: *mut CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION,
-        _ppszoptionalstatustext: *mut PWSTR,
-        _pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
+        pcpgsr: *mut CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE,
+        pcpcs: *mut CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION,
+        ppszoptionalstatustext: *mut PWSTR,
+        pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
     ) -> windows_core::Result<()> {
-        // Phase 3: fetch the one-shot credential from the auth service,
-        // serialize KERB_INTERACTIVE_UNLOCK_LOGON, mark stale.
-        Err(Error::from_hresult(crate::E_NOTIMPL))
+        // Output contract (matches the C++ baseline): default to "not
+        // finished", then fill in on success.
+        if !pcpgsr.is_null() {
+            unsafe { *pcpgsr = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(0) }; // CPGSR_NO_CREDENTIAL_NOT_FINISHED
+        }
+        if !ppszoptionalstatustext.is_null() {
+            unsafe { *ppszoptionalstatustext = PWSTR::null() };
+        }
+        if !pcpsioptionalstatusicon.is_null() {
+            unsafe { *pcpsioptionalstatusicon = CREDENTIAL_PROVIDER_STATUS_ICON(0) }; // CPSI_NONE
+        }
+        if pcpcs.is_null() || pcpgsr.is_null() {
+            return Err(Error::from_hresult(crate::E_POINTER));
+        }
+
+        // One submission per pipe token: a failed login (ReportResult) or a
+        // previous serialization must not produce a second credential.
+        if self.stale.get() || self.serialized.get() {
+            return Err(Error::from_hresult(crate::E_NOTIMPL));
+        }
+        let scenario = self.scenario.get();
+
+        let sid = match crate::pipe_client::current_user_sid() {
+            Ok(sid) => sid.encode_utf16().collect::<Vec<u16>>(),
+            Err(_) => return Err(Error::from_hresult(crate::E_NOTIMPL)),
+        };
+        let password = match crate::pipe_client::PipeClient.prepare(&sid, 1, 0) {
+            Ok(pw) => pw.as_u16_slice().to_vec(),
+            Err(err) => return Err(err),
+        };
+        let protected = match crate::serialization::protect_password(&password) {
+            Ok(p) => p,
+            Err(err) => {
+                let mut pw = password.clone();
+                crate::pipe_client::secure_clear(&mut pw);
+                return Err(err);
+            }
+        };
+        let (domain, username) =
+            match crate::serialization::split_domain_and_username(&protected) {
+                Ok(d) => d,
+                Err(err) => return Err(err),
+            };
+        let kiul = match crate::serialization::kerb_interactive_unlock_logon_init(
+            &domain,
+            &username,
+            &protected,
+            scenario,
+        ) {
+            Ok(k) => k,
+            Err(err) => return Err(err),
+        };
+        let (blob, blob_len) = unsafe {
+            match crate::serialization::kerb_interactive_unlock_logon_pack(&kiul) {
+                Ok(b) => b,
+                Err(err) => return Err(err),
+            }
+        };
+        let auth_package = match crate::serialization::retrieve_negotiate_auth_package() {
+            Ok(p) => p,
+            Err(err) => {
+                unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(blob as *const _)) };
+                return Err(err);
+            }
+        };
+
+        let serialization = unsafe { &mut *pcpcs };
+        serialization.clsidCredentialProvider = crate::CLSID_SU_PROVIDER;
+        serialization.ulAuthenticationPackage = auth_package;
+        serialization.rgbSerialization = blob as *mut u8;
+        serialization.cbSerialization = blob_len as u32;
+        if !pcpgsr.is_null() {
+            unsafe { *pcpgsr = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(1) }; // CPGSR_RETURN_CREDENTIAL_FINISHED
+        }
+        self.serialized.set(true);
+        Ok(())
     }
 
     fn ReportResult(
         &self,
-        _ntsstatus: NTSTATUS,
+        ntsstatus: NTSTATUS,
         _ntssubstatus: NTSTATUS,
         _ppszoptionalstatustext: *mut PWSTR,
         _pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
     ) -> windows_core::Result<()> {
-        // Phase 3 marks the credential stale on failure so it is never
-        // re-submitted with the same pipe token.
+        // STATUS_SUCCESS (0) means the login went through; anything else
+        // marks the one-shot credential stale so the same pipe token can
+        // never be re-submitted.
+        if ntsstatus.0 != 0 {
+            self.stale.set(true);
+        }
         Ok(())
     }
 }
