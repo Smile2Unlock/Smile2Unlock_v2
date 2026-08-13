@@ -186,7 +186,8 @@ impl ICredentialProvider_Impl for Provider_Impl {
         if dwindex != 0 {
             return Err(Error::from_hresult(crate::E_INVALIDARG));
         }
-        let credential: ICredentialProviderCredential = Credential::new().into();
+        let credential: ICredentialProviderCredential =
+            Credential::new(self.usage_scenario.get().unwrap_or(0)).into();
         Ok(credential)
     }
 }

@@ -435,6 +435,29 @@ target("su_core_rust_tests")
     end)
     add_tests("default")
 
+target("su_credential_provider_rust_tests")
+    apply_cpp_target("binary")
+    add_files("tests/rust/main.cpp")
+    on_test(function (target)
+        local args = {
+            "test",
+            "--manifest-path",
+            path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml"),
+        }
+        -- COM/IPC tests are cfg(windows); the mingw build runs them under
+        -- wine via the crate-local .cargo/config.toml runner.
+        if is_plat("mingw") then
+            table.insert(args, "--target")
+            table.insert(args, "x86_64-pc-windows-gnu")
+        end
+        local ok = os.execv("cargo", args, { try = true })
+        if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
+            os.raise("credential provider cargo test failed: " .. tostring(ok))
+        end
+        return true
+    end)
+    add_tests("default")
+
 if has_config("with_seetaface") then
     target("su_seetaface_pipeline_smoke_test")
         apply_cpp_target("binary")
