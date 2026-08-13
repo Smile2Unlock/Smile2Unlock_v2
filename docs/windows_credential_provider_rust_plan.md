@@ -33,12 +33,12 @@ src/platform/windows/credential_provider_rs/
 ├── scripts/seal_smoke.c        # VirtualAlloc 版 PAGE_NOACCESS 冒烟（wine 可跑）
 └── src/
     ├── lib.rs                  # 4 个 no_mangle 导出 + 基线测试（已完成）
-    ├── class_factory.rs        # Phase 1
-    ├── provider.rs             # Phase 1
-    ├── credential.rs           # Phase 1
+    ├── class_factory.rs        # Phase 1 ✅
+    ├── provider.rs             # Phase 1 ✅
+    ├── credential.rs           # Phase 1 ✅
     ├── fields.rs               # v1 字段布局与状态（已完成）
     ├── serialization.rs        # Phase 3
-    ├── event_sink.rs           # Phase 1
+    ├── event_sink.rs           # Phase 1 ✅
     ├── pipe_client.rs          # Phase 2
     └── secret_buffer.rs        # WindowsSecret<N> 原型（已完成）
 ```
@@ -144,12 +144,16 @@ src/platform/windows/credential_provider_rs/
 - 已修问题：seal 测试必须堆分配（栈页被封立即违例）；wine 对堆管理页封 PAGE_NOACCESS 会 fault（真实 Windows 是标准做法）；windows-sys 0.61 的 MEMORY_BASIC_INFORMATION 指针字段需 `null_mut()` 初始化。
 - wine 加载限制（记录，不影响真实 Windows）：Rust 1.98 std 的 futex 原语导入 `api-ms-win-core-synch-l1-2-0.dll`（WaitOnAddress/WakeByAddress），wine 11.15 (staging) 的 api-set schema 不识别该名字（`build_import_name` 只有 api-ms-win-crt-* → ucrtbase 的映射），导致 LoadLibrary 失败 c0000135，即使 system32 放了该 dll 也不落盘解析。真实 Windows 10+ 自带此 api-set，无此问题；wine 下仅能跑 cargo test（已 12/12 + 1 ignored），DLL 加载验证归入 Phase 4 VM 验收。
 
+### 重要发现：windows crate 0.62.2 的 CPFT_* 常量值错误
+
+`windows::Win32::UI::Shell` 0.62.2 中 `CREDENTIAL_PROVIDER_FIELD_TYPE` 常量与 wincred.h SDK 值不符（`CPFT_TILE_IMAGE`=6 而 SDK 为 1、`CPFT_SUBMIT_BUTTON`=9 而 SDK 为 6 等，疑似 metadata 偏移 bug）。`CPUS_*`/`CPFS_*`/`CPFG_*` 值正确。因此 Phase 1 起所有字段类型数值取自 `fields.rs` 本地枚举（对齐 wincred.h ABI 值），不使用 crate 的 CPFT_* 常量；`sdk_constants_match` 测试锁定数值。
+
 ### Phase 1：Rust COM 骨架
 
-- [ ] 实现 `DllGetClassObject`、class factory、引用计数和生命周期。
-- [ ] 实现 provider 的字段元数据、用户数组、usage scenario 和 credential object 创建。
-- [ ] 实现空 credential tile，只显示状态和失败信息，不读取密码。
-- [ ] 在测试宿主中验证 COM 激活、`GetFieldDescriptorAt`、`GetCredentialCount` 和释放顺序。
+- [x] 实现 `DllGetClassObject`、class factory、引用计数和生命周期。*`DllGetClassObject` 校验 CLSID（不匹配 `CLASS_E_CLASSNOTAVAILABLE`）、riid（仅 `IClassFactory::IID`/`IUnknown::IID`，否则 `E_NOINTERFACE`）、null 输出（`E_POINTER`）；`ClassFactory::CreateInstance` 拒绝聚合（`CLASS_E_NOAGGREGATION`）并返回 `Provider` 实例；`LockServer` 维护进程级 `LOCK_COUNT`（`DllCanUnloadNow` 在 >0 时返回 `S_FALSE`，fail-secure 防负）。*
+- [x] 实现 provider 的字段元数据、用户数组、usage scenario 和 credential object 创建。*`Provider` 暴露 4 字段（TileImage/LargeText/FaceStatus/SubmitButton）；`GetFieldDescriptorAt` 用 `CoTaskMemAlloc` 分配 descriptor + UTF-16 label（越界 `E_INVALIDARG`，失败分支先释放 label）；`GetCredentialCount` 返回 1/0/FALSE；`SetUsageScenario` 仅收 `CPUS_LOGON`/`CPUS_UNLOCK_WORKSTATION`（其余 `E_NOTIMPL`）；`SetUserArray` 暂存（Phase 4 绑 SID）；`Advise` 只存 upadvisecontext（接口指针 marshal 留 Phase 2）。*
+- [x] 实现空 credential tile，只显示状态和失败信息，不读取密码。*`Credential` 实现 `ICredentialProviderCredential`/`2`/`WithFieldOptions`：`GetFieldState` 查 fields.rs `state_pairs()`、`SetSelected` 返回 TRUE、`GetSubmitButtonValue` 返回 3、`GetSerialization`/`GetUserSid` 返回 `E_NOTIMPL`（Phase 3/4），不含任何密码材料。*
+- [x] 在测试宿主中验证 COM 激活、`GetFieldDescriptorAt`、`GetCredentialCount` 和释放顺序。*wine 下 22 个测试：COM 激活成功路径（`GetFieldDescriptorCount`==4、`GetCredentialCount`==1）、错误 CLSID/riid/null 输出、聚合拒绝、`GetFieldDescriptorAt(0)` 内容（dwFieldID/cpft==1/`CPFG_CREDENTIAL_PROVIDER_LOGO`/label 非空 + `CoTaskMemFree` 释放）、`CPUS_CREDUI` 拒绝、`LockServer` 与 `DllCanUnloadNow` 联动。21 通过 + 1 ignored（wine heap 的 PAGE_NOACCESS，见 Phase 0 记录）。*
 
 ### Phase 2：安全 IPC 客户端
 
