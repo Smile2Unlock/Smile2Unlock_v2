@@ -13,7 +13,7 @@ use windows::Win32::Foundation::LUID;
 use windows::Win32::Security::Authentication::Identity::{
     KerbInteractiveLogon, KerbWorkstationUnlockLogon, LSA_STRING, LSA_UNICODE_STRING,
     LsaConnectUntrusted, LsaDeregisterLogonProcess, LsaLookupAuthenticationPackage,
-    KERB_INTERACTIVE_LOGON, KERB_INTERACTIVE_UNLOCK_LOGON, KERB_LOGON_SUBMIT_TYPE,
+    KERB_INTERACTIVE_LOGON, KERB_INTERACTIVE_UNLOCK_LOGON,
 };
 use windows::Win32::Security::Credentials::{
     CredIsProtectedW, CredProtectW, CRED_PROTECTION_TYPE,
@@ -214,7 +214,7 @@ pub fn retrieve_negotiate_auth_package() -> windows_core::Result<u32> {
     // SAFETY: handle and package slots are valid.
     let status = unsafe { LsaLookupAuthenticationPackage(handle, &package_name, &mut package) };
     // SAFETY: best-effort cleanup regardless of lookup result.
-    unsafe { LsaDeregisterLogonProcess(handle) };
+    unsafe { let _ = LsaDeregisterLogonProcess(handle); };
     if status.0 != 0 {
         return Err(hresult_from_nt(status.0));
     }
