@@ -121,6 +121,13 @@ impl<const N: usize> Secret<N> {
     pub fn write(&mut self) -> Result<MemSafeWrite<'_, [u8; N]>, MemoryError> {
         self.inner.write()
     }
+
+    /// Protected page address; crate-internal, for the project production
+    /// gate tests only (page-protection verification). Not exposed publicly.
+    #[cfg(test)]
+    pub(crate) fn cell_ptr(&self) -> *const u8 {
+        self.inner.cell.page_ptr()
+    }
 }
 
 impl<const N: usize> TryFrom<&str> for Secret<N> {
