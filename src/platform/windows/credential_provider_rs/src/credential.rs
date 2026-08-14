@@ -11,6 +11,7 @@ use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::UI::Shell::{
+    CPSI_ERROR,
     CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION,
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE, CREDENTIAL_PROVIDER_FIELD_STATE,
@@ -23,6 +24,7 @@ use windows::Win32::UI::Shell::{
 use windows_core::{implement, Error, Ref, BOOL, PCWSTR, PWSTR};
 
 use crate::fields::{self, FieldId};
+use crate::recognition::{Recognition, RS_SUCCESS};
 
 #[implement(
     ICredentialProviderCredential,
@@ -40,10 +42,18 @@ pub struct Credential {
     serialized: Cell<bool>,
     /// SID of the user this tile is associated with (V2 CP requirement).
     user_sid: RefCell<Option<String>>,
+    /// Face-recognition client shared with the provider. None when the
+    /// credential is created outside a provider that owns one (never in
+    /// practice); the gate then degrades to the password-only flow.
+    recognition: Option<std::sync::Arc<Recognition>>,
 }
 
 impl Credential {
-    pub fn new(scenario: i32, user_sid: Option<String>) -> Self {
+    pub fn new(
+        scenario: i32,
+        user_sid: Option<String>,
+        recognition: Option<std::sync::Arc<Recognition>>,
+    ) -> Self {
         crate::log::cp_log(&format!("Credential::new scenario={} sid={:?}", scenario, user_sid));
         Self {
             advised: Cell::new(false),
@@ -51,6 +61,7 @@ impl Credential {
             stale: Cell::new(false),
             serialized: Cell::new(false),
             user_sid: RefCell::new(user_sid),
+            recognition,
         }
     }
 
@@ -341,6 +352,61 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             ));
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
+        // Face-recognition gate (RecognitionMode):
+        // - Manual (0, default): this GetSerialization call IS the
+        //   password-box Enter trigger. Recognition runs now; success lets
+        //   the stored secret through, failure rejects the submit (LogonUI
+        //   shows the error status; the tile stays for a retry).
+        // - Auto (1): when LogonUI auto-submits after a face success,
+        //   GetCredentialCount consumed face_ready and armed auto_grant, so
+        //   this gate is skipped. Otherwise (user pressed Enter before a
+        //   success) it falls through to the same manual trigger.
+        if let Some(rec) = self.recognition.as_ref() {
+            if rec.available() {
+                let granted = rec.consume_auto_grant();
+                if !granted && !rec.is_ready() {
+                    let outcome = rec.trigger_and_wait();
+                    crate::log::cp_log(&format!(
+                        "GetSerialization: face gate outcome={}",
+                        outcome
+                    ));
+                    if outcome != RS_SUCCESS {
+                        // Reject the submit with an error status; LogonUI
+                        // keeps the tile and shows the text.
+                        if !ppszoptionalstatustext.is_null() {
+                            let msg: Vec<u16> = "Face recognition failed. Please try again."
+                                .encode_utf16()
+                                .chain(core::iter::once(0))
+                                .collect();
+                            // SAFETY: CoTaskMemAlloc returns a writable block
+                            // of msg.len() u16s; LogonUI frees it with
+                            // CoTaskMemFree.
+                            let mem = unsafe { CoTaskMemAlloc(msg.len() * 2) } as *mut u16;
+                            if !mem.is_null() {
+                                unsafe {
+                                    core::ptr::copy_nonoverlapping(
+                                        msg.as_ptr(), mem, msg.len(),
+                                    );
+                                    *ppszoptionalstatustext = PWSTR(mem);
+                                }
+                            }
+                        }
+                        if !pcpsioptionalstatusicon.is_null() {
+                            unsafe { *pcpsioptionalstatusicon = CPSI_ERROR };
+                        }
+                        if !pcpgsr.is_null() {
+                            // CPGSR_NO_CREDENTIAL_FINISHED: user is done,
+                            // no credential to submit.
+                            unsafe {
+                                *pcpgsr = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(1)
+                            };
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let scenario = self.scenario.get();
 
         // The pipe service looks up the secret store by the REQUESTED sid
