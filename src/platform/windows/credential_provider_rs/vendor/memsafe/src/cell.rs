@@ -1,8 +1,5 @@
 use std::ops::{Deref, DerefMut};
 
-#[cfg(unix)]
-use crate::ffi::mem_noaccess;
-
 #[cfg(target_os = "linux")]
 use crate::ffi::{mem_no_dump, mem_wipe_on_fork};
 

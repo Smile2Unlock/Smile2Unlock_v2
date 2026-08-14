@@ -19,6 +19,55 @@ int su_win_username_for_uid(char* out, unsigned long cap) {
     return 0;
 }
 
+// Write the recognition trigger policy to HKLM\SOFTWARE\Smile2Unlock\Recognition,
+// the key the credential provider reads at lock-screen time. Requires admin
+// rights (the GUI runs elevated). Failures are reported as non-zero so the
+// caller can surface a diagnostic; the config.toml copy remains authoritative
+// for the GUI itself.
+int su_win_write_recognition_registry(
+    unsigned int mode,
+    unsigned int auto_delay_sec,
+    unsigned int retry_delay_sec,
+    unsigned int timeout_sec) {
+    const wchar_t* const key_path = L"SOFTWARE\\Smile2Unlock\\Recognition";
+    HKEY key = nullptr;
+    if (::RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            key_path,
+            0,
+            nullptr,
+            0,
+            KEY_SET_VALUE,
+            nullptr,
+            &key,
+            nullptr) != ERROR_SUCCESS) {
+        return -1;
+    }
+    struct RegKeyCloser {
+        void operator()(HKEY handle) const { ::RegCloseKey(handle); }
+    };
+    const auto close_key =
+        std::unique_ptr<std::remove_pointer_t<HKEY>, RegKeyCloser>(key);
+    const auto set_dword = [key](const wchar_t* name, unsigned int value) {
+        return ::RegSetValueExW(
+                   key,
+                   name,
+                   0,
+                   REG_DWORD,
+                   reinterpret_cast<const BYTE*>(&value),
+                   sizeof(value))
+            == ERROR_SUCCESS;
+    };
+    int result = 0;
+    if (!set_dword(L"RecognitionMode", mode)
+        || !set_dword(L"AutoDelaySec", auto_delay_sec)
+        || !set_dword(L"RetryDelaySec", retry_delay_sec)
+        || !set_dword(L"TimeoutSec", timeout_sec)) {
+        result = -2;
+    }
+    return result;
+}
+
 unsigned int su_win_current_uid() {
     HANDLE token = nullptr;
     if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {

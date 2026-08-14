@@ -510,6 +510,15 @@ int main(int argc, char** argv) {
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
+    // Recognition trigger policy (Windows only; the UI hides these on Linux,
+    // but the values are still carried in the config struct everywhere).
+    window->set_recognition_mode(static_cast<int>(snapshot->config.recognition_mode));
+    window->set_auto_delay_sec(static_cast<int>(snapshot->config.auto_delay_sec));
+    window->set_retry_delay_sec(static_cast<int>(snapshot->config.retry_delay_sec));
+    window->set_timeout_sec(static_cast<int>(snapshot->config.timeout_sec));
+#ifdef _WIN32
+    window->set_platform_windows(true);
+#endif
     set_preview_idle(window, *catalog);
     window->set_activity_title(slint::SharedString(catalog->translate(
         selected_language,
@@ -780,7 +789,11 @@ int main(int argc, char** argv) {
             float recognition_threshold,
             bool liveness_enabled,
             float liveness_threshold,
-            int preview_fps) {
+            int preview_fps,
+            int recognition_mode,
+            int auto_delay_sec,
+            int retry_delay_sec,
+            int timeout_sec) {
             const auto window = weak_window.lock();
             if (!window) {
                 return;
@@ -804,6 +817,10 @@ int main(int argc, char** argv) {
             config->liveness_detection = liveness_enabled;
             config->liveness_threshold = liveness_threshold;
             config->preview_fps = static_cast<std::uint32_t>(std::clamp(preview_fps, 1, 60));
+            config->recognition_mode = static_cast<std::uint32_t>(recognition_mode <= 1 ? recognition_mode : 0);
+            config->auto_delay_sec = static_cast<std::uint32_t>(std::clamp(auto_delay_sec, 0, 3600));
+            config->retry_delay_sec = static_cast<std::uint32_t>(std::clamp(retry_delay_sec, 1, 3600));
+            config->timeout_sec = static_cast<std::uint32_t>(std::clamp(timeout_sec, 5, 600));
 
             const auto saved = controller->save_config_snapshot(*config);
             if (!saved) {

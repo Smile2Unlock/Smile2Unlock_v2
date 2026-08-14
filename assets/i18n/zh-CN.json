@@ -207,6 +207,17 @@
     "status.ready": "就绪",
     "status.unavailable": "不可用",
     "status.unknown": "未知",
-    "status.working": "处理中"
+    "status.working": "处理中",
+    "settings.recognition_trigger": "识别触发",
+    "settings.trigger_detail": "锁屏时凭证提供程序启动人脸识别的方式与时机",
+    "settings.recognition_mode": "识别模式",
+    "settings.mode_manual": "手动（回车触发）",
+    "settings.mode_auto": "自动",
+    "settings.auto_delay": "自动识别延迟",
+    "settings.auto_delay_detail": "锁屏后等待的秒数再触发自动识别（睡眠/休眠会暂停计时）",
+    "settings.retry_delay": "重试间隔",
+    "settings.retry_delay_detail": "自动识别失败后重试的间隔秒数",
+    "settings.timeout": "识别超时",
+    "settings.timeout_detail": "单次识别等待结果的最大秒数"
   }
 }

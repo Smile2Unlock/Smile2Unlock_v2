@@ -143,6 +143,10 @@ fn missing_config_file_returns_default() {
     let config = load_config(&path).unwrap();
     assert_eq!(config.version, 1);
     assert_eq!(config.preview_fps, 15);
+    assert_eq!(config.recognition_mode, 0);
+    assert_eq!(config.auto_delay_sec, 3);
+    assert_eq!(config.retry_delay_sec, 5);
+    assert_eq!(config.timeout_sec, 30);
 }
 
 #[test]
@@ -150,7 +154,7 @@ fn unsafe_config_values_fall_back_to_safe_defaults() {
     let path = temp_path("unsafe_config", "toml");
     fs::write(
         &path,
-        "version = 0\nselected_camera = -1\nrecognition_threshold = -1.0\nliveness_detection = true\nliveness_threshold = 2.0\npreview_fps = 5000\n",
+        "version = 0\nselected_camera = -1\nrecognition_threshold = -1.0\nliveness_detection = true\nliveness_threshold = 2.0\npreview_fps = 5000\nrecognition_mode = 9\nauto_delay_sec = 99999\nretry_delay_sec = 0\ntimeout_sec = 1\n",
     )
     .unwrap();
 
@@ -160,6 +164,10 @@ fn unsafe_config_values_fall_back_to_safe_defaults() {
     assert_eq!(config.recognition_threshold, 0.65);
     assert_eq!(config.liveness_threshold, 0.50);
     assert_eq!(config.preview_fps, 15);
+    assert_eq!(config.recognition_mode, 0);
+    assert_eq!(config.auto_delay_sec, 3);
+    assert_eq!(config.retry_delay_sec, 5);
+    assert_eq!(config.timeout_sec, 30);
     let _ = fs::remove_file(path);
 }
 

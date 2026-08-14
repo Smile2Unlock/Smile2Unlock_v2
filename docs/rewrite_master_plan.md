@@ -474,6 +474,26 @@ Smile2Unlock_v2/
 - Linux 使用 peer credential 校验。
 - Windows 使用启动时生成的 local auth token。
 
+## Windows GUI Recognition Settings + Camera Backend (implemented 2026-08-14)
+
+- Media Foundation camera backend replaces the Windows camera stub
+  (`src/recognizer/camera/windows_mf_camera.{h,cpp}` + module wrapper
+  `windows_camera.cpp`): MFEnumDeviceSources enumeration, IMFSourceReader
+  capture on a private MTA worker thread, YUY2 output reported as V4L2 YUYV
+  (identical packing) so the shared pixel-conversion pipeline works unchanged.
+  `MFEnumDeviceSources`/`MFGetAttributeSize` are missing from the mingw-w64
+  import library and are resolved at runtime / decoded in-place.
+- GUI settings page (Windows only): recognition mode (manual/auto), auto
+  delay, retry interval, timeout. Saved through the Rust core into
+  config.toml and mirrored to `HKLM\SOFTWARE\Smile2Unlock\Recognition`
+  (best-effort, requires elevation), which the credential provider reads.
+- Platform-conditional UI: the recognition-trigger block shows only on
+  Windows; the PAM/deployment/desktop-auth checks show only on Linux
+  (`platform_windows` property driven by `_WIN32` in slint_main.cpp).
+- Linux native `cargo test` for the credential-provider crate is skipped by
+  xmake (crate is windows-only); duplicate `mem_noaccess` import in vendored
+  memsafe fixed.
+
 ## Face Recognition Trigger Flow (Windows, implemented 2026-08-14)
 
 Implemented in `src/platform/windows/credential_provider_rs/src/recognition.rs`
