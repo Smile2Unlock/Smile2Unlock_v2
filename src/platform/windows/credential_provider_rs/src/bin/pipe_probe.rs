@@ -9,8 +9,15 @@ fn main() {
     let sid: Vec<u16> = "S-1-5-21-2028198983-2841916586-3191050802-500"
         .encode_utf16()
         .collect();
-    match PipeClient.prepare(&sid, 2, 0) {
-        Ok(pw) => println!("[probe] prepare OK len={}", pw.as_u16_slice().len()),
-        Err(e) => println!("[probe] prepare FAILED {:08x}", e.code().0),
+    let mut pw = match PipeClient.prepare(&sid, 2, 0) {
+        Ok(pw) => pw,
+        Err(e) => {
+            println!("[probe] prepare FAILED {:08x}", e.code().0);
+            return;
+        }
+    };
+    match pw.with_password(|units| units.len()) {
+        Ok(len) => println!("[probe] prepare OK len={}", len),
+        Err(e) => println!("[probe] view FAILED {:?}", e),
     }
 }

@@ -29,7 +29,7 @@ mod provider;
 mod serialization;
 
 pub use fields::{FieldId, FieldState, FieldStatePair, InteractiveState};
-pub use secret_buffer::{CapacityError, WindowsSecret};
+pub use secret_buffer::{SecretError, WindowsSecret};
 #[cfg(windows)]
 pub use pipe_client::{current_user_sid, PipeClient, PreparedPipePassword};
 #[cfg(windows)]

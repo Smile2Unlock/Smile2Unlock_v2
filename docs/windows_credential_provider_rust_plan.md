@@ -108,11 +108,13 @@ src/platform/windows/credential_provider_rs/
 
 在正式依赖前完成一个固定 commit 的 fork 或补丁分支：
 
-1. 锁定 `v1.0.2`，记录 checksum / commit，禁止无审查的浮动版本。
-2. Windows 封存态评估并优先改为 `PAGE_NOACCESS`；确认 `VirtualLock`、保护页切换和 LogonUI 环境兼容。
-3. 移除 guard `Drop` 中的 `unwrap()`，改为不 panic 的 fail-secure 清理路径，并记录不可含秘密的诊断状态。
-4. 添加 Windows stale-pointer、异常展开、线程交错、锁页配额和子进程 dump 测试。
-5. 验证 UTF-16 输入不会先生成普通 `String` / `Vec<u16>` 副本。
+1. 锁定 `v1.0.2`，记录 checksum / commit，禁止无审查的浮动版本。*✅ 已锁定：vendored 至 `src/platform/windows/credential_provider_rs/vendor/memsafe/`，上游 commit `704f558a0e796e3b2fb8837ee7aabcb46c3b1250`（`git -C build/research/memsafe rev-parse HEAD` 记录），作为 path dependency 引入。*
+2. Windows 封存态评估并优先改为 `PAGE_NOACCESS`；确认 `VirtualLock`、保护页切换和 LogonUI 环境兼容。*⚠️ 已评估：memsafe 1.0.2 的 Windows 常态封存为 `PAGE_READONLY`（`low_priv` = read_only），读写时临时提权、guard drop 回降。未改 `PAGE_NOACCESS`：改封存级别需在真实 Windows 上重新验证 LogonUI 兼容性（wine 下对堆页封 `PAGE_NOACCESS` 会 fault，此前 Phase 0 已记录），列为后续强化项。真实 VM 已确认 READONLY 封存下完整登录流程正常（v26）。*
+3. 移除 guard `Drop` 中的 `unwrap()`，改为不 panic 的 fail-secure 清理路径，并记录不可含秘密的诊断状态。*✅ 已补丁：`MemSafeRead/Write::drop` 的 `low_priv().unwrap()` → `let _ = low_priv()`（注释说明 fail-secure 语义）；`TryFrom<String>` 错误路径的 `expect` → `from_utf8_lossy`。*
+4. 添加 Windows stale-pointer、异常展开、线程交错、锁页配额和子进程 dump 测试。*⏳ 部分：wine 下新增/适配 `WindowsSecret` 全量测试（roundtrip、capacity、overwrite、drop、alignment，40 passed）；stale-pointer / dump 排除 / 锁页配额仍需真实 Windows 验收。*
+5. 验证 UTF-16 输入不会先生成普通 `String` / `Vec<u16>` 副本。*✅ 已落实：`GetSerialization` 改为 `with_password(|units| protect_password(units))` guard 模式，一次性密码直接经保护页视图进入 `CredProtectW`，不再产生 `Vec<u16>` 副本；`PreparedPipePassword` 由 `[u16; 513]` 迁移到 `WindowsSecret<1026>`。*
+
+采用记录（2026-08-14）：`WindowsSecret<N>` 内部改为持有 `memsafe::Secret<N>`（VirtualAlloc + VirtualLock + READONLY 常态），`seal()/unseal()`/手写 `VirtualProtect` 逻辑移除（memsafe 的 read/write 提权模型替代）；`new()` 改为 fallible（`SecretError::Init`，内存保护失败不 panic）；`Drop` 经 `write()` 清零后由 memsafe 释放页面。真实 VM 回归：v26 锁屏提交一次登录成功。
 
 若上述补丁不能在目标 Windows 版本上稳定通过，Provider 不得把 `memsafe` 当作安全保证；应退回经过审查的固定容量 `zeroize` 缓冲，并保留同样的生命周期和 FFI 约束。
 

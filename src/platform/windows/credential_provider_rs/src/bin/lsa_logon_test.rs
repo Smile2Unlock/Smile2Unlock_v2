@@ -27,10 +27,10 @@ fn main() {
     let sid: Vec<u16> = "S-1-5-21-2028198983-2841916586-3191050802-500"
         .encode_utf16()
         .collect();
-    let password = match su_credential_provider::PipeClient.prepare(&sid, request_id, 0) {
+    let mut password = match su_credential_provider::PipeClient.prepare(&sid, request_id, 0) {
         Ok(pw) => {
-            println!("[lsa] pipe prepare OK len={}", pw.as_u16_slice().len());
-            pw.as_u16_slice().to_vec()
+            println!("[lsa] pipe prepare OK");
+            pw
         }
         Err(e) => {
             println!("[lsa] pipe prepare FAILED {:08x}", e.code().0);
@@ -39,10 +39,14 @@ fn main() {
     };
 
     // 2. protect the password exactly like GetSerialization
-    let protected = match protect_password(&password) {
-        Ok(p) => p,
-        Err(e) => {
+    let protected = match password.with_password(|units| protect_password(units)) {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
             println!("[lsa] protect_password FAILED {:08x}", e.code().0);
+            return;
+        }
+        Err(e) => {
+            println!("[lsa] secret view FAILED {:?}", e);
             return;
         }
     };
