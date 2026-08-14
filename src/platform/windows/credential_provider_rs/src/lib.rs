@@ -26,6 +26,8 @@ mod pipe_client;
 #[cfg(windows)]
 mod provider;
 #[cfg(windows)]
+mod recognition;
+#[cfg(windows)]
 mod serialization;
 
 pub use fields::{FieldId, FieldState, FieldStatePair, InteractiveState};
@@ -354,6 +356,7 @@ mod com_tests {
         let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
             2, // CPUS_LOGON
             Some("S-1-5-21-123-456-789-1001".to_owned()),
+            None,
         )
         .into();
         let sid = unsafe { credential.GetUserSid() }.expect("GetUserSid should succeed");
@@ -373,6 +376,7 @@ mod com_tests {
         let credential: ICredentialProviderCredential = crate::credential::Credential::new(
             2, // CPUS_LOGON
             Some("S-1-5-21-123-456-789-1001".to_owned()),
+            None,
         )
         .into();
         let c2 = credential
@@ -392,6 +396,7 @@ mod com_tests {
         // it during enumeration. Verify the real vtable QI returns it.
         let credential: ICredentialProviderCredential = crate::credential::Credential::new(
             2, // CPUS_LOGON
+            None,
             None,
         )
         .into();
@@ -419,6 +424,7 @@ mod com_tests {
         // unwritten null out-param; native LogonUI sees S_FALSE + NULL.
         let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
             2, // CPUS_LOGON
+            None,
             None,
         )
         .into();

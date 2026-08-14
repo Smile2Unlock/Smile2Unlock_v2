@@ -19,11 +19,54 @@ use windows::Win32::UI::Shell::{
     ICredentialProviderSetUserArray, ICredentialProviderSetUserArray_Impl,
     ICredentialProviderUserArray,
 };
-use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoTaskMemAlloc, CoTaskMemFree, CLSCTX_INPROC_SERVER,
+    IGlobalInterfaceTable,
+};
 use windows_core::{implement, Error, GUID, Interface, Ref, BOOL, PWSTR};
+
+/// CLSID_StdGlobalInterfaceTable {00000323-0000-0000-C000-000000000046}
+/// (not exposed by windows 0.62.2 metadata).
+const CLSID_STD_GLOBAL_INTERFACE_TABLE: GUID = GUID {
+    data1: 0x0000_0323,
+    data2: 0x0000,
+    data3: 0x0000,
+    data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+};
+
+/// IGlobalInterfaceTable is !Send/!Sync in the windows crate (it wraps a raw
+/// COM pointer), but GIT is explicitly designed for cross-thread marshalling:
+/// GetInterfaceFromGlobal/RevokeInterfaceFromGlobal are documented thread-
+/// safe. The wrapper restores Send/Sync for the recognition worker callback.
+///
+/// NOTE: the closure must call a METHOD on the wrapper, not touch its field:
+/// edition-2021 disjoint closure captures would otherwise capture only the
+/// inner `IGlobalInterfaceTable` (losing the Send/Sync impl).
+struct GitSend(IGlobalInterfaceTable);
+unsafe impl Send for GitSend {}
+unsafe impl Sync for GitSend {}
+
+impl GitSend {
+    /// Retrieve the marshalled ICredentialProviderEvents proxy for the
+    /// cookie registered at Advise time.
+    fn get_events(&self, cookie: u32) -> windows_core::Result<ICredentialProviderEvents> {
+        let mut raw: *mut core::ffi::c_void = core::ptr::null_mut();
+        unsafe {
+            self.0
+                .GetInterfaceFromGlobal(cookie, &ICredentialProviderEvents::IID, &mut raw)
+        }?;
+        if raw.is_null() {
+            return Err(Error::from_hresult(crate::E_POINTER));
+        }
+        // SAFETY: raw came from GIT for the requested IID; the proxy is
+        // thread-local to this worker thread.
+        Ok(unsafe { ICredentialProviderEvents::from_raw(raw) })
+    }
+}
 
 use crate::credential::Credential;
 use crate::fields::{self, FieldId};
+use crate::recognition::{load_config, Recognition};
 
 #[implement(ICredentialProvider, ICredentialProviderSetUserArray)]
 pub struct Provider {
@@ -36,6 +79,14 @@ pub struct Provider {
     /// must return a valid SID from ICredentialProviderCredential2::GetUserSid
     /// or LogonUI discards the tile.
     user_sid: RefCell<Option<String>>,
+    /// GIT used to marshal ICredentialProviderEvents for the recognition
+    /// worker thread (CredentialsChanged must not cross apartments raw).
+    git: RefCell<Option<IGlobalInterfaceTable>>,
+    git_cookie: Cell<Option<u32>>,
+    /// Face-recognition client (UDP) with trigger workers. Shared with the
+    /// credential so GetSerialization can gate on face success and arm the
+    /// manual trigger.
+    recognition: RefCell<Option<std::sync::Arc<Recognition>>>,
 }
 
 impl Provider {
@@ -44,6 +95,9 @@ impl Provider {
             usage_scenario: Cell::new(None),
             advised_context: Cell::new(0),
             user_sid: RefCell::new(None),
+            git: RefCell::new(None),
+            git_cookie: Cell::new(None),
+            recognition: RefCell::new(None),
         }
     }
 
@@ -100,19 +154,82 @@ impl ICredentialProvider_Impl for Provider_Impl {
 
     fn Advise(
         &self,
-        _pcpe: Ref<ICredentialProviderEvents>,
+        pcpe: Ref<ICredentialProviderEvents>,
         upadvisecontext: usize,
     ) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::Advise");
-        // Phase 2 marshals the interface pointer to a worker thread and calls
-        // CredentialsChanged through it. Storing the raw pointer now would
-        // violate the no-unsafe-Send/Sync rule, so only the context is kept.
         self.advised_context.set(upadvisecontext);
+
+        // Marshal ICredentialProviderEvents through the Global Interface
+        // Table so the recognition worker thread can safely call
+        // CredentialsChanged (no raw cross-thread COM pointer).
+        let git: IGlobalInterfaceTable = unsafe {
+            CoCreateInstance(&CLSID_STD_GLOBAL_INTERFACE_TABLE, None, CLSCTX_INPROC_SERVER)
+        }?;
+        let Some(events) = pcpe.as_ref() else {
+            crate::log::cp_log("Provider::Advise: no events -> no auto-submit");
+            return Ok(());
+        };
+        let cookie = unsafe { git.RegisterInterfaceInGlobal(events, &ICredentialProviderEvents::IID) }?;
+        *self.git.borrow_mut() = Some(git);
+        self.git_cookie.set(Some(cookie));
+
+        // Face recognition: load config, create the client, arm the worker
+        // for the configured mode, and wire the success callback that pushes
+        // CredentialsChanged (LogonUI re-enumerates and auto-submits).
+        let cfg = load_config();
+        let recognition = Recognition::new(cfg);
+        if recognition.available() {
+            let git_clone = self.git.borrow().clone();
+            let cookie_val = self.git_cookie.get();
+            let ctx = upadvisecontext;
+            let git_send = GitSend(git_clone.expect("git registered above"));
+            let cookie = cookie_val.expect("cookie set above");
+            recognition.set_on_success(Box::new(move || {
+                crate::log::cp_log("Provider::on_recognition_success");
+                // SAFETY: worker thread owns a marshalled copy; the GIT call
+                // returns a thread-local interface proxy.
+                let events = match git_send.get_events(cookie) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        crate::log::cp_log(&format!(
+                            "recognition success: GetInterfaceFromGlobal FAILED {:08x}",
+                            e.code().0
+                        ));
+                        return;
+                    }
+                };
+                // SAFETY: events is a valid proxy; CredentialsChanged is a
+                // plain method call on the worker thread.
+                if let Err(e) = unsafe { events.CredentialsChanged(ctx) } {
+                    crate::log::cp_log(&format!(
+                        "recognition success: CredentialsChanged FAILED {:08x}",
+                        e.code().0
+                    ));
+                }
+            }));
+            match cfg.mode {
+                1 => recognition.start_auto(),
+                _ => recognition.start_manual(),
+            }
+            *self.recognition.borrow_mut() = Some(std::sync::Arc::new(recognition));
+        } else {
+            crate::log::cp_log("Provider::Advise: recognition unavailable (degraded)");
+        }
         Ok(())
     }
 
     fn UnAdvise(&self) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::UnAdvise");
+        if let Some(rec) = self.recognition.borrow_mut().take() {
+            rec.stop();
+        }
+        if let Some(git) = self.git.borrow_mut().take() {
+            if let Some(cookie) = self.git_cookie.take() {
+                // SAFETY: cookie was returned by RegisterInterfaceInGlobal.
+                let _ = unsafe { git.RevokeInterfaceFromGlobal(cookie) };
+            }
+        }
         self.advised_context.set(0);
         Ok(())
     }
@@ -182,8 +299,18 @@ impl ICredentialProvider_Impl for Provider_Impl {
         pbautologonwithdefault: *mut BOOL,
     ) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::GetCredentialCount");
-        // One tile; never auto-logon with a default credential (the pipe
-        // fetch decides). All outputs are optional.
+        // One tile. Face recognition success arms auto-logon exactly once
+        // (LogonUI immediately calls GetSerialization on the credential).
+        let mut autologon = false;
+        if let Some(rec) = self.recognition.borrow().as_ref() {
+            if rec.consume_ready() {
+                autologon = true;
+                // LogonUI calls GetSerialization right after this
+                // auto-logon enumeration; arm the grant so that call skips
+                // the manual face gate.
+                rec.mark_auto_grant();
+            }
+        }
         if !pdwcount.is_null() {
             unsafe { *pdwcount = 1 };
         }
@@ -191,8 +318,12 @@ impl ICredentialProvider_Impl for Provider_Impl {
             unsafe { *pdwdefault = 0 };
         }
         if !pbautologonwithdefault.is_null() {
-            unsafe { *pbautologonwithdefault = BOOL(0) };
+            unsafe { *pbautologonwithdefault = BOOL(autologon as i32) };
         }
+        crate::log::cp_log(&format!(
+            "Provider::GetCredentialCount autologon={}",
+            autologon
+        ));
         Ok(())
     }
 
@@ -204,6 +335,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         let credential: ICredentialProviderCredential = Credential::new(
             self.usage_scenario.get().unwrap_or(0),
             self.user_sid.borrow().clone(),
+            self.recognition.borrow().clone(),
         )
         .into();
 
