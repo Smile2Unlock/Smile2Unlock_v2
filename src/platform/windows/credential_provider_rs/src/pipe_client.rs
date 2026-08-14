@@ -317,8 +317,16 @@ impl PipeClient {
         };
         if !ok.as_bool() {
             let code = unsafe { GetLastError().0 };
+            crate::log::cp_log(&format!(
+                "pipe transact FAILED code={:#x} bytes_read={}",
+                code, bytes_read
+            ));
             return Err(win32_error(code));
         }
+        crate::log::cp_log(&format!(
+            "pipe transact OK bytes_read={} status={}",
+            bytes_read, response.status
+        ));
         // Every response must round-trip the request identity before the
         // caller may consume its payload (magic/version/request_id/session).
         validate_response(response, request, bytes_read)?;

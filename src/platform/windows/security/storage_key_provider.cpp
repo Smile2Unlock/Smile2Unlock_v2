@@ -102,7 +102,8 @@ std::expected<LocalMemory, StorageKeyError> system_only_descriptor() {
     return LocalMemory{descriptor};
 }
 
-std::expected<void, StorageKeyError> apply_system_only_file_acl(HANDLE handle) {
+std::expected<void, StorageKeyError> apply_system_only_file_acl(
+    const std::filesystem::path& path) {
     const auto descriptor = system_only_descriptor();
     if (!descriptor) {
         return std::unexpected(descriptor.error());
@@ -112,15 +113,24 @@ std::expected<void, StorageKeyError> apply_system_only_file_acl(HANDLE handle) {
     auto* dacl = static_cast<PACL>(nullptr);
     if (!GetSecurityDescriptorDacl(
             descriptor->get(), &dacl_present, &dacl, &dacl_defaulted)
-        || !dacl_present
-        || SetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            nullptr,
-            nullptr,
-            dacl,
-            nullptr) != ERROR_SUCCESS) {
+        || !dacl_present) {
+        return std::unexpected(StorageKeyError::kUnsafePath);
+    }
+    // SetNamedSecurityInfoW (path-based) instead of SetSecurityInfo (handle
+    // based): the handle-based call fails with ERROR_ACCESS_DENIED on some
+    // systems even when the handle was opened with WRITE_DAC (observed on a
+    // Windows 10 19044 VM with every handle flag combination), while the
+    // path-based API used by icacls/Set-Acl works. Same DACL semantics.
+    auto wide_path = path.wstring();
+    const auto status = SetNamedSecurityInfoW(
+        wide_path.data(),
+        SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr,
+        nullptr,
+        dacl,
+        nullptr);
+    if (status != ERROR_SUCCESS) {
         return std::unexpected(StorageKeyError::kUnsafePath);
     }
     return {};
@@ -164,7 +174,7 @@ std::expected<void, StorageKeyError> ensure_parent_directory(
         || (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         return std::unexpected(StorageKeyError::kUnsafePath);
     }
-    return apply_system_only_file_acl(directory.get());
+    return apply_system_only_file_acl(parent);
 }
 
 std::expected<std::vector<std::uint8_t>, StorageKeyError> read_wrapped_file(
@@ -180,7 +190,7 @@ std::expected<std::vector<std::uint8_t>, StorageKeyError> read_wrapped_file(
     if (!file || file.get() == INVALID_HANDLE_VALUE) {
         return std::unexpected(StorageKeyError::kUnavailable);
     }
-    if (const auto secured = apply_system_only_file_acl(file.get()); !secured) {
+    if (const auto secured = apply_system_only_file_acl(path); !secured) {
         return std::unexpected(secured.error());
     }
     auto information = BY_HANDLE_FILE_INFORMATION{};
@@ -553,7 +563,12 @@ std::expected<StorageKey, StorageKeyError> load_or_create_storage_key(
 
     auto protection = KeyProtection::kTpm2Bound;
     auto wrapped = wrap_with_tpm(*key);
-    if (!wrapped && wrapped.error() == StorageKeyError::kUnavailable) {
+    // TPM absence or failure must fall back to machine DPAPI. wrap_with_tpm
+    // surfaces kTpmFailed for most NCrypt failures (not just kUnavailable),
+    // so accept both here; otherwise machines without a TPM (VMs) can never
+    // create a storage key.
+    if (!wrapped && (wrapped.error() == StorageKeyError::kUnavailable
+                     || wrapped.error() == StorageKeyError::kTpmFailed)) {
         protection = KeyProtection::kMachineDpapi;
         wrapped = wrap_with_dpapi(*key);
     }
