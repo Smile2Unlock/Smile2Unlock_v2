@@ -240,4 +240,33 @@ mod tests {
         })
         .unwrap();
     }
+
+    #[test]
+    fn concurrent_access_is_consistent() {
+        // Thread interleave: several threads alternately write and read
+        // through a Mutex; every read must see exactly what its writer
+        // stored (protection elevation round-trips are serialized by the
+        // borrow discipline, never racing).
+        use std::sync::{Arc, Mutex};
+        let shared = Arc::new(Mutex::new(WindowsSecret::<128>::new().unwrap()));
+        let mut handles = Vec::new();
+        for t in 0..4u8 {
+            let shared = Arc::clone(&shared);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..40u16 {
+                    let mut s = shared.lock().unwrap();
+                    let text = format!("t{}-{}", t, i);
+                    s.write_utf16le(&text).unwrap();
+                    let expected = text.encode_utf16().collect::<Vec<u16>>();
+                    s.with_u16_slice(|units| {
+                        assert_eq!(units, expected.as_slice());
+                    })
+                    .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
 }

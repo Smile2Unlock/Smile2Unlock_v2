@@ -8,7 +8,7 @@ use crate::ffi::{mem_no_dump, mem_wipe_on_fork};
 
 use crate::{
     MemoryError,
-    ffi::{mem_alloc, mem_dealloc, mem_lock, mem_readonly, mem_readwrite, mem_unlock},
+    ffi::{mem_alloc, mem_dealloc, mem_lock, mem_noaccess, mem_readonly, mem_readwrite, mem_unlock},
     ptr_ops::{ptr_deref, ptr_deref_mut, ptr_drop_in_place, ptr_fill_zero, secure_zero},
 };
 
@@ -113,6 +113,13 @@ impl<T> Drop for PartialCell<T> {
 }
 
 impl<T> Cell<T> {
+    /// Protected page address; crate-internal, for the project production
+    /// gate tests only. Not exposed publicly.
+    #[cfg(test)]
+    pub(crate) fn page_ptr(&self) -> *const u8 {
+        self.ptr as *const u8
+    }
+
     pub fn new(mut value: T) -> Result<Cell<T>, MemoryError> {
         let len = std::mem::size_of::<T>();
         if len == 0 {
@@ -149,9 +156,6 @@ impl<T> Cell<T> {
         ptr_fill_zero(val_ptr);
         std::mem::forget(value);
 
-        #[cfg(windows)]
-        mem_readonly(ptr, len)?;
-        #[cfg(unix)]
         mem_noaccess(ptr, len)?;
 
         Ok(Cell {
@@ -160,18 +164,15 @@ impl<T> Cell<T> {
     }
 
     pub fn low_priv(&mut self) -> Result<(), MemoryError> {
-        // lowest privilege on windows
-        #[cfg(windows)]
-        let ret = self.read_only();
-
-        // lowest privilege on unix
-        #[cfg(unix)]
-        let ret = self.no_access();
-
-        ret
+        // Lowest privilege on both platforms. Project patch: Windows now
+        // seals with PAGE_NOACCESS (was PAGE_READONLY); the page is only
+        // readable/writable during a read()/write() guard and restored to
+        // no-access when the guard drops. VirtualLock happens before the
+        // seal (Windows: PAGE_NOACCESS pages cannot be VirtualLock'ed, so
+        // the lock must precede the seal, which is the construction order).
+        mem_noaccess(self.ptr, std::mem::size_of::<T>())
     }
 
-    #[cfg(unix)]
     pub fn no_access(&mut self) -> Result<(), MemoryError> {
         mem_noaccess(self.ptr, std::mem::size_of::<T>())
     }
@@ -229,9 +230,6 @@ impl<const N: usize> Cell<[u8; N]> {
         guard.mark_written();
         init(unsafe { &mut *ptr });
 
-        #[cfg(windows)]
-        mem_readonly(ptr, len)?;
-        #[cfg(unix)]
         mem_noaccess(ptr, len)?;
 
         Ok(Cell {

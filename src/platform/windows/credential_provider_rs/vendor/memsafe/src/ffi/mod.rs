@@ -12,7 +12,9 @@ use libc::{MADV_DONTDUMP, c_void};
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
-use winapi::um::winnt::{MEM_COMMIT, MEM_DECOMMIT, MEM_RESERVE, PAGE_READONLY, PAGE_READWRITE};
+use winapi::um::winnt::{
+    MEM_COMMIT, MEM_DECOMMIT, MEM_RESERVE, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE,
+};
 
 /// Allocates page-alined memory dynamically.
 ///
@@ -127,9 +129,16 @@ pub fn mem_dealloc<T>(ptr: *mut T, len: usize) -> Result<(), MemoryError> {
 /// * `len` must be correct, matching the size of the allocated region.
 /// * Accessing the memory after calling this function will trigger a segmentation fault (Unix) or
 ///   access violation (Windows).
-#[cfg(unix)]
 pub fn mem_noaccess<T>(ptr: *mut T, len: usize) -> Result<(), MemoryError> {
-    unix::mprotect(ptr, len, PROT_NONE)
+    #[cfg(unix)]
+    {
+        unix::mprotect(ptr, len, PROT_NONE)
+    }
+
+    #[cfg(windows)]
+    {
+        win::virtual_protect(ptr, len, PAGE_NOACCESS, &mut 0)
+    }
 }
 
 /// Marks a memory region as read-only.
