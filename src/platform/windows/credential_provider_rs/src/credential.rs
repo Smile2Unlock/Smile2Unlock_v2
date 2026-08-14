@@ -366,10 +366,10 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let base = (millis << 24) ^ (pid << 8) ^ (millis & 0xff);
         let request_id = if base == 0 { 1 } else { base }
             + NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let password = match crate::pipe_client::PipeClient.prepare(&sid, request_id, 0) {
+        let mut password = match crate::pipe_client::PipeClient.prepare(&sid, request_id, 0) {
             Ok(pw) => {
                 crate::log::cp_log("GetSerialization: pipe prepare OK");
-                pw.as_u16_slice().to_vec()
+                pw
             }
             Err(err) => {
                 crate::log::cp_log(&format!(
@@ -379,16 +379,22 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                 return Err(err);
             }
         };
-        let protected = match crate::serialization::protect_password(&password) {
-            Ok(p) => p,
-            Err(err) => {
+        // CredProtect directly over the protected-memory view; no plain
+        // Vec<u16> copy of the one-time password is produced (memsafe gate).
+        let mut protected = match password.with_password(|units| {
+            crate::serialization::protect_password(units)
+        }) {
+            Ok(Ok(p)) => p,
+            Ok(Err(err)) => {
                 crate::log::cp_log(&format!(
                     "GetSerialization: protect_password FAILED {:08x}",
                     err.code().0
                 ));
-                let mut pw = password.clone();
-                crate::pipe_client::secure_clear(&mut pw);
                 return Err(err);
+            }
+            Err(_) => {
+                crate::log::cp_log("GetSerialization: secret view FAILED");
+                return Err(Error::from_hresult(crate::E_NOTIMPL));
             }
         };
         // Domain/username must come from the tile's bound user (resolved via
@@ -420,6 +426,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             Ok(k) => k,
             Err(err) => {
                 crate::log::cp_log("GetSerialization: kerb init FAILED");
+                crate::pipe_client::secure_clear(&mut protected);
                 return Err(err);
             }
         };
@@ -428,6 +435,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                 Ok(b) => b,
                 Err(err) => {
                     crate::log::cp_log("GetSerialization: kerb pack FAILED");
+                    crate::pipe_client::secure_clear(&mut protected);
                     return Err(err);
                 }
             }
@@ -437,6 +445,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             Err(err) => {
                 crate::log::cp_log("GetSerialization: negotiate package FAILED");
                 unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(blob as *const _)) };
+                crate::pipe_client::secure_clear(&mut protected);
                 return Err(err);
             }
         };
@@ -455,6 +464,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             String::from_utf16_lossy(&username),
             blob_len
         ));
+        crate::pipe_client::secure_clear(&mut protected);
         self.serialized.set(true);
         Ok(())
     }

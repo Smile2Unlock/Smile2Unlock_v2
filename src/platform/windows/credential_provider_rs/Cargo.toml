@@ -27,6 +27,9 @@ path = "src/bin/lsa_logon_test.rs"
 [dependencies]
 windows-core = "0.62.2"
 zeroize = { version = "1", features = ["derive"] }
+# memsafe v1.0.2 vendored fork (project patch: fail-secure Drop, no panics
+# in error paths). Upstream commit 704f558a0e796e3b2fb8837ee7aabcb46c3b1250.
+memsafe = { path = "vendor/memsafe" }
 
 [profile.release]
 lto = true
