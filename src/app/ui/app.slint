@@ -62,6 +62,12 @@ export component AppWindow inherits Window {
     in-out property <float> liveness_threshold: 0.5;
     in-out property <int> preview_fps: 15;
     in-out property <string> settings_status: "";
+    // Recognition trigger policy (Windows only; hidden on Linux).
+    in property <bool> platform_windows: false;
+    in-out property <int> recognition_mode: 0;
+    in-out property <int> auto_delay_sec: 3;
+    in-out property <int> retry_delay_sec: 5;
+    in-out property <int> timeout_sec: 30;
 
     callback enroll_current_frame_requested(string);
     callback current_frame_auth_requested();
@@ -74,7 +80,7 @@ export component AppWindow inherits Window {
     callback rollback_desktop_target_requested(string);
     callback start_preview_requested();
     callback stop_preview_requested();
-    callback save_settings_requested(int, float, bool, float, int);
+    callback save_settings_requested(int, float, bool, float, int, int, int, int, int);
     callback language_selected(int);
     callback theme_mode_selected(int);
     callback window_controls_selected(int);
@@ -100,7 +106,9 @@ export component AppWindow inherits Window {
     private property <bool> storage-ready: root.storage_protection_index == 1 || root.storage_protection_index == 2;
     private property <bool> auth-ready: root.service_available && root.seetaface_available && root.camera_count > 0;
     private property <bool> runtime-ready: root.auth-ready && root.storage-ready;
-    private property <bool> setup-complete: root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured;
+    private property <bool> setup-complete: root.platform_windows
+        ? (root.runtime-ready && root.profiles.length > 0)
+        : (root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured);
     private property <length> page-padding: 18px;
 
     HorizontalLayout {
@@ -330,6 +338,7 @@ export component AppWindow inherits Window {
                                 activated => { root.current_frame_auth_requested(); }
                             }
                             SetupStep {
+                                visible: !root.platform_windows;
                                 number: "5";
                                 title: root.translate("onboarding.pam", root.language_index);
                                 detail: root.pam_configured
@@ -646,7 +655,8 @@ export component AppWindow inherits Window {
 
             if root.current_page == 2: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 896px;
+                // The recognition-trigger block adds 320px on Windows.
+                viewport-height: root.platform_windows ? 1216px : 896px;
 
                 settings-content := VerticalLayout {
                     width: parent.width;
@@ -794,6 +804,93 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Recognition trigger policy: Windows-only (the
+                    // credential provider consumes it at lock-screen time;
+                    // Linux uses the PAM/service flow and hides these).
+                    Rectangle {
+                        visible: root.platform_windows;
+                        height: 280px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 14px;
+                            SectionTitle {
+                                title: root.translate("settings.recognition_trigger", root.language_index);
+                                detail: root.translate("settings.trigger_detail", root.language_index);
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text {
+                                    width: 132px;
+                                    text: root.translate("settings.recognition_mode", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                SegmentedSelector {
+                                    horizontal-stretch: 1;
+                                    options: [
+                                        root.translate("settings.mode_manual", root.language_index),
+                                        root.translate("settings.mode_auto", root.language_index),
+                                    ];
+                                    current-index <=> root.recognition_mode;
+                                    selected(index) => { root.settings_status = root.translate("settings.unsaved", root.language_index); }
+                                }
+                            }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 6px;
+                                    Text { text: root.translate("settings.auto_delay", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.auto_delay_detail", root.language_index); color: UiTheme.text-secondary; font-size: 11px; wrap: word-wrap; }
+                                }
+                                SpinBox {
+                                    enabled: root.recognition_mode == 1;
+                                    minimum: 0;
+                                    maximum: 3600;
+                                    value <=> root.auto_delay_sec;
+                                    edited => { root.settings_status = root.translate("settings.unsaved", root.language_index); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 6px;
+                                    Text { text: root.translate("settings.retry_delay", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.retry_delay_detail", root.language_index); color: UiTheme.text-secondary; font-size: 11px; wrap: word-wrap; }
+                                }
+                                SpinBox {
+                                    enabled: root.recognition_mode == 1;
+                                    minimum: 1;
+                                    maximum: 3600;
+                                    value <=> root.retry_delay_sec;
+                                    edited => { root.settings_status = root.translate("settings.unsaved", root.language_index); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 6px;
+                                    Text { text: root.translate("settings.timeout", root.language_index); color: UiTheme.text-secondary; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.timeout_detail", root.language_index); color: UiTheme.text-secondary; font-size: 11px; wrap: word-wrap; }
+                                }
+                                SpinBox {
+                                    minimum: 5;
+                                    maximum: 600;
+                                    value <=> root.timeout_sec;
+                                    edited => { root.settings_status = root.translate("settings.unsaved", root.language_index); }
+                                }
+                            }
+                        }
+                    }
+
                     HorizontalLayout {
                         height: 44px;
                         spacing: 12px;
@@ -810,7 +907,11 @@ export component AppWindow inherits Window {
                                     root.recognition_threshold,
                                     root.liveness_enabled,
                                     root.liveness_threshold,
-                                    root.preview_fps);
+                                    root.preview_fps,
+                                    root.recognition_mode,
+                                    root.auto_delay_sec,
+                                    root.retry_delay_sec,
+                                    root.timeout_sec);
                             }
                         }
                     }
@@ -832,6 +933,7 @@ export component AppWindow inherits Window {
                     }
 
                     DeploymentPanel {
+                        visible: !root.platform_windows;
                         targets: root.deployment_targets;
                         helper_available: root.deployment_helper_available;
                         installer_available: root.deployment_installer_available;
@@ -906,6 +1008,7 @@ export component AppWindow inherits Window {
                                 tone: root.profiles.length > 0 ? "good" : "warn";
                             }
                             DiagnosticRow {
+                                visible: !root.platform_windows;
                                 label: root.translate("diagnostics.login_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
@@ -918,6 +1021,7 @@ export component AppWindow inherits Window {
                                 tone: root.login_pam_configured ? "good" : "warn";
                             }
                             DiagnosticRow {
+                                visible: !root.platform_windows;
                                 label: root.translate("diagnostics.lock_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
@@ -961,6 +1065,7 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
+                        visible: !root.platform_windows;
                         height: 118px;
                         border-radius: 6px;
                         border-width: 1px;

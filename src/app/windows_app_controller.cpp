@@ -8,6 +8,16 @@ import su.recognizer.service;
 import su.recognizer.image;
 import su.app.user;
 
+// Plain-TU bridge (user_windows.cpp): registry write for the recognition
+// policy consumed by the credential provider at lock-screen time.
+extern "C" {
+int su_win_write_recognition_registry(
+    unsigned int mode,
+    unsigned int auto_delay_sec,
+    unsigned int retry_delay_sec,
+    unsigned int timeout_sec);
+}
+
 namespace su::app {
 
 namespace {
@@ -173,6 +183,18 @@ std::expected<void, std::string> AppController::save_config_snapshot(const CoreC
     const auto saved = save_config(path, config);
     if (!saved) {
         return std::unexpected(std::format("failed to save config through Rust core: {}", path));
+    }
+    // Mirror the recognition trigger policy to the HKLM registry key the
+    // credential provider reads. Best-effort: config.toml stays authoritative
+    // for the GUI; a non-admin session simply skips the mirror.
+    if (su_win_write_recognition_registry(
+            config.recognition_mode,
+            config.auto_delay_sec,
+            config.retry_delay_sec,
+            config.timeout_sec) != 0) {
+        // Not fatal: recognition settings still apply after the next lock if
+        // the registry write succeeds elsewhere; surface nothing here because
+        // a non-elevated run is a normal state.
     }
     return {};
 }

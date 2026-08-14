@@ -32,6 +32,12 @@ struct CoreConfig {
     bool liveness_detection = true;
     float liveness_threshold = 0.50F;
     std::uint32_t preview_fps = 15;
+    // Recognition trigger policy (0 = manual, 1 = auto). Mirrors
+    // HKLM\SOFTWARE\Smile2Unlock\Recognition on Windows.
+    std::uint32_t recognition_mode = 0;
+    std::uint32_t auto_delay_sec = 3;
+    std::uint32_t retry_delay_sec = 5;
+    std::uint32_t timeout_sec = 30;
 };
 
 struct AuthDecision {

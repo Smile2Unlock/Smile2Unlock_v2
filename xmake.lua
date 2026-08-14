@@ -167,7 +167,9 @@ target("su_recognizer")
     if is_plat("linux") then
         add_files("src/recognizer/camera/v4l2_camera.cpp")
     else
-        add_files("src/recognizer/camera/windows_camera_stub.cpp")
+        add_files("src/recognizer/camera/windows_camera.cpp")
+        add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
     end
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
@@ -439,17 +441,20 @@ target("su_credential_provider_rust_tests")
     apply_cpp_target("binary")
     add_files("tests/rust/main.cpp")
     on_test(function (target)
+        -- The crate is Windows-only (cfg(windows) modules, windows crate
+        -- dependency); native cargo test cannot compile it on Linux. The
+        -- mingw build runs the COM/IPC suite under wine via the crate-local
+        -- .cargo/config.toml runner.
+        if not is_plat("mingw") then
+            return true
+        end
         local args = {
             "test",
             "--manifest-path",
             path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml"),
+            "--target",
+            "x86_64-pc-windows-gnu",
         }
-        -- COM/IPC tests are cfg(windows); the mingw build runs them under
-        -- wine via the crate-local .cargo/config.toml runner.
-        if is_plat("mingw") then
-            table.insert(args, "--target")
-            table.insert(args, "x86_64-pc-windows-gnu")
-        end
         local ok = os.execv("cargo", args, { try = true })
         if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
             os.raise("credential provider cargo test failed: " .. tostring(ok))
