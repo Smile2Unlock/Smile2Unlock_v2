@@ -16,11 +16,12 @@ use windows::Win32::Security::Authentication::Identity::{
     KERB_INTERACTIVE_LOGON, KERB_INTERACTIVE_UNLOCK_LOGON,
 };
 use windows::Win32::Security::Credentials::{
-    CredIsProtectedW, CredProtectW, CRED_PROTECTION_TYPE,
+    CredIsProtectedW, CredPackAuthenticationBufferW, CredProtectW,
+    CRED_PACK_PROTECTED_CREDENTIALS, CRED_PROTECTION_TYPE,
 };
 use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows::Win32::System::WindowsProgramming::GetComputerNameW;
-use windows_core::{Error, PSTR, PWSTR};
+use windows_core::{Error, PCWSTR, PSTR, PWSTR};
 
 use crate::{E_FAIL, E_OUTOFMEMORY};
 
@@ -33,9 +34,13 @@ fn make_lsa_string(value: &[u16]) -> LSA_UNICODE_STRING {
     // Length excludes the NUL terminator (C++ wcslen semantics).
     let text_len = value.iter().position(|&c| c == 0).unwrap_or(value.len());
     let len = text_len.checked_mul(2).unwrap_or(u16::MAX as usize);
+    // MaximumLength == Length, exactly like the C++ baseline's
+    // UnicodeStringInitWithString (it sets MaximumLength = Length, NOT
+    // Length + 2). LSA sanity checks use MaximumLength against the packed
+    // buffer size; a larger value would overflow the check.
     LSA_UNICODE_STRING {
         Length: len.min(u16::MAX as usize) as u16,
-        MaximumLength: len.saturating_add(2).min(u16::MAX as usize) as u16,
+        MaximumLength: len.min(u16::MAX as usize) as u16,
         Buffer: PWSTR::from_raw(value.as_ptr().cast_mut()),
     }
 }
@@ -162,13 +167,21 @@ pub fn protect_password(password: &[u16]) -> windows_core::Result<Vec<u16>> {
         return Ok(password.to_vec());
     }
 
+    // CredProtectW's cchCredentials must INCLUDE the terminating NUL (the
+    // C++ baseline passes wcslen+1). The windows-crate wrapper derives the
+    // length from the slice, so append the NUL to the input ourselves;
+    // otherwise the encrypted blob covers only password[..len-1] and LSA
+    // fails to unprotect it (logon rejected as bad password).
+    let mut with_nul = password.to_vec();
+    with_nul.push(0);
+
     // First pass: probe the required character count (including NUL).
     let mut cch = 0u32;
     // SAFETY: out buffer is null, cch starts at 0; the API reports the size.
     let _ = unsafe {
         CredProtectW(
             false,
-            password,
+            &with_nul,
             PWSTR::null(),
             &mut cch,
             None,
@@ -182,14 +195,66 @@ pub fn protect_password(password: &[u16]) -> windows_core::Result<Vec<u16>> {
     unsafe {
         CredProtectW(
             false,
-            password,
+            &with_nul,
             PWSTR::from_raw(out.as_mut_ptr()),
             &mut cch,
             None,
         )?
     };
+    crate::pipe_client::secure_clear(&mut with_nul);
     out.truncate(cch as usize);
     Ok(out)
+}
+
+/// Pack a protected password + qualified user name through the system
+/// CredPackAuthenticationBufferW, which guarantees the exact KERB
+/// serialization layout LSA expects. Only usable for CPUS_LOGON (the
+/// MessageType in the output is always KerbInteractiveLogon), matching the
+/// C++ baseline's note about CredPackAuthenticationBuffer.
+pub unsafe fn cred_pack_authentication_buffer(
+    qualified_username: &[u16],
+    protected_password: &[u16],
+) -> windows_core::Result<(*mut u8, usize)> {
+    use windows::Win32::System::Com::CoTaskMemAlloc;
+    use windows_core::PCWSTR;
+
+    let mut user = qualified_username.to_vec();
+    user.push(0);
+    let mut pass = protected_password.to_vec();
+    pass.push(0);
+
+    let mut cb: u32 = 0;
+    let _ = unsafe {
+        CredPackAuthenticationBufferW(
+            CRED_PACK_PROTECTED_CREDENTIALS,
+            PCWSTR(user.as_ptr()),
+            PCWSTR(pass.as_ptr()),
+            None,
+            &mut cb,
+        )
+    };
+    if cb == 0 || cb > 1 << 20 {
+        crate::pipe_client::secure_clear(&mut pass);
+        return Err(Error::from_hresult(crate::E_OUTOFMEMORY));
+    }
+    // SAFETY: CoTaskMemAlloc returns a writable block of cb bytes.
+    let mem = unsafe { CoTaskMemAlloc(cb as usize) };
+    if mem.is_null() {
+        crate::pipe_client::secure_clear(&mut pass);
+        return Err(Error::from_hresult(crate::E_OUTOFMEMORY));
+    }
+    // SAFETY: mem holds cb bytes; the API fills exactly cb bytes.
+    unsafe {
+        CredPackAuthenticationBufferW(
+            CRED_PACK_PROTECTED_CREDENTIALS,
+            PCWSTR(user.as_ptr()),
+            PCWSTR(pass.as_ptr()),
+            Some(mem as *mut u8),
+            &mut cb,
+        )?
+    };
+    crate::pipe_client::secure_clear(&mut pass);
+    Ok((mem as *mut u8, cb as usize))
 }
 
 /// Look up the Negotiate (NEGOSSP) LSA authentication package identifier.
@@ -198,17 +263,24 @@ pub fn retrieve_negotiate_auth_package() -> windows_core::Result<u32> {
     let mut handle = MaybeUninit::uninit();
     let status = unsafe { LsaConnectUntrusted(handle.as_mut_ptr()) };
     if status.0 != 0 {
+        crate::log::cp_log(&format!(
+            "negotiate package: LsaConnectUntrusted FAILED nt={:#x}",
+            status.0
+        ));
         return Err(hresult_from_nt(status.0));
     }
     // SAFETY: handle initialized on success above.
     let handle = unsafe { handle.assume_init() };
 
-    const NEGOSSP: &[u8] = b"NEGOSSP";
+    // NEGOSSP_NAME_A is "Negotiate" (the Microsoft Negotiate package name);
+    // the C++ baseline uses NEGOSSP_NAME_A. The literal "NEGOSSP" is not a
+    // registered package name and LsaLookupAuthenticationPackage rejects it.
+    const NEGOSSP_NAME_A: &[u8] = b"Negotiate";
     let package_name = LSA_STRING {
-        Length: NEGOSSP.len() as u16,
-        MaximumLength: (NEGOSSP.len() + 1) as u16,
+        Length: NEGOSSP_NAME_A.len() as u16,
+        MaximumLength: (NEGOSSP_NAME_A.len() + 1) as u16,
         // SAFETY: static ASCII, no mutation.
-        Buffer: PSTR::from_raw(NEGOSSP.as_ptr() as *mut u8),
+        Buffer: PSTR::from_raw(NEGOSSP_NAME_A.as_ptr() as *mut u8),
     };
     let mut package = 0u32;
     // SAFETY: handle and package slots are valid.
@@ -216,14 +288,85 @@ pub fn retrieve_negotiate_auth_package() -> windows_core::Result<u32> {
     // SAFETY: best-effort cleanup regardless of lookup result.
     unsafe { let _ = LsaDeregisterLogonProcess(handle); };
     if status.0 != 0 {
+        crate::log::cp_log(&format!(
+            "negotiate package: LsaLookupAuthenticationPackage FAILED nt={:#x}",
+            status.0
+        ));
         return Err(hresult_from_nt(status.0));
     }
+    crate::log::cp_log(&format!("negotiate package: OK id={}", package));
     Ok(package)
 }
 
 /// HRESULT_FROM_NT: NTSTATUS with the NT facility bit promoted to HRESULT.
 fn hresult_from_nt(status: i32) -> Error {
     Error::from_hresult(crate::HRESULT((status as u32 | 0x1000_0000) as i32))
+}
+
+/// Resolve a SID string to its (domain, username) pair for the local
+/// machine, e.g. ("DESKTOP-ABC123", "Administrator"). The C++ baseline
+/// builds the qualified name from the ICredentialProviderUser; the Rust
+/// tile only captured the SID, so LookupAccountSidW recovers the name.
+/// Fails closed when the account cannot be resolved.
+pub fn qualified_username_from_sid(sid: &str) -> windows_core::Result<(Vec<u16>, Vec<u16>)> {
+    use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows::Win32::Security::{LookupAccountSidW, PSID, SID_NAME_USE};
+    use windows_core::PWSTR;
+
+    let sid_wide: Vec<u16> = sid.encode_utf16().chain(core::iter::once(0)).collect();
+    let mut psid: PSID = PSID(core::ptr::null_mut());
+    // SAFETY: sid_wide is a NUL-terminated SID string; psid receives a
+    // LocalAlloc'd SID owned by the caller.
+    unsafe { ConvertStringSidToSidW(PCWSTR(sid_wide.as_ptr()), &mut psid) }?;
+    if psid.0.is_null() {
+        return Err(Error::from_hresult(crate::E_NOTIMPL));
+    }
+
+    let mut name_len: u32 = 0;
+    let mut domain_len: u32 = 0;
+    let mut sid_use = SID_NAME_USE(0);
+    // First pass: query buffer sizes (fails with ERROR_INSUFFICIENT_BUFFER).
+    let _ = unsafe {
+        LookupAccountSidW(
+            None,
+            psid,
+            None,
+            &mut name_len,
+            None,
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    if name_len == 0 || domain_len == 0 {
+        free_sid(psid);
+        return Err(Error::from_hresult(crate::E_NOTIMPL));
+    }
+    let mut name = vec![0u16; name_len as usize];
+    let mut domain = vec![0u16; domain_len as usize];
+    let second = unsafe {
+        LookupAccountSidW(
+            None,
+            psid,
+            Some(PWSTR(name.as_mut_ptr())),
+            &mut name_len,
+            Some(PWSTR(domain.as_mut_ptr())),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    free_sid(psid);
+    second?;
+    name.truncate(name_len as usize);
+    domain.truncate(domain_len as usize);
+    Ok((domain, name))
+}
+
+/// LocalFree for the SID allocated by ConvertStringSidToSidW.
+fn free_sid(psid: windows::Win32::Security::PSID) {
+    // SAFETY: psid came from ConvertStringSidToSidW (LocalAlloc).
+    unsafe {
+        windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(psid.0)));
+    }
 }
 
 /// Split a qualified user name into (domain, username), mirroring the C++
@@ -254,7 +397,6 @@ pub fn split_domain_and_username(qualified: &[u16]) -> windows_core::Result<(Vec
 mod tests {
     use super::*;
     use core::mem::size_of;
-    use windows_core::HRESULT;
 
     #[test]
     fn kerb_init_message_types() {

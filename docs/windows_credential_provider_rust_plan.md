@@ -144,15 +144,25 @@ src/platform/windows/credential_provider_rs/
 - 已修问题：seal 测试必须堆分配（栈页被封立即违例）；wine 对堆管理页封 PAGE_NOACCESS 会 fault（真实 Windows 是标准做法）；windows-sys 0.61 的 MEMORY_BASIC_INFORMATION 指针字段需 `null_mut()` 初始化。
 - wine 加载限制（记录，不影响真实 Windows）：Rust 1.98 std 的 futex 原语导入 `api-ms-win-core-synch-l1-2-0.dll`（WaitOnAddress/WakeByAddress），wine 11.15 (staging) 的 api-set schema 不识别该名字（`build_import_name` 只有 api-ms-win-crt-* → ucrtbase 的映射），导致 LoadLibrary 失败 c0000135，即使 system32 放了该 dll 也不落盘解析。真实 Windows 10+ 自带此 api-set，无此问题；wine 下仅能跑 cargo test（已 12/12 + 1 ignored），DLL 加载验证归入 Phase 4 VM 验收。
 
-### 重要发现：windows crate 0.62.2 的 CPFT_* 常量值错误
+### 重要发现（已修正 2026-08-14）：CPFT_* / CPFIS_* / CPCFO_* 常量必须用官方 SDK 值
 
-`windows::Win32::UI::Shell` 0.62.2 中 `CREDENTIAL_PROVIDER_FIELD_TYPE` 常量与 wincred.h SDK 值不符（`CPFT_TILE_IMAGE`=6 而 SDK 为 1、`CPFT_SUBMIT_BUTTON`=9 而 SDK 为 6 等，疑似 metadata 偏移 bug）。`CPUS_*`/`CPFS_*`/`CPFG_*` 值正确。因此 Phase 1 起所有字段类型数值取自 `fields.rs` 本地枚举（对齐 wincred.h ABI 值），不使用 crate 的 CPFT_* 常量；`sdk_constants_match` 测试锁定数值。
+本节的旧结论（"windows crate 0.62.2 的 CPFT_* 常量值错误"）**本身是错的**，并直接导致 tile 不显示数轮排查。事实（对照 winsdk-10 10.0.16299.0 `um/credentialprovider.h` 验证）：**crate 的常量是对的**，`CPFT_TILE_IMAGE=6`、`CPFT_SUBMIT_BUTTON=9` 等；错误出在本地 `fields.rs` 曾按旧顺序写了 `0..8` 映射（`TileImage=0`…）。LogonUI 在枚举自检中读到 `cpft=0`（= `CPFT_INVALID`）即静默丢弃整个 provider —— DLL 正常加载、`GetCredentialAt`/`GetFieldDescriptorAt` 全部 S_OK、但 tile 永不显示，且不调用 credential 任何方法。
+
+官方 SDK 常量表（Phase 1 起 `fields.rs` 本地枚举对齐这些 ABI 值，`sdk_constants_match` 测试锁定）：
+
+- `CREDENTIAL_PROVIDER_FIELD_TYPE`：`CPFT_INVALID=0`、`CPFT_LARGE_TEXT=1`、`CPFT_SMALL_TEXT=2`、`CPFT_COMMAND_LINK=3`、`CPFT_EDIT_TEXT=4`、`CPFT_PASSWORD_TEXT=5`、`CPFT_TILE_IMAGE=6`、`CPFT_CHECKBOX=7`、`CPFT_COMBOBOX=8`、`CPFT_SUBMIT_BUTTON=9`。
+- `CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE`：`CPFIS_NONE=0`、`CPFIS_READONLY=1`、`CPFIS_DISABLED=2`、`CPFIS_FOCUSED=3`（旧 SDK 无 SELECTED）。
+- `CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS`：`CPCFO_NONE=0`、`CPCFO_ENABLE_PASSWORD_REVEAL=0x1`、`CPCFO_IS_EMAIL_ADDRESS=0x2`、`CPCFO_ENABLE_TOUCH_KEYBOARD_AUTO_INVOKE=0x4`、`CPCFO_NUMBERS_ONLY=0x8`、`CPCFO_SHOW_ENGLISH_KEYBOARD=0x10`。
+- `CPUS_*`/`CPFS_*`/`CPFG_*`（GUID）值始终正确，未受影响。
 
 ### Phase 1：Rust COM 骨架
 
 - [x] 实现 `DllGetClassObject`、class factory、引用计数和生命周期。*`DllGetClassObject` 校验 CLSID（不匹配 `CLASS_E_CLASSNOTAVAILABLE`）、riid（仅 `IClassFactory::IID`/`IUnknown::IID`，否则 `E_NOINTERFACE`）、null 输出（`E_POINTER`）；`ClassFactory::CreateInstance` 拒绝聚合（`CLASS_E_NOAGGREGATION`）并返回 `Provider` 实例；`LockServer` 维护进程级 `LOCK_COUNT`（`DllCanUnloadNow` 在 >0 时返回 `S_FALSE`，fail-secure 防负）。*
 - [x] 实现 provider 的字段元数据、用户数组、usage scenario 和 credential object 创建。*`Provider` 暴露 4 字段（TileImage/LargeText/FaceStatus/SubmitButton）；`GetFieldDescriptorAt` 用 `CoTaskMemAlloc` 分配 descriptor + UTF-16 label（越界 `E_INVALIDARG`，失败分支先释放 label）；`GetCredentialCount` 返回 1/0/FALSE；`SetUsageScenario` 仅收 `CPUS_LOGON`/`CPUS_UNLOCK_WORKSTATION`（其余 `E_NOTIMPL`）；`SetUserArray` 暂存（Phase 4 绑 SID）；`Advise` 只存 upadvisecontext（接口指针 marshal 留 Phase 2）。*
 - [x] 实现空 credential tile，只显示状态和失败信息，不读取密码。*`Credential` 实现 `ICredentialProviderCredential`/`2`/`WithFieldOptions`：`GetFieldState` 查 fields.rs `state_pairs()`、`SetSelected` 返回 TRUE、`GetSubmitButtonValue` 返回 3、`GetSerialization`/`GetUserSid` 返回 `E_NOTIMPL`（Phase 3/4），不含任何密码材料。*
+- [x] 修复 V2 用户关联缺失（LogonUI 不显示 tile 的直接原因）：`Provider` 实现了 `ICredentialProviderSetUserArray`，但 `Credential` 此前只实现 v1 `ICredentialProviderCredential`。按 V2 规则（provider.rs 注释、C++ 基线 `CSampleCredential` 同时实现 `ICredentialProviderCredential2`），LogonUI 对实现了 `SetUserArray` 的 Provider 会逐个查询凭证的 `ICredentialProviderCredential2::GetUserSid`；缺失或 SID 不匹配用户数组时直接丢弃 tile——DLL 已加载、`GetCredentialAt` 已执行，但界面不出现 tile。修复：`Credential` 增加 `ICredentialProviderCredential2`，`GetUserSid` 返回 `SetUserArray` 捕获的第一个用户 SID（`CoTaskMemAlloc`，与 C++ 基线 `GetAt(0)` 一致）；无 SID 时按 C++ 基线返回 `S_FALSE` + null（空用户 tile）。新增 `com_credential2_get_user_sid_roundtrip` / `com_credential2_empty_sid_is_s_false` 回归测试。*
+- [x] 修复 tile 图片不显示：`GetBitmapValue` 曾用 `GetModuleFileNameW(None, …)` 取 DLL 目录——hModule 为 NULL 时返回的是调用进程（LogonUI.exe）的路径（`C:\Windows\System32\`），导致找不到 `tileimage.bmp` 而静默失败。改为把 BMP **内嵌进 DLL**（`include_bytes!` + 解析 24bpp BMP 头 + `CreateDIBSection` 从内存建 HBITMAP，cdylib 无法携带 `.rc` 资源），不再依赖 DLL 旁的外部文件；失败路径补日志。*
+- [x] v15 精简字段：删除 C++ 基线 9 个隐藏字段（LaunchWindowLink/HideControlsLink/FullName/DisplayName/LogonStatus/Checkbox/EditText/ComboBox/FaceRecognitionLink），tile 只保留 5 个：TILEIMAGE(LOGO 双显示)/LABEL(隐藏)/LARGE_TEXT(双显示)/PASSWORD(选中聚焦)/SUBMIT_BUTTON(选中)。`GetFieldDescriptorCount`=5；Checkbox/ComboBox 相关方法保留但返回 `E_INVALIDARG`。真实 LogonUI 验证：字段渲染 0..4 + `GetBitmapValue: OK 128x128 bpp=24` + `GetUserSid` + `Advise` 全通过。*
 - [x] 在测试宿主中验证 COM 激活、`GetFieldDescriptorAt`、`GetCredentialCount` 和释放顺序。*wine 下 22 个测试：COM 激活成功路径（`GetFieldDescriptorCount`==4、`GetCredentialCount`==1）、错误 CLSID/riid/null 输出、聚合拒绝、`GetFieldDescriptorAt(0)` 内容（dwFieldID/cpft==1/`CPFG_CREDENTIAL_PROVIDER_LOGO`/label 非空 + `CoTaskMemFree` 释放）、`CPUS_CREDUI` 拒绝、`LockServer` 与 `DllCanUnloadNow` 联动。21 通过 + 1 ignored（wine heap 的 PAGE_NOACCESS，见 Phase 0 记录）。*
 
 ### Phase 2：安全 IPC 客户端
@@ -172,7 +182,14 @@ src/platform/windows/credential_provider_rs/
 
 ### Phase 4：真实 LogonUI 集成
 
-- [ ] 在隔离 Windows 虚拟机中注册测试 CLSID，验证锁屏、解锁、冷启动和注销 / 重启。
+- [x] 在隔离 Windows 虚拟机中注册测试 CLSID，验证锁屏、解锁、冷启动和注销 / 重启。*2026-08-14 真实 VM（Win10 19044，Administrator/本地账户）验收通过：锁屏 tile 显示（含内嵌图片）→ 点击提交 → 管道取一次性密码 → KERB 序列化 → LSA 验证 → 登录成功。*
+- [x] 端到端修复记录（真实 LogonUI 验证中发现并修复）：
+  - *CPGSR 返回值错误（登录不提交的根因）：`GetSerialization` 成功时把 `*pcpgsr` 写成 `1`（= `CPGSR_NO_CREDENTIAL_FINISHED`，"没有凭据"），LogonUI 收到后不提交、密码框闪烁。正确值 `CPGSR_RETURN_CREDENTIAL_FINISHED = 2`。此前 `LsaLogonUser` 直测成功但 LogonUI 不登录即此因。*
+  - *CredProtectW 加密长度：`cchCredentials` 必须含 NUL（C++ 传 `wcslen+1`）；windows-crate 封装按切片 `len()` 取值，需自行在输入尾部补 NUL，否则 LSA 解密失败（表现为密码错误）。*
+  - *LSA 认证包名：`LsaLookupAuthenticationPackage` 用 `NEGOSSP_NAME_A`（"Negotiate"），Rust 曾误写 `"NEGOSSP"` 导致查询失败。*
+  - *request_id 冲突：per-process 计数器从 1 开始会撞服务端进程级重放缓存，导致"要多提交几次才成功"；改为 PID+时间戳种子 + 递增，一次提交即成功。*
+  - *服务端（`auth_service`）在 VM 部署中的问题：`load_or_create_storage_key` 的 TPM→DPAPI 回退条件漏了 `kTpmFailed`（无 TPM 机器永远建不了密钥）；`apply_system_only_file_acl` 的句柄版 `SetSecurityInfo` 在该 VM 上返回 ACCESS_DENIED（icacls/Set-Acl 正常），改路径版 `SetNamedSecurityInfoW` 修复。服务以 LocalSystem 注册（`Smile2UnlockAuthService`），密码经 `su_password_tool store` 录入。*
+  - *CredPack vs 手工 KERB 打包：CredPack（`CRED_PACK_PROTECTED_CREDENTIALS`）输出被 LSA 拒绝（`cb=454`），回归 C++ 一致的手工 `KerbInteractiveUnlockLogonInit/Pack`（`cb=212`）后由 `LsaLogonUser` 直测确认有效；`make_lsa_string` 的 `MaximumLength` 与 C++ 一致取 `Length`。*
 - [ ] 验证 Provider 不阻塞 LogonUI：相机 / 识别由认证服务处理，Provider 回调有明确超时。
 - [ ] 验证系统密码 tile、辅助功能、取消、切换用户和错误提示仍可用。
 - [ ] 验证 TPM2、无 TPM2、服务重启、密钥不可用和 BitLocker 环境下的回退行为。

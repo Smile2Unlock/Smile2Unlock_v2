@@ -20,21 +20,23 @@ mod credential;
 #[cfg(windows)]
 mod event_sink;
 #[cfg(windows)]
+mod log;
+#[cfg(windows)]
 mod pipe_client;
 #[cfg(windows)]
 mod provider;
 #[cfg(windows)]
 mod serialization;
 
-pub use fields::{FieldId, FieldState, FieldStatePair};
+pub use fields::{FieldId, FieldState, FieldStatePair, InteractiveState};
 pub use secret_buffer::{CapacityError, WindowsSecret};
 #[cfg(windows)]
 pub use pipe_client::{current_user_sid, PipeClient, PreparedPipePassword};
 #[cfg(windows)]
 pub use serialization::{
-    kerb_interactive_unlock_logon_init, kerb_interactive_unlock_logon_pack, protect_password,
-    retrieve_negotiate_auth_package, split_domain_and_username, CPUS_LOGON,
-    CPUS_UNLOCK_WORKSTATION,
+    cred_pack_authentication_buffer, kerb_interactive_unlock_logon_init,
+    kerb_interactive_unlock_logon_pack, protect_password, retrieve_negotiate_auth_package,
+    split_domain_and_username, CPUS_LOGON, CPUS_UNLOCK_WORKSTATION,
 };
 
 pub(crate) use windows_core::HRESULT;
@@ -46,6 +48,7 @@ pub(crate) const E_POINTER: HRESULT = HRESULT(0x80004003u32 as i32);
 pub(crate) const E_FAIL: HRESULT = HRESULT(0x80004005u32 as i32);
 pub(crate) const E_OUTOFMEMORY: HRESULT = HRESULT(0x8007000eu32 as i32);
 pub(crate) const E_INVALIDARG: HRESULT = HRESULT(0x80070057u32 as i32);
+pub(crate) const S_FALSE: HRESULT = HRESULT(1);
 #[cfg(windows)]
 pub(crate) use pipe_client::win32_error;
 
@@ -76,37 +79,50 @@ pub extern "system" fn DllGetClassObject(
     riid: *const windows_core::GUID,
     ppv: *mut *mut core::ffi::c_void,
 ) -> HRESULT {
+    log::cp_log("DllGetClassObject enter");
     if ppv.is_null() {
+        log::cp_log("DllGetClassObject: ppv null -> E_POINTER");
         return E_POINTER;
     }
     unsafe {
         *ppv = core::ptr::null_mut();
     }
     if rclsid.is_null() || riid.is_null() {
+        log::cp_log("DllGetClassObject: rclsid/riid null -> E_POINTER");
         return E_POINTER;
     }
     // SAFETY: caller passes valid in-parameters per COM contract.
     let clsid = unsafe { *rclsid };
     let requested = unsafe { *riid };
     if clsid != CLSID_SU_PROVIDER {
+        log::cp_log("DllGetClassObject: clsid mismatch -> CLASS_E_CLASSNOTAVAILABLE");
         return CLASS_E_CLASSNOTAVAILABLE;
     }
     if requested != IClassFactory::IID && requested != IUnknown::IID {
+        log::cp_log("DllGetClassObject: riid mismatch -> E_NOINTERFACE");
         return E_NOINTERFACE;
     }
+    log::cp_log("DllGetClassObject: creating class factory");
     let factory: IClassFactory = class_factory::ClassFactory::new().into();
     // SAFETY: into_raw hands over ownership; the caller (COM) releases it.
     let ptr: *mut core::ffi::c_void = factory.into_raw();
     unsafe {
         *ppv = ptr;
     }
+    log::cp_log("DllGetClassObject: S_OK");
     HRESULT(0) // S_OK
 }
 
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    if class_factory::LOCK_COUNT.load(core::sync::atomic::Ordering::SeqCst) > 0 {
+    let locked = class_factory::LOCK_COUNT.load(core::sync::atomic::Ordering::SeqCst) > 0;
+    log::cp_log(if locked {
+        "DllCanUnloadNow: S_FALSE (locked)"
+    } else {
+        "DllCanUnloadNow: S_OK"
+    });
+    if locked {
         HRESULT(1) // S_FALSE: still locked
     } else {
         HRESULT(0) // S_OK
@@ -168,10 +184,11 @@ mod tests {
         assert_eq!(pairs.len(), fields::FIELD_COUNT);
         // Tile image is the only logo-field shown in both tiles.
         assert_eq!(pairs[FieldId::TileImage as usize].state, FieldState::DisplayInBoth);
-        // Phase 1 finalizes the tile; nothing is focused yet.
-        for pair in pairs {
-            assert!(pair.focused_index.is_none());
-        }
+        // Large text is also shown in both tiles.
+        assert_eq!(pairs[FieldId::LargeText as usize].state, FieldState::DisplayInBoth);
+        // Password field is focused in the selected tile, matching the C++ baseline.
+        assert_eq!(pairs[FieldId::PasswordText as usize].state, FieldState::DisplayInSelectedTile);
+        assert_eq!(pairs[FieldId::PasswordText as usize].interactive, InteractiveState::Focused);
     }
 
     #[test]
@@ -180,14 +197,15 @@ mod tests {
         // Logo/label fields carry their CPFG guids; text/submit fields are
         // zeroed so LogonUI treats them as plain fields.
         assert_ne!(fields::field_type_guid(FieldId::TileImage), (0, 0, 0, [0; 8]));
-        assert_ne!(fields::field_type_guid(FieldId::LargeText), (0, 0, 0, [0; 8]));
-        assert_eq!(fields::field_type_guid(FieldId::FaceStatus), (0, 0, 0, [0; 8]));
+        assert_eq!(fields::field_type_guid(FieldId::LargeText), (0, 0, 0, [0; 8]));
+        assert_ne!(fields::field_type_guid(FieldId::Label), (0, 0, 0, [0; 8]));
         assert_eq!(fields::field_type_guid(FieldId::SubmitButton), (0, 0, 0, [0; 8]));
         assert_eq!(fields::field_type(FieldId::TileImage), FieldType::TileImage);
         assert_eq!(fields::field_type(FieldId::LargeText), FieldType::LargeText);
-        assert_eq!(fields::field_type(FieldId::FaceStatus), FieldType::SmallText);
+        assert_eq!(fields::field_type(FieldId::Label), FieldType::SmallText);
+        assert_eq!(fields::field_type(FieldId::PasswordText), FieldType::PasswordText);
         assert_eq!(fields::field_type(FieldId::SubmitButton), FieldType::SubmitButton);
-        for id in [FieldId::TileImage, FieldId::LargeText, FieldId::FaceStatus, FieldId::SubmitButton] {
+        for id in [FieldId::TileImage, FieldId::LargeText, FieldId::Label, FieldId::PasswordText, FieldId::SubmitButton] {
             assert!(!fields::label(id).is_empty());
         }
     }
@@ -325,5 +343,86 @@ mod com_tests {
         assert_eq!(DllCanUnloadNow(), HRESULT(1)); // S_FALSE
         unsafe { factory.LockServer(false) }.expect("LockServer(FALSE) should succeed");
         assert_eq!(DllCanUnloadNow(), HRESULT(0)); // S_OK
+    }
+
+    #[test]
+    fn com_credential2_get_user_sid_roundtrip() {
+        use windows::Win32::UI::Shell::ICredentialProviderCredential2;
+        // The SID the provider captured from SetUserArray must be returned
+        // verbatim: LogonUI discards tiles whose GetUserSid does not match a
+        // user in the array (V2 rule, see provider.rs SetUserArray).
+        let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
+            2, // CPUS_LOGON
+            Some("S-1-5-21-123-456-789-1001".to_owned()),
+        )
+        .into();
+        let sid = unsafe { credential.GetUserSid() }.expect("GetUserSid should succeed");
+        let text = unsafe { sid.to_string().unwrap_or_default() };
+        assert_eq!(text, "S-1-5-21-123-456-789-1001");
+        unsafe { CoTaskMemFree(Some(sid.0 as *const core::ffi::c_void)) };
+    }
+
+    #[test]
+    fn com_credential_real_qi_credential2() {
+        use windows::Win32::UI::Shell::ICredentialProviderCredential;
+        // LogonUI obtains the credential as ICredentialProviderCredential
+        // (from GetCredentialAt) and then QueryInterfaces it for
+        // ICredentialProviderCredential2. `cast` performs a REAL QI through
+        // the vtable, unlike `.into()`, so this catches a broken generated
+        // QueryInterface for the v1+v2 interface pair.
+        let credential: ICredentialProviderCredential = crate::credential::Credential::new(
+            2, // CPUS_LOGON
+            Some("S-1-5-21-123-456-789-1001".to_owned()),
+        )
+        .into();
+        let c2 = credential
+            .cast::<windows::Win32::UI::Shell::ICredentialProviderCredential2>()
+            .expect("QI for ICredentialProviderCredential2 must succeed");
+        let sid = unsafe { c2.GetUserSid() }.expect("GetUserSid should succeed");
+        let text = unsafe { sid.to_string().unwrap_or_default() };
+        assert_eq!(text, "S-1-5-21-123-456-789-1001");
+        unsafe { CoTaskMemFree(Some(sid.0 as *const core::ffi::c_void)) };
+    }
+
+    #[test]
+    fn com_credential_real_qi_with_field_options() {
+        use windows::Win32::UI::Shell::ICredentialProviderCredential;
+        // The C++ baseline credential exposes
+        // ICredentialProviderCredentialWithFieldOptions; LogonUI may QI for
+        // it during enumeration. Verify the real vtable QI returns it.
+        let credential: ICredentialProviderCredential = crate::credential::Credential::new(
+            2, // CPUS_LOGON
+            None,
+        )
+        .into();
+        let wfo = credential
+            .cast::<windows::Win32::UI::Shell::ICredentialProviderCredentialWithFieldOptions>()
+            .expect("QI for WithFieldOptions must succeed");
+        // Field 3 = password text -> CPCFO_ENABLE_PASSWORD_REVEAL (SDK 0x1).
+        let opts = unsafe { wfo.GetFieldOptions(3) }.expect("GetFieldOptions should succeed");
+        assert_eq!(opts.0, 1);
+        // Field 0 = tile image -> CPCFO_ENABLE_TOUCH_KEYBOARD_AUTO_INVOKE
+        // (SDK 0x4, per winsdk-10 10.0.16299.0 credentialprovider.h).
+        let opts = unsafe { wfo.GetFieldOptions(0) }.expect("GetFieldOptions should succeed");
+        assert_eq!(opts.0, 4);
+        // Other fields -> CPCFO_NONE.
+        let opts = unsafe { wfo.GetFieldOptions(2) }.expect("GetFieldOptions should succeed");
+        assert_eq!(opts.0, 0);
+    }
+
+    #[test]
+    fn com_credential2_empty_sid_is_s_false() {
+        use windows::Win32::UI::Shell::ICredentialProviderCredential2;
+        // No SetUserArray (or empty array): mirror the C++ baseline's
+        // S_FALSE + null SID (empty-user-tile association). windows-core
+        // surfaces S_FALSE (HRESULT 1, a success code) as Ok with the
+        // unwritten null out-param; native LogonUI sees S_FALSE + NULL.
+        let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
+            2, // CPUS_LOGON
+            None,
+        )
+        .into();
+        let sid = unsafe { credential.GetUserSid() }.expect("S_FALSE must surface as Ok");
+        assert!(sid.0.is_null(), "empty-tile SID must be null");
     }
 }

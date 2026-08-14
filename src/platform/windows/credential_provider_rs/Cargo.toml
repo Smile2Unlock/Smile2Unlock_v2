@@ -6,7 +6,23 @@ description = "Rust Windows Credential Provider for Smile2Unlock (COM adapter on
 
 [lib]
 name = "su_credential_provider"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "enum_probe"
+path = "src/bin/enum_probe.rs"
+
+[[bin]]
+name = "pipe_probe"
+path = "src/bin/pipe_probe.rs"
+
+[[bin]]
+name = "cred_check"
+path = "src/bin/cred_check.rs"
+
+[[bin]]
+name = "lsa_logon_test"
+path = "src/bin/lsa_logon_test.rs"
 
 [dependencies]
 windows-core = "0.62.2"
@@ -22,12 +38,15 @@ panic = "abort"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
     "Win32_System_Com",
     "Win32_Graphics_Gdi",
     "Win32_System_Pipes",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Security_Authentication_Identity",
+    "Win32_System_SystemServices",
     "Win32_System_WindowsProgramming",
     "Win32_Security_Credentials",
 
