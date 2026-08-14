@@ -494,6 +494,22 @@ Smile2Unlock_v2/
   xmake (crate is windows-only); duplicate `mem_noaccess` import in vendored
   memsafe fixed.
 
+## KVM Guest Graphics (Windows 10, solved 2026-08-14)
+
+The win10 KVM guest uses a QXL display (2D only) over SPICE; Windows then
+falls back to GDI Generic OpenGL 1.1, so Slint/winit fails with "Could not
+locate glCreateShader symbol". Fix without touching the VM hardware config:
+
+- Deploy Mesa3D llvmpipe software GL next to the GUI binary:
+  `opengl32.dll` (loader) + `libgallium_wgl.dll` (llvmpipe, OpenGL 4.5,
+  CPU-rendered) from mesa-dist-win release-mingw into `C:\su-deploy\bin\`.
+  DLL search order loads the app-local copy before system32.
+- Verified: su_app.exe starts and enters its GUI event loop (no GL panic).
+- Optional hardware path (not needed for acceptance): libvirt video model
+  `virtio` + accel3d with virglrenderer (host has virglrenderer 1.3), plus
+  the virtio-win viogpudo guest driver; Windows-side virtio-gpu 3D support
+  is experimental, so software GL remains the reliable baseline.
+
 ## Face Recognition Trigger Flow (Windows, implemented 2026-08-14)
 
 Implemented in `src/platform/windows/credential_provider_rs/src/recognition.rs`
