@@ -474,6 +474,38 @@ Smile2Unlock_v2/
 - Linux 使用 peer credential 校验。
 - Windows 使用启动时生成的 local auth token。
 
+## Face Recognition Trigger Flow (Windows, implemented 2026-08-14)
+
+Implemented in `src/platform/windows/credential_provider_rs/src/recognition.rs`
+(v28 deployed; 46 unit tests green incl. full UDP round-trips).
+
+- Transport: C++-parity UDP. Request on 127.0.0.1:51236
+  (`UdpAuthRequestPacket`, magic "AUTH", v1, 88 B); status on 127.0.0.1:51234
+  (`UdpStatusPacket`, magic 0x8581DAF3, v2, 49244 B). The provider is a pure
+  client: it never runs a camera or recognizer inside LogonUI.
+- Security: loopback-only, status accepted only when the session_id matches
+  the most recent request and the timestamp is within 30 s (anti-injection /
+  anti-replay, verified live: mismatched session packets are rejected).
+  Forgery resistance at the same trust level as the C++ baseline; signing is
+  a tracked hardening item. Face success only gates the stored-secret fetch
+  through the SYSTEM pipe; the pipe never trusts UDP.
+- Manual mode (RecognitionMode=0, default): password-box Enter calls
+  GetSerialization, which arms the worker and waits for the terminal status.
+  Success submits the stored secret; failure rejects the submit with
+  CPSI_ERROR + status text.
+- Auto mode (RecognitionMode=1): worker waits AutoDelaySec after the lock
+  screen (sleep/hibernate/lid suspension pauses the countdown via
+  GetTickCount64; resume triggers immediately), retries every RetryDelaySec
+  until success, then sets face_ready and fires CredentialsChanged through
+  the Global Interface Table (cross-thread marshalled). LogonUI re-enumerates
+  with auto-logon; GetSerialization skips the manual gate via auto_grant.
+- Registry: `HKLM\SOFTWARE\Smile2Unlock\Recognition` (RecognitionMode,
+  AutoDelaySec, RetryDelaySec, TimeoutSec). Missing key degrades to defaults.
+- VM test harness: `mock_recognizer` bin stands in for su_app.exe (no camera
+  needed); deployed as SYSTEM scheduled task SU_Mock. Live acceptance passed
+  end-to-end in auto mode (lock -> auto trigger -> SUCCESS -> logon).
+  Manual mode awaits interactive Enter on the VM console.
+
 ## Recognizer Plan
 
 识别模块第一阶段作为 `su_recognizer` 静态库接入 `su_app`。
