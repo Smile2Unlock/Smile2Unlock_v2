@@ -7,6 +7,9 @@ import std;
 import su.recognizer.service;
 import su.recognizer.image;
 import su.app.user;
+import su.core.types;
+
+#include "../platform/windows/udp_recognition_server.h"
 
 // Plain-TU bridge (user_windows.cpp): registry write for the recognition
 // policy consumed by the credential provider at lock-screen time.
@@ -103,10 +106,91 @@ std::expected<std::string, std::string> resolve_image_sample_source(
 
 // The Linux implementation talks to the LocalSystem authentication service
 // (su_authd) over the su.control socket and inspects PAM deployments. On
-// Windows those services are not available yet: profile storage is owned by
-// the Windows auth service (see windows_credential_provider_rust_plan.md).
-std::expected<void, std::string> control_unavailable() {
-    return std::unexpected("authentication service is unavailable on Windows");
+// Windows there is no control socket: profile storage is system-owned under
+// ProgramData (see docs/rewrite_master_plan.md "凭据存储" platform
+// decision) and su_app reads/writes it directly through the Rust core FFI,
+// because the Credential Provider never consumes profiles (recognition
+// results cross loopback UDP) and the Windows auth service only owns the
+// logon-secret pipe.
+
+const char* core_error_name(CoreError error) {
+    switch (error) {
+        case CoreError::kNullArgument: return "null argument";
+        case CoreError::kInvalidUtf8: return "invalid utf-8";
+        case CoreError::kUserDenied: return "user denied";
+        case CoreError::kIoError: return "io error";
+        case CoreError::kParseError: return "parse error";
+        case CoreError::kWriteError: return "write error";
+        case CoreError::kInvalidArgument: return "invalid argument";
+        case CoreError::kBufferTooSmall: return "buffer too small";
+        case CoreError::kCryptoError: return "crypto error";
+        case CoreError::kKeyUnavailable: return "key unavailable";
+        case CoreError::kMigrationRequired: return "migration required";
+        case CoreError::kUnknown: return "unknown error";
+    }
+    return "unknown error";
+}
+
+const char* recognizer_error_name(su::recognizer::RecognizerError error) {
+    switch (error) {
+        case su::recognizer::RecognizerError::kNoCamera: return "no camera";
+        case su::recognizer::RecognizerError::kCameraUnavailable: return "camera unavailable";
+        case su::recognizer::RecognizerError::kModelUnavailable: return "model unavailable";
+        case su::recognizer::RecognizerError::kInvalidArgument: return "invalid argument";
+        case su::recognizer::RecognizerError::kInvalidImage: return "invalid image";
+        case su::recognizer::RecognizerError::kImageLoadFailed: return "image load failed";
+        case su::recognizer::RecognizerError::kNoFace: return "no face";
+    }
+    return "unknown error";
+}
+
+std::expected<std::vector<FaceProfileSummary>, std::string> profile_rows_from_json(
+    std::string_view payload) {
+    const auto parsed = nlohmann::json::parse(payload, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_array()) {
+        return std::unexpected("profile store returned invalid profile data");
+    }
+    auto profiles = std::vector<FaceProfileSummary>{};
+    profiles.reserve(parsed.size());
+    for (const auto& item : parsed) {
+        if (!item.is_object()
+            || !item.contains("id") || !item["id"].is_string()
+            || !item.contains("label") || !item["label"].is_string()
+            || !item.contains("created_at_unix") || !item["created_at_unix"].is_number_unsigned()) {
+            return std::unexpected("profile store returned invalid profile data");
+        }
+        profiles.push_back(FaceProfileSummary{
+            .id = item["id"].get<std::string>(),
+            .label = item["label"].get<std::string>(),
+            .created_at_unix = item["created_at_unix"].get<std::uint64_t>(),
+        });
+    }
+    return profiles;
+}
+
+std::expected<FaceAuthReport, std::string> auth_report_from_json(std::string_view payload) {
+    const auto parsed = nlohmann::json::parse(payload, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()
+        || !parsed.contains("accepted") || !parsed["accepted"].is_boolean()
+        || !parsed.contains("score") || !parsed["score"].is_number()
+        || !parsed.contains("threshold") || !parsed["threshold"].is_number()
+        || !parsed.contains("liveness_ok") || !parsed["liveness_ok"].is_boolean()
+        || !parsed.contains("profile_count") || !parsed["profile_count"].is_number_unsigned()
+        || !parsed.contains("best_profile_id") || !parsed["best_profile_id"].is_string()
+        || !parsed.contains("best_profile_label") || !parsed["best_profile_label"].is_string()
+        || !parsed.contains("reason") || !parsed["reason"].is_string()) {
+        return std::unexpected("profile store returned invalid authentication data");
+    }
+    return FaceAuthReport{
+        .accepted = parsed["accepted"].get<bool>(),
+        .score = parsed["score"].get<float>(),
+        .threshold = parsed["threshold"].get<float>(),
+        .liveness_ok = parsed["liveness_ok"].get<bool>(),
+        .profile_count = parsed["profile_count"].get<std::uint32_t>(),
+        .best_profile_id = parsed["best_profile_id"].get<std::string>(),
+        .best_profile_label = parsed["best_profile_label"].get<std::string>(),
+        .reason = parsed["reason"].get<std::string>(),
+    };
 }
 
 }  // namespace
@@ -222,8 +306,16 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     if (username.empty()) {
         return std::unexpected("failed to resolve current account");
     }
-    const auto unavailable = control_unavailable();
-    return std::unexpected(unavailable.error());
+    const auto enrolled = su::app::enroll_face_profile(
+        profile_store_path(), label, *resolved);
+    if (!enrolled) {
+        return std::unexpected(std::format("failed to enroll profile: {}", core_error_name(enrolled.error())));
+    }
+    const auto profiles = su::app::list_face_profiles_json(profile_store_path());
+    if (!profiles) {
+        return std::unexpected(std::format("failed to list profiles: {}", core_error_name(profiles.error())));
+    }
+    return *profiles;
 }
 
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_current_frame(
@@ -267,8 +359,49 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     if (username.empty()) {
         return std::unexpected("failed to resolve current account");
     }
-    const auto unavailable = control_unavailable();
-    return std::unexpected(unavailable.error());
+    const auto config = load_config(config_path());
+    if (!config) {
+        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    }
+    const auto auth_report = su::app::authenticate_face_sample_report(
+        profile_store_path(),
+        *resolved,
+        config->recognition_threshold,
+        liveness_ok);
+    if (!auth_report) {
+        return std::unexpected(std::format("failed to authenticate face sample: {}", core_error_name(auth_report.error())));
+    }
+    const auto profiles = su::app::list_face_profiles_json(profile_store_path());
+    if (!profiles) {
+        return std::unexpected(std::format("failed to list profiles: {}", core_error_name(profiles.error())));
+    }
+    const auto profile_rows = profile_rows_from_json(*profiles);
+    if (!profile_rows) {
+        return std::unexpected(profile_rows.error());
+    }
+    const auto decision = FaceAuthDecision{
+        .accepted = auth_report->accepted,
+        .score = auth_report->score,
+        .profile_count = auth_report->profile_count,
+    };
+    const auto report_json = std::format(
+        R"({{"accepted":{},"score":{},"threshold":{},"liveness_ok":{},"profile_count":{},"best_profile_id":"{}","best_profile_label":"{}","reason":"{}"}})",
+        auth_report->accepted ? "true" : "false",
+        auth_report->score,
+        auth_report->threshold,
+        auth_report->liveness_ok ? "true" : "false",
+        auth_report->profile_count,
+        auth_report->best_profile_id,
+        auth_report->best_profile_label,
+        auth_report->reason);
+
+    return FaceDemoSnapshot{
+        .profiles = *profile_rows,
+        .profiles_json = *profiles,
+        .auth_report_json = report_json,
+        .decision = decision,
+        .report = *auth_report,
+    };
 }
 
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current_frame() {
@@ -301,23 +434,37 @@ void AppController::cancel_camera_operation() {
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {
-    const auto unavailable = control_unavailable();
-    return std::unexpected(unavailable.error());
+    const auto profiles = su::app::list_face_profiles_json(profile_store_path());
+    if (!profiles) {
+        return std::unexpected(std::format("failed to list profiles: {}", core_error_name(profiles.error())));
+    }
+    return *profiles;
 }
 
 std::expected<std::vector<FaceProfileSummary>, std::string> AppController::list_face_profile_rows() {
-    const auto unavailable = control_unavailable();
-    return std::unexpected(unavailable.error());
+    const auto profiles = list_face_profiles();
+    if (!profiles) {
+        return std::unexpected(profiles.error());
+    }
+    return profile_rows_from_json(*profiles);
 }
 
 std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::string_view profile_id) {
-    const auto unavailable = control_unavailable();
-    return std::unexpected(unavailable.error());
+    const auto deleted = su::app::delete_face_profile(profile_store_path(), profile_id);
+    if (!deleted) {
+        return std::unexpected(std::format("failed to delete profile: {}", core_error_name(deleted.error())));
+    }
+    return *deleted;
 }
 
 SystemStatus AppController::load_system_status() {
     auto status = SystemStatus{};
-    status.service_reason = "authentication service is unavailable on Windows";
+    // Windows: profile storage is system-owned under ProgramData and is
+    // accessed directly by su_app (see the platform decision in
+    // docs/rewrite_master_plan.md); the auth service only owns the logon
+    // secret pipe, so PAM/deployment status is not applicable.
+    status.service_reason = "local profile store (ProgramData)";
+    status.storage_protection = StorageProtection::kHostKey;
     return status;
 }
 
@@ -338,6 +485,71 @@ std::expected<std::string, std::string> AppController::configure_desktop_target(
 std::expected<std::string, std::string> AppController::rollback_desktop_target(
     std::string_view target) {
     return std::unexpected("desktop deployment is only supported on Linux");
+}
+
+// Runs on the UDP recognition server thread: opens the camera, captures a
+// live face, authenticates against the local ProgramData profile store and
+// reports the outcome to the credential provider.
+int AppController::udp_recognize_callback(
+    std::uint32_t session_id,
+    const char* username_hint,
+    char* out_username,
+    void* userdata) {
+    (void)session_id;
+    (void)username_hint;
+    auto* self = static_cast<AppController*>(userdata);
+    self->camera_cancel_requested_.store(false, std::memory_order_release);
+
+    const auto config = self->load_config_snapshot();
+    if (!config) {
+        std::println(stderr, "[recognition] udp: failed to load config: {}", config.error());
+        return SU_RS_RECOGNITION_ERROR;
+    }
+    if (!self->recognizer_.seetaface_available()) {
+        std::println(stderr, "[recognition] udp: seetaface backend unavailable");
+        return SU_RS_RECOGNITION_ERROR;
+    }
+    if (const auto opened = self->recognizer_.open_camera(config->selected_camera);
+        !opened) {
+        std::println(stderr, "[recognition] udp: failed to open camera: {}", recognizer_error_name(opened.error()));
+        return SU_RS_RECOGNITION_ERROR;
+    }
+    struct [[nodiscard]] CameraGuard {
+        su::recognizer::RecognizerService& svc;
+        ~CameraGuard() { svc.close_camera(); }
+    };
+    const CameraGuard _close_guard{self->recognizer_};
+
+    const auto result = capture_live_features(
+        self->recognizer_, *config, self->camera_cancel_requested_);
+    if (!result) {
+        // No face seen or liveness rejected within the deadline: report as
+        // failed so the provider retries per its policy.
+        std::println(stderr, "[recognition] udp: capture failed: {}", result.error());
+        return SU_RS_FAILED;
+    }
+    const auto report = su::app::authenticate_face_sample_report(
+        self->profile_store_path(),
+        su::recognizer::embedding_sample_source(result->feature),
+        config->recognition_threshold,
+        true);
+    if (!report) {
+        std::println(stderr, "[recognition] udp: authenticate failed: {}", core_error_name(report.error()));
+        return SU_RS_RECOGNITION_ERROR;
+    }
+    const auto username = su::app::current_username("");
+    std::snprintf(out_username, SU_UDP_STATUS_USERNAME_CAP, "%s", username.c_str());
+    std::println(stderr, "[recognition] udp: session=0x{:X} user='{}' accepted={} score={:.2f}",
+        session_id, username, report->accepted, report->score);
+    return report->accepted ? SU_RS_SUCCESS : SU_RS_FAILED;
+}
+
+void AppController::start_udp_recognition_server() {
+    (void)su_udp_start_recognition_server(&AppController::udp_recognize_callback, this);
+}
+
+void AppController::stop_udp_recognition_server() {
+    su_udp_stop_recognition_server();
 }
 
 }  // namespace su::app
