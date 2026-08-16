@@ -1,0 +1,4 @@
+// Application icon embedded into the su_app.exe resource section
+// (Explorer file icon, and the default window/taskbar icon until the
+// runtime WM_SETICON call applies the same icon at window creation).
+IDI_APP_ICON ICON "../common/resources/img/Smile2Unlock.ico"

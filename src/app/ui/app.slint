@@ -95,8 +95,12 @@ export component AppWindow inherits Window {
     }
 
     title: title_text;
-    // Application icon (embedded at compile time).
-    icon: @image-url("../../../common/resources/img/Smile2Unlock.png");
+    // NOTE: no `icon:` property here. slint 1.17's compiler never embeds
+    // Window.icon images; it generates Image::load_from_path() with the
+    // build-machine's absolute path, which does not exist at deploy time.
+    // The window icon is set at runtime from the .ico next to the
+    // executable (see slint_main.cpp), and the exe embeds the icon via a
+    // .rc resource so Explorer/taskbar fall back to it.
     no-frame: !root.window_frame_visible;
     // No explicit width/height: an explicit size would bind the window to
     // that size (update_window_properties re-applies it, making the window
