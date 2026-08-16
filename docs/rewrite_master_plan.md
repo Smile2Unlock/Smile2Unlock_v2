@@ -809,8 +809,9 @@ Slint 是唯一计划内 GUI。
 - ✅ MinGW 交叉构建和 Windows Rust core 静态库
 - ✅ 纯 Rust COM Provider（`credential_provider_rs`，v28）：CP 客户端、UDP 识别触发（manual/auto）、46 单元测试、自动模式 VM 端到端验收（mock 服务端）
 - ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
-- ❌ su_app 内的 UDP 识别服务端（监听 51236/51234）——目前只有 `mock_recognizer` 测试桩
-- ❌ Windows GUI profile 操作（注册/列表/删除/认证）——目前 `AppController` 返回 `control_unavailable()`，未接入本地 FFI store
+- ✅ su_app UDP 识别服务端（`udp_recognition_server`，监听 127.0.0.1:51236/51234，协议与 CP 对齐；VM 上协议链路实测：magic/version/session 回显正确，回调执行识别并回状态；mock_recognizer 已停用）
+- ✅ Windows GUI profile 操作（注册/列表/删除/认证经 Rust core FFI 直连 ProgramData store；VM 上受限于无摄像头，识别路径返回 camera unavailable）
+- ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 锁屏 CP 触发）
 - ❌ MSVC 原生构建、物理 TPM / 无 TPM 机器和真实 LogonUI 验收
 
 ### Phase 5: Optimization and optional split ✅ 第一版决策完成

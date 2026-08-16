@@ -1042,7 +1042,11 @@ int main(int argc, char** argv) {
     gui_log_t(std::format("renderer env: SLINT_BACKEND={}",
         std::getenv("SLINT_BACKEND") ? std::getenv("SLINT_BACKEND") : "(unset)"));
     window->show();
+#ifdef _WIN32
     gui_log_t(std::format("show() returned (lastError=0x{:X})", ::GetLastError()));
+#else
+    gui_log_t("show() returned");
+#endif
 #ifdef _WIN32
     // Fit the window to the desktop so it is never larger than the screen.
     // SPI_GETWORKAREA reports PHYSICAL pixels, while set_size takes a
@@ -1125,6 +1129,13 @@ int main(int argc, char** argv) {
         gui_log_t("watcher thread done");
     });
     window_watcher.detach();
+#endif
+#ifdef _WIN32
+    // UDP face-recognition server for the credential provider (loopback
+    // 51236/51234). Runs until the process exits; recognition requests are
+    // answered by AppController on the server thread.
+    controller->start_udp_recognition_server();
+    gui_log_t("udp recognition server started");
 #endif
     gui_log_t("calling run_event_loop");
     slint::run_event_loop();

@@ -596,4 +596,8 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
     return su::deploy::DeploymentClient{}.rollback_target(target);
 }
 
+// UDP recognition server is Windows-only (credential provider integration).
+void AppController::start_udp_recognition_server() {}
+void AppController::stop_udp_recognition_server() {}
+
 }  // namespace su::app
