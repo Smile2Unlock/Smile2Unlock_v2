@@ -185,7 +185,7 @@ target("su_recognizer")
         add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
         add_seetaface_backend()
         before_build( function ()
-            local srcdir = path.join(os.projectdir(), "FaceRecognizer", "resources", "models")
+            local srcdir = path.join(os.projectdir(), "assets", "models", "seeta")
             local dstdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
             os.mkdir(dstdir)
             for _, file in ipairs(os.files(path.join(srcdir, "*.csta"))) do
@@ -286,7 +286,7 @@ target("su_recognizer")
             -- Ship the .ico next to the executable; the GUI applies it to the
             -- native window (title bar / taskbar) at startup via WM_SETICON.
             if is_plat("windows", "mingw") then
-                os.cp(path.join(os.projectdir(), "common", "resources", "img", "Smile2Unlock.ico"), target:targetdir())
+                os.cp(path.join(os.projectdir(), "assets", "icons", "Smile2Unlock.ico"), target:targetdir())
             end
         end)
     else

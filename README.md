@@ -1,7 +1,7 @@
 # Smile2Unlock
 
 <p align="center">
-  <img src="common/resources/img/Smile2Unlock.png" alt="Smile2Unlock banner" width="140" />
+  <img src="assets/icons/Smile2Unlock.png" alt="Smile2Unlock banner" width="140" />
 </p>
 
 <h3 align="center">A modern Windows face-unlock prototype built on Credential Provider, local IPC, and SeetaFace.</h3>
@@ -30,41 +30,39 @@ Smile2Unlock is a Windows biometric login project that experiments with a custom
 
 Instead of being only a single app, the repository is organized as a small system:
 
-- `Smile2Unlock`: the desktop GUI and orchestration layer
-- `SampleV2CredentialProvider.dll`: the Windows Credential Provider integration
-- `FaceRecognizer`: the camera, optional liveness checks, and feature extraction worker
-- `common`: shared models, config, crypto, IPC, assets, and language resources
+- `su_app`: the Slint desktop GUI and orchestration layer
+- `su_authd` (Linux) / Credential Provider (Windows): the sign-in integration
+- `su_deploy_helper`: the privileged deployment helper (UAC on Windows, D-Bus/Polkit on Linux)
+- `src/recognizer`: camera capture, liveness checks, and SeetaFace feature extraction
+- `assets/`: the single repository-wide resource folder (icons, i18n, SeetaFace models)
 
 The current codebase already includes:
 
 - Face capture and feature extraction
 - Liveness detection via SeetaFace anti-spoofing
 - A Windows login integration path through Credential Provider
-- Local IPC between GUI / service / recognizer components
-- An installer script for packaging and registration
+- UDP recognition server for the sign-in flow, plus local IPC between GUI / service components
+- In-app deployment (Credential Provider registration, service management) with UAC elevation
 
 ## Installation & Usage
 
-For most users, the easiest way to get started is to download the pre-built installer from the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page.
+### Step 1: Deploy the app
 
-### Step 1: Download and Install
-1. Go to the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page
-2. Download the latest `Smile2Unlock-Setup.exe` installer
-3. Run the installer with administrator privileges (required for Credential Provider registration)
-4. Follow the installation wizard
+Copy the build output (`su_app.exe`, `su_deploy_helper.exe`, and the `assets/` folder next to it) to a folder on the target machine, for example `C:\su-deploy\bin\`.
 
 ### Step 2: Set Up Your Face
-1. After installation, launch **Smile2Unlock** from the Start Menu or desktop shortcut
+1. Launch **Smile2Unlock** (`su_app.exe`) from the deployment folder
 2. Go to the **Enrollment** tab
 3. Click **"Add User"** to create a new user account
 4. Click **"Capture Face"** to enroll your facial features
 5. You can enroll multiple faces for different lighting conditions or angles
 
-### Step 3: Use Face Unlock
-1. Lock your Windows session (Win+L) or restart your computer
-2. At the Windows login screen, you should see the Smile2Unlock credential provider tile
-3. Look at your camera - the system will automatically detect your face and unlock
-4. If face recognition fails, you can still use your password by clicking "Sign-in options"
+### Step 3: Enable Face Unlock
+1. Open the **Deployment** panel inside the app and click **Install** (a UAC prompt will appear — the deployment helper performs Credential Provider registration and service setup)
+2. Lock your Windows session (Win+L) or restart your computer
+3. At the Windows login screen, you should see the Smile2Unlock credential provider tile
+4. Look at your camera - the system will automatically detect your face and unlock
+5. If face recognition fails, you can still use your password by clicking "Sign-in options"
 
 ### Troubleshooting
 - **Camera not detected**: Ensure your camera is properly connected and drivers are installed
@@ -77,23 +75,23 @@ For most users, the easiest way to get started is to download the pre-built inst
 | Capability | Notes |
 | --- | --- |
 | Windows login integration | Uses a custom Credential Provider DLL for Winlogon sign-in flow |
-| Split-process design | GUI, service, and recognition worker are separated for cleaner responsibilities |
-| Shared-memory + UDP IPC | Supports image sharing, preview streaming, probe-feature delivery, and status messaging |
-| Local persistence | Uses SQLite plus config/runtime directories for local state |
-| Modern C++ toolchain | Built with `xmake`, `clang`, `llvm-mingw`, and C++26 modules |
+| Split-process design | GUI, privileged deployment helper, and recognition worker are separated |
+| UDP + socket IPC | UDP recognition server for the sign-in flow, control socket for GUI IPC |
+| Local persistence | Rust core with SQLite-backed plaintext/encrypted stores |
+| Modern toolchain | Built with `xmake`, `g++` (mingw / native), C++26 modules, Rust, Zig, and Slint |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     U[User at Windows Sign-in] --> CP[Credential Provider DLL]
-    CP --> S[Smile2Unlock Service / Backend]
-    S --> FR[FaceRecognizer]
-    S <--> GUI[Smile2Unlock GUI]
-    GUI <--> DB[(SQLite / Config / Runtime Data)]
-    FR --> CAM[Camera]
-    FR --> MODEL[SeetaFace Models]
-    FR --> S
+    CP --> S[su_app / UDP recognition server]
+    S --> R[src/recognizer - SeetaFace]
+    S <--> GUI[su_app GUI]
+    GUI <--> CORE[(Rust core - SQLite / Config)]
+    R --> CAM[Camera]
+    R --> MODEL[assets/models/seeta]
+    R --> S
 ```
 
 ### Sign-in flow
@@ -102,26 +100,23 @@ flowchart LR
 sequenceDiagram
     participant User
     participant CP as Credential Provider
-    participant Service as Smile2Unlock Service
-    participant FR as FaceRecognizer
-    participant GUI as Smile2Unlock GUI
+    participant S as su_app (UDP server)
+    participant R as Recognizer
+    participant GUI as su_app GUI
 
     User->>CP: Open sign-in screen
-    CP->>Service: Request biometric authentication
-    Service->>FR: Start capture / recognition task
-    FR->>FR: Detect face, optionally run liveness checks, and extract a probe feature
-    FR-->>Service: Return probe feature after capture / liveness gates pass
-    Service->>Service: Compare probe feature against enrolled local features
-    Service-->>CP: Approve or reject sign-in step from the service-owned match result
-    GUI-->>Service: Configure device, profile, and runtime settings
+    CP->>S: UDP auth request (127.0.0.1:51236)
+    S->>R: Start capture / recognition task
+    R->>R: Detect face, optionally run liveness checks, and extract a probe feature
+    R-->>S: Recognition result
+    S-->>CP: UDP status packet (127.0.0.1:51234) with success / failure
+    GUI-->>S: Configure device, profile, and runtime settings
 ```
 
 ### Runtime roles
 
-- `SampleV2CredentialProvider.dll` plugs into the Windows authentication surface.
-- `Smile2Unlock.exe --service` acts as the privileged backend / IPC host.
-- `Smile2Unlock.exe` without `--service` launches the GUI and can connect to an already-running backend.
-- `FaceRecognizer.exe` handles camera-oriented recognition tasks such as one-shot capture, preview streaming, liveness checks, and feature extraction. The service owns login-time feature comparison and decides whether CP receives final success.
+- `su_deploy_helper.exe` (Windows, UAC) / `su_deploy_helper` (Linux, D-Bus/Polkit) performs privileged deployment: Credential Provider registration, service installation.
+- `su_app` hosts the GUI, profile management (enroll/list/delete via the Rust core), the UDP recognition server, and the deployment panel.
 
 <details>
 <summary>Why the project is split this way</summary>
@@ -134,14 +129,18 @@ This layout helps keep Windows sign-in integration, GUI behavior, and recognitio
 
 ```text
 .
-|-- Smile2Unlock/          # Main GUI app, backend service, runtime orchestration
-|-- CredentialProvider/    # Windows Credential Provider DLL
-|-- FaceRecognizer/        # Recognition worker, camera capture, SeetaFace integration
-|-- common/                # Shared models, modules, IPC helpers, resources
+|-- src/                   # All source code
+|   |-- app/               # su_app GUI entry + controllers (per-platform)
+|   |-- modules/           # C++26 modules (su.core.types, su.app.*, su.recognizer.*)
+|   |-- core-rs/           # Rust core (storage, enrollment, encryption)
+|   |-- recognizer/        # SeetaFace backend, camera, image pipeline
+|   |-- platform/          # Windows (CP, UDP server, deploy) / Linux (authd, deploy)
+|   `-- zig/               # Zig components
+|-- assets/                # Single resource folder: icons/, i18n/, models/seeta/
+|-- docs/                  # Design docs
+|-- packaging/             # Linux packaging (package.sh, systemd, dbus, polkit)
 |-- local-repo/            # Local xmake package repository
-|-- licenses/              # Third-party license texts
 |-- NOTICE/                # Third-party notices
-|-- setup.iss              # Inno Setup installer script
 `-- xmake.lua              # Primary build entry
 ```
 
@@ -150,93 +149,88 @@ This layout helps keep Windows sign-in integration, GUI behavior, and recognitio
 ```mermaid
 flowchart TD
     ROOT[Smile2Unlock_v2]
-    ROOT --> APP[Smile2Unlock/]
-    ROOT --> CP[CredentialProvider/]
-    ROOT --> FR[FaceRecognizer/]
-    ROOT --> COMMON[common/]
+    ROOT --> APP[src/app/]
+    ROOT --> CORE[src/core-rs/]
+    ROOT --> REC[src/recognizer/]
+    ROOT --> PLAT[src/platform/]
+    ROOT --> ASSETS[assets/]
     ROOT --> BUILD[xmake.lua]
-    ROOT --> INSTALLER[setup.iss]
-    ROOT --> NOTICE[NOTICE/ + licenses/]
+    ROOT --> NOTICE[NOTICE/]
 
-    APP --> APP1[GUI + backend orchestration]
-    CP --> CP1[Windows sign-in integration]
-    FR --> FR1[Camera + recognition worker]
-    COMMON --> COMMON1[IPC + config + crypto + resources]
+    APP --> APP1[Slint GUI + controllers]
+    CORE --> CORE1[Rust storage / enrollment core]
+    REC --> REC1[SeetaFace camera + recognition]
+    PLAT --> PLAT1[Windows CP + deploy / Linux authd]
+    ASSETS --> ASSETS1[icons + i18n + models]
 ```
 
 ## Tech Stack
 
 - Windows Credential Provider API
+- Slint (UI)
 - SeetaFace 6
 - SQLite3
-- GLFW + Dear ImGui
-- Boost
-- Mbed TLS
+- C++26 modules
+- Rust (core storage / enrollment, credential provider helper)
+- Zig (platform components)
 - libyuv
 - xmake
-- clang + llvm-mingw
+- g++ (mingw for Windows, native for Linux)
 
 ## Building from Source
 
-*This section is for developers and users who want to build from source. Most users should use the pre-built installer from the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page.*
+*This section is for developers and users who want to build from source.*
 
 ### Requirements
 
 - Windows 10 or later
 - `xmake`
-- `llvm-mingw-ucrt-x86_64`
+- A MinGW-w64 toolchain (`g++` with C++26 module support, e.g. mingw-w64-gcc 14+)
 - A working camera
 - Administrator privileges for installation / Credential Provider registration
 
 ### Build
 
 ```powershell
-xmake f -y -c -p mingw -a x86_64 --mingw="D:\Tools\llvm-mingw-ucrt-x86_64" --sdk="D:\Tools\llvm-mingw-ucrt-x86_64" --toolchain=clang --runtimes=c++_static
+xmake f -y -c -p mingw -a x86_64
 xmake require --build -f -y seetaface6open
 xmake build
+```
+
+The Windows Credential Provider (`su_credential_provider.dll`) is built from Rust:
+
+```powershell
+cargo build --release --target x86_64-pc-windows-gnu --manifest-path src\platform\windows\credential_provider_rs\Cargo.toml
 ```
 
 ### Build outputs
 
 The main targets defined in [`xmake.lua`](xmake.lua) are:
 
-- `Smile2Unlock`
-- `FaceRecognizer`
-- `SampleV2CredentialProvider.dll`
+- `su_app` (Windows: `su_app.exe`) — the Slint GUI
+- `su_deploy_helper` (Windows: `su_deploy_helper.exe`) — the privileged deployment helper
+- `su_authd` (Linux only) — the auth daemon
+- `su_credential_provider.dll` (Windows only, Rust) — the Credential Provider
 
 ### Running locally
 
-Launch the GUI:
+Launch the GUI (Windows):
 
 ```powershell
-.\build\mingw\x86_64\release\Smile2Unlock.exe
-```
-
-Launch backend service mode:
-
-```powershell
-.\build\mingw\x86_64\release\Smile2Unlock.exe --service
-```
-
-Inspect recognizer CLI help:
-
-```powershell
-.\build\mingw\x86_64\release\FaceRecognizer.exe --help
+.\build\mingw\x86_64\release\su_app.exe
 ```
 
 ### Creating an Installer
 
-The repository includes an Inno Setup script at [`setup.iss`](setup.iss) that can be used to create a distributable installer. This is useful for developers who want to package their own builds:
+On Linux, run [`packaging/linux/package.sh`](packaging/linux/package.sh) to produce `tar.gz` / `pacman` / `deb` / `rpm` packages:
 
-- Build the project using the instructions above
-- Run Inno Setup with `setup.iss` to create `Smile2Unlock-Setup.exe`
-- The generated installer will:
-  - Copy the application files
-  - Deploy `SampleV2CredentialProvider.dll` into `System32`
-  - Register the Credential Provider CLSID
-  - Install with administrator privileges
+```bash
+packaging/linux/package.sh --format all
+```
 
-Most users should download the pre-built installer from the [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) page instead of building their own.
+The generated packages include `su_app`, `su_authd`, `su_deploy_helper`, the PAM module, and the resources staged from `assets/` (i18n and SeetaFace models) into `/usr/share/smile2unlock/`.
+
+Most users should use the packaged release instead of building their own.
 
 ## Screenshots
 
@@ -261,22 +255,9 @@ This section highlights the Windows login side of the project:
   <img src="docs/images/windows-uac-credential-ui.png" alt="Windows UAC credential interface" width="88%" />
 </p>
 
-## FaceRecognizer CLI
+## Sign-in flow details
 
-`FaceRecognizer` already exposes several useful modes:
-
-- `recognize`
-- `capture-image`
-- `preview-stream`
-- `compare-features`
-
-Typical entry point:
-
-```powershell
-.\FaceRecognizer.exe --mode recognize --camera 0 --liveness-detection=true
-```
-
-For service-launched recognition, boolean options are passed with explicit values, for example `--liveness-detection=false`. In the sign-in flow, `recognize` emits a probe feature after capture and optional liveness checks; `Smile2Unlock.exe --service` compares that feature with enrolled local features before forwarding final success or failure to the Credential Provider.
+In the Windows sign-in flow, the Credential Provider sends a UDP auth request to `su_app` (port 51236). `su_app` runs face capture, optional liveness checks, and feature extraction through the SeetaFace backend, compares the probe against enrolled local features, and reports the result back to the Credential Provider via the status channel (port 51234).
 
 ## Status
 

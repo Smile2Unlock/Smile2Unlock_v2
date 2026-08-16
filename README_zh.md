@@ -1,7 +1,7 @@
 # Smile2Unlock
 
 <p align="center">
-  <img src="common/resources/img/Smile2Unlock.png" alt="Smile2Unlock banner" width="140" />
+  <img src="assets/icons/Smile2Unlock.png" alt="Smile2Unlock banner" width="140" />
 </p>
 
 <h3 align="center">一个基于 Windows Credential Provider、本地 IPC 与 SeetaFace 的现代化人脸解锁原型。</h3>
@@ -30,41 +30,39 @@ Smile2Unlock 是一个面向 Windows 登录场景的人脸认证项目，核心�
 
 这个仓库不是单一程序，而是一套由多个组件协同组成的小系统：
 
-- `Smile2Unlock`：主 GUI 与编排层
-- `SampleV2CredentialProvider.dll`：接入 Windows 登录界面的 Credential Provider
-- `FaceRecognizer`：负责摄像头采集、可选活体检测与特征提取
-- `common`：共享模型、配置、加密、IPC、资源与语言文件
+- `su_app`：Slint 桌面 GUI 与编排层
+- `su_authd`（Linux）/ Credential Provider（Windows）：登录集成
+- `su_deploy_helper`：特权部署助手（Windows 走 UAC，Linux 走 D-Bus/Polkit）
+- `src/recognizer`：摄像头采集、活体检测与 SeetaFace 特征提取
+- `assets/`：仓库唯一的资源目录（图标、i18n、SeetaFace 模型）
 
 当前代码已经覆盖这些关键能力：
 
 - 人脸采集与特征提取
 - 基于 SeetaFace 的活体检测
 - Windows 登录流程集成路径
-- GUI / Service / Recognizer 之间的本地 IPC
-- 安装器脚本与 Credential Provider 注册流程
+- 登录流程使用的 UDP 识别服务器，以及 GUI 组件间的本地 IPC
+- 应用内部署（Credential Provider 注册、服务管理）与 UAC 提权
 
 ## 安装与使用
 
-对于大多数用户，最简单的方式是从 [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) 页面下载预构建的安装程序。
+### 第一步：部署应用
 
-### 第一步：下载与安装
-1. 访问 [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) 页面
-2. 下载最新的 `Smile2Unlock-Setup.exe` 安装程序
-3. 以管理员权限运行安装程序（注册 Credential Provider 需要管理员权限）
-4. 按照安装向导完成安装
+将构建产物（`su_app.exe`、`su_deploy_helper.exe` 以及旁边的 `assets/` 目录）复制到目标机器的某个目录，例如 `C:\su-deploy\bin\`。
 
 ### 第二步：录入人脸
-1. 安装完成后，从开始菜单或桌面快捷方式启动 **Smile2Unlock**
+1. 从部署目录启动 **Smile2Unlock**（`su_app.exe`）
 2. 进入 **Enrollment（录入）** 标签页
 3. 点击 **"Add User"（添加用户）** 创建新用户账户
 4. 点击 **"Capture Face"（采集人脸）** 录入面部特征
 5. 你可以为不同的光照条件或角度录入多张人脸
 
-### 第三步：使用人脸解锁
-1. 锁定 Windows 会话（Win+L）或重启计算机
-2. 在 Windows 登录界面，你应该能看到 Smile2Unlock 的凭证提供程序磁贴
-3. 注视摄像头 - 系统将自动检测你的人脸并解锁
-4. 如果人脸识别失败，你可以点击"登录选项"使用密码登录
+### 第三步：启用人脸解锁
+1. 在应用内打开 **Deployment（部署）** 面板并点击 **Install（安装）**（会弹出 UAC 提权提示——部署助手将完成 Credential Provider 注册与服务安装）
+2. 锁定 Windows 会话（Win+L）或重启计算机
+3. 在 Windows 登录界面，你应该能看到 Smile2Unlock 的凭证提供程序磁贴
+4. 注视摄像头 - 系统将自动检测你的人脸并解锁
+5. 如果人脸识别失败，你可以点击"登录选项"使用密码登录
 
 ### 故障排除
 - **摄像头未检测到**：确保摄像头已正确连接且驱动程序已安装
@@ -77,23 +75,23 @@ Smile2Unlock 是一个面向 Windows 登录场景的人脸认证项目，核心�
 | 能力 | 说明 |
 | --- | --- |
 | 登录界面集成 | 通过自定义 Credential Provider 挂接到 Windows 登录流程 |
-| 分进程架构 | GUI、后台服务、识别进程职责分离，更方便维护与调试 |
-| 多种本地通信方式 | 使用共享内存与 UDP 传递图像、预览流、探测特征和状态 |
-| 本地数据存储 | 结合 SQLite、配置文件与运行时目录保存本地状态 |
-| 现代 C++ 构建链 | 基于 `xmake`、`clang`、`llvm-mingw` 与 C++26 modules |
+| 分进程架构 | GUI、特权部署助手、识别进程职责分离，更方便维护与调试 |
+| UDP + socket IPC | 登录流程走 UDP 识别服务器，GUI 间通过控制 socket 通信 |
+| 本地数据存储 | Rust core 结合 SQLite 提供明文/加密存储 |
+| 现代构建链 | 基于 `xmake`、`g++`（mingw / 原生）、C++26 modules、Rust、Zig 与 Slint |
 
 ## 系统架构
 
 ```mermaid
 flowchart LR
     U[用户在 Windows 登录界面] --> CP[Credential Provider DLL]
-    CP --> S[Smile2Unlock Service / Backend]
-    S --> FR[FaceRecognizer]
-    S <--> GUI[Smile2Unlock GUI]
-    GUI <--> DB[(SQLite / Config / Runtime Data)]
-    FR --> CAM[Camera]
-    FR --> MODEL[SeetaFace Models]
-    FR --> S
+    CP --> S[su_app / UDP 识别服务器]
+    S --> R[src/recognizer - SeetaFace]
+    S <--> GUI[su_app GUI]
+    GUI <--> CORE[(Rust core - SQLite / Config)]
+    R --> CAM[Camera]
+    R --> MODEL[assets/models/seeta]
+    R --> S
 ```
 
 ### 登录流程
@@ -102,26 +100,23 @@ flowchart LR
 sequenceDiagram
     participant User as 用户
     participant CP as Credential Provider
-    participant Service as Smile2Unlock Service
-    participant FR as FaceRecognizer
-    participant GUI as Smile2Unlock GUI
+    participant S as su_app（UDP 服务器）
+    participant R as 识别器
+    participant GUI as su_app GUI
 
     User->>CP: 打开登录界面
-    CP->>Service: 发起生物认证请求
-    Service->>FR: 启动采集与识别任务
-    FR->>FR: 执行人脸检测、可选活体校验与探测特征提取
-    FR-->>Service: 采集/活体门禁通过后返回探测特征
-    Service->>Service: 将探测特征与本地已录入特征进行比对
-    Service-->>CP: 基于服务端比对结果决定放行或拒绝当前登录步骤
-    GUI-->>Service: 管理设备、配置与运行参数
+    CP->>S: UDP 认证请求（127.0.0.1:51236）
+    S->>R: 启动采集与识别任务
+    R->>R: 执行人脸检测、可选活体校验与特征提取
+    R-->>S: 识别结果
+    S-->>CP: UDP 状态包（127.0.0.1:51234）返回成功/失败
+    GUI-->>S: 管理设备、配置与运行参数
 ```
 
 ### 运行时职责
 
-- `SampleV2CredentialProvider.dll` 负责接入 Windows 身份验证界面。
-- `Smile2Unlock.exe --service` 作为高权限后台服务与 IPC 主机运行。
-- `Smile2Unlock.exe` 默认启动 GUI，并且在检测到已有服务进程时优先连接现有后端。
-- `FaceRecognizer.exe` 负责摄像头相关识别任务，例如抓拍、预览流、活体检测和特征提取。登录流程中的特征比对与最终放行判断由 Service 持有。
+- `su_deploy_helper.exe`（Windows，UAC）/ `su_deploy_helper`（Linux，D-Bus/Polkit）负责特权部署：Credential Provider 注册、服务安装。
+- `su_app` 承载 GUI、人脸档案管理（通过 Rust core 录入/列出/删除）、UDP 识别服务器与部署面板。
 
 <details>
 <summary>为什么要拆成这几个部分</summary>
@@ -134,14 +129,18 @@ sequenceDiagram
 
 ```text
 .
-|-- Smile2Unlock/          # 主 GUI、后端服务、运行时编排
-|-- CredentialProvider/    # Windows Credential Provider DLL
-|-- FaceRecognizer/        # 识别进程、摄像头采集、SeetaFace 集成
-|-- common/                # 共享模型、模块、IPC 工具、资源
+|-- src/                   # 全部源代码
+|   |-- app/               # su_app GUI 入口与控制器（分平台）
+|   |-- modules/           # C++26 modules（su.core.types、su.app.*、su.recognizer.*）
+|   |-- core-rs/           # Rust core（存储、录入、加密）
+|   |-- recognizer/        # SeetaFace 后端、摄像头、图像流水线
+|   |-- platform/          # Windows（CP、UDP 服务器、部署）/ Linux（authd、部署）
+|   `-- zig/               # Zig 组件
+|-- assets/                # 唯一资源目录：icons/、i18n/、models/seeta/
+|-- docs/                  # 设计文档
+|-- packaging/             # Linux 打包（package.sh、systemd、dbus、polkit）
 |-- local-repo/            # 本地 xmake 包仓库
-|-- licenses/              # 第三方许可证文本
 |-- NOTICE/                # 第三方声明
-|-- setup.iss              # Inno Setup 安装脚本
 `-- xmake.lua              # 主构建入口
 ```
 
@@ -150,93 +149,88 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     ROOT[Smile2Unlock_v2]
-    ROOT --> APP[Smile2Unlock/]
-    ROOT --> CP[CredentialProvider/]
-    ROOT --> FR[FaceRecognizer/]
-    ROOT --> COMMON[common/]
+    ROOT --> APP[src/app/]
+    ROOT --> CORE[src/core-rs/]
+    ROOT --> REC[src/recognizer/]
+    ROOT --> PLAT[src/platform/]
+    ROOT --> ASSETS[assets/]
     ROOT --> BUILD[xmake.lua]
-    ROOT --> INSTALLER[setup.iss]
-    ROOT --> NOTICE[NOTICE/ + licenses/]
+    ROOT --> NOTICE[NOTICE/]
 
-    APP --> APP1[GUI 与后端编排]
-    CP --> CP1[Windows 登录集成]
-    FR --> FR1[摄像头与识别执行器]
-    COMMON --> COMMON1[IPC、配置、加密与资源]
+    APP --> APP1[Slint GUI 与控制器]
+    CORE --> CORE1[Rust 存储 / 录入核心]
+    REC --> REC1[SeetaFace 摄像头与识别]
+    PLAT --> PLAT1[Windows CP + 部署 / Linux authd]
+    ASSETS --> ASSETS1[图标 + i18n + 模型]
 ```
 
 ## 技术栈
 
 - Windows Credential Provider API
+- Slint（UI）
 - SeetaFace 6
 - SQLite3
-- GLFW + Dear ImGui
-- Boost
-- Mbed TLS
+- C++26 modules
+- Rust（核心存储 / 录入、Credential Provider 助手）
+- Zig（平台组件）
 - libyuv
 - xmake
-- clang + llvm-mingw
+- g++（Windows 用 mingw，Linux 用原生）
 
 ## 从源代码构建
 
-*本节面向开发者或希望从源代码构建的用户。大多数用户应使用 [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) 页面提供的预构建安装程序。*
+*本节面向开发者或希望从源代码构建的用户。*
 
 ### 环境要求
 
 - Windows 10 或更高版本
 - `xmake`
-- `llvm-mingw-ucrt-x86_64`
+- MinGW-w64 工具链（支持 C++26 modules 的 `g++`，如 mingw-w64-gcc 14+）
 - 可用摄像头
 - 安装和注册 Credential Provider 时需要管理员权限
 
 ### 构建
 
 ```powershell
-xmake f -y -c -p mingw -a x86_64 --mingw="D:\Tools\llvm-mingw-ucrt-x86_64" --sdk="D:\Tools\llvm-mingw-ucrt-x86_64" --toolchain=clang --runtimes=c++_static
+xmake f -y -c -p mingw -a x86_64
 xmake require --build -f -y seetaface6open
 xmake build
+```
+
+Windows Credential Provider（`su_credential_provider.dll`）由 Rust 构建：
+
+```powershell
+cargo build --release --target x86_64-pc-windows-gnu --manifest-path src\platform\windows\credential_provider_rs\Cargo.toml
 ```
 
 ### 构建产物
 
 [`xmake.lua`](xmake.lua) 中定义的主要目标包括：
 
-- `Smile2Unlock`
-- `FaceRecognizer`
-- `SampleV2CredentialProvider.dll`
+- `su_app`（Windows 下为 `su_app.exe`）—— Slint GUI
+- `su_deploy_helper`（Windows 下为 `su_deploy_helper.exe`）—— 特权部署助手
+- `su_authd`（仅 Linux）—— 认证守护进程
+- `su_credential_provider.dll`（仅 Windows，Rust）—— Credential Provider
 
 ### 本地运行
 
-启动 GUI：
+启动 GUI（Windows）：
 
 ```powershell
-.\build\mingw\x86_64\release\Smile2Unlock.exe
-```
-
-启动后台服务模式：
-
-```powershell
-.\build\mingw\x86_64\release\Smile2Unlock.exe --service
-```
-
-查看识别器命令行帮助：
-
-```powershell
-.\build\mingw\x86_64\release\FaceRecognizer.exe --help
+.\build\mingw\x86_64\release\su_app.exe
 ```
 
 ### 创建安装程序
 
-仓库包含 Inno Setup 脚本 [`setup.iss`](setup.iss)，可用于创建可分发的安装程序。这对于希望打包自己构建版本的开发者非常有用：
+Linux 下运行 [`packaging/linux/package.sh`](packaging/linux/package.sh) 可生成 `tar.gz` / `pacman` / `deb` / `rpm` 包：
 
-- 使用上述说明构建项目
-- 使用 Inno Setup 运行 `setup.iss` 来创建 `Smile2Unlock-Setup.exe`
-- 生成的安装程序将：
-  - 复制应用文件
-  - 将 `SampleV2CredentialProvider.dll` 部署到 `System32`
-  - 注册 Credential Provider 的 CLSID
-  - 在管理员权限下完成安装
+```bash
+packaging/linux/package.sh --format all
+```
 
-大多数用户应从 [Releases](https://github.com/Smile2Unlock/Smile2Unlock_v2/releases) 页面下载预构建的安装程序，而非自行构建。
+生成的包包含 `su_app`、`su_authd`、`su_deploy_helper`、PAM 模块，以及从 `assets/` 暂存到 `/usr/share/smile2unlock/` 的资源（i18n 与 SeetaFace 模型）。
+
+大多数用户应使用打包发布的版本，而非自行构建。
 
 ## 截图展示
 
@@ -261,22 +255,9 @@ xmake build
   <img src="docs/images/windows-uac-credential-ui.png" alt="Windows UAC 凭证界面" width="88%" />
 </p>
 
-## FaceRecognizer 命令行能力
+## 登录链路说明
 
-`FaceRecognizer` 当前已经提供多个模式：
-
-- `recognize`
-- `capture-image`
-- `preview-stream`
-- `compare-features`
-
-一个典型调用方式如下：
-
-```powershell
-.\FaceRecognizer.exe --mode recognize --camera 0 --liveness-detection=true
-```
-
-服务端启动识别进程时会显式传递布尔值，例如 `--liveness-detection=false`。在登录链路中，`recognize` 只会在采集与可选活体检测通过后输出探测特征；`Smile2Unlock.exe --service` 会把该特征与本地已录入特征比对，再向 Credential Provider 转发最终成功或失败状态。
+在 Windows 登录链路中，Credential Provider 通过 UDP 向 `su_app` 发送认证请求（端口 51236）。`su_app` 通过 SeetaFace 后端完成人脸采集、可选活体检测与特征提取，将探测特征与本地已录入特征比对，并通过状态通道（端口 51234）把结果回传给 Credential Provider。
 
 ## 当前状态
 

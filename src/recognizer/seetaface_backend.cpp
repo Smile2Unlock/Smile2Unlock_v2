@@ -36,7 +36,6 @@ std::optional<std::filesystem::path> find_model_dir_from(const std::filesystem::
     while (true) {
         for (const auto& candidate : {
                  path / "assets" / "models" / "seeta",
-                 path / "FaceRecognizer" / "resources" / "models",
              }) {
             auto error = std::error_code{};
             if (std::filesystem::is_directory(candidate, error)) {
