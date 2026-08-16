@@ -243,6 +243,8 @@ target("su_recognizer")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })
+            -- Embed the application icon into the exe resource section.
+            add_files("src/app/su_app.rc")
         end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
@@ -274,6 +276,11 @@ target("su_recognizer")
             os.mkdir(outputdir)
             for _, file in ipairs(os.files(path.join(os.projectdir(), "assets", "i18n", "*.json"))) do
                 os.cp(file, outputdir)
+            end
+            -- Ship the .ico next to the executable; the GUI applies it to the
+            -- native window (title bar / taskbar) at startup via WM_SETICON.
+            if is_plat("windows", "mingw") then
+                os.cp(path.join(os.projectdir(), "common", "resources", "img", "Smile2Unlock.ico"), target:targetdir())
             end
         end)
     else

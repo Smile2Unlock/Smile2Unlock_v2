@@ -19,6 +19,11 @@ extern "C" int __stdcall GetEnvironmentVariableW(const wchar_t* name, wchar_t* b
 extern "C" int __stdcall SetEnvironmentVariableW(const wchar_t* name, const wchar_t* value);
 extern "C" unsigned long __stdcall GetLastError(void);
 extern "C" int __stdcall SystemParametersInfoW(unsigned int action, unsigned int param, void* value, unsigned int win_ini);
+extern "C" void* __stdcall LoadImageW(void* instance, const wchar_t* name, unsigned int type, int width, int height, unsigned int flags);
+extern "C" unsigned long long __stdcall SendMessageW(void* window, unsigned int message, unsigned long long wparam, long long lparam);
+extern "C" void* __stdcall FindWindowW(const wchar_t* class_name, const wchar_t* window_name);
+extern "C" unsigned long __stdcall GetModuleFileNameW(void* module, wchar_t* buffer, unsigned long size);
+extern "C" void __stdcall DestroyIcon(void* icon);
 #endif
 
 namespace {
@@ -190,6 +195,44 @@ unsigned long thread_id() {
 void gui_log_t(const std::string& message) {
     gui_log(std::format("[{:>9.3f}s tid=0x{:X}] {}", now_seconds(), thread_id(), message));
 }
+
+#ifdef _WIN32
+// Set the title-bar and taskbar icon from the .ico file next to the
+// executable. slint 1.17 cannot embed Window.icon (the compiler emits
+// Image::load_from_path with the build machine's absolute path), so apply
+// the icon directly via WM_SETICON once the native window exists. Call on
+// the event-loop thread (e.g. from a timer callback).
+void apply_window_icon() {
+    wchar_t exe_path[260] = {};
+    if (::GetModuleFileNameW(nullptr, exe_path, 260) == 0) {
+        return;
+    }
+    std::wstring icon_path(exe_path);
+    const auto slash = icon_path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return;
+    }
+    icon_path.resize(slash + 1);
+    icon_path += L"Smile2Unlock.ico";
+    if (void* hwnd = ::FindWindowW(nullptr, L"Smile2Unlock"); hwnd != nullptr) {
+        const auto set_icon = [hwnd, &icon_path](int size, unsigned long long which) {
+            if (void* icon = ::LoadImageW(
+                    nullptr,
+                    icon_path.c_str(),
+                    1 /* IMAGE_ICON */,
+                    size,
+                    size,
+                    0x10 /* LR_LOADFROMFILE */);
+                icon != nullptr) {
+                ::SendMessageW(hwnd, 0x80 /* WM_SETICON */, which, reinterpret_cast<long long>(icon));
+            }
+        };
+        set_icon(32, 1 /* ICON_BIG: taskbar / alt-tab */);
+        set_icon(16, 0 /* ICON_SMALL: title bar */);
+        gui_log_t("window icon applied");
+    }
+}
+#endif
 
 std::size_t language_index(const WindowHandle& window) {
     return static_cast<std::size_t>(std::max(window->get_language_index(), 0));
@@ -1052,7 +1095,12 @@ int main(int argc, char** argv) {
     // One-shot: re-apply the fitted size once the first layout pass has
     // settled (the layout may otherwise grow the window back to the
     // preferred size). A repeating timer would fight manual resizing.
-    slint::Timer::single_shot(std::chrono::milliseconds(100), fit_window_to_screen);
+    // Also apply the window icon here: at this point the native window
+    // exists and the event loop is running.
+    slint::Timer::single_shot(std::chrono::milliseconds(100), [window, fit_window_to_screen] {
+        fit_window_to_screen();
+        apply_window_icon();
+    });
 #endif
     // Independent watcher: enumerates this process's top-level windows every
     // second (Win32 only, no slint main-thread calls) to see whether the
