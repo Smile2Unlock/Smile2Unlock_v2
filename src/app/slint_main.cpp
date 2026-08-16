@@ -10,6 +10,17 @@ import su.app.preferences;
 import su.app.session;
 import su.app.theme;
 
+#ifdef _WIN32
+extern "C" int su_win_enum_own_windows(char* out, size_t cap);
+extern "C" int su_win_find_window(const char* needle, char* out, size_t cap);
+extern "C" int su_win_count_own_threads(void);
+extern "C" unsigned long __stdcall GetCurrentThreadId(void);
+extern "C" int __stdcall GetEnvironmentVariableW(const wchar_t* name, wchar_t* buffer, unsigned long size);
+extern "C" int __stdcall SetEnvironmentVariableW(const wchar_t* name, const wchar_t* value);
+extern "C" unsigned long __stdcall GetLastError(void);
+extern "C" int __stdcall SystemParametersInfoW(unsigned int action, unsigned int param, void* value, unsigned int win_ini);
+#endif
+
 namespace {
 
 namespace ui = su::app::ui;
@@ -147,6 +158,37 @@ void set_activity(
     window->set_activity_detail(slint::SharedString(detail));
     window->set_activity_tone(slint::SharedString(tone));
     window->set_busy(busy);
+}
+
+// Diagnostic log for GUI bring-up (window creation, GL, event loop). File
+// based because GUI-subsystem builds have no console; fail-silent.
+void gui_log(const std::string& message) {
+    if (auto file = std::ofstream("C:/Windows/Temp/su_gui.log", std::ios::app)) {
+        file << message << "\n";
+    }
+}
+
+#ifdef _WIN32
+extern "C" unsigned long __stdcall GetCurrentThreadId(void);
+#endif
+
+double now_seconds() {
+    namespace chrono = std::chrono;
+    return chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+unsigned long thread_id() {
+#ifdef _WIN32
+    return ::GetCurrentThreadId();
+#else
+    return static_cast<unsigned long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
+}
+
+// Timed + thread-id variant so we can tell WHICH thread wrote a line and
+// measure how long each stage took (a stuck thread stops producing lines).
+void gui_log_t(const std::string& message) {
+    gui_log(std::format("[{:>9.3f}s tid=0x{:X}] {}", now_seconds(), thread_id(), message));
 }
 
 std::size_t language_index(const WindowHandle& window) {
@@ -342,19 +384,42 @@ void start_deployment_operation(
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // GUI-subsystem builds have no console: capture stderr so Rust-side
+    // diagnostics from slint (backend/renderer errors, panics) are visible.
+    if (auto* log = std::freopen("C:/Windows/Temp/su_stderr.log", "w", stderr)) {
+        (void)log;
+    }
+#endif
+    gui_log_t("main enter");
+#ifdef _WIN32
+    // Force slint's software renderer. Two requirements:
+    //  1. slint reads SLINT_BACKEND from the OS environment block (Rust
+    //     std::env), not from the C runtime environ that mingw's _putenv_s
+    //     updates; SetEnvironmentVariableW updates the OS block.
+    //  2. Valid values in slint 1.17: gl|winit|femtovg|skia|sw|software.
+    //     "software" selects the winit backend with the CPU renderer, so no
+    //     GL context (Mesa) is created.
+    if (::GetEnvironmentVariableW(L"SLINT_BACKEND", nullptr, 0) == 0) {
+        ::SetEnvironmentVariableW(L"SLINT_BACKEND", L"software");
+    }
+#endif
     slint::set_xdg_app_id(xdg_app_id);
     const auto preference_path = ui_preference_path();
+    gui_log_t("preference path: " + preference_path.string());
     auto preferences = std::make_shared<su::app::UiPreferences>();
     if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
         *preferences = std::move(*loaded);
     } else {
         std::println(stderr, "[preferences] {}", loaded.error());
     }
+    gui_log_t("preferences loaded");
     const auto theme_paths = su::app::default_theme_paths();
     const auto theme_commands = su::app::system_theme_command_runner();
     auto initial_theme = su::app::load_desktop_theme(
         theme_paths, theme_commands, preferences->theme);
     log_theme_diagnostics(initial_theme.diagnostics);
+    gui_log_t("theme loaded");
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
@@ -362,18 +427,22 @@ int main(int argc, char** argv) {
         std::cerr << "su_app failed to load language packs: " << loaded_catalog.error() << '\n';
         return 1;
     }
+    gui_log_t("language loaded");
     const auto catalog = std::make_shared<const su::app::LanguageCatalog>(std::move(*loaded_catalog));
     const auto selected_language = catalog->select_language(preferences->language, system_locale());
 
     auto controller = std::make_shared<su::app::AppController>();
+    gui_log_t("controller constructed");
     auto preview = std::make_shared<su::app::PreviewController>();
     const auto snapshot = controller->load_initial_snapshot();
+    gui_log_t("snapshot loaded");
     if (!snapshot) {
         std::cerr << "su_app failed to start: " << snapshot.error() << '\n';
         return 1;
     }
 
     auto window = ui::AppWindow::create();
+    gui_log_t("AppWindow::create ok");
     apply_theme(window, initial_theme.snapshot.theme);
     const WeakWindowHandle weak_window(window);
     const auto theme_monitor = std::make_shared<su::app::ThemeMonitor>(
@@ -908,7 +977,94 @@ int main(int argc, char** argv) {
         }
     });
 
-    window->run();
+    gui_log_t(std::format("before run: visible={} size={}x{}",
+        window->window().is_visible(),
+        static_cast<int>(window->window().size().width),
+        static_cast<int>(window->window().size().height)));
+    // Poll window state once a second while the event loop runs, to see
+    // whether show() actually makes the window visible.
+    slint::Timer state_timer(std::chrono::milliseconds(1000), [weak_window] {
+        auto w = weak_window.lock();
+        if (w.has_value()) {
+            auto handle = *w;
+            auto& win = handle->window();
+            gui_log_t(std::format("tick: visible={} size={}x{}",
+                win.is_visible(),
+                static_cast<int>(win.size().width),
+                static_cast<int>(win.size().height)));
+        }
+    });
+    gui_log_t(std::format("renderer env: SLINT_BACKEND={}",
+        std::getenv("SLINT_BACKEND") ? std::getenv("SLINT_BACKEND") : "(unset)"));
+    window->show();
+    gui_log_t(std::format("show() returned (lastError=0x{:X})", ::GetLastError()));
+#ifdef _WIN32
+    // Fit the window to the desktop so it is never larger than the screen
+    // (the SPICE console is typically 1280x800 while the design size is
+    // 1560x880). No minimum size or aspect-ratio constraints are set: this
+    // only picks the initial size, the window stays freely resizable.
+    // A one-shot timer re-applies the size after the first layout pass,
+    // because the layout may otherwise grow the window back to the
+    // preferred size.
+    const auto fit_window_to_screen = [window] {
+        struct SuRect {
+            long left;
+            long top;
+            long right;
+            long bottom;
+        };
+        SuRect work{};
+        if (::SystemParametersInfoW(0x0030 /* SPI_GETWORKAREA */, 0, &work, 0) == 0) {
+            return;
+        }
+        const float avail_w = static_cast<float>(work.right - work.left) - 24.0f;
+        const float avail_h = static_cast<float>(work.bottom - work.top) - 48.0f;
+        const float scale = std::clamp(
+            std::min(1.0f, std::min(avail_w / 1560.0f, avail_h / 880.0f)),
+            0.5f,
+            1.0f);
+        const auto fitted = slint::LogicalSize({1560.0f * scale, 880.0f * scale});
+        window->window().set_size(fitted);
+        gui_log_t(std::format("window fitted: work={}x{} -> {}x{}",
+            static_cast<int>(avail_w),
+            static_cast<int>(avail_h),
+            static_cast<int>(fitted.width),
+            static_cast<int>(fitted.height)));
+    };
+    fit_window_to_screen();
+    // One-shot: re-apply the fitted size once the first layout pass has
+    // settled (the layout may otherwise grow the window back to the
+    // preferred size). A repeating timer would fight manual resizing.
+    slint::Timer::single_shot(std::chrono::milliseconds(100), fit_window_to_screen);
+#endif
+    // Independent watcher: enumerates this process's top-level windows every
+    // second (Win32 only, no slint main-thread calls) to see whether the
+    // winit window is actually created/visible. Also logs the real OS thread
+    // count so we can verify this watcher thread is actually alive.
+#ifdef _WIN32
+    std::thread window_watcher([] {
+        gui_log_t("watcher thread started");
+        for (int i = 0; i < 120; ++i) {
+            if (i > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            char buffer[2048] = {};
+            gui_log_t("watch: before find_window");
+            const int f = su_win_find_window("Smile2Unlock", buffer, sizeof(buffer));
+            gui_log_t(std::format("watch: find_window -> {} ({})", f, buffer));
+            gui_log_t("watch: before enum_own");
+            const int n = su_win_enum_own_windows(buffer, sizeof(buffer));
+            const int threads = su_win_count_own_threads();
+            gui_log_t(std::format("watch tick {} ({} bytes, threads={}): {}", i, n, threads, buffer));
+        }
+        gui_log_t("watcher thread done");
+    });
+    window_watcher.detach();
+#endif
+    gui_log_t("calling run_event_loop");
+    slint::run_event_loop();
+    gui_log_t("run returned");
     preview->stop();
+    gui_log_t("main exiting");
     return 0;
 }

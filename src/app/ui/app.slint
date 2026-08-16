@@ -96,10 +96,13 @@ export component AppWindow inherits Window {
 
     title: title_text;
     no-frame: !root.window_frame_visible;
+    // No explicit width/height: an explicit size would bind the window to
+    // that size (update_window_properties re-applies it, making the window
+    // non-resizable and oversized on small screens). The initial size is
+    // chosen by su_app at startup to fit the desktop; preferred-* only
+    // guides the layout.
     preferred-width: 1560px;
     preferred-height: 880px;
-    min-width: 1180px;
-    min-height: 700px;
     background: UiTheme.canvas;
 
     private property <bool> compact-layout: root.width < 1020px;
@@ -190,9 +193,6 @@ export component AppWindow inherits Window {
 
             if root.current_page == 0: ScrollView {
                 viewport-width: self.width;
-                viewport-height: root.setup-complete
-                    ? (root.compact-layout ? 826px : 614px)
-                    : (root.compact-layout ? 1196px : 984px);
 
                 overview-content := VerticalLayout {
                     width: parent.width;
@@ -272,7 +272,8 @@ export component AppWindow inherits Window {
                     }
 
                     if !root.setup-complete: Rectangle {
-                        height: 356px;
+                        // Auto-sized: the PAM step is Linux-only, so a fixed
+                        // height would leave blank space on Windows.
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
@@ -337,8 +338,7 @@ export component AppWindow inherits Window {
                                 action-enabled: root.auth-ready && root.profiles.length > 0 && !root.busy;
                                 activated => { root.current_frame_auth_requested(); }
                             }
-                            SetupStep {
-                                visible: !root.platform_windows;
+                            if !root.platform_windows : SetupStep {
                                 number: "5";
                                 title: root.translate("onboarding.pam", root.language_index);
                                 detail: root.pam_configured
@@ -487,9 +487,6 @@ export component AppWindow inherits Window {
 
             if root.current_page == 1: ScrollView {
                 viewport-width: self.width;
-                viewport-height: root.profiles.length == 0
-                    ? 674px
-                    : 560px + root.profiles.length * 82px;
 
                 enrollment-content := VerticalLayout {
                     width: parent.width;
@@ -655,8 +652,6 @@ export component AppWindow inherits Window {
 
             if root.current_page == 2: ScrollView {
                 viewport-width: self.width;
-                // The recognition-trigger block adds 320px on Windows.
-                viewport-height: root.platform_windows ? 1216px : 896px;
 
                 settings-content := VerticalLayout {
                     width: parent.width;
@@ -807,8 +802,9 @@ export component AppWindow inherits Window {
                     // Recognition trigger policy: Windows-only (the
                     // credential provider consumes it at lock-screen time;
                     // Linux uses the PAM/service flow and hides these).
-                    Rectangle {
-                        visible: root.platform_windows;
+                    // Conditional element: on Linux it is not instantiated
+                    // at all, so it leaves no blank space in the layout.
+                    if root.platform_windows : Rectangle {
                         height: 280px;
                         border-radius: 6px;
                         border-width: 1px;
@@ -920,7 +916,6 @@ export component AppWindow inherits Window {
 
             if root.current_page == 3: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 1042px + root.deployment_targets.length * 122px;
 
                 diagnostics-content := VerticalLayout {
                     width: parent.width;
@@ -932,8 +927,7 @@ export component AppWindow inherits Window {
                         detail: root.translate("diagnostics.subtitle", root.language_index);
                     }
 
-                    DeploymentPanel {
-                        visible: !root.platform_windows;
+                    if !root.platform_windows : DeploymentPanel {
                         targets: root.deployment_targets;
                         helper_available: root.deployment_helper_available;
                         installer_available: root.deployment_installer_available;
@@ -952,8 +946,9 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    // Runtime card: auto-sized so the PAM rows (Linux only)
+                    // do not leave blank space on Windows.
                     Rectangle {
-                        height: 438px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
@@ -1007,8 +1002,7 @@ export component AppWindow inherits Window {
                                 detail: root.profiles.length == 0 ? root.translate("diagnostics.profiles_action", root.language_index) : root.translate("diagnostics.profiles_ready_detail", root.language_index);
                                 tone: root.profiles.length > 0 ? "good" : "warn";
                             }
-                            DiagnosticRow {
-                                visible: !root.platform_windows;
+                            if !root.platform_windows : DiagnosticRow {
                                 label: root.translate("diagnostics.login_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
@@ -1020,8 +1014,7 @@ export component AppWindow inherits Window {
                                     : root.translate("diagnostics.login_pam_action", root.language_index);
                                 tone: root.login_pam_configured ? "good" : "warn";
                             }
-                            DiagnosticRow {
-                                visible: !root.platform_windows;
+                            if !root.platform_windows : DiagnosticRow {
                                 label: root.translate("diagnostics.lock_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
@@ -1064,8 +1057,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    Rectangle {
-                        visible: !root.platform_windows;
+                    if !root.platform_windows : Rectangle {
                         height: 118px;
                         border-radius: 6px;
                         border-width: 1px;

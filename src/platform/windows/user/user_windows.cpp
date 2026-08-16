@@ -4,9 +4,13 @@
 // imported via `import std;` when compiled as a module unit (GCC 16 mingw).
 #include <windows.h>
 #include <sddl.h>
+#include <tlhelp32.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 extern "C" {
@@ -103,3 +107,123 @@ unsigned int su_win_current_uid() {
 }
 
 }  // extern "C"
+
+// Quick probe: find a top-level window whose title contains `needle`.
+// Returns 1 if found, 0 otherwise, -1 on failure. Does not enumerate.
+extern "C" int su_win_find_window(const char* needle, char* out, size_t cap) {
+    if (out == nullptr || cap == 0) {
+        return -1;
+    }
+    out[0] = '\0';
+    wchar_t wide[128] = {};
+    ::MultiByteToWideChar(
+        CP_UTF8, 0, needle != nullptr ? needle : "", -1, wide, 128);
+    const HWND h = ::FindWindowW(nullptr, wide);
+    if (h == nullptr) {
+        return 0;
+    }
+    RECT rc{};
+    ::GetWindowRect(h, &rc);
+    snprintf(
+        out, cap, "found hwnd=0x%llX vis=%d rect=(%ld,%ld,%ld,%ld)",
+        reinterpret_cast<unsigned long long>(h),
+        ::IsWindowVisible(h) ? 1 : 0,
+        static_cast<long>(rc.left), static_cast<long>(rc.top),
+        static_cast<long>(rc.right), static_cast<long>(rc.bottom));
+    return 1;
+}
+
+// Enumerate this process's top-level windows into `out` as UTF-8 text
+// "vis=1 rect=(l,t,r,b) title='...' ...". Returns bytes written.
+// Pure Win32; safe to call from a worker thread. The callback accumulates
+// into a struct whose address is passed via lParam (no heap allocation).
+// NOTE: GetWindowTextW is a synchronous SendMessage for same-process
+// windows, which hangs forever if the target thread is not pumping.
+// SendMessageTimeoutW with SMTO_ABORTIFHUNG bounds each window to 500ms
+// so this probe can never deadlock.
+extern "C" int su_win_enum_own_windows(char* out, size_t cap) {
+    if (out == nullptr || cap == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    struct State {
+        DWORD pid;
+        std::string text;
+    };
+    State state{::GetCurrentProcessId(), {}};
+    ::EnumWindows(
+        [](HWND hwnd, LPARAM lparam) -> BOOL {
+            auto& st = *reinterpret_cast<State*>(lparam);
+            DWORD wpid = 0;
+            ::GetWindowThreadProcessId(hwnd, &wpid);
+            if (wpid != st.pid) {
+                return TRUE;
+            }
+            wchar_t title[128] = {};
+            DWORD_PTR result = 0;
+            ::SendMessageTimeoutW(
+                hwnd,
+                WM_GETTEXT,
+                128,
+                reinterpret_cast<LPARAM>(title),
+                SMTO_ABORTIFHUNG,
+                500,
+                &result);
+            if (result == 0) {
+                title[0] = L'\0';
+            }
+            title[127] = L'\0';
+            char narrow[256] = {};
+            ::WideCharToMultiByte(
+                CP_UTF8, 0, title, -1, narrow, sizeof(narrow), nullptr, nullptr);
+            RECT rc{};
+            ::GetWindowRect(hwnd, &rc);
+            char line[384] = {};
+            snprintf(
+                line, sizeof(line),
+                "vis=%d rect=(%ld,%ld,%ld,%ld) title='%s'",
+                ::IsWindowVisible(hwnd) ? 1 : 0,
+                static_cast<long>(rc.left), static_cast<long>(rc.top),
+                static_cast<long>(rc.right), static_cast<long>(rc.bottom),
+                narrow);
+            if (!st.text.empty()) {
+                st.text += ' ';
+            }
+            st.text += line;
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&state));
+    const size_t n = state.text.size();
+    if (n >= cap) {
+        std::memcpy(out, state.text.data(), cap - 1);
+        out[cap - 1] = '\0';
+        return static_cast<int>(cap - 1);
+    }
+    if (n > 0) {
+        std::memcpy(out, state.text.data(), n);
+    }
+    out[n] = '\0';
+    return static_cast<int>(n);
+}
+
+// Number of OS threads owned by the current process (Toolhelp32), used to
+// detect whether background threads are actually alive. Returns -1 on error.
+extern "C" int su_win_count_own_threads(void) {
+    HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    const DWORD pid = ::GetCurrentProcessId();
+    int count = 0;
+    if (::Thread32First(snapshot, &entry)) {
+        do {
+            if (entry.th32OwnerProcessID == pid) {
+                ++count;
+            }
+        } while (::Thread32Next(snapshot, &entry));
+    }
+    ::CloseHandle(snapshot);
+    return count;
+}
