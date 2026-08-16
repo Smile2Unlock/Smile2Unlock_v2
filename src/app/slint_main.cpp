@@ -557,7 +557,9 @@ int main(int argc, char** argv) {
 
     const auto username = su::app::current_username(
         catalog->translate(selected_language, "common.current_user"));
-    window->set_title_text(slint::SharedString(snapshot->title));
+    // Window title: plain product name (the versioned string stays in
+    // snapshot->title for the diagnostics view).
+    window->set_title_text(slint::SharedString("Smile2Unlock"));
     window->set_username(slint::SharedString(username));
     window->set_username_initial(slint::SharedString(username_initial(username)));
     window->set_core_version(slint::SharedString(catalog->translate_value(
@@ -999,13 +1001,13 @@ int main(int argc, char** argv) {
     window->show();
     gui_log_t(std::format("show() returned (lastError=0x{:X})", ::GetLastError()));
 #ifdef _WIN32
-    // Fit the window to the desktop so it is never larger than the screen
-    // (the SPICE console is typically 1280x800 while the design size is
-    // 1560x880). No minimum size or aspect-ratio constraints are set: this
-    // only picks the initial size, the window stays freely resizable.
-    // A one-shot timer re-applies the size after the first layout pass,
-    // because the layout may otherwise grow the window back to the
-    // preferred size.
+    // Fit the window to the desktop so it is never larger than the screen.
+    // SPI_GETWORKAREA reports PHYSICAL pixels, while set_size takes a
+    // logical size, so the design size must be compared in physical units
+    // (design * scale_factor). No minimum size or aspect-ratio constraints
+    // are set: this only picks the initial size, the window stays freely
+    // resizable. A one-shot timer re-applies the size after the first
+    // layout pass, when the real scale factor is known.
     const auto fit_window_to_screen = [window] {
         struct SuRect {
             long left;
@@ -1019,17 +1021,32 @@ int main(int argc, char** argv) {
         }
         const float avail_w = static_cast<float>(work.right - work.left) - 24.0f;
         const float avail_h = static_cast<float>(work.bottom - work.top) - 48.0f;
+        const float sf = window->window().scale_factor();
         const float scale = std::clamp(
-            std::min(1.0f, std::min(avail_w / 1560.0f, avail_h / 880.0f)),
+            std::min(1.0f, std::min(avail_w / (1560.0f * sf), avail_h / (880.0f * sf))),
             0.5f,
             1.0f);
         const auto fitted = slint::LogicalSize({1560.0f * scale, 880.0f * scale});
         window->window().set_size(fitted);
-        gui_log_t(std::format("window fitted: work={}x{} -> {}x{}",
-            static_cast<int>(avail_w),
-            static_cast<int>(avail_h),
+        // Center the window on the work area: winit's default placement can
+        // leave it partly off-screen when the initial size exceeds the
+        // screen (e.g. 1560x880 logical at 125% scaling on a 1920x1080
+        // console). set_position takes logical coordinates.
+        const float center_x = (work.left + work.right) / 2.0f - fitted.width * sf / 2.0f;
+        const float center_y = (work.top + work.bottom) / 2.0f - fitted.height * sf / 2.0f;
+        window->window().set_position(slint::LogicalPosition({center_x / sf, center_y / sf}));
+        gui_log_t(std::format("window fitted: work=({},{})-({},{}) sf={:.2f} -> {}x{} at ({},{}) physical {}x{}",
+            work.left,
+            work.top,
+            work.right,
+            work.bottom,
+            sf,
             static_cast<int>(fitted.width),
-            static_cast<int>(fitted.height)));
+            static_cast<int>(fitted.height),
+            static_cast<int>(center_x),
+            static_cast<int>(center_y),
+            static_cast<int>(fitted.width * sf),
+            static_cast<int>(fitted.height * sf)));
     };
     fit_window_to_screen();
     // One-shot: re-apply the fitted size once the first layout pass has

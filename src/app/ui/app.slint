@@ -95,6 +95,8 @@ export component AppWindow inherits Window {
     }
 
     title: title_text;
+    // Application icon (embedded at compile time).
+    icon: @image-url("../../../common/resources/img/Smile2Unlock.png");
     no-frame: !root.window_frame_visible;
     // No explicit width/height: an explicit size would bind the window to
     // that size (update_window_properties re-applies it, making the window
