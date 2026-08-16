@@ -1,6 +1,8 @@
 module;
 
 #include <nlohmann/json.hpp>
+#include "../platform/windows/deploy/deployment.h"
+#include "../platform/windows/udp_recognition_server.h"
 
 module su.app.controller;
 import std;
@@ -8,8 +10,6 @@ import su.recognizer.service;
 import su.recognizer.image;
 import su.app.user;
 import su.core.types;
-
-#include "../platform/windows/udp_recognition_server.h"
 
 // Plain-TU bridge (user_windows.cpp): registry write for the recognition
 // policy consumed by the credential provider at lock-screen time.
@@ -20,6 +20,15 @@ int su_win_write_recognition_registry(
     unsigned int retry_delay_sec,
     unsigned int timeout_sec);
 }
+
+extern "C" int __stdcall ShellExecuteExW(void* exec_info);
+extern "C" int __stdcall GetModuleFileNameW(void* module, wchar_t* buffer, unsigned long size);
+extern "C" unsigned long __stdcall GetTempPathW(unsigned long length, wchar_t* buffer);
+extern "C" int __stdcall WaitForSingleObject(void* handle, unsigned long milliseconds);
+extern "C" int __stdcall CloseHandle(void* handle);
+extern "C" void* __stdcall CreateFileA(const char* name, unsigned long access, unsigned long share, void* security, unsigned long creation, unsigned long flags, void* template_file);
+extern "C" int __stdcall ReadFile(void* file, void* buffer, unsigned long to_read, unsigned long* read, void* overlapped);
+extern "C" int __stdcall WideCharToMultiByte(unsigned int code_page, unsigned long flags, const wchar_t* wide, int wide_length, char* narrow, int narrow_length, const char* default_char, int* used_default);
 
 namespace su::app {
 
@@ -459,32 +468,212 @@ std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::s
 
 SystemStatus AppController::load_system_status() {
     auto status = SystemStatus{};
-    // Windows: profile storage is system-owned under ProgramData and is
-    // accessed directly by su_app (see the platform decision in
-    // docs/rewrite_master_plan.md); the auth service only owns the logon
-    // secret pipe, so PAM/deployment status is not applicable.
     status.service_reason = "local profile store (ProgramData)";
     status.storage_protection = StorageProtection::kHostKey;
+    const auto snapshot = su::windeploy::inspect_deployment();
+    if (snapshot) {
+        status.service_available = true;
+        for (const auto& target : snapshot->targets) {
+            status.deployment_targets.push_back(DeploymentTargetStatus{
+                .id = target.id,
+                .service = target.service,
+                .effective_path = target.effective_path,
+                .role = target.role,
+                .state = target.state,
+                .detail = target.detail,
+                .password_fallback = false,
+                .configured = target.configured,
+                .configurable = target.configurable,
+                .managed = target.managed,
+                .wallet_available = target.wallet_available,
+                .wallet_enabled = target.wallet_enabled,
+            });
+        }
+    }
     return status;
 }
 
+namespace {
+
+// Path of su_deploy_helper.exe next to the current executable.
+std::string deploy_helper_path() {
+    wchar_t buffer[512] = {};
+    const auto length = ::GetModuleFileNameW(nullptr, buffer, 512);
+    if (length == 0 || length >= 512) {
+        return {};
+    }
+    std::wstring path(buffer, buffer + length);
+    const auto slash = path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return {};
+    }
+    path.resize(slash + 1);
+    path += L"su_deploy_helper.exe";
+    auto narrow = std::string(path.size(), '\0');
+    (void)::WideCharToMultiByte(
+        65001 /* CP_UTF8 */, 0, path.data(), static_cast<int>(path.size()), narrow.data(),
+        static_cast<int>(narrow.size()), nullptr, nullptr);
+    return narrow;
+}
+
+// Runs su_deploy_helper elevated via UAC (ShellExecuteEx runas) and waits
+// for its result file. Returns the helper's JSON result.
+std::expected<std::string, std::string> run_elevated_deploy(std::string_view arguments) {
+    struct ShellExecuteInfoW {
+        unsigned long cb_size;
+        unsigned long f_mask;
+        void* hwnd;
+        const wchar_t* verb;
+        const wchar_t* file;
+        const wchar_t* parameters;
+        const wchar_t* directory;
+        int n_show;
+        void* h_inst_app;
+        void* lp_id_list;
+        const wchar_t* lp_class;
+        void* hkey_class;
+        unsigned long dw_hot_key;
+        void* h_icon;
+        void* h_process;
+    };
+
+    const auto helper = deploy_helper_path();
+    if (helper.empty()) {
+        return std::unexpected("failed to locate su_deploy_helper.exe");
+    }
+    const auto wide_helper = std::wstring(helper.begin(), helper.end());
+    const auto wide_args = std::wstring(arguments.begin(), arguments.end());
+
+    ShellExecuteInfoW info{};
+    info.cb_size = sizeof(info);
+    info.f_mask = 0x40;  // SEE_MASK_NOCLOSEPROCESS
+    info.verb = L"runas";
+    info.file = wide_helper.c_str();
+    info.parameters = wide_args.c_str();
+    info.n_show = 0;  // SW_HIDE
+
+    if (::ShellExecuteExW(&info) == 0) {
+        return std::unexpected("UAC launch of su_deploy_helper was denied or failed");
+    }
+    if (info.h_process != nullptr) {
+        (void)::WaitForSingleObject(info.h_process, 60000);
+        (void)::CloseHandle(info.h_process);
+    }
+
+    // Read %TEMP%\su_deploy_result.json written by the helper.
+    wchar_t temp[512] = {};
+    if (::GetTempPathW(512, temp) == 0) {
+        return std::unexpected("failed to resolve the temporary directory");
+    }
+    auto narrow_temp = std::string(512, '\0');
+    const auto converted = ::WideCharToMultiByte(
+        65001 /* CP_UTF8 */, 0, temp, -1, narrow_temp.data(), 512, nullptr, nullptr);
+    if (converted == 0) {
+        return std::unexpected("failed to convert the temporary directory path");
+    }
+    narrow_temp.resize(std::strlen(narrow_temp.c_str()));
+    const auto result_path = narrow_temp + "su_deploy_result.json";
+
+    void* file = ::CreateFileA(
+        result_path.c_str(),
+        0x80000000 /* GENERIC_READ */,
+        1 /* FILE_SHARE_READ */,
+        nullptr,
+        3 /* OPEN_EXISTING */,
+        0,
+        nullptr);
+    if (file == nullptr || file == reinterpret_cast<void*>(-1)) {
+        return std::unexpected("su_deploy_helper produced no result file");
+    }
+    char buffer[8192] = {};
+    unsigned long read = 0;
+    (void)::ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+    (void)::CloseHandle(file);
+    return std::string(buffer, read);
+}
+
+std::expected<void, std::string> deploy_action(std::string_view arguments) {
+    if (su::windeploy::process_elevated()) {
+        // Already elevated (e.g. launched by the scheduled task): perform
+        // the operation directly without a second UAC prompt.
+        if (arguments.find("--register-cp") != std::string_view::npos) {
+            const auto registered = su::windeploy::register_credential_provider(
+                "C:\\su-deploy\\bin\\su_credential_provider_fix_v28.dll");
+            if (!registered) {
+                return registered;
+            }
+        }
+        if (arguments.find("--unregister-cp") != std::string_view::npos) {
+            const auto unregistered = su::windeploy::unregister_credential_provider();
+            if (!unregistered) {
+                return unregistered;
+            }
+        }
+        if (arguments.find("--ensure-service") != std::string_view::npos) {
+            const auto ensured = su::windeploy::ensure_auth_service();
+            if (!ensured) {
+                return ensured;
+            }
+        }
+        return {};
+    }
+    const auto result = run_elevated_deploy(arguments);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    const auto parsed = nlohmann::json::parse(*result, nullptr, false);
+    if (parsed.is_discarded() || !parsed.contains("ok") || !parsed["ok"].is_boolean()
+        || !parsed["ok"].get<bool>()) {
+        const auto detail = parsed.is_object() && parsed.contains("error")
+            ? parsed["error"].get<std::string>()
+            : std::string("su_deploy_helper reported failure");
+        return std::unexpected(detail);
+    }
+    return {};
+}
+
+}  // namespace
+
 std::expected<std::string, std::string> AppController::install_deployment_helper() {
-    return std::unexpected("desktop deployment is only supported on Linux");
+    const auto helper = deploy_helper_path();
+    if (helper.empty() || !std::filesystem::exists(helper)) {
+        return std::unexpected("su_deploy_helper.exe is not deployed next to su_app.exe");
+    }
+    return helper;
 }
 
 std::expected<std::string, std::string> AppController::initialize_system_deployment() {
-    return std::unexpected("desktop deployment is only supported on Linux");
+    const auto deployed = deploy_action("--register-cp --ensure-service");
+    if (!deployed) {
+        return std::unexpected(deployed.error());
+    }
+    return "credential provider registered and auth service started";
 }
 
 std::expected<std::string, std::string> AppController::configure_desktop_target(
     std::string_view target,
     bool wallet_token) {
-    return std::unexpected("desktop deployment is only supported on Linux");
+    (void)wallet_token;
+    if (target != su::windeploy::kCredentialProviderId) {
+        return std::unexpected(std::format("unsupported deployment target: {}", target));
+    }
+    const auto configured = deploy_action("--register-cp");
+    if (!configured) {
+        return std::unexpected(configured.error());
+    }
+    return "credential provider registered";
 }
 
 std::expected<std::string, std::string> AppController::rollback_desktop_target(
     std::string_view target) {
-    return std::unexpected("desktop deployment is only supported on Linux");
+    if (target != su::windeploy::kCredentialProviderId) {
+        return std::unexpected(std::format("unsupported deployment target: {}", target));
+    }
+    const auto rolled_back = deploy_action("--unregister-cp");
+    if (!rolled_back) {
+        return std::unexpected(rolled_back.error());
+    }
+    return "credential provider unregistered";
 }
 
 // Runs on the UDP recognition server thread: opens the camera, captures a

@@ -933,7 +933,11 @@ export component AppWindow inherits Window {
                         detail: root.translate("diagnostics.subtitle", root.language_index);
                     }
 
-                    if !root.platform_windows : DeploymentPanel {
+                    // Deployment panel on both platforms: Linux shows the
+                    // PAM/display-manager targets (via su_authd), Windows
+                    // shows the credential provider and auth service (via
+                    // su_deploy_helper with UAC).
+                    DeploymentPanel {
                         targets: root.deployment_targets;
                         helper_available: root.deployment_helper_available;
                         installer_available: root.deployment_installer_available;
