@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-// RecognitionStatus (common/models/recognition_status.h).
+// RecognitionStatus (C++ baseline recognition_status.h).
 enum {
     SU_RS_IDLE = 0,
     SU_RS_RECOGNIZING = 1,

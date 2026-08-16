@@ -83,7 +83,7 @@ require_file "${build_dir}/pam_smile2unlock.so"
 require_file "${build_dir}/assets/i18n/en.json"
 require_file "${build_dir}/assets/i18n/zh-CN.json"
 for model in face_detector.csta face_landmarker_pts5.csta face_recognizer.csta fas_first.csta fas_second.csta; do
-    require_file "${build_dir}/assets/models/${model}"
+    require_file "${build_dir}/assets/models/seeta/${model}"
 done
 
 command -v patchelf >/dev/null || {
@@ -132,7 +132,7 @@ install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployme
     "${root_dir}/usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy"
 install -m 0644 "${project_dir}/packaging/linux/smile2unlock.desktop" \
     "${root_dir}/usr/share/applications/smile2unlock.desktop"
-install -m 0644 "${project_dir}/common/resources/img/Smile2Unlock.png" \
+install -m 0644 "${project_dir}/assets/icons/Smile2Unlock.png" \
     "${root_dir}/usr/share/icons/hicolor/128x128/apps/smile2unlock.png"
 install -m 0644 "${project_dir}/LICENSE" \
     "${root_dir}/usr/share/doc/smile2unlock/LICENSE"
@@ -147,7 +147,7 @@ install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
 
 install -m 0644 "${build_dir}/assets/i18n/"*.json \
     "${root_dir}/usr/share/smile2unlock/i18n/"
-install -m 0644 "${build_dir}/assets/models/"*.csta \
+install -m 0644 "${build_dir}/assets/models/seeta/"*.csta \
     "${root_dir}/usr/share/smile2unlock/models/"
 
 mapfile -t rpath_dirs < <(

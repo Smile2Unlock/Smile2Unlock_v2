@@ -4,8 +4,8 @@
 //! - request: UDP 127.0.0.1:51236, `UdpAuthRequestPacket` (magic "AUTH")
 //! - status:  UDP 127.0.0.1:51234, `UdpStatusPacket` (magic 0x8581DAF3)
 //!
-//! Protocol mirrors common/models/udp_auth_request_packet.h and
-//! common/models/udp_status_packet.h (C++ baseline). The provider is a pure
+//! Protocol mirrors the C++ baseline packet definitions
+//! (udp_auth_request_packet.h / udp_status_packet.h, archived). The provider is a pure
 //! UDP client: it never runs a camera or recognizer inside LogonUI.
 //!
 //! Transport security (user requirement):
@@ -57,12 +57,12 @@ pub const UDP_STATUS_MAX_FEATURE_BYTES: usize = 48 * 1024;
 /// Status packets older than this (wall clock, ms) are treated as replays.
 pub const STATUS_FRESHNESS_MS: u64 = 30_000;
 
-/// AuthRequestType (common/models/udp_auth_request_packet.h).
+/// AuthRequestType (C++ baseline udp_auth_request_packet.h).
 pub const REQ_START_RECOGNITION: i32 = 1;
 pub const REQ_CANCEL_RECOGNITION: i32 = 2;
 pub const REQ_QUERY_STATUS: i32 = 3;
 
-/// RecognitionStatus (common/models/recognition_status.h).
+/// RecognitionStatus (C++ baseline recognition_status.h).
 pub const RS_IDLE: i32 = 0;
 pub const RS_RECOGNIZING: i32 = 1;
 pub const RS_SUCCESS: i32 = 2;
