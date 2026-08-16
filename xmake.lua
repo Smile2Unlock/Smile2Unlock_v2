@@ -247,6 +247,10 @@ target("su_recognizer")
             add_files("src/app/su_app.rc")
             -- UDP face-recognition server for the credential provider.
             add_files("src/platform/windows/udp_recognition_server.cpp")
+            -- Windows deployment/integration library (CP registration, auth
+            -- service status) used by the GUI deployment panel.
+            add_files("src/platform/windows/deploy/deployment.cpp")
+            add_includedirs("src/platform/windows/deploy")
         end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
@@ -306,6 +310,21 @@ if is_plat("linux") then
         add_syslinks("systemd")
         add_tests("version", {runargs = {"--version"}})
 
+elseif is_plat("windows", "mingw") then
+    -- Windows counterpart of su_deploy_helper: runs elevated (UAC) to
+    -- perform credential-provider registration and auth-service actions
+    -- triggered from the GUI deployment panel.
+    target("su_deploy_helper")
+        apply_cpp_target("binary")
+        add_files("src/platform/windows/deploy_helper/main.cpp")
+        add_files("src/platform/windows/deploy_helper/helper.rc")
+        add_files("src/platform/windows/deploy/deployment.cpp")
+        add_includedirs("src/platform/windows/deploy")
+        add_syslinks("advapi32", "user32")
+        add_tests("version", {runargs = {"--version"}})
+end
+
+if is_plat("linux") then
     target("pam_smile2unlock")
         apply_cpp_target("shared")
         set_filename("pam_smile2unlock.so")

@@ -1,0 +1,2 @@
+// Embeds the requireAdministrator manifest (UAC prompt on launch).
+1 24 "app.manifest"
