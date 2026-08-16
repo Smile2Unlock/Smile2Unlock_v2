@@ -671,7 +671,10 @@ Camera
 凭据存储：
 
 - 第一阶段采用 Rust 管理的版本化 XChaCha20-Poly1305 加密文件，不引入普通 SQLite。
-- profile 迁到 system-owned store，GUI 只通过认证服务 IPC 进行录入、列出和删除。
+- profile 存储必须是 system-owned（Linux `/var/lib/smile2unlock/users/<uid>/`；Windows `C:/ProgramData/smile2unlock/users/<uid>/`）。
+- profile 访问路径按平台（2026-08-16 决策，取代早期"GUI 一律走认证服务 IPC"的通用要求）：
+  - **Linux：GUI 只通过认证服务 IPC（control socket → root `su_authd`）进行录入、列出、删除和认证**。已实现：`su.auth.daemon.cppm` 处理 `EnrollProfile/ListProfiles/DeleteProfile/VerifyProfile`，`su.auth.storage.cppm` 以 root 权限 + mlock + O_NOFOLLOW + 严格权限校验读写；GUI 侧 `AppController` 一律 `send_control_request(...)`。
+  - **Windows：由 su_app（交互会话内的 GUI 宿主）直接经 Rust core FFI 读写 ProgramData 加密 store，不走认证服务 IPC**。理由：Windows 登录消费方（Credential Provider）不读 profile——识别结果通过回环 UDP（51236/51234）传给 LogonUI；profile 的唯一读写方就是桌面会话里的 su_app，Windows 认证服务只负责登录密钥管道（logon secret）。若未来需要在 SYSTEM/LogonUI 上下文直接比对，再迁移到认证服务 IPC。
 - Linux 使用 systemd encrypted credential；TPM2 机器使用 `host+tpm2`，无 TPM2 时明确回退 `host` key，并建议配合全盘加密。
 - Windows 登录密码使用与 profile 分离的 encrypted envelope；TPM 由 CNG Platform Crypto Provider 保护 master key，无 TPM 时回退 machine DPAPI。
 - 完整格式、密钥、迁移和 Windows stale password 规则见 `docs/credential_storage_encryption_plan.md`。
@@ -798,14 +801,16 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
-### Phase 4: Windows compatibility ⚠️ 基础设施完成，Rust Provider 待实现
+### Phase 4: Windows compatibility ⚠️ 基础设施完成，识别服务端与 profile 操作待接通
 
 - ✅ Windows password XChaCha20-Poly1305 envelope 和 stale-password 状态
 - ✅ CNG TPM wrapping、machine DPAPI fallback、SYSTEM-only ACL 和 LocalSystem 服务
 - ✅ 认证命名管道和现有 C++ Credential Provider 的 LOGON / UNLOCK 序列化
 - ✅ MinGW 交叉构建和 Windows Rust core 静态库
-- ❌ `docs/windows_credential_provider_rust_plan.md` 中的纯 Rust COM Provider
-- ❌ Windows system-service owned encrypted face profiles
+- ✅ 纯 Rust COM Provider（`credential_provider_rs`，v28）：CP 客户端、UDP 识别触发（manual/auto）、46 单元测试、自动模式 VM 端到端验收（mock 服务端）
+- ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
+- ❌ su_app 内的 UDP 识别服务端（监听 51236/51234）——目前只有 `mock_recognizer` 测试桩
+- ❌ Windows GUI profile 操作（注册/列表/删除/认证）——目前 `AppController` 返回 `control_unavailable()`，未接入本地 FFI store
 - ❌ MSVC 原生构建、物理 TPM / 无 TPM 机器和真实 LogonUI 验收
 
 ### Phase 5: Optimization and optional split ✅ 第一版决策完成
@@ -821,6 +826,7 @@ Slint 是唯一计划内 GUI。
 | Slint 版本 pin | ✅ 已决定 | v1.17.0 |
 | Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
 | 凭据存储 | ✅ 已决定 | system-owned XChaCha20-Poly1305 envelope；SQLite 暂不引入，详见加密存储计划 |
+| Windows profile 访问 | ✅ 已决定 (2026-08-16) | su_app 本地 FFI 直读 ProgramData 加密 store（不走认证服务 IPC）；Linux 保持 control socket IPC。理由见"凭据存储"小节 |
 | Linux 摄像头 | ✅ 已决定 | V4L2（第一阶段），暂不预留 PipeWire |
 | Zig target 启用 | ✅ 已决定 | 默认不启用（`with_zig` defaults to false），仅 placeholder |
 | 汇编优化 | ✅ 已决定 | 不入第一版（`with_simd` defaults to false） |
