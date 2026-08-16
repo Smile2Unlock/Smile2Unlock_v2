@@ -510,6 +510,73 @@ locate glCreateShader symbol". Fix without touching the VM hardware config:
   the virtio-win viogpudo guest driver; Windows-side virtio-gpu 3D support
   is experimental, so software GL remains the reliable baseline.
 
+### Why the window did not appear (diagnosed 2026-08-15, root cause + fix)
+
+Even with Mesa deployed the GUI produced no visible window, while the
+process stayed alive with one thread. Methodical debugging (fresh full
+minidump + TID/timestamp instrumentation + in-process Win32 probes) pinned
+it down:
+
+1. **slint 1.17 has no `SLINT_RENDERER` env var.** The renderer is chosen at
+   runtime via `SLINT_BACKEND` (selector: `gl`|`winit`|`femtovg`|`skia`|
+   `sw`|`software`), and the prebuilt `libslint_cpp.a` contains all three
+   renderers with femtovg (GL) preferred. The old `_putenv_s("SLINT_RENDERER",
+   "software")` did nothing, and `_putenv_s` only updates the C-runtime
+   `environ` anyway, not the OS environment block that Rust's `std::env`
+   reads.
+2. **The GL renderer then initialized Mesa's d3d12 driver, which fell back
+   to WARP (`d3d10warp.dll`) and hung** inside D3D12/D3D12Core on this VM
+   (proven by the minidump's thread stack: libgallium_wgl + D3D12 +
+   D3D12Core + d3d10warp + ntdll wait).
+3. `slint::run_event_loop()` returns `void`; when the winit backend errors
+   out (GL init failure / invalid backend name), the error is only
+   `eprintln!`-ed to an invisible stderr in GUI-subsystem builds. `main()`
+   then returned, `ExitProcess` terminated all other threads, and the
+   process became a **zombie stuck in a DLL's `DLL_PROCESS_DETACH`**
+   (one thread, `TerminateProcess` reports success but the process never
+   dies). This produced the misleading "1 thread, no window" state; the
+   old watcher probe also appeared stuck because ExitProcess killed it
+   mid-`EnumWindows`.
+4. **Fix in `slint_main.cpp` (Windows):**
+   `SetEnvironmentVariableW(L"SLINT_BACKEND", L"software")` before any slint
+   window creation. This selects the winit backend with the CPU software
+   renderer — no GL context at all (Mesa DLLs still load as import
+   dependencies but are never called). stderr is redirected to
+   `C:/Windows/Temp/su_stderr.log` for future Rust-side diagnostics.
+5. **Additional gotchas found while testing:**
+   - The window title is `Smile2Unlock core v0` (from `config.title`), so a
+     probe doing exact-match `FindWindowW(L"Smile2Unlock")` reports "no
+     window" even when the window exists and is visible.
+   - The VM session auto-locks after idle; a locked session shows only the
+     lock screen (LogonUI), so "no window" reports can be the environment.
+     Disabled via `InactivityTimeoutSecs=0` + `ScreenSaveActive=0`
+     (+ `powercfg /change standby-timeout-ac 0`).
+   - `taskkill`/`schtasks` interplay: scheduled-task-launched processes live
+     in job objects; `taskkill` from another task cannot kill them
+     ("no instance of this task is running"); `Stop-Process`
+     (`TerminateProcess`) works — except for the teardown zombies, which
+     need a reboot.
+
+### Window sizing on small screens (fixed 2026-08-15)
+
+The design size is 1560x880, larger than the VM's 1280x800 SPICE console,
+and the window had an explicit `width/height` in `app.slint`, which the
+winit backend re-applies from the window-item properties on every layout
+pass (`update_window_properties`), making the window effectively
+fixed-size and oversized. Fix:
+
+- `app.slint`: removed the explicit `width/height` on the AppWindow (kept
+  `preferred-width/height: 1560x880` as layout hints only).
+- `slint_main.cpp` (Windows): `fit_window_to_screen()` queries
+  `SPI_GETWORKAREA` and calls `window->window().set_size()` with the design
+  size scaled to ≤ the work area (min scale 0.5); applied right after
+  `show()` (the window is created lazily inside `run_event_loop`, so the
+  size lands in the winit attributes) and once more via
+  `slint::Timer::single_shot(100ms)` after the first layout pass settles.
+- Result: window opens at ~1256x708 on the 1280x800 console, has no
+  minimum-size or aspect-ratio constraints, and stays freely resizable
+  (the layout switches to a compact mode below 1020px width by design).
+
 ## Face Recognition Trigger Flow (Windows, implemented 2026-08-14)
 
 Implemented in `src/platform/windows/credential_provider_rs/src/recognition.rs`
