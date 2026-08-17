@@ -144,7 +144,7 @@ Secrets are wiped with `zeroize` on both platforms. The Linux `su_authd` master 
 |   |   `-- linux/            # authd, PAM, deploy helper
 |   `-- zig/                  # Zig components
 |-- assets/                   # single resource dir: icons / i18n / models/seeta
-|-- packaging/                # Linux packaging (package.sh, systemd, dbus, polkit)
+|-- packaging/                # Linux (package.sh, systemd, dbus, polkit) + Windows (package.sh)
 |-- docs/                     # design documents
 |-- local-repo/               # local xmake package repository
 |-- NOTICE/                   # third-party notices
@@ -183,6 +183,18 @@ Package (`tar.gz` / `pacman` / `deb` / `rpm`):
 ```bash
 packaging/linux/package.sh --format all
 ```
+
+### Windows package (one command)
+
+```bash
+packaging/windows/package.sh
+```
+
+Stages `build/windows-package/smile2unlock-<version>/` (bin\ + assets\ sibling
+layout with su_app/su_deploy_helper/CP DLL/service/icon and all runtime DLLs
+collected from the NEEDED tables, plus i18n + models) and writes
+`build/packages/smile2unlock-<version>-windows-x86_64.zip`. Use `--no-zip` to
+only stage the directory. No Inno Setup or installer required — unzip and run.
 
 ## Contributors
 
