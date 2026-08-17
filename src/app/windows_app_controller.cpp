@@ -202,6 +202,10 @@ std::expected<FaceAuthReport, std::string> auth_report_from_json(std::string_vie
     };
 }
 
+// Defined below (second anonymous namespace); forward-declared here for
+// load_system_status().
+std::string deploy_helper_path();
+
 }  // namespace
 
 std::string AppController::config_path() const {
@@ -470,6 +474,10 @@ SystemStatus AppController::load_system_status() {
     auto status = SystemStatus{};
     status.service_reason = "local profile store (ProgramData)";
     status.storage_protection = StorageProtection::kHostKey;
+    // su_deploy_helper.exe sits next to su_app.exe in the flat deployment
+    // layout; report availability so the deployment panel does not ask the
+    // user to install a helper that is already deployed.
+    status.deployment_helper_available = !deploy_helper_path().empty();
     const auto snapshot = su::windeploy::inspect_deployment();
     if (snapshot) {
         status.service_available = true;
