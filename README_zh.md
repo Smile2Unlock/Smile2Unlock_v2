@@ -59,14 +59,17 @@ Smile2Unlock 是一套**本地人脸认证系统**:人脸特征全部在本机�
 
 ## 部署
 
-Windows 采用平级布局:可执行文件与 `assets/` 放在同一目录。Linux 按系统安装的 FHS 布局分散放置。
+Windows 采用 **`bin\` + `assets\` 平级布局**:可执行文件(及其运行 DLL)放在 `bin\` 中,`assets\` 与它同级。Linux 按系统安装的 FHS 布局分散放置。
 
 ```text
 Windows:  C:\su-deploy\
-├── su_app.exe
-├── su_deploy_helper.exe
-├── su_credential_provider.dll
-├── Smile2Unlock.ico
+├── bin\                     # 可执行文件 + 运行 DLL
+│   ├── su_app.exe
+│   ├── su_deploy_helper.exe
+│   ├── su_credential_provider.dll
+│   ├── Smile2UnlockAuthService.exe
+│   ├── Smile2Unlock.ico
+│   └── (SeetaFace / tennis / MinGW 运行库)
 └── assets\
     ├── i18n\
     │   ├── en.json
@@ -85,7 +88,7 @@ Linux(打包后):  /usr/bin/su_app
                /usr/share/smile2unlock/{i18n,models}
 ```
 
-- 模型目录按 `SU_SEETAFACE_MODEL_DIR` 环境变量、编译期宏、「从当前目录向上查找 `assets/models/seeta`」的顺序解析;Linux 系统安装后回退到 `/usr/share/smile2unlock/models`
+- 模型目录按 `SU_SEETAFACE_MODEL_DIR` 环境变量、编译期宏、「从当前目录向上查找 `assets/models/seeta`」的顺序解析;i18n 用同样的向上查找定位 `assets/i18n`(这正是 `bin\` + `assets\` 平级布局能工作的原因);Linux 系统安装后回退到 `/usr/share/smile2unlock/models`
 - Windows 复制文件后,在 GUI 的 **Deployment(部署)** 面板点击 Install(UAC 提权),即可完成 CP 注册与服务安装
 
 ## 架构
@@ -95,13 +98,13 @@ flowchart LR
     subgraph Windows
         CP[su_credential_provider.dll] -- UDP 51236/51234 --> APP[su_app.exe]
         APP --> REC[src/recognizer<br/>SeetaFace 6]
-        APP --> CORE[(Rust core<br/>SQLite 档案)]
+        APP --> CORE[(Rust core<br/>加密档案文件)]
         APP -- UAC --> HELPER[su_deploy_helper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
         AUTHD --> REC2[src/recognizer<br/>SeetaFace 6]
-        AUTHD --> CORE2[(Rust core<br/>SQLite 档案)]
+        AUTHD --> CORE2[(Rust core<br/>加密档案文件)]
         GUI[su_app] -- control.sock --> AUTHD
         GUI -- D-Bus/Polkit --> HELPER2[su_deploy_helper]
     end
@@ -112,6 +115,20 @@ flowchart LR
 - **识别流水线**(`src/recognizer`):摄像头采集(V4L2 / Windows Media Foundation)、SeetaFace 检测 / 关键点 / 特征提取 / 活体检测,全部本地执行
 - **Rust core**(`src/core-rs`):人脸档案的明文与加密存储(Windows 无主密钥提供者时用明文,Linux 密钥由 systemd 托管)
 - **GUI**(`src/app`):Slint 界面 + 平台控制器;Windows 内置 UDP 识别服务器,Linux 通过控制 socket 与 `su_authd` 交互
+
+### 本地存储(两个平台一致)
+
+**不使用 SQLite**:两个平台共用同一套 Rust core 存储——原子写入的私有文件:
+
+| 数据 | 格式 | Linux | Windows |
+| --- | --- | --- | --- |
+| 应用配置 | TOML | `~/.config/smile2unlock/config.toml` | `%APPDATA%\smile2unlock\config.toml` |
+| UI 偏好 | JSON | `~/.config/smile2unlock/ui.json` | `<exe 目录>\.smile2unlock-ui.json` |
+| 人脸档案 | XChaCha20-Poly1305 封套内的 JSON | `/var/lib/smile2unlock/users/<uid>/profiles.s2u` | `%PROGRAMDATA%\smile2unlock\users\<sid>\profiles.s2u` |
+
+平台差异仅在于目录惯例(XDG vs `%APPDATA%`、`/var/lib` vs `%PROGRAMDATA%`);文件格式与 Rust core 代码路径完全相同。Linux 写入为 `0600` + fsync,Windows 用 `MoveFileExW` 原子替换。
+
+两个平台的秘密数据都用 `zeroize` 清零;Windows Credential Provider 额外使用 vendored 的 `memsafe` fork(锁定 + `PAGE_NOACCESS` 封存页)保护 LogonUI 内的密码/密钥——Linux 无 memsafe 依赖。
 
 ## 仓库结构
 
