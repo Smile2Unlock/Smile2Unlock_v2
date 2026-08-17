@@ -433,6 +433,75 @@ void start_deployment_operation(
     }).detach();
 }
 
+#ifndef _WIN32
+// Resolve the desktop size on Linux without linking X11/Wayland client
+// libraries (su_app is a Wayland-first GUI; adding libX11 would pull in a
+// long display-manager dependency chain). Probe the compositor through CLI
+// tools that ship alongside it:
+//   - Wayland (sway/niri/labwc/…): `wlr-randr` (widely installed with wlr
+//     compositors; falls back to nothing if missing)
+//   - X11: `xdpyinfo`
+// Returns false when no probe yields a size; the caller keeps the design size.
+bool detect_linux_desktop_size(float& width, float& height) {
+    const bool wayland = std::getenv("WAYLAND_DISPLAY") != nullptr;
+    const bool x11 = std::getenv("DISPLAY") != nullptr;
+    if (!wayland && !x11) {
+        return false;
+    }
+    auto run = [](const std::string& cmd) {
+        std::array<char, 4096> buffer{};
+        if (FILE* pipe = ::popen(cmd.c_str(), "r")) {
+            std::string text;
+            std::size_t n = 0;
+            while ((n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) {
+                text.append(buffer.data(), n);
+            }
+            ::pclose(pipe);
+            return text;
+        }
+        return std::string{};
+    };
+    if (wayland) {
+        // wlr-randr output lines like "HDMI-A-1 connected 2560x1600@...".
+        // Take the largest WxH across all listed outputs (single-display and
+        // the primary of a multi-head setup both land correctly).
+        const auto out = run("wlr-randr");
+        if (!out.empty()) {
+            std::regex mode{R"((\d+)\s*x\s*(\d+))"};
+            std::smatch match;
+            std::size_t best_w = 0, best_h = 0;
+            auto it = std::sregex_iterator(out.begin(), out.end(), mode);
+            auto end = std::sregex_iterator{};
+            for (; it != end; ++it) {
+                const auto w = std::stoul((*it)[1].str());
+                const auto h = std::stoul((*it)[2].str());
+                if (w * h > best_w * best_h) {
+                    best_w = w;
+                    best_h = h;
+                }
+            }
+            if (best_w != 0 && best_h != 0) {
+                width = static_cast<float>(best_w);
+                height = static_cast<float>(best_h);
+                return true;
+            }
+        }
+    }
+    if (x11) {
+        // xdpyinfo: "dimensions:    2560x1600 pixels"
+        const auto out = run("xdpyinfo");
+        std::regex dimensions{R"(\b(\d+)x(\d+)\s+pixels)"};
+        std::smatch match;
+        if (std::regex_search(out, match, dimensions)) {
+            width = static_cast<float>(std::stoul(match[1].str()));
+            height = static_cast<float>(std::stoul(match[2].str()));
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -625,6 +694,9 @@ int main(int argc, char** argv) {
     window->set_camera_options(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(camera_names)));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
+    gui_log_t(std::format("cameras enumerated: {} (first='{}')",
+        snapshot->cameras.size(),
+        snapshot->cameras.empty() ? "<none>" : snapshot->cameras.front().name));
     window->set_seetaface_available(snapshot->seetaface_available);
     apply_system_status(window, controller->load_system_status(), deployment_targets);
     window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
@@ -1056,15 +1128,19 @@ int main(int argc, char** argv) {
 #else
     gui_log_t("show() returned");
 #endif
-#ifdef _WIN32
     // Fit the window to the desktop so it is never larger than the screen.
-    // SPI_GETWORKAREA reports PHYSICAL pixels, while set_size takes a
-    // logical size, so the design size must be compared in physical units
-    // (design * scale_factor). No minimum size or aspect-ratio constraints
-    // are set: this only picks the initial size, the window stays freely
-    // resizable. A one-shot timer re-applies the size after the first
-    // layout pass, when the real scale factor is known.
+    // Windows: SPI_GETWORKAREA reports PHYSICAL pixels; set_size takes a
+    // logical size, so the design size must be compared in physical units.
+    // Linux: the compositor's reported mode is physical pixels too. No
+    // minimum-size or aspect-ratio constraints are set: this only picks a
+    // proportional initial size, the window stays freely resizable. A
+    // one-shot timer re-applies the size after the first layout pass.
     const auto fit_window_to_screen = [window] {
+        float avail_w = 0.0f;
+        float avail_h = 0.0f;
+        float center_x = 0.0f;
+        float center_y = 0.0f;
+#ifdef _WIN32
         struct SuRect {
             long left;
             long top;
@@ -1075,8 +1151,21 @@ int main(int argc, char** argv) {
         if (::SystemParametersInfoW(0x0030 /* SPI_GETWORKAREA */, 0, &work, 0) == 0) {
             return;
         }
-        const float avail_w = static_cast<float>(work.right - work.left) - 24.0f;
-        const float avail_h = static_cast<float>(work.bottom - work.top) - 48.0f;
+        avail_w = static_cast<float>(work.right - work.left) - 24.0f;
+        avail_h = static_cast<float>(work.bottom - work.top) - 48.0f;
+        center_x = (work.left + work.right) / 2.0f;
+        center_y = (work.top + work.bottom) / 2.0f;
+#else
+        if (!detect_linux_desktop_size(avail_w, avail_h)) {
+            return;
+        }
+        // Physical resolution: leave a small margin so the window is not
+        // edge-to-edge on a tiling compositor.
+        avail_w -= 24.0f;
+        avail_h -= 48.0f;
+        center_x = 0.0f;
+        center_y = 0.0f;
+#endif
         const float sf = window->window().scale_factor();
         const float scale = std::clamp(
             std::min(1.0f, std::min(avail_w / (1560.0f * sf), avail_h / (880.0f * sf))),
@@ -1084,23 +1173,21 @@ int main(int argc, char** argv) {
             1.0f);
         const auto fitted = slint::LogicalSize({1560.0f * scale, 880.0f * scale});
         window->window().set_size(fitted);
+#ifdef _WIN32
         // Center the window on the work area: winit's default placement can
         // leave it partly off-screen when the initial size exceeds the
         // screen (e.g. 1560x880 logical at 125% scaling on a 1920x1080
         // console). set_position takes logical coordinates.
-        const float center_x = (work.left + work.right) / 2.0f - fitted.width * sf / 2.0f;
-        const float center_y = (work.top + work.bottom) / 2.0f - fitted.height * sf / 2.0f;
+        center_x -= fitted.width * sf / 2.0f;
+        center_y -= fitted.height * sf / 2.0f;
         window->window().set_position(slint::LogicalPosition({center_x / sf, center_y / sf}));
-        gui_log_t(std::format("window fitted: work=({},{})-({},{}) sf={:.2f} -> {}x{} at ({},{}) physical {}x{}",
-            work.left,
-            work.top,
-            work.right,
-            work.bottom,
+#endif
+        gui_log_t(std::format("window fitted: avail={}x{} sf={:.2f} -> {}x{} physical {}x{}",
+            static_cast<int>(avail_w),
+            static_cast<int>(avail_h),
             sf,
             static_cast<int>(fitted.width),
             static_cast<int>(fitted.height),
-            static_cast<int>(center_x),
-            static_cast<int>(center_y),
             static_cast<int>(fitted.width * sf),
             static_cast<int>(fitted.height * sf)));
     };
@@ -1112,9 +1199,10 @@ int main(int argc, char** argv) {
     // exists and the event loop is running.
     slint::Timer::single_shot(std::chrono::milliseconds(100), [window, fit_window_to_screen] {
         fit_window_to_screen();
+#ifdef _WIN32
         apply_window_icon();
-    });
 #endif
+    });
     // Independent watcher: enumerates this process's top-level windows every
     // second (Win32 only, no slint main-thread calls) to see whether the
     // winit window is actually created/visible. Also logs the real OS thread
