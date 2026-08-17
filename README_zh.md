@@ -128,7 +128,7 @@ flowchart LR
 
 平台差异仅在于目录惯例(XDG vs `%APPDATA%`、`/var/lib` vs `%PROGRAMDATA%`);文件格式与 Rust core 代码路径完全相同。Linux 写入为 `0600` + fsync,Windows 用 `MoveFileExW` 原子替换。
 
-两个平台的秘密数据都用 `zeroize` 清零;Windows Credential Provider 额外使用 vendored 的 `memsafe` fork(锁定 + `PAGE_NOACCESS` 封存页)保护 LogonUI 内的密码/密钥——Linux 无 memsafe 依赖。
+两个平台的秘密数据都用 `zeroize` 清零。Linux `su_authd` 的主密钥放在页对齐的 `mmap` 中:`mlock` 锁页、标记 `MADV_DONTDUMP`、空闲时用 `mprotect(PROT_NONE)` 封存——与 Windows Credential Provider 使用的 vendored `memsafe` fork 提供的空闲封存(锁定 + `PAGE_NOACCESS`)同一语义;LogonUI 内密码/密钥另有锁定 + `PAGE_NOACCESS` 保护。密钥读取是限定在消费调用内(`with_bytes` / `with_context`)的临时 `PROT_READ` 提升。
 
 ## 仓库结构
 
