@@ -139,7 +139,7 @@ flowchart LR
 ### Windows (cross-compiled or native)
 
 ```bash
-xmake f -y -c -p mingw -a x86_64          # or -p windows (MSVC)
+xmake f -y -c -p mingw -a x86_64
 xmake require --build -f -y seetaface6open
 xmake build
 ```
