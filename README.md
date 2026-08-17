@@ -59,14 +59,17 @@ Sign-in flow: login screen → PAM hook → control socket → local recognition
 
 ## Deployment
 
-Windows keeps the resource layout flat: the executables and `assets/` sit **side by side** in one directory. Linux follows the FHS layout of a system install.
+Windows uses a **bin/ + assets/ sibling layout**: the executables (and their runtime DLLs) live in `bin\`, and `assets\` sits next to it. Linux follows the FHS layout of a system install.
 
 ```text
 Windows:  C:\su-deploy\
-├── su_app.exe
-├── su_deploy_helper.exe
-├── su_credential_provider.dll
-├── Smile2Unlock.ico
+├── bin\                     # executables + runtime DLLs
+│   ├── su_app.exe
+│   ├── su_deploy_helper.exe
+│   ├── su_credential_provider.dll
+│   ├── Smile2UnlockAuthService.exe
+│   ├── Smile2Unlock.ico
+│   └── (SeetaFace / tennis / MinGW runtime DLLs)
 └── assets\
     ├── i18n\
     │   ├── en.json
@@ -85,7 +88,7 @@ Linux (packaged):  /usr/bin/su_app
                    /usr/share/smile2unlock/{i18n,models}
 ```
 
-- The model directory is resolved via `SU_SEETAFACE_MODEL_DIR` (env), a compile-time macro, or by walking up from the current directory looking for `assets/models/seeta`; a system install on Linux falls back to `/usr/share/smile2unlock/models`
+- The model directory is resolved via `SU_SEETAFACE_MODEL_DIR` (env), a compile-time macro, or by walking up from the current directory looking for `assets/models/seeta`; i18n uses the same walk-up for `assets/i18n` (this is what makes the `bin\` + `assets\` sibling layout work); a system install on Linux falls back to `/usr/share/smile2unlock/models`
 - On Windows, after copying the files, open the **Deployment** panel in the GUI and click Install (UAC) to register the Credential Provider and install the service
 
 ## Architecture
@@ -95,13 +98,13 @@ flowchart LR
     subgraph Windows
         CP[su_credential_provider.dll] -- UDP 51236/51234 --> APP[su_app.exe]
         APP --> REC[src/recognizer<br/>SeetaFace 6]
-        APP --> CORE[(Rust core<br/>SQLite profiles)]
+        APP --> CORE[(Rust core<br/>encrypted profile files)]
         APP -- UAC --> HELPER[su_deploy_helper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
         AUTHD --> REC2[src/recognizer<br/>SeetaFace 6]
-        AUTHD --> CORE2[(Rust core<br/>SQLite profiles)]
+        AUTHD --> CORE2[(Rust core<br/>encrypted profile files)]
         GUI[su_app] -- control.sock --> AUTHD
         GUI -- D-Bus/Polkit --> HELPER2[su_deploy_helper]
     end
@@ -112,6 +115,20 @@ flowchart LR
 - **Recognition pipeline** (`src/recognizer`): camera capture (V4L2 / Windows Media Foundation), SeetaFace detection / landmarks / feature extraction / anti-spoofing — all local
 - **Rust core** (`src/core-rs`): plaintext and encrypted face-profile stores (Windows has no master-key provider and uses plaintext; Linux keys are managed by systemd)
 - **GUI** (`src/app`): Slint UI + per-platform controller; Windows embeds the UDP recognition server, Linux talks to `su_authd` over the control socket
+
+### Local storage (identical on both platforms)
+
+There is **no SQLite**: both platforms share the same Rust-core storage — atomic, private files:
+
+| Data | Format | Linux | Windows |
+| --- | --- | --- | --- |
+| App config | TOML | `~/.config/smile2unlock/config.toml` | `%APPDATA%\smile2unlock\config.toml` |
+| UI preferences | JSON | `~/.config/smile2unlock/ui.json` | `<exe dir>\.smile2unlock-ui.json` |
+| Face profiles | JSON payload in XChaCha20-Poly1305 envelope | `/var/lib/smile2unlock/users/<uid>/profiles.s2u` | `%PROGRAMDATA%\smile2unlock\users\<sid>\profiles.s2u` |
+
+The only platform difference is the directory convention (XDG vs. `%APPDATA%`, `/var/lib` vs. `%PROGRAMDATA%`); the file formats and the Rust-core code path are the same. Linux writes are `0600` + fsync, Windows uses `MoveFileExW` replace + `FILE_ATTRIBUTE_NORMAL`.
+
+Secrets are wiped with `zeroize` on both platforms; the Windows Credential Provider additionally uses a vendored `memsafe` fork (locked, `PAGE_NOACCESS`-sealed pages) for passwords/keys inside LogonUI — Linux has no memsafe dependency.
 
 ## Repository Layout
 
