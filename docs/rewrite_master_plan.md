@@ -4,9 +4,11 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-07-26)
+## Current Status (2026-08-17)
 
-Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 加密密码存储和 LocalSystem 认证服务已实现，Rust Credential Provider 重写尚未开始**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
+Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 基础设施、纯 Rust Credential Provider、UDP 识别服务端、GUI profile 操作 (FFI) 与认证服务全部接通；剩余项仅为需要真实摄像头 / 物理 TPM / LogonUI 的现场验收**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
+
+当前 Windows 构建包含 `su_app` (Slint GUI + UDP 识别服务端)、`su_deploy_helper` (UAC 提权部署)、`su_auth_service` (LocalSystem 命名管道服务)、`su_credential_provider.dll` (Rust CP, 46 单元测试)；仓库资源统一在 `assets/`（icons / i18n / models/seeta），Windows 部署采用可执行文件与 `assets/` 平级的单一目录布局（默认 `C:\su-deploy\`）。
 
 当前 Linux 配置包含 19 个 Xmake target；`xmake build` 和 12 个 Xmake test case 已通过，其中 Rust core 包含 42 个单元测试。Linux GUI 已支持 DMS / Matugen Monet 配色、外部语言包、system-owned 加密档案、桌面 PAM 目标管理，以及在 helper 缺失时通过 `pkexec` 直接安装源码树内完整 Release 构建的系统组件。
 
@@ -801,7 +803,7 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
-### Phase 4: Windows compatibility ⚠️ 基础设施完成，识别服务端与 profile 操作待接通
+### Phase 4: Windows compatibility ✅ 基础设施、Rust CP、UDP 服务端与 profile 操作全部接通；现场验收待真实硬件
 
 - ✅ Windows password XChaCha20-Poly1305 envelope 和 stale-password 状态
 - ✅ CNG TPM wrapping、machine DPAPI fallback、SYSTEM-only ACL 和 LocalSystem 服务
@@ -811,6 +813,8 @@ Slint 是唯一计划内 GUI。
 - ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
 - ✅ su_app UDP 识别服务端（`udp_recognition_server`，监听 127.0.0.1:51236/51234，协议与 CP 对齐；VM 上协议链路实测：magic/version/session 回显正确，回调执行识别并回状态；mock_recognizer 已停用）
 - ✅ Windows GUI profile 操作（注册/列表/删除/认证经 Rust core FFI 直连 ProgramData store；VM 上受限于无摄像头，识别路径返回 camera unavailable）
+- ✅ Windows 部署布局平级化（可执行文件与 `assets/` 同目录，无嵌套 `bin\`）；CP 注册与认证服务 ImagePath 已按新布局在 VM 上重新注册并用仓库构建的服务二进制运行
+- ✅ `logon_secret_protocol.h` 恢复至 `src/platform/windows/auth_service/`（随 `common/` 删除而丢失），`su_auth_service` 加入 xmake 主构建（此前仅由已删除的 tests/windows 构建）
 - ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 锁屏 CP 触发）
 - ❌ MSVC 原生构建、物理 TPM / 无 TPM 机器和真实 LogonUI 验收
 
