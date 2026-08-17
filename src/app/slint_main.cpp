@@ -370,6 +370,8 @@ void apply_system_status(
     window->set_pam_configured(status.pam_configured);
     window->set_pam_service(slint::SharedString(status.pam_service));
     window->set_deployment_helper_available(status.deployment_helper_available);
+    gui_log_t(std::format("deployment helper available: {}",
+        status.deployment_helper_available ? "yes" : "no"));
     window->set_deployment_installer_available(status.deployment_installer_available);
     window->set_login_pam_configured(status.login_pam_configured);
     window->set_lock_pam_configured(status.lock_pam_configured);
