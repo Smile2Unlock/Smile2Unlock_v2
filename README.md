@@ -128,7 +128,7 @@ There is **no SQLite**: both platforms share the same Rust-core storage — atom
 
 The only platform difference is the directory convention (XDG vs. `%APPDATA%`, `/var/lib` vs. `%PROGRAMDATA%`); the file formats and the Rust-core code path are the same. Linux writes are `0600` + fsync, Windows uses `MoveFileExW` replace + `FILE_ATTRIBUTE_NORMAL`.
 
-Secrets are wiped with `zeroize` on both platforms; the Windows Credential Provider additionally uses a vendored `memsafe` fork (locked, `PAGE_NOACCESS`-sealed pages) for passwords/keys inside LogonUI — Linux has no memsafe dependency.
+Secrets are wiped with `zeroize` on both platforms. The Linux `su_authd` master key is held in a page-aligned `mmap` that is `mlock`ed, marked `MADV_DONTDUMP`, and sealed with `mprotect(PROT_NONE)` while idle — the same idle-seal the vendored `memsafe` fork provides for the Windows Credential Provider (lock + `PAGE_NOACCESS` for passwords/keys inside LogonUI). Key reads are temporary `PROT_READ` elevations scoped to the consuming call (`with_bytes` / `with_context`).
 
 ## Repository Layout
 

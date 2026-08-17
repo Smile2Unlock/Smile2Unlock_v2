@@ -6,6 +6,10 @@ module;
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(__linux__)
+#include <cstdlib>
+#endif
+
 export module su.auth.storage;
 
 import std;
@@ -35,22 +39,61 @@ public:
 
     [[nodiscard]] KeyProtection protection() const { return protection_; }
     [[nodiscard]] std::uint32_t version() const { return version_; }
-    [[nodiscard]] std::span<const std::uint8_t, 32> bytes() const;
-    [[nodiscard]] su::app::EncryptedStoreContext context_for_uid(std::uint32_t uid) const;
+    // RAII read access: temporarily elevates the mprotect state of the locked
+    // page from PROT_NONE to PROT_READ, hands the callback the 32 key bytes,
+    // and re-seals to PROT_NONE when the guard drops. Idle the key is
+    // unreadable and excluded from core dumps (MADV_DONTDUMP on Linux) —
+    // mirroring memsafe's Unix idle-seal. The page stays readable for exactly
+    // the duration of `fn`, so no key-bearing span can outlive the seal.
+    template <typename Fn>
+    [[nodiscard]] auto with_bytes(Fn&& fn) const {
+        elevate();
+        SealGuard guard{page_.get()};
+        return std::forward<Fn>(fn)(bytes());
+    }
+    // Runs `fn` with a fully-constructed EncryptedStoreContext while the key
+    // page is elevated to readable, then re-seals. This is the only way to get
+    // an EncryptedStoreContext from a sealed MasterKey; the context (and any
+    // span it carries) is guaranteed to live within the call.
+    template <typename Fn>
+    [[nodiscard]] auto with_context(std::uint32_t uid, Fn&& fn) const {
+        elevate();
+        SealGuard guard{page_.get()};
+        const su::app::EncryptedStoreContext context{
+            .master_key = bytes(),
+            .key_version = version_,
+            .account = uid,
+        };
+        return std::forward<Fn>(fn)(context);
+    }
 
 private:
-    struct LockedBufferDeleter {
-        std::size_t size = 0;
-        void operator()(std::uint8_t* buffer) const noexcept;
+    // Page-aligned mmap mapping (memsafe-style). Deleter wipes the page and
+    // munmaps it; mlock/MADV_DONTDUMP/mprotect are handled in load/guards.
+    struct PageDeleter {
+        std::size_t length = 0;
+        void operator()(std::uint8_t* page) const noexcept;
     };
 
-    using LockedBuffer = std::unique_ptr<std::uint8_t[], LockedBufferDeleter>;
+    using Page = std::unique_ptr<std::uint8_t[], PageDeleter>;
     friend std::expected<MasterKey, KeyProviderError> load_key_credential(
         const std::filesystem::path& path);
-    MasterKey(LockedBuffer bytes, KeyProtection protection, std::uint32_t version)
-        : bytes_(std::move(bytes)), protection_(protection), version_(version) {}
+    MasterKey(Page page, KeyProtection protection, std::uint32_t version)
+        : page_(std::move(page)), protection_(protection), version_(version) {}
 
-    LockedBuffer bytes_;
+    [[nodiscard]] std::span<const std::uint8_t, 32> bytes() const;
+    void elevate() const;
+    // Restores PROT_NONE on the locked page when a with_bytes() read ends.
+    struct SealGuard {
+        std::uint8_t* page;
+        ~SealGuard() noexcept {
+            (void)::mprotect(page, kSealLength, PROT_NONE);
+        }
+    };
+
+    static constexpr std::size_t kSealLength = 4096;
+
+    Page page_;
     KeyProtection protection_ = KeyProtection::kHostKey;
     std::uint32_t version_ = 0;
 };
@@ -103,25 +146,26 @@ std::uint32_t read_u32_be(std::span<const std::uint8_t, 4> bytes) {
 
 } // namespace
 
-void MasterKey::LockedBufferDeleter::operator()(std::uint8_t* buffer) const noexcept {
-    if (buffer == nullptr) {
+void MasterKey::PageDeleter::operator()(std::uint8_t* page) const noexcept {
+    if (page == nullptr) {
         return;
     }
-    clear_bytes(std::span{buffer, size});
-    (void)::munlock(buffer, size);
-    delete[] buffer;
+    // The page may be sealed (PROT_NONE); elevate before wiping so the
+    // volatile-clearing loop can touch it, then mlock is released on a page
+    // whose protection we restored (munlock works on any mapped region).
+    (void)::mprotect(page, length, PROT_READ | PROT_WRITE);
+    clear_bytes(std::span{page, length});
+    (void)::munlock(page, length);
+    (void)::munmap(page, length);
 }
 
 std::span<const std::uint8_t, 32> MasterKey::bytes() const {
-    return std::span<const std::uint8_t, 32>{bytes_.get() + kMasterKeyOffset, kMasterKeySize};
+    return std::span<const std::uint8_t, 32>{
+        page_.get() + kMasterKeyOffset, kMasterKeySize};
 }
 
-su::app::EncryptedStoreContext MasterKey::context_for_uid(std::uint32_t uid) const {
-    return su::app::EncryptedStoreContext{
-        .master_key = bytes(),
-        .key_version = version_,
-        .account = uid,
-    };
+void MasterKey::elevate() const {
+    (void)::mprotect(page_.get(), kSealLength, PROT_READ);
 }
 
 std::expected<MasterKey, KeyProviderError> load_key_credential(
@@ -146,38 +190,50 @@ std::expected<MasterKey, KeyProviderError> load_key_credential(
         return std::unexpected(KeyProviderError::kUnsafeFile);
     }
 
-    auto buffer = MasterKey::LockedBuffer{
-        new (std::nothrow) std::uint8_t[kCredentialSize],
-        MasterKey::LockedBufferDeleter{.size = kCredentialSize},
-    };
-    if (!buffer) {
+    // Page-aligned mapping (memsafe-style) so mprotect can seal/protect the
+    // whole page; mlock pins it (no swap-out), MADV_DONTDUMP keeps it out of
+    // core dumps.
+    auto* mapping = static_cast<std::uint8_t*>(
+        ::mmap(nullptr, MasterKey::kSealLength, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (mapping == MAP_FAILED) {
         return std::unexpected(KeyProviderError::kUnavailable);
     }
-    if (::mlock(buffer.get(), kCredentialSize) != 0) {
+    auto page = MasterKey::Page{
+        mapping, MasterKey::PageDeleter{.length = MasterKey::kSealLength}};
+    if (::mlock(mapping, MasterKey::kSealLength) != 0) {
         return std::unexpected(KeyProviderError::kMemoryLockFailed);
     }
-    if (!read_exact(fd, std::span{buffer.get(), kCredentialSize})) {
+#if defined(__linux__)
+    // Key never lands in a core dump.
+    (void)::madvise(mapping, MasterKey::kSealLength, MADV_DONTDUMP);
+#endif
+
+    if (!read_exact(fd, std::span{mapping, kCredentialSize})) {
         return std::unexpected(KeyProviderError::kUnavailable);
     }
 
-    const auto bytes = std::span<const std::uint8_t, kCredentialSize>{
-        buffer.get(), kCredentialSize};
-    if (!std::ranges::equal(bytes.first<4>(), std::string_view{"S2UK"})
-        || bytes[4] != 0
-        || bytes[5] != 1
-        || bytes[7] != 0) {
+    const auto key_bytes = std::span<const std::uint8_t, kCredentialSize>{
+        mapping, kCredentialSize};
+    if (!std::ranges::equal(key_bytes.first<4>(), std::string_view{"S2UK"})
+        || key_bytes[4] != 0
+        || key_bytes[5] != 1
+        || key_bytes[7] != 0) {
         return std::unexpected(KeyProviderError::kInvalidFormat);
     }
-    const auto protection = bytes[6] == static_cast<std::uint8_t>(KeyProtection::kTpm2Bound)
+    const auto protection = key_bytes[6] == static_cast<std::uint8_t>(KeyProtection::kTpm2Bound)
         ? std::optional{KeyProtection::kTpm2Bound}
-        : bytes[6] == static_cast<std::uint8_t>(KeyProtection::kHostKey)
+        : key_bytes[6] == static_cast<std::uint8_t>(KeyProtection::kHostKey)
             ? std::optional{KeyProtection::kHostKey}
             : std::nullopt;
-    const auto version = read_u32_be(bytes.subspan<8, 4>());
+    const auto version = read_u32_be(key_bytes.subspan<8, 4>());
     if (!protection || version == 0) {
         return std::unexpected(KeyProviderError::kInvalidFormat);
     }
-    return MasterKey{std::move(buffer), *protection, version};
+    // Sealed once fully loaded: the key is unreadable while idle. All
+    // subsequent reads go through with_bytes() (temporary PROT_READ).
+    (void)::mprotect(mapping, MasterKey::kSealLength, PROT_NONE);
+    return MasterKey{std::move(page), *protection, version};
 }
 
 std::expected<MasterKey, KeyProviderError> load_systemd_key_credential() {

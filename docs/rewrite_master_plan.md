@@ -675,7 +675,7 @@ Camera
 - 第一阶段采用 Rust 管理的版本化 XChaCha20-Poly1305 加密文件，不引入普通 SQLite。
 - profile 存储必须是 system-owned（Linux `/var/lib/smile2unlock/users/<uid>/`；Windows `C:/ProgramData/smile2unlock/users/<uid>/`）。
 - profile 访问路径按平台（2026-08-16 决策，取代早期"GUI 一律走认证服务 IPC"的通用要求）：
-  - **Linux：GUI 只通过认证服务 IPC（control socket → root `su_authd`）进行录入、列出、删除和认证**。已实现：`su.auth.daemon.cppm` 处理 `EnrollProfile/ListProfiles/DeleteProfile/VerifyProfile`，`su.auth.storage.cppm` 以 root 权限 + mlock + O_NOFOLLOW + 严格权限校验读写；GUI 侧 `AppController` 一律 `send_control_request(...)`。
+  - **Linux：GUI 只通过认证服务 IPC（control socket → root `su_authd`）进行录入、列出、删除和认证**。已实现：`su.auth.daemon.cppm` 处理 `EnrollProfile/ListProfiles/DeleteProfile/VerifyProfile`，`su.auth.storage.cppm` 以 root 权限 + mmap 页对齐 + mlock + `MADV_DONTDUMP` + `mprotect(PROT_NONE)` 空闲封存 + O_NOFOLLOW + 严格权限校验读写；主密钥读取限定在 `with_bytes`/`with_context` 的临时 `PROT_READ` 提升内（memsafe Unix 语义的 C++ 同款实现）；GUI 侧 `AppController` 一律 `send_control_request(...)`。
   - **Windows：由 su_app（交互会话内的 GUI 宿主）直接经 Rust core FFI 读写 ProgramData 加密 store，不走认证服务 IPC**。理由：Windows 登录消费方（Credential Provider）不读 profile——识别结果通过回环 UDP（51236/51234）传给 LogonUI；profile 的唯一读写方就是桌面会话里的 su_app，Windows 认证服务只负责登录密钥管道（logon secret）。若未来需要在 SYSTEM/LogonUI 上下文直接比对，再迁移到认证服务 IPC。
 - Linux 使用 systemd encrypted credential；TPM2 机器使用 `host+tpm2`，无 TPM2 时明确回退 `host` key，并建议配合全盘加密。
 - Windows 登录密码使用与 profile 分离的 encrypted envelope；TPM 由 CNG Platform Crypto Provider 保护 master key，无 TPM 时回退 machine DPAPI。

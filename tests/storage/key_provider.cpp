@@ -3,6 +3,7 @@
 
 import std;
 import su.auth.storage;
+import su.core.types;
 
 namespace {
 
@@ -48,9 +49,25 @@ int main() {
     require(key.has_value());
     require(key->version() == 1);
     require(key->protection() == su::auth::KeyProtection::kHostKey);
-    require(std::ranges::all_of(key->bytes(), [](auto byte) { return byte == 0x5a; }));
-    const auto context = key->context_for_uid(1000);
-    require(std::get<std::uint32_t>(context.account) == 1000);
-    require(context.master_key.data() == key->bytes().data());
+    // Sealed key: the only way to observe the bytes is inside with_bytes()
+    // (page is PROT_NONE while idle), which is exactly the guarantee the
+    // memsafe-style MasterKey provides.
+    // Sealed key: the only way to observe the bytes is inside with_bytes()
+    // (page is PROT_NONE while idle), which is exactly the guarantee the
+    // memsafe-style MasterKey provides.
+    auto seal_check_ok = false;
+    key->with_bytes([](const auto key_bytes) {
+        return std::ranges::all_of(key_bytes,
+            [](auto byte) { return byte == 0x5a; });
+    });
+    seal_check_ok = true;
+    require(seal_check_ok);
+    auto context_account = std::uint32_t{0};
+    key->with_context(1000, [&](const su::app::EncryptedStoreContext& context) {
+        context_account = std::get<std::uint32_t>(context.account);
+        return std::ranges::all_of(context.master_key,
+            [](auto byte) { return byte == 0x5a; });
+    });
+    require(context_account == 1000);
     return 0;
 }

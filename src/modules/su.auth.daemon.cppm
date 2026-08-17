@@ -198,8 +198,11 @@ std::expected<UserAuthData, std::string> load_user_auth_data(
     if (!config) {
         return std::unexpected(config.error());
     }
-    const auto profiles = su::app::list_encrypted_face_profile_summaries(
-        master_key.context_for_uid(paths.uid), paths.profiles.string());
+    const auto profiles = master_key.with_context(
+        paths.uid, [&](const su::app::EncryptedStoreContext& context) {
+            return su::app::list_encrypted_face_profile_summaries(
+                context, paths.profiles.string());
+        });
     if (!profiles) {
         return std::unexpected("failed to decrypt face profiles");
     }
@@ -216,12 +219,11 @@ std::expected<su::app::FaceAuthReport, std::string> authenticate_user_sample(
     const MasterKey& master_key,
     std::string_view sample,
     float threshold) {
-    const auto report = su::app::authenticate_encrypted_face_sample_report(
-        master_key.context_for_uid(user_data.uid),
-        user_data.profiles_path,
-        sample,
-        threshold,
-        true);
+    const auto report = master_key.with_context(
+        user_data.uid, [&](const su::app::EncryptedStoreContext& context) {
+            return su::app::authenticate_encrypted_face_sample_report(
+                context, user_data.profiles_path, sample, threshold, true);
+        });
     if (!report) {
         return std::unexpected("face profile comparison failed");
     }
@@ -354,8 +356,11 @@ public:
         if (!master_key_) {
             return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
         }
-        const auto profiles = su::app::list_encrypted_face_profiles_json(
-            master_key_->context_for_uid(paths->uid), paths->profiles.string());
+        const auto profiles = master_key_->with_context(
+            paths->uid, [&](const su::app::EncryptedStoreContext& context) {
+                return su::app::list_encrypted_face_profiles_json(
+                    context, paths->profiles.string());
+            });
         return profiles
             ? AttemptResult{su::control::ControlResult::kAccepted, "profiles listed", *profiles}
             : AttemptResult{su::control::ControlResult::kUnavailable, "failed to decrypt profiles"};
@@ -372,11 +377,11 @@ public:
         if (!master_key_) {
             return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
         }
-        const auto enrolled = su::app::enroll_encrypted_face_profile(
-            master_key_->context_for_uid(paths->uid),
-            paths->profiles.string(),
-            label,
-            sample);
+        const auto enrolled = master_key_->with_context(
+            paths->uid, [&](const su::app::EncryptedStoreContext& context) {
+                return su::app::enroll_encrypted_face_profile(
+                    context, paths->profiles.string(), label, sample);
+            });
         if (!enrolled) {
             return {su::control::ControlResult::kUnavailable, "failed to encrypt face profile"};
         }
@@ -393,10 +398,11 @@ public:
         if (!master_key_) {
             return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
         }
-        const auto deleted = su::app::delete_encrypted_face_profile(
-            master_key_->context_for_uid(paths->uid),
-            paths->profiles.string(),
-            profile_id);
+        const auto deleted = master_key_->with_context(
+            paths->uid, [&](const su::app::EncryptedStoreContext& context) {
+                return su::app::delete_encrypted_face_profile(
+                    context, paths->profiles.string(), profile_id);
+            });
         if (!deleted) {
             return {su::control::ControlResult::kUnavailable, "failed to update encrypted profiles"};
         }
@@ -421,12 +427,12 @@ public:
         if (!user_data) {
             return {su::control::ControlResult::kUnavailable, user_data.error()};
         }
-        const auto report = su::app::authenticate_encrypted_face_sample_report(
-            master_key_->context_for_uid(user_data->uid),
-            user_data->profiles_path,
-            sample,
-            user_data->config.recognition_threshold,
-            liveness_ok);
+        const auto report = master_key_->with_context(
+            user_data->uid, [&](const su::app::EncryptedStoreContext& context) {
+                return su::app::authenticate_encrypted_face_sample_report(
+                    context, user_data->profiles_path, sample,
+                    user_data->config.recognition_threshold, liveness_ok);
+            });
         if (!report) {
             return {su::control::ControlResult::kUnavailable, "face profile comparison failed"};
         }
@@ -474,10 +480,11 @@ public:
             legacy.emplace(std::move(opened->value()));
         }
 
-        const auto migrated = su::app::migrate_plaintext_face_profiles(
-            master_key_->context_for_uid(paths->uid),
-            legacy->proc_path(),
-            paths->profiles.string());
+        const auto migrated = master_key_->with_context(
+            paths->uid, [&](const su::app::EncryptedStoreContext& context) {
+                return su::app::migrate_plaintext_face_profiles(
+                    context, legacy->proc_path(), paths->profiles.string());
+            });
         if (!migrated) {
             return {su::control::ControlResult::kUnavailable, "profile migration failed"};
         }
