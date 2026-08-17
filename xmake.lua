@@ -421,6 +421,27 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/security/*.cpp")
         add_headerfiles("src/platform/windows/security/*.h")
         add_syslinks("ncrypt", "bcrypt", "crypt32", "shell32", "ole32")
+
+    -- LocalSystem auth service: named-pipe host for the logon-secret store,
+    -- used by the C++ Credential Provider baseline and the Rust CP client.
+    target("su_auth_service")
+        apply_cpp_target("binary")
+        set_targetdir("$(builddir)/$(plat)/$(arch)/$(mode)")
+        add_files("src/platform/windows/security/storage_key_provider.cpp")
+        add_files("src/platform/windows/security/logon_secret_store.cpp")
+        add_files("src/platform/windows/auth_service/logon_secret_server.cpp")
+        add_files("src/platform/windows/auth_service/service_main.cpp")
+        add_includedirs(
+            "src/platform/windows/security",
+            "src/platform/windows/auth_service",
+            "src/core-rs/include")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        add_ldflags("-static", "-municode", "-mwindows", {force = true})
+        add_syslinks(
+            "ncrypt", "bcrypt", "crypt32", "shell32", "ole32", "advapi32",
+            "userenv", "ntdll", "ws2_32", "uuid")
+        add_deps("su_core")
 end
 
 target("su_face_auth_smoke_test")

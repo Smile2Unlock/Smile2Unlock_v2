@@ -1,6 +1,6 @@
 #include "logon_secret_server.h"
 
-#include "windows/logon_secret_protocol.h"
+#include "logon_secret_protocol.h"
 
 #include <aclapi.h>
 #include <sddl.h>
