@@ -606,7 +606,7 @@ std::expected<void, std::string> deploy_action(std::string_view arguments) {
         // the operation directly without a second UAC prompt.
         if (arguments.find("--register-cp") != std::string_view::npos) {
             const auto registered = su::windeploy::register_credential_provider(
-                "C:\\su-deploy\\su_credential_provider.dll");
+                "C:\\su-deploy\\bin\\su_credential_provider.dll");
             if (!registered) {
                 return registered;
             }

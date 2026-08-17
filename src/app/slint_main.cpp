@@ -271,15 +271,22 @@ std::filesystem::path executable_directory(const char* argument_zero) {
 }
 
 std::filesystem::path language_directory(const std::filesystem::path& executable_dir) {
-    const auto candidates = std::array{
-        executable_dir / "assets" / "i18n",
-        executable_dir / ".." / "share" / "smile2unlock" / "i18n",
-    };
-    const auto found = std::ranges::find_if(candidates, [](const auto& candidate) {
+    // Walk up from the executable looking for assets/i18n, matching the
+    // model-dir lookup, so both flat (exe + assets side by side) and
+    // bin/assets layouts resolve. Falls back to the Linux system location.
+    auto directory = executable_dir;
+    while (true) {
         auto error = std::error_code{};
-        return std::filesystem::is_directory(candidate, error);
-    });
-    return found == candidates.end() ? candidates.front() : *found;
+        const auto candidate = directory / "assets" / "i18n";
+        if (std::filesystem::is_directory(candidate, error)) {
+            return candidate;
+        }
+        if (!directory.has_parent_path() || directory == directory.parent_path()) {
+            break;
+        }
+        directory = directory.parent_path();
+    }
+    return executable_dir / ".." / "share" / "smile2unlock" / "i18n";
 }
 
 std::filesystem::path ui_preference_path() {
