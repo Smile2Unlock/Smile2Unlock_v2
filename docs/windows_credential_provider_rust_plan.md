@@ -125,7 +125,7 @@ src/platform/windows/credential_provider_rs/
 ### Phase 0：冻结接口与安全样例
 
 - [x] 固定 Windows SDK、Rust toolchain、`windows` crate 和 `memsafe` fork 版本。*冻结：rustc/cargo 1.98.0-nightly（toolchain pinned by rust-toolchain.toml），`windows-core` 0.62.2 + `windows-sys` 0.61（仅 Win32_System_Memory / Win32_System_Threading），`zeroize` 1 + derive；`memsafe` 尚未引入——本阶段以本地 `WindowsSecret<N>` 满足固定容量 + PAGE_NOACCESS + zeroize 要求，`memsafe` 仅作后续评估（见下方基线记录）。*
-- [x] 用最小 Rust `cdylib` 验证 x64 MSVC 原生构建、MinGW 交叉构建和 DLL 导出检查。*Linux 宿主机完成 x86_64-pc-windows-gnu 交叉构建：release cdylib 244KB，`#[unsafe(no_mangle)]` 导出 DllCanUnloadNow / DllGetClassObject / DllRegisterServer / DllUnregisterServer，objdump 导出表核对无误；`exports.def` 已备好（LIBRARY su_credential_provider，4 导出 PRIVATE），Phase 1 接入。x64 MSVC 原生构建是发布门槛，需真实 Windows（VM）执行。*
+- [x] 用最小 Rust `cdylib` 验证 MinGW 交叉构建和 DLL 导出检查。*Linux 宿主机完成 x86_64-pc-windows-gnu 交叉构建：release cdylib 244KB，`#[unsafe(no_mangle)]` 导出 DllCanUnloadNow / DllGetClassObject / DllRegisterServer / DllUnregisterServer，objdump 导出表核对无误；`exports.def` 已备好（LIBRARY su_credential_provider，4 导出 PRIVATE），Phase 1 接入。*
 - [x] 写 COM GUID / HRESULT / field descriptor 的纯内存单元测试。*`canonical_clsid_matches_cpp_baseline`（0x5fd3d285_0dd9_4362_8855_e0abaacd4af6）、`hresult_codes_are_stable`、`field_layout_is_stable`、`sdk_constants_match` 等，12/12 通过（宿主 Linux + wine runner 均过）。*
 - [x] 完成 `WindowsSecret` 原型和 Windows 内存保护测试；不接入 LogonUI。*见下方基线记录；seal（PAGE_NOACCESS）测试因 wine 堆页 fault 标 `#[ignore]`，由 `scripts/seal_smoke.c`（VirtualAlloc 版，wine 下通过）与真实 Windows VM 覆盖。*
 - [x] 记录旧 C++ Provider 的 CLSID、字段布局、注册项和卸载行为，作为兼容基线。*见下方基线记录。*
@@ -218,7 +218,7 @@ src/platform/windows/credential_provider_rs/
 
 - Rust：COM 对象生命周期、字段索引、协议解析、pipe framing、超时、SID / session 绑定、UTF-16 序列化、zeroization 和 stale 状态。
 - `memsafe` fork：Windows page protection、异常展开、锁页失败回滚、并发 guard、stale pointer 和 dump 排除。
-- 构建：x64 MSVC 原生构建为发布门槛；MinGW 交叉构建用于开发机回归；`xmake build` 不得修改用户配置文件。
+- 构建：MinGW 交叉构建用于开发机回归；`xmake build` 不得修改用户配置文件。
 - 静态检查：禁止 `static mut`、`unsafe impl Send/Sync`、密码 `String` / `Vec`、`unwrap()` 出现在 COM / IPC 生产路径。
 
 ### Windows 平台验收
@@ -243,5 +243,4 @@ src/platform/windows/credential_provider_rs/
 
 - [待定] 新 Provider 是否使用新的 CLSID 并在灰度验收后切换，还是在最终发布时复用旧 CLSID。
 - [待定] `memsafe` Windows `PAGE_NOACCESS` 和无 panic Drop 补丁是维护 fork 还是上游贡献。
-- [待定] 是否需要同时发布 MSVC 和 MinGW 构建；MSVC 原生验收不可省略。
 - [待定] 域 / Entra 账户和 `CPUS_CREDUI` 的后续支持范围。

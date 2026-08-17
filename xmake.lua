@@ -5,7 +5,11 @@ add_repositories("local-repo local-repo")
 add_requires("slint v1.17.0", { system = false, optional = true })
 add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg")
-add_requires("libyuv")
+-- Static libyuv avoids a runtime dependency on the distro's libyuv.so,
+-- which is not present on many distributions (Arch/Debian/Fedora shipping
+-- different sonames or none at all). Built with JPEG (MJPEG decode) from the
+-- local-repo package; mingw builds pull libjpeg-turbo automatically.
+add_requires("libyuv", { system = false, configs = { shared = false, jpeg = true, jpeg_library = "libjpeg-turbo" } })
 
 set_encodings("utf-8")
 set_languages("c++26")
@@ -175,9 +179,7 @@ target("su_recognizer")
     add_files("src/modules/su.core.*.cppm")
     add_packages("cimg")
     add_packages("libyuv")
-    if is_plat("linux") then
-        add_syslinks("jpeg")  -- libyuv MJPEG decode links libjpeg
-    elseif is_plat("mingw") then
+    if is_plat("mingw") then
         add_files("src/platform/windows/print_shim.cpp")
     end
     if has_config("with_seetaface") then
@@ -201,6 +203,11 @@ target("su_recognizer")
     add_includedirs("src/core-rs/include", {public = true})
     add_packages("nlohmann_json")
     add_deps("su_core", "su_recognizer")
+    if is_plat("mingw") then
+        -- Ship the Rust Credential Provider DLL next to the GUI binary so a
+        -- plain `xmake build` produces the full deployable set.
+        add_deps("su_credential_provider")
+    end
     if is_plat("linux") then
         add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     else
@@ -488,6 +495,36 @@ target("su_core_rust_tests")
         return true
     end)
     add_tests("default")
+
+target("su_credential_provider")
+    -- Rust cdylib Credential Provider, cross-built from the Linux host.
+    -- Mirrors su_core's cargo integration: only active for mingw (the crate
+    -- is cfg(windows)-only); a phony target so `xmake build` produces the
+    -- DLL next to su_app.exe without a manual cargo invocation.
+    set_kind("phony")
+    on_build( function ()
+        if not is_plat("mingw") then
+            return
+        end
+        local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
+        local manifest = path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml")
+        local cargo_mode = is_mode("release") and "release" or "debug"
+        local cargo_args = {
+            "build",
+            "--manifest-path", manifest,
+            "--target", "x86_64-pc-windows-gnu",
+            "--target-dir", path.join(os.projectdir(), "build", "cargo", "credential_provider_rs")
+        }
+        if is_mode("release") then
+            table.insert(cargo_args, "--release")
+        end
+        os.mkdir(outdir)
+        os.execv("cargo", cargo_args)
+        local cargo_out = path.join(
+            os.projectdir(), "build", "cargo", "credential_provider_rs",
+            "x86_64-pc-windows-gnu", cargo_mode, "su_credential_provider.dll")
+        os.cp(cargo_out, path.join(outdir, "su_credential_provider.dll"))
+    end)
 
 target("su_credential_provider_rust_tests")
     apply_cpp_target("binary")

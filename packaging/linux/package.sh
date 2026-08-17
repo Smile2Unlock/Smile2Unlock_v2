@@ -218,7 +218,7 @@ pkgdesc='Local face authentication enrollment and diagnostics'
 arch=('${architecture}')
 license=('MIT')
 options=('!debug')
-depends=('pam' 'libyuv' 'libjpeg-turbo' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
+depends=('pam' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
 _stage_root='${root_dir}'
 
 package() {
@@ -243,10 +243,12 @@ build_fpm() {
     local default_depends
     case "$target" in
         deb)
-            default_depends="libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0,dbus,polkitd"
+            # libyuv and libjpeg-turbo are linked statically (see xmake.lua),
+            # so the package needs no libyuv0/libjpeg system dependency.
+            default_depends="libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd"
             ;;
         rpm)
-            default_depends="glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs,dbus,polkit"
+            default_depends="glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit"
             ;;
     esac
     local -a depends=()

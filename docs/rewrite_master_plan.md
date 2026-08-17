@@ -816,7 +816,7 @@ Slint 是唯一计划内 GUI。
 - ✅ Windows 部署布局平级化（可执行文件与 `assets/` 同目录，无嵌套 `bin\`）；CP 注册与认证服务 ImagePath 已按新布局在 VM 上重新注册并用仓库构建的服务二进制运行
 - ✅ `logon_secret_protocol.h` 恢复至 `src/platform/windows/auth_service/`（随 `common/` 删除而丢失），`su_auth_service` 加入 xmake 主构建（此前仅由已删除的 tests/windows 构建）
 - ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 锁屏 CP 触发）
-- ❌ MSVC 原生构建、物理 TPM / 无 TPM 机器和真实 LogonUI 验收
+- ❌ 物理 TPM / 无 TPM 机器和真实 LogonUI 验收
 
 ### Phase 5: Optimization and optional split ✅ 第一版决策完成
 

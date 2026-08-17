@@ -139,7 +139,7 @@ flowchart LR
 ### Windows(交叉编译或原生)
 
 ```bash
-xmake f -y -c -p mingw -a x86_64          # 或 -p windows(MSVC)
+xmake f -y -c -p mingw -a x86_64
 xmake require --build -f -y seetaface6open
 xmake build
 ```
