@@ -63,7 +63,7 @@ int fail(std::string_view detail) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string dll_path = "C:\\su-deploy\\bin\\su_credential_provider_fix_v28.dll";
+    std::string dll_path = "C:\\su-deploy\\su_credential_provider.dll";
     std::string_view operation;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
