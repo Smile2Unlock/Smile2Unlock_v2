@@ -144,7 +144,7 @@ flowchart LR
 |   |   `-- linux/            # authd、PAM、部署助手
 |   `-- zig/                  # Zig 组件
 |-- assets/                   # 唯一资源目录:icons / i18n / models/seeta
-|-- packaging/                # Linux 打包(package.sh、systemd、dbus、polkit)
+|-- packaging/                # Linux(package.sh、systemd、dbus、polkit)+ Windows(package.sh)
 |-- docs/                     # 设计文档
 |-- local-repo/               # 本地 xmake 包仓库
 |-- NOTICE/                   # 第三方声明
@@ -183,6 +183,14 @@ xmake build
 ```bash
 packaging/linux/package.sh --format all
 ```
+
+### Windows 打包(单命令)
+
+```bash
+packaging/windows/package.sh
+```
+
+产出 `build/windows-package/smile2unlock-<版本>/`(bin\ + assets\ 平级布局:su_app / su_deploy_helper / CP DLL / 服务 / 图标及从 NEEDED 表递归收集的全部运行库,外加 i18n + 模型),并写入 `build/packages/smile2unlock-<版本>-windows-x86_64.zip`。加 `--no-zip` 只暂存目录。无需 Inno Setup 安装器——解压即用。
 
 ## 贡献者
 
