@@ -84,18 +84,21 @@ void shutdown_mf() {
 }
 
 // MFEnumDeviceSources is missing from the mingw-w64 mfplat import library;
-// resolve it at runtime from mfplat.dll.
+// resolve it at runtime. It is exported by mf.dll (not mfplat.dll) on
+// Windows 8+ — loading it from mfplat returns NULL and enumeration silently
+// reports no cameras even when a UVC device is present (observed on a KVM VM
+// where Device Manager shows "USB2.0 HD UVC WebCam" but MF enumerated none).
 using MfEnumDeviceSourcesFn =
     HRESULT(WINAPI*)(IMFAttributes*, IMFActivate***, UINT32*);
 
 MfEnumDeviceSourcesFn load_mf_enum_device_sources() {
     static const MfEnumDeviceSourcesFn fn = [] {
-        HMODULE mfplat = ::LoadLibraryW(L"mfplat.dll");
-        if (mfplat == nullptr) {
+        HMODULE mf = ::LoadLibraryW(L"mf.dll");
+        if (mf == nullptr) {
             return static_cast<MfEnumDeviceSourcesFn>(nullptr);
         }
         return reinterpret_cast<MfEnumDeviceSourcesFn>(
-            ::GetProcAddress(mfplat, "MFEnumDeviceSources"));
+            ::GetProcAddress(mf, "MFEnumDeviceSources"));
     }();
     return fn;
 }
