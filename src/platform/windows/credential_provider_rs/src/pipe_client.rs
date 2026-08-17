@@ -1,13 +1,14 @@
 // Wire constants mirror the C++ protocol-header naming (kMagic, kSidCapacity,
-// ...) so the mapping to common/windows/logon_secret_protocol.h stays
-// greppable; the casing lint is disabled for this module.
+// ...) so the mapping to src/platform/windows/auth_service/logon_secret_protocol.h
+// stays greppable; the casing lint is disabled for this module.
 #![allow(non_upper_case_globals)]
 
 //! Named-pipe client for the LocalSystem Smile2Unlock logon-secret service.
 //!
 //! Wire format: fixed-size binary structs shared with the C++ service
-//! (common/windows/logon_secret_protocol.h). One CallNamedPipeW transaction
-//! per request; the pipe is message-mode, 3000 ms timeout.
+//! (src/platform/windows/auth_service/logon_secret_protocol.h). One
+//! CallNamedPipeW transaction per request; the pipe is message-mode,
+//! 3000 ms timeout.
 //!
 //! Security posture:
 //! - kPrepare / kMarkStale are only honored by the service when the caller
