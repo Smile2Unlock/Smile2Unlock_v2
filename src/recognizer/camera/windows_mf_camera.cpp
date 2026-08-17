@@ -318,13 +318,56 @@ private:
             return;
         }
 
-        // Prefer YUY2 (same packing as V4L2 YUYV). If the device rejects it,
-        // keep the native subtype and report it in grab_frame.
-        ComPtr<IMFMediaType> requested;
-        if (SUCCEEDED(::MFCreateMediaType(&requested))
-            && SUCCEEDED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
-            && SUCCEEDED(requested->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2))) {
-            (void)reader->SetCurrentMediaType(0, nullptr, requested.Get());
+        // Prefer YUY2 (same packing as V4L2 YUYV). Some devices — notably
+        // virtual cameras behind a KVM (QEMU/usbredir) — return a zero
+        // MF_MT_FRAME_SIZE when the media type only pins the subtype. Set an
+        // explicit resolution so negotiation yields a real size; otherwise the
+        // open fails even though the device enumerates fine.
+        const auto try_media_type = [&](const GUID& subtype, std::uint64_t size) {
+            ComPtr<IMFMediaType> requested;
+            if (FAILED(::MFCreateMediaType(&requested))) {
+                return false;
+            }
+            if (FAILED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
+                || FAILED(requested->SetGUID(MF_MT_SUBTYPE, subtype))
+                || FAILED(requested->SetUINT64(MF_MT_FRAME_SIZE, size))) {
+                return false;
+            }
+            return SUCCEEDED(reader->SetCurrentMediaType(0, nullptr, requested.Get()));
+        };
+        const auto packed_size = [](std::uint32_t w, std::uint32_t h) {
+            return (static_cast<std::uint64_t>(w) << 32) | static_cast<std::uint64_t>(h);
+        };
+        static constexpr std::array kSizes = std::array{
+            packed_size(1920, 1080), packed_size(1280, 720), packed_size(960, 540),
+            packed_size(640, 480), packed_size(320, 240), packed_size(176, 144),
+        };
+        bool type_set = false;
+        for (const auto size : kSizes) {
+            if (try_media_type(MFVideoFormat_YUY2, size)) {
+                type_set = true;
+                break;
+            }
+        }
+        if (!type_set) {
+            for (const auto size : kSizes) {
+                if (try_media_type(MFVideoFormat_MJPG, size)) {
+                    type_set = true;
+                    break;
+                }
+            }
+        }
+        if (!type_set) {
+            // Last resort: let the reader pick any format/ratio.
+            ComPtr<IMFMediaType> requested;
+            if (SUCCEEDED(::MFCreateMediaType(&requested))
+                && SUCCEEDED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))) {
+                type_set = SUCCEEDED(reader->SetCurrentMediaType(0, nullptr, requested.Get()));
+            }
+        }
+        if (!type_set) {
+            finish_open(false);
+            return;
         }
 
         ComPtr<IMFMediaType> negotiated;
