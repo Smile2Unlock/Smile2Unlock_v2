@@ -7,7 +7,10 @@ output_dir="${OUTPUT_DIR:-${project_dir}/build/packages}"
 format="${PACKAGE_FORMAT:-tar.gz}"
 pam_module_dir="${PAM_MODULE_DIR:-/usr/lib/security}"
 package_name="smile2unlock"
-version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
+# Version / release manifest helpers.
+# shellcheck source=../version/versions.sh
+source "${project_dir}/packaging/version/versions.sh"
+version="$(version_read)"
 architecture="$(uname -m)"
 work_dir="${project_dir}/build/packages/.work/${package_name}-${version}"
 root_dir="${work_dir}/root"
@@ -197,10 +200,14 @@ package_root="${work_dir}/${package_name}-${version}"
 rm -rf "$package_root"
 mkdir -p "$(dirname "$package_root")"
 cp -a "${root_dir}" "$package_root"
+# Ship the release manifest (version/stream/date + per-file SHA256) inside the
+# package so an updater can verify / compute an incremental diff.
+inject_release_info "${package_root}/usr/share/smile2unlock" "linux"
 
 build_tarball() {
     local output="${output_dir}/${package_name}-${version}-${architecture}.tar.gz"
     tar -C "${work_dir}" --owner=0 --group=0 -czf "$output" "${package_name}-${version}"
+    manifest_add "Smile2Unlock ${version} (Linux, tar.gz)" "$output"
     echo "created ${output}"
 }
 
@@ -232,6 +239,8 @@ EOF
         printf 'PKGDEST=%q\n' "$output_dir"
     } > "$makepkg_config"
     (cd "$work_dir" && makepkg --force --nodeps --config "$makepkg_config" -p PKGBUILD)
+    local pkgfile="${output_dir}/${package_name}-${version}-1-${architecture}.pkg.tar.zst"
+    manifest_add "Smile2Unlock ${version} (Linux, pacman)" "$pkgfile"
 }
 
 build_fpm() {
@@ -273,6 +282,8 @@ build_fpm() {
         -C "$root_dir" \
         -p "${output_dir}/${package_name}-${version}.${target}" \
         usr
+    local fpm_output="${output_dir}/${package_name}-${version}.${target}"
+    [[ -f "${fpm_output}" ]] && manifest_add "Smile2Unlock ${version} (Linux, ${target})" "$fpm_output"
 }
 
 case "$format" in
