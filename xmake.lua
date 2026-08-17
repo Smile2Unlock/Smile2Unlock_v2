@@ -2,6 +2,25 @@ add_rules("mode.debug", "mode.release")
 
 add_repositories("local-repo local-repo")
 
+-- Project identity + version: single source of truth is version.txt. xmake
+-- reads it so the version is available to targets (set_version also exposes
+-- a PROJECT_VERSION define / version header for build-time embedding) and
+-- stays in sync with the packaging scripts.
+-- Project identity + version: single source of truth is version.txt (read by
+-- packaging/version/*.sh and exported as SU_VERSION when invoking xmake). If
+-- it is not set we keep a matching literal so a bare `xmake build` still
+-- works. set_version also drives soname/soversion for shared libs.
+local _su_version = os.getenv("SU_VERSION")
+if not _su_version or _su_version == "" then
+    _su_version = "2.2.0"
+end
+set_version(_su_version, {build = "", arch = os.arch()})
+set_description("Smile2Unlock - local face authentication (Windows sign-in + Linux PAM)")
+-- (License/homepage/author are carried by packaging/version/releases.json and
+--  the per-package release-info.json; xmake's project API has no setters for
+--  them in this version.)
+
+
 add_requires("slint v1.17.0", { system = false, optional = true })
 add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg")
@@ -226,6 +245,9 @@ target("su_recognizer")
     if not is_plat("linux") then
         add_files("src/platform/windows/user/user_windows.cpp")
     end
+    -- Build-time version string for su_app (single source: version.txt via
+    -- SU_VERSION, fallback literal above).
+    add_defines("SU_VERSION_STR=\"" .. (_su_version or "2.2.0") .. "\"")
     if is_plat("linux") then
         add_files("src/modules/su.control.socket.cppm")
         add_files("src/platform/linux/deploy_client/*.cpp")

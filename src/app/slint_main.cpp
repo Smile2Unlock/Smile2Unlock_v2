@@ -686,7 +686,12 @@ int main(int argc, char** argv) {
     window->set_core_version(slint::SharedString(catalog->translate_value(
         selected_language,
         "diagnostics.core_version",
-        std::format("{}", su::app::core_version_major()))));
+#ifdef SU_VERSION_STR
+        SU_VERSION_STR
+#else
+        std::format("{}", su::app::core_version_major())
+#endif
+        )));
     window->set_config_path_text(slint::SharedString(snapshot->config_path));
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profiles(profiles);

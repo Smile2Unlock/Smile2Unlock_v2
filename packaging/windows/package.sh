@@ -29,6 +29,10 @@ build_dir="${BUILD_DIR:-${project_dir}/build/mingw/x86_64/release}"
 output_dir="${OUTPUT_DIR:-${project_dir}/build/packages}"
 package_name="smile2unlock"
 version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
+# Version / release manifest helpers (release-info + releases.json).
+# shellcheck source=../version/versions.sh
+source "${project_dir}/packaging/version/versions.sh"
+version="$(version_read)"
 arch="x86_64"
 work_root="${project_dir}/build/windows-package"
 package_root="${work_root}/${package_name}-${version}"
@@ -183,6 +187,9 @@ echo "staged: ${package_root}"
 echo "  bin: $(find "${package_root}/bin" -maxdepth 1 -type f | wc -l) files"
 echo "  assets: $(find "${package_root}/assets" -type f | wc -l) files"
 
+# --- 3.5 Inject release-info.json (version/stream + per-file SHA256) --------
+inject_release_info "${package_root}" "windows"
+
 # --- 4. Zip -----------------------------------------------------------------
 if [[ "$no_zip" == true ]]; then
     echo "skipped zip"
@@ -196,4 +203,5 @@ mkdir -p "${output_dir}"
 zip_file="${output_dir}/${package_name}-${version}-windows-${arch}.zip"
 rm -f "${zip_file}"
 (cd "${work_root}" && zip -qr "${zip_file}" "${package_name}-${version}")
+manifest_add "Smile2Unlock ${version} (Windows, zip)" "${zip_file}"
 echo "created ${zip_file}"
