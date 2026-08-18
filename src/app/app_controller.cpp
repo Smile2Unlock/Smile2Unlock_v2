@@ -469,7 +469,8 @@ std::expected<std::vector<FaceProfileSummary>, std::string> AppController::list_
     return profile_rows_from_json(*profiles);
 }
 
-std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::string_view profile_id) {
+std::expected<bool, std::string> AppController::delete_face_profile_by_id(
+    std::string_view profile_id) {
     const auto username = current_account_name();
     if (username.empty()) {
         return std::unexpected("failed to resolve current account");
@@ -487,6 +488,12 @@ std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::s
         return std::unexpected(response->reason);
     }
     return true;
+}
+
+std::expected<void, std::string> AppController::configure_windows_account_credential(
+    std::string_view windows_password) {
+    (void)windows_password;
+    return std::unexpected("Windows account credentials are not used on Linux");
 }
 
 SystemStatus AppController::load_system_status() {
@@ -595,9 +602,5 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
     std::string_view target) {
     return su::deploy::DeploymentClient{}.rollback_target(target);
 }
-
-// UDP recognition server is Windows-only (credential provider integration).
-void AppController::start_udp_recognition_server() {}
-void AppController::stop_udp_recognition_server() {}
 
 }  // namespace su::app

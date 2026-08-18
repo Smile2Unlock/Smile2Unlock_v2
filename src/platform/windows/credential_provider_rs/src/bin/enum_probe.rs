@@ -10,7 +10,7 @@
 //! Windows VM next to the deployed DLL.
 
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
 };
 use windows::Win32::UI::Shell::{
     CPUS_LOGON, ICredentialProvider, ICredentialProviderCredential2,
@@ -81,7 +81,11 @@ fn main() {
                             } else {
                                 let text = unsafe { sid.to_string() }.unwrap_or_default();
                                 println!("[probe] GetUserSid -> '{}'", text);
-                                unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(sid.0 as *const core::ffi::c_void)) };
+                                unsafe {
+                                    windows::Win32::System::Com::CoTaskMemFree(Some(
+                                        sid.0 as *const core::ffi::c_void,
+                                    ))
+                                };
                             }
                         }
                         Err(e) => println!("[probe] GetUserSid FAILED {:08x}", e.code().0),

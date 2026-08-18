@@ -1,13 +1,22 @@
 #include "logon_secret_server.h"
 
 #include "logon_secret_protocol.h"
+#include "recognition_agent_protocol.h"
 
 #include <aclapi.h>
+#include <bcrypt.h>
 #include <sddl.h>
+#include <userenv.h>
+#include <wtsapi32.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <fstream>
+#include <filesystem>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -16,7 +25,9 @@ namespace su::windows::auth_service {
 
 // Diagnostic log (SYSTEM-writable). Diagnostic only.
 void server_log(const char* message) {
-    std::ofstream log(L"C:\\su-deploy\\authsvc.log", std::ios::app);
+    std::filesystem::create_directories(L"C:\\ProgramData\\Smile2Unlock\\Logs");
+    std::ofstream log(
+        L"C:\\ProgramData\\Smile2Unlock\\Logs\\auth-service.log", std::ios::app);
     log << message << "\n";
 }
 
@@ -201,6 +212,8 @@ std::expected<std::string, Status> wide_to_utf8(std::wstring_view value);
 struct ResolvedAccount {
     std::string canonical_username;
     SuWindowsAccountKind kind;
+    std::wstring domain;
+    std::wstring username;
 };
 
 std::expected<ResolvedAccount, Status> resolve_account(
@@ -252,7 +265,7 @@ std::expected<ResolvedAccount, Status> resolve_account(
     if (!canonical_utf8) {
         return std::unexpected(canonical_utf8.error());
     }
-    return ResolvedAccount{*canonical_utf8, kind};
+    return ResolvedAccount{*canonical_utf8, kind, std::move(domain), std::move(name)};
 }
 
 std::expected<std::string, Status> wide_to_utf8(std::wstring_view value) {
@@ -295,11 +308,372 @@ Status map_error(security::LogonSecretError error) {
     return Status::kUnavailable;
 }
 
+Status map_profile_error(security::FaceProfileStoreError error) {
+    switch (error) {
+    case security::FaceProfileStoreError::kInvalidArgument:
+        return Status::kInvalidRequest;
+    case security::FaceProfileStoreError::kCorrupt:
+        return Status::kCorrupt;
+    case security::FaceProfileStoreError::kNotFound:
+        return Status::kProfileNotFound;
+    case security::FaceProfileStoreError::kUnavailable:
+    case security::FaceProfileStoreError::kWriteFailed:
+        return Status::kUnavailable;
+    }
+    return Status::kUnavailable;
+}
+
+std::optional<std::string_view> request_payload(const Request& request) {
+    if (request.payload_length == 0
+        || request.payload_length >= std::size(request.payload)) {
+        return std::nullopt;
+    }
+    const auto payload = std::string_view{
+        reinterpret_cast<const char*>(request.payload), request.payload_length};
+    if (payload.find('\0') != std::string_view::npos) {
+        return std::nullopt;
+    }
+    return payload;
+}
+
+bool copy_payload(std::string_view payload, Response& response) {
+    if (payload.size() >= std::size(response.payload)) {
+        return false;
+    }
+    std::ranges::copy(payload, response.payload);
+    response.payload[payload.size()] = 0;
+    response.payload_length = static_cast<std::uint32_t>(payload.size());
+    return true;
+}
+
+std::string fixed_utf8(const std::uint8_t* bytes, std::size_t capacity) {
+    const auto* end = std::find(bytes, bytes + capacity, std::uint8_t{0});
+    return std::string{reinterpret_cast<const char*>(bytes),
+        static_cast<std::size_t>(end - bytes)};
+}
+
+std::string json_escape(std::string_view text) {
+    auto escaped = std::string{};
+    escaped.reserve(text.size());
+    for (const auto character : text) {
+        switch (character) {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default:
+            if (static_cast<unsigned char>(character) < 0x20) {
+                escaped += '?';
+            } else {
+                escaped += character;
+            }
+        }
+    }
+    return escaped;
+}
+
+bool verify_windows_password(
+    const ResolvedAccount& account,
+    std::wstring_view password) {
+    HANDLE token = nullptr;
+    const auto authenticated = LogonUserW(
+        account.username.c_str(),
+        account.domain.c_str(),
+        std::wstring{password}.c_str(),
+        LOGON32_LOGON_NETWORK,
+        LOGON32_PROVIDER_DEFAULT,
+        &token);
+    if (token != nullptr) {
+        CloseHandle(token);
+    }
+    return authenticated != FALSE;
+}
+
+bool write_exact(HANDLE handle, const void* input, DWORD size) {
+    const auto* bytes = static_cast<const std::byte*>(input);
+    DWORD total = 0;
+    while (total < size) {
+        DWORD written = 0;
+        if (!WriteFile(handle, bytes + total, size - total, &written, nullptr)
+            || written == 0) {
+            return false;
+        }
+        total += written;
+    }
+    return true;
+}
+
+std::filesystem::path sibling_path(const wchar_t* name) {
+    auto path = std::wstring(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) {
+        return {};
+    }
+    path.resize(length);
+    auto result = std::filesystem::path{path}.parent_path();
+    result /= name;
+    return result;
+}
+
+std::expected<std::vector<float>, DWORD> run_recognition_agent(
+    HANDLE stop_event,
+    std::uint32_t requested_session_id) {
+    using namespace smile2unlock::recognition_agent_ipc;
+    using AgentRequest = smile2unlock::recognition_agent_ipc::Request;
+    using AgentResponse = smile2unlock::recognition_agent_ipc::Response;
+    const auto agent_path = sibling_path(L"su_recognition_agent.exe");
+    const auto attributes = GetFileAttributesW(agent_path.c_str());
+    if (agent_path.empty() || attributes == INVALID_FILE_ATTRIBUTES
+        || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return std::unexpected(ERROR_FILE_NOT_FOUND);
+    }
+
+    auto inheritable = SECURITY_ATTRIBUTES{
+        .nLength = sizeof(SECURITY_ATTRIBUTES),
+        .lpSecurityDescriptor = nullptr,
+        .bInheritHandle = TRUE,
+    };
+    HANDLE child_read_raw = nullptr;
+    HANDLE service_write_raw = nullptr;
+    HANDLE service_read_raw = nullptr;
+    HANDLE child_write_raw = nullptr;
+    if (!CreatePipe(&child_read_raw, &service_write_raw, &inheritable, sizeof(AgentRequest))
+        || !CreatePipe(&service_read_raw, &child_write_raw, &inheritable, sizeof(AgentResponse))) {
+        if (child_read_raw != nullptr) CloseHandle(child_read_raw);
+        if (service_write_raw != nullptr) CloseHandle(service_write_raw);
+        if (service_read_raw != nullptr) CloseHandle(service_read_raw);
+        if (child_write_raw != nullptr) CloseHandle(child_write_raw);
+        return std::unexpected(GetLastError());
+    }
+    auto child_read = ScopedHandle{child_read_raw};
+    auto service_write = ScopedHandle{service_write_raw};
+    const auto service_read = ScopedHandle{service_read_raw};
+    auto child_write = ScopedHandle{child_write_raw};
+    if (!SetHandleInformation(service_write_raw, HANDLE_FLAG_INHERIT, 0)
+        || !SetHandleInformation(service_read_raw, HANDLE_FLAG_INHERIT, 0)) {
+        return std::unexpected(GetLastError());
+    }
+
+    const auto null_error_raw = CreateFileW(
+        L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (null_error_raw == INVALID_HANDLE_VALUE) {
+        return std::unexpected(GetLastError());
+    }
+    auto null_error = ScopedHandle{null_error_raw};
+
+    HANDLE process_token_raw = nullptr;
+    if (!OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
+            &process_token_raw)) {
+        return std::unexpected(GetLastError());
+    }
+    const auto process_token = ScopedHandle{process_token_raw};
+    HANDLE session_token_raw = nullptr;
+    if (!DuplicateTokenEx(
+            process_token_raw,
+            TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY
+                | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
+            nullptr,
+            SecurityImpersonation,
+            TokenPrimary,
+            &session_token_raw)) {
+        return std::unexpected(GetLastError());
+    }
+    const auto session_token = ScopedHandle{session_token_raw};
+    auto session_id = requested_session_id;
+    if (session_id == 0) {
+        session_id = WTSGetActiveConsoleSessionId();
+    }
+    if (session_id == 0 || session_id == 0xFFFF'FFFF
+        || !SetTokenInformation(
+            session_token_raw, TokenSessionId, &session_id, sizeof(session_id))) {
+        return std::unexpected(session_id == 0 || session_id == 0xFFFF'FFFF
+            ? ERROR_NO_SUCH_LOGON_SESSION : GetLastError());
+    }
+
+    auto attribute_size = SIZE_T{0};
+    (void)InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_size);
+    auto attribute_storage = std::vector<std::byte>(attribute_size);
+    auto* attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
+        attribute_storage.data());
+    if (!InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size)) {
+        return std::unexpected(GetLastError());
+    }
+    using AttributeList = std::remove_pointer_t<LPPROC_THREAD_ATTRIBUTE_LIST>;
+    const auto delete_attributes = std::unique_ptr<AttributeList, decltype(&DeleteProcThreadAttributeList)>{
+        attribute_list, &DeleteProcThreadAttributeList};
+    const HANDLE inherited_handles[]{child_read_raw, child_write_raw, null_error_raw};
+    if (!UpdateProcThreadAttribute(
+            attribute_list,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            const_cast<HANDLE*>(inherited_handles),
+            sizeof(inherited_handles),
+            nullptr,
+            nullptr)) {
+        return std::unexpected(GetLastError());
+    }
+
+    auto startup = STARTUPINFOEXW{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = child_read_raw;
+    startup.StartupInfo.hStdOutput = child_write_raw;
+    startup.StartupInfo.hStdError = null_error_raw;
+    startup.lpAttributeList = attribute_list;
+    auto command_line = L"\"" + agent_path.wstring() + L"\"";
+    auto process = PROCESS_INFORMATION{};
+    void* environment = nullptr;
+    if (!CreateEnvironmentBlock(&environment, session_token_raw, FALSE)) {
+        return std::unexpected(GetLastError());
+    }
+    const auto destroy_environment = std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)>{
+        environment, &DestroyEnvironmentBlock};
+    const auto working_directory = agent_path.parent_path();
+    if (!CreateProcessAsUserW(
+            session_token_raw,
+            agent_path.c_str(),
+            command_line.data(),
+            nullptr,
+            nullptr,
+            TRUE,
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+            environment,
+            working_directory.c_str(),
+            &startup.StartupInfo,
+            &process)) {
+        return std::unexpected(GetLastError());
+    }
+    const auto process_handle = ScopedHandle{process.hProcess};
+    const auto thread_handle = ScopedHandle{process.hThread};
+    CloseHandle(child_read.release());
+    CloseHandle(child_write.release());
+    null_error.reset();
+
+    const auto terminate_agent = [&](DWORD exit_code) {
+        (void)TerminateProcess(process.hProcess, exit_code);
+        (void)WaitForSingleObject(process.hProcess, 3000);
+    };
+
+    auto request = AgentRequest{};
+    if (BCryptGenRandom(
+            nullptr,
+            request.nonce.data(),
+            static_cast<ULONG>(request.nonce.size()),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+        terminate_agent(ERROR_GEN_FAILURE);
+        return std::unexpected(ERROR_GEN_FAILURE);
+    }
+    request.camera_index = 0;
+    request.timeout_ms = 10'000;
+    request.liveness_threshold = 0.5F;
+    if (!write_exact(service_write_raw, &request, sizeof(request))) {
+        const auto error = GetLastError();
+        terminate_agent(ERROR_WRITE_FAULT);
+        return std::unexpected(error);
+    }
+    service_write.reset();
+
+    auto response = AgentResponse{};
+    auto received = std::size_t{0};
+    const auto deadline = GetTickCount64() + request.timeout_ms + 3000;
+    while (received < sizeof(response)) {
+        if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+            terminate_agent(ERROR_CANCELLED);
+            SecureZeroMemory(&request, sizeof(request));
+            SecureZeroMemory(&response, sizeof(response));
+            return std::unexpected(ERROR_CANCELLED);
+        }
+        auto available = DWORD{0};
+        if (!PeekNamedPipe(service_read_raw, nullptr, 0, nullptr, &available, nullptr)) {
+            const auto error = GetLastError();
+            terminate_agent(error);
+            SecureZeroMemory(&request, sizeof(request));
+            SecureZeroMemory(&response, sizeof(response));
+            return std::unexpected(error);
+        }
+        if (available != 0) {
+            const auto remaining = sizeof(response) - received;
+            const auto to_read = static_cast<DWORD>(std::min<std::size_t>(available, remaining));
+            auto bytes_read = DWORD{0};
+            auto* destination = reinterpret_cast<std::byte*>(&response) + received;
+            if (!ReadFile(service_read_raw, destination, to_read, &bytes_read, nullptr)
+                || bytes_read == 0) {
+                const auto error = GetLastError();
+                terminate_agent(error);
+                SecureZeroMemory(&request, sizeof(request));
+                SecureZeroMemory(&response, sizeof(response));
+                return std::unexpected(error);
+            }
+            received += bytes_read;
+            continue;
+        }
+        if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
+            SecureZeroMemory(&request, sizeof(request));
+            SecureZeroMemory(&response, sizeof(response));
+            return std::unexpected(ERROR_HANDLE_EOF);
+        }
+        const auto now = GetTickCount64();
+        if (now >= deadline) {
+            terminate_agent(ERROR_TIMEOUT);
+            SecureZeroMemory(&request, sizeof(request));
+            SecureZeroMemory(&response, sizeof(response));
+            return std::unexpected(ERROR_TIMEOUT);
+        }
+        (void)WaitForSingleObject(
+            stop_event, static_cast<DWORD>(std::min<ULONGLONG>(25, deadline - now)));
+    }
+
+    auto exit_code = DWORD{STILL_ACTIVE};
+    if (WaitForSingleObject(process.hProcess, 3000) != WAIT_OBJECT_0
+        || !GetExitCodeProcess(process.hProcess, &exit_code)
+        || exit_code != ERROR_SUCCESS) {
+        terminate_agent(ERROR_GEN_FAILURE);
+        SecureZeroMemory(&request, sizeof(request));
+        SecureZeroMemory(&response, sizeof(response));
+        return std::unexpected(ERROR_GEN_FAILURE);
+    }
+    if (response.magic != kResponseMagic
+        || response.version != kVersion
+        || response.nonce != request.nonce
+        || response.status != AgentStatus::kOk
+        || response.feature_count == 0
+        || response.feature_count > response.feature.size()
+        || !std::isfinite(response.liveness_score)
+        || response.liveness_score < request.liveness_threshold) {
+        SecureZeroMemory(&request, sizeof(request));
+        SecureZeroMemory(&response, sizeof(response));
+        return std::unexpected(ERROR_ACCESS_DENIED);
+    }
+    auto feature = std::vector<float>(
+        response.feature.begin(), response.feature.begin() + response.feature_count);
+    SecureZeroMemory(&request, sizeof(request));
+    SecureZeroMemory(&response, sizeof(response));
+    return feature;
+}
+
+std::string embedding_source(std::span<const float> feature) {
+    auto stream = std::ostringstream{};
+    stream << "embedding:" << std::setprecision(9);
+    for (std::size_t index = 0; index < feature.size(); ++index) {
+        if (index != 0) {
+            stream << ',';
+        }
+        stream << feature[index];
+    }
+    return std::move(stream).str();
+}
+
 Status process_request(
     HANDLE pipe,
+    HANDLE stop_event,
     const Request& request,
     Response& response,
-    security::LogonSecretStore& store) {
+    security::LogonSecretStore& store,
+    security::FaceProfileStore& profile_store) {
     if (request.magic != smile2unlock::logon_secret_ipc::kMagic
         || request.version != smile2unlock::logon_secret_ipc::kVersion
         || request.request_id == 0) {
@@ -315,11 +689,18 @@ Status process_request(
     }
     const auto caller_is_system = is_local_system(*caller_sid);
     if ((request.operation == Operation::kPrepare
+            || request.operation == Operation::kAuthenticateAndPrepare
             || request.operation == Operation::kMarkStale)
         && !caller_is_system) {
         return Status::kAccessDenied;
     }
-    if (request.operation == Operation::kStore || request.operation == Operation::kClear) {
+    if (request.operation == Operation::kStore
+        || request.operation == Operation::kClear
+        || request.operation == Operation::kEnrollProfile
+        || request.operation == Operation::kListProfiles
+        || request.operation == Operation::kDeleteProfile
+        || request.operation == Operation::kVerifyProfile
+        || request.operation == Operation::kCredentialStatus) {
         const auto caller_sid_text = sid_string(*caller_sid);
         if (!caller_sid_text || !std::ranges::equal(*caller_sid_text, *requested_sid)) {
             return Status::kAccessDenied;
@@ -332,14 +713,9 @@ Status process_request(
 
     switch (request.operation) {
     case Operation::kPrepare: {
-        auto password = store.prepare(
-            *sid_utf8, request.request_id, request.logon_session_id);
-        if (!password || password->size() >= std::size(response.password)) {
-            return password ? Status::kCorrupt : map_error(password.error());
-        }
-        std::copy_n(password->c_str(), password->size() + 1, response.password);
-        response.password_length = static_cast<std::uint32_t>(password->size());
-        return Status::kOk;
+        // Version 2 closes the old bypass: password release is only reachable
+        // through kAuthenticateAndPrepare after service-owned face matching.
+        return Status::kAccessDenied;
     }
     case Operation::kMarkStale: {
         const auto marked = store.mark_stale(*sid_utf8);
@@ -354,6 +730,9 @@ Status process_request(
         if (password->empty()) {
             return Status::kInvalidRequest;
         }
+        if (!verify_windows_password(*account, *password)) {
+            return Status::kAuthenticationFailed;
+        }
         const auto stored = store.store(
             *sid_utf8,
             account->canonical_username,
@@ -365,6 +744,99 @@ Status process_request(
         const auto cleared = store.clear(*sid_utf8);
         return cleared ? Status::kOk : map_error(cleared.error());
     }
+    case Operation::kAuthenticateAndPrepare: {
+        const auto feature = run_recognition_agent(stop_event, request.logon_session_id);
+        if (!feature) {
+            return Status::kAuthenticationFailed;
+        }
+        const auto source = embedding_source(*feature);
+        const auto report = profile_store.authenticate(*sid_utf8, source, 0.65F, true);
+        if (!report) {
+            return map_profile_error(report.error());
+        }
+        if (!report->accepted || !report->liveness_ok) {
+            return Status::kAuthenticationFailed;
+        }
+        auto password = store.prepare(
+            *sid_utf8, request.request_id, request.logon_session_id);
+        if (!password || password->size() >= std::size(response.password)) {
+            return password ? Status::kCorrupt : map_error(password.error());
+        }
+        std::copy_n(password->c_str(), password->size() + 1, response.password);
+        response.password_length = static_cast<std::uint32_t>(password->size());
+        return Status::kOk;
+    }
+    case Operation::kEnrollProfile: {
+        const auto label = fixed_wide(request.canonical_username);
+        const auto payload = request_payload(request);
+        if (!label || !payload) {
+            return Status::kInvalidRequest;
+        }
+        const auto label_utf8 = wide_to_utf8(*label);
+        if (!label_utf8) {
+            return label_utf8.error();
+        }
+        const auto credential_ready = store.configured(*sid_utf8);
+        if (!credential_ready || !*credential_ready) {
+            return credential_ready ? Status::kUnavailable : map_error(credential_ready.error());
+        }
+        const auto enrolled = profile_store.enroll(*sid_utf8, *label_utf8, *payload);
+        if (!enrolled) {
+            return map_profile_error(enrolled.error());
+        }
+        const auto profiles = profile_store.list_json(*sid_utf8);
+        return profiles && copy_payload(*profiles, response)
+            ? Status::kOk
+            : (profiles ? Status::kCorrupt : map_profile_error(profiles.error()));
+    }
+    case Operation::kListProfiles: {
+        const auto profiles = profile_store.list_json(*sid_utf8);
+        return profiles && copy_payload(*profiles, response)
+            ? Status::kOk
+            : (profiles ? Status::kCorrupt : map_profile_error(profiles.error()));
+    }
+    case Operation::kDeleteProfile: {
+        const auto profile_id = request_payload(request);
+        if (!profile_id) {
+            return Status::kInvalidRequest;
+        }
+        const auto removed = profile_store.remove(*sid_utf8, *profile_id);
+        if (!removed) {
+            return map_profile_error(removed.error());
+        }
+        return *removed ? Status::kOk : Status::kProfileNotFound;
+    }
+    case Operation::kVerifyProfile: {
+        const auto payload = request_payload(request);
+        if (!payload) {
+            return Status::kInvalidRequest;
+        }
+        const auto report = profile_store.authenticate(
+            *sid_utf8, *payload, 0.65F, request.account_kind == 1);
+        if (!report) {
+            return map_profile_error(report.error());
+        }
+        const auto report_json = std::format(
+            R"({{"accepted":{},"score":{},"threshold":{},"liveness_ok":{},"profile_count":{},"best_profile_id":"{}","best_profile_label":"{}","reason":"{}"}})",
+            report->accepted ? "true" : "false",
+            report->score,
+            report->threshold,
+            report->liveness_ok ? "true" : "false",
+            report->profile_count,
+            json_escape(fixed_utf8(report->best_profile_id, std::size(report->best_profile_id))),
+            json_escape(fixed_utf8(report->best_profile_label, std::size(report->best_profile_label))),
+            json_escape(fixed_utf8(report->reason, std::size(report->reason))));
+        return copy_payload(report_json, response) ? Status::kOk : Status::kCorrupt;
+    }
+    case Operation::kCredentialStatus: {
+        const auto configured = store.configured(*sid_utf8);
+        if (!configured) {
+            return map_error(configured.error());
+        }
+        response.payload[0] = *configured ? 1 : 0;
+        response.payload_length = 1;
+        return Status::kOk;
+    }
     }
     return Status::kInvalidRequest;
 }
@@ -372,7 +844,9 @@ Status process_request(
 } // namespace
 
 LogonSecretServer::LogonSecretServer(security::StorageKey storage_key)
-    : storage_key_(std::move(storage_key)), secret_store_(storage_key_) {}
+    : storage_key_(std::move(storage_key)),
+      secret_store_(storage_key_),
+      profile_store_(storage_key_) {}
 
 std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
     const auto descriptor = pipe_descriptor();
@@ -428,7 +902,8 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             server_log("serve: request received");
             response.request_id = request.request_id;
             response.logon_session_id = request.logon_session_id;
-            response.status = process_request(raw_pipe, request, response, secret_store_);
+            response.status = process_request(
+                raw_pipe, stop_event, request, response, secret_store_, profile_store_);
             server_log(("serve: response status=" + std::to_string(static_cast<int>(response.status))).c_str());
         } else {
             response.status = Status::kInvalidRequest;

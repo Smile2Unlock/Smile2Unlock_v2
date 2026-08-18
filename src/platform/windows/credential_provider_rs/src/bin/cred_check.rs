@@ -6,7 +6,7 @@
 use su_credential_provider::{
     cred_pack_authentication_buffer, protect_password, retrieve_negotiate_auth_package,
 };
-use windows::Win32::Security::Credentials::{CredUnprotectW, CRED_PROTECTION_TYPE};
+use windows::Win32::Security::Credentials::{CRED_PROTECTION_TYPE, CredUnprotectW};
 use windows_core::PWSTR;
 
 fn main() {
@@ -52,15 +52,14 @@ fn main() {
 
     // 3. CredPack size with a real protected password
     let qualified: Vec<u16> = "DESKTOP-308FE27\\Administrator".encode_utf16().collect();
-    match protect_password(&pw) {
-        Ok(protected) => match unsafe { cred_pack_authentication_buffer(&qualified, &protected) } {
+    if let Ok(protected) = protect_password(&pw) {
+        match unsafe { cred_pack_authentication_buffer(&qualified, &protected) } {
             Ok((ptr, cb)) => {
                 println!("[check] cred_pack cb={}", cb);
                 unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(ptr as *const _)) };
             }
             Err(e) => println!("[check] cred_pack FAILED {:08x}", e.code().0),
-        },
-        Err(_) => {}
+        }
     }
     let _ = CRED_PROTECTION_TYPE::default();
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "face_profile_store.h"
 #include "logon_secret_store.h"
 
 #include <windows.h>
@@ -19,6 +20,7 @@ public:
 private:
     security::StorageKey storage_key_;
     security::LogonSecretStore secret_store_;
+    security::FaceProfileStore profile_store_;
 };
 
 } // namespace su::windows::auth_service

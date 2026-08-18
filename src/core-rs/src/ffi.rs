@@ -159,7 +159,9 @@ pub(crate) fn write_string_to_buffer(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn su_core_version_major() -> u32 {
-    0
+    // Core ABI major, kept independent from the product's patch/minor
+    // version. The current rewrite exports ABI v2.
+    2
 }
 
 #[unsafe(no_mangle)]

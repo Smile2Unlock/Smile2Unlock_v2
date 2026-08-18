@@ -17,6 +17,7 @@ extern "C" int su_win_count_own_threads(void);
 extern "C" unsigned long __stdcall GetCurrentThreadId(void);
 extern "C" int __stdcall GetEnvironmentVariableW(const wchar_t* name, wchar_t* buffer, unsigned long size);
 extern "C" int __stdcall SetEnvironmentVariableW(const wchar_t* name, const wchar_t* value);
+extern "C" int __stdcall GetUserDefaultLocaleName(wchar_t* locale_name, int locale_name_count);
 extern "C" unsigned long __stdcall GetLastError(void);
 extern "C" int __stdcall SystemParametersInfoW(unsigned int action, unsigned int param, void* value, unsigned int win_ini);
 extern "C" void* __stdcall LoadImageW(void* instance, const wchar_t* name, unsigned int type, int width, int height, unsigned int flags);
@@ -168,8 +169,12 @@ void set_activity(
 // Diagnostic log for GUI bring-up (window creation, GL, event loop). File
 // based because GUI-subsystem builds have no console; fail-silent.
 void gui_log(const std::string& message) {
-    if (auto file = std::ofstream("C:/Windows/Temp/su_gui.log", std::ios::app)) {
-        file << message << "\n";
+    std::error_code error;
+    const auto path = std::filesystem::temp_directory_path(error) / "su_gui.log";
+    if (!error) {
+        if (auto file = std::ofstream(path, std::ios::app)) {
+            file << message << "\n";
+        }
     }
 }
 
@@ -253,6 +258,25 @@ std::string translated_value(
     return catalog.translate_value(language_index(window), key, value);
 }
 
+std::string localized_backend_error(
+    const su::app::LanguageCatalog& catalog,
+    const WindowHandle& window,
+    std::string_view error) {
+    const auto key = error == "Windows password verification failed"
+            || error == "Windows password is invalid"
+        ? "error.windows_password"
+        : error == "secure profile store is unavailable"
+            ? "error.secure_store_unavailable"
+        : error == "Smile2Unlock auth service returned an invalid response"
+            ? "error.auth_service_response"
+        : error == "auth service denied profile access"
+            ? "error.profile_access_denied"
+        : error == "face profile was not found"
+            ? "error.profile_not_found"
+        : std::string_view{};
+    return key.empty() ? std::string(error) : translated(catalog, window, key);
+}
+
 void set_preview_idle(
     const WindowHandle& window,
     const su::app::LanguageCatalog& catalog) {
@@ -290,6 +314,17 @@ std::filesystem::path language_directory(const std::filesystem::path& executable
 }
 
 std::filesystem::path ui_preference_path() {
+#ifdef _WIN32
+    if (const auto* appdata = std::getenv("APPDATA");
+        appdata != nullptr && *appdata != '\0') {
+        return std::filesystem::path(appdata) / "smile2unlock" / "ui.json";
+    }
+    if (const auto* profile = std::getenv("USERPROFILE");
+        profile != nullptr && *profile != '\0') {
+        return std::filesystem::path(profile) / "AppData" / "Roaming"
+            / "smile2unlock" / "ui.json";
+    }
+#endif
     if (const auto* config_home = std::getenv("XDG_CONFIG_HOME");
         config_home != nullptr && *config_home != '\0') {
         return std::filesystem::path(config_home) / "smile2unlock" / "ui.json";
@@ -301,12 +336,24 @@ std::filesystem::path ui_preference_path() {
 }
 
 std::string system_locale() {
+#ifdef _WIN32
+    auto locale_name = std::array<wchar_t, 85>{};
+    if (::GetUserDefaultLocaleName(
+            locale_name.data(), static_cast<int>(locale_name.size())) > 0) {
+        const auto locale = std::wstring_view{locale_name.data()};
+        if (locale.starts_with(L"zh")) {
+            return "zh-CN";
+        }
+    }
+    return "en";
+#else
     for (const auto* name : {"LC_ALL", "LC_MESSAGES", "LANG"}) {
         if (const auto* value = std::getenv(name); value != nullptr && *value != '\0') {
             return value;
         }
     }
     return "en";
+#endif
 }
 
 int theme_preference_index(su::app::ThemePreference preference) {
@@ -372,6 +419,7 @@ void apply_system_status(
     const su::app::SystemStatus& status,
     const std::shared_ptr<DeploymentTargetModel>& deployment_targets) {
     window->set_service_available(status.service_available);
+    window->set_account_credential_configured(status.account_credential_configured);
     window->set_storage_protection_index(static_cast<int>(status.storage_protection));
     window->set_pam_status_known(status.pam_status_known);
     window->set_pam_configured(status.pam_configured);
@@ -473,11 +521,15 @@ bool detect_linux_desktop_size(float& width, float& height) {
             auto it = std::sregex_iterator(out.begin(), out.end(), mode);
             auto end = std::sregex_iterator{};
             for (; it != end; ++it) {
-                const auto w = std::stoul((*it)[1].str());
-                const auto h = std::stoul((*it)[2].str());
-                if (w * h > best_w * best_h) {
-                    best_w = w;
-                    best_h = h;
+                try {
+                    const auto w = std::stoul((*it)[1].str());
+                    const auto h = std::stoul((*it)[2].str());
+                    if (w * h > best_w * best_h) {
+                        best_w = w;
+                        best_h = h;
+                    }
+                } catch (const std::exception&) {
+                    continue;
                 }
             }
             if (best_w != 0 && best_h != 0) {
@@ -493,9 +545,13 @@ bool detect_linux_desktop_size(float& width, float& height) {
         std::regex dimensions{R"(\b(\d+)x(\d+)\s+pixels)"};
         std::smatch match;
         if (std::regex_search(out, match, dimensions)) {
-            width = static_cast<float>(std::stoul(match[1].str()));
-            height = static_cast<float>(std::stoul(match[2].str()));
-            return true;
+            try {
+                width = static_cast<float>(std::stoul(match[1].str()));
+                height = static_cast<float>(std::stoul(match[2].str()));
+                return true;
+            } catch (const std::exception&) {
+                return false;
+            }
         }
     }
     return false;
@@ -788,8 +844,63 @@ int main(int argc, char** argv) {
                 });
         });
 
+    window->on_configure_account_credential_requested(
+        [weak_window, controller, deployment_targets, catalog](
+            slint::SharedString requested_password) {
+            if (const auto window = weak_window.lock()) {
+                (*window)->set_busy(true);
+                set_activity(
+                    *window,
+                    translated(*catalog, *window, "account.credential_saving"),
+                    translated(*catalog, *window, "account.credential_verifying"),
+                    "warn",
+                    true);
+            }
+            auto password = std::string(requested_password);
+            std::thread([
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                password = std::move(password)]() mutable {
+                const auto configured =
+                    controller->configure_windows_account_credential(password);
+                std::fill(password.begin(), password.end(), '\0');
+                password.clear();
+                auto status = controller->load_system_status();
+                slint::invoke_from_event_loop([
+                    weak_window,
+                    deployment_targets,
+                    catalog,
+                    configured,
+                    status = std::move(status)]() mutable {
+                    const auto window = weak_window.lock();
+                    if (!window) {
+                        return;
+                    }
+                    apply_system_status(*window, status, deployment_targets);
+                    (*window)->set_account_password_text("");
+                    if (!configured) {
+                        set_activity(
+                            *window,
+                            translated(*catalog, *window, "account.credential_save_failed"),
+                            localized_backend_error(
+                                *catalog, *window, configured.error()),
+                            "bad");
+                        return;
+                    }
+                    set_activity(
+                        *window,
+                        translated(*catalog, *window, "account.credential_saved"),
+                        translated(*catalog, *window, "account.credential_saved_detail"),
+                        "good");
+                });
+            }).detach();
+        });
+
     window->on_enroll_current_frame_requested(
-        [weak_window, controller, preview, profiles, catalog](slint::SharedString requested_label) {
+        [weak_window, controller, preview, profiles, catalog](
+            slint::SharedString requested_label) {
             if (auto window = weak_window.lock()) {
                 preview->stop();
                 set_preview_idle(*window, *catalog);
@@ -807,7 +918,8 @@ int main(int argc, char** argv) {
                     label = translated(*catalog, *window, "enrollment.default_label");
                 }
             }
-            std::thread([weak_window, controller, profiles, catalog, label = std::move(label)] {
+            std::thread([weak_window, controller, profiles, catalog,
+                         label = std::move(label)]() mutable {
                 const auto enrolled = controller->enroll_face_profile_from_current_frame(label);
                 auto rows = enrolled
                     ? controller->list_face_profile_rows()
@@ -824,7 +936,7 @@ int main(int argc, char** argv) {
                             set_activity(
                                 *window,
                                 translated(*catalog, *window, "activity.enrollment_failed"),
-                                rows.error(),
+                                localized_backend_error(*catalog, *window, rows.error()),
                                 "bad");
                             return;
                         }
@@ -881,7 +993,7 @@ int main(int argc, char** argv) {
                         set_activity(
                             *window,
                             translated(*catalog, *window, "activity.auth_unavailable"),
-                            result.error(),
+                            localized_backend_error(*catalog, *window, result.error()),
                             "bad");
                         return;
                     }
@@ -921,8 +1033,10 @@ int main(int argc, char** argv) {
     });
 
     window->on_delete_profile_requested(
-        [weak_window, controller, profiles, catalog](slint::SharedString profile_id) {
-            const auto deleted = controller->delete_face_profile_by_id(std::string(profile_id));
+        [weak_window, controller, profiles, catalog](
+            slint::SharedString profile_id) {
+            const auto deleted = controller->delete_face_profile_by_id(
+                std::string(profile_id));
             const auto window = weak_window.lock();
             if (!window) {
                 return;
@@ -931,7 +1045,7 @@ int main(int argc, char** argv) {
                 set_activity(
                     *window,
                     translated(*catalog, *window, "activity.remove_failed"),
-                    deleted.error(),
+                    localized_backend_error(*catalog, *window, deleted.error()),
                     "bad");
                 return;
             }
@@ -971,7 +1085,7 @@ int main(int argc, char** argv) {
             set_activity(
                 *window,
                 translated(*catalog, *window, "activity.refresh_failed"),
-                rows.error(),
+                localized_backend_error(*catalog, *window, rows.error()),
                 "bad");
             return;
         }
@@ -1173,10 +1287,10 @@ int main(int argc, char** argv) {
 #endif
         const float sf = window->window().scale_factor();
         const float scale = std::clamp(
-            std::min(1.0f, std::min(avail_w / (1560.0f * sf), avail_h / (880.0f * sf))),
+            std::min(1.0f, std::min(avail_w / (1200.0f * sf), avail_h / (780.0f * sf))),
             0.5f,
             1.0f);
-        const auto fitted = slint::LogicalSize({1560.0f * scale, 880.0f * scale});
+        const auto fitted = slint::LogicalSize({1200.0f * scale, 780.0f * scale});
         window->window().set_size(fitted);
 #ifdef _WIN32
         // Center the window on the work area: winit's default placement can
@@ -1231,13 +1345,6 @@ int main(int argc, char** argv) {
         gui_log_t("watcher thread done");
     });
     window_watcher.detach();
-#endif
-#ifdef _WIN32
-    // UDP face-recognition server for the credential provider (loopback
-    // 51236/51234). Runs until the process exits; recognition requests are
-    // answered by AppController on the server thread.
-    controller->start_udp_recognition_server();
-    gui_log_t("udp recognition server started");
 #endif
     gui_log_t("calling run_event_loop");
     slint::run_event_loop();

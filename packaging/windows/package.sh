@@ -8,8 +8,10 @@
 #
 # Stages into:
 #   build/windows-package/smile2unlock-<version>/
-#     bin\    su_app.exe, su_deploy_helper.exe, su_credential_provider.dll,
-#             Smile2UnlockAuthService.exe, Smile2Unlock.ico, runtime DLLs
+#     bin\    su_app.exe, su_deploy_helper.exe, su_password_tool.exe,
+#             su_recognition_agent.exe,
+#             su_credential_provider.dll, Smile2UnlockAuthService.exe,
+#             Smile2Unlock.ico, runtime DLLs
 #     assets\ i18n\ + models\seeta\ (same tree the GUI resolves at runtime)
 #
 # and writes build/packages/smile2unlock-<version>-windows-x86_64.zip.
@@ -71,6 +73,8 @@ require_file "${build_dir}/su_app.exe"
 require_file "${build_dir}/su_deploy_helper.exe"
 require_file "${build_dir}/su_credential_provider.dll"
 require_file "${build_dir}/su_auth_service.exe"
+require_file "${build_dir}/su_password_tool.exe"
+require_file "${build_dir}/su_recognition_agent.exe"
 require_file "${build_dir}/assets/i18n/en.json"
 require_file "${build_dir}/assets/i18n/zh-CN.json"
 for model in face_detector.csta face_landmarker_pts5.csta face_recognizer.csta fas_first.csta fas_second.csta; do
@@ -140,6 +144,8 @@ install -m 0755 "${build_dir}/su_app.exe" "${package_root}/bin/su_app.exe"
 install -m 0755 "${build_dir}/su_deploy_helper.exe" "${package_root}/bin/su_deploy_helper.exe"
 install -m 0755 "${build_dir}/su_credential_provider.dll" "${package_root}/bin/su_credential_provider.dll"
 install -m 0755 "${build_dir}/su_auth_service.exe" "${package_root}/bin/Smile2UnlockAuthService.exe"
+install -m 0755 "${build_dir}/su_password_tool.exe" "${package_root}/bin/su_password_tool.exe"
+install -m 0755 "${build_dir}/su_recognition_agent.exe" "${package_root}/bin/su_recognition_agent.exe"
 install -m 0644 "${build_dir}/Smile2Unlock.ico" "${package_root}/bin/Smile2Unlock.ico"
 
 # --- 2. Copy runtime DLLs recursively from NEEDED tables ---------------------
@@ -161,8 +167,8 @@ stage_deps() {
             if [[ -f "${package_root}/bin/${name}" ]]; then
                 continue
             fi
-            echo "WARNING: runtime DLL not found for ${binary}: ${name}" >&2
-            continue
+            echo "missing runtime DLL for ${binary}: ${name}" >&2
+            return 1
         fi
         install -m 0755 "$path" "${package_root}/bin/${name}"
         stage_deps "$path"
@@ -173,6 +179,8 @@ for binary in \
     "${package_root}/bin/su_app.exe" \
     "${package_root}/bin/su_deploy_helper.exe" \
     "${package_root}/bin/Smile2UnlockAuthService.exe" \
+    "${package_root}/bin/su_password_tool.exe" \
+    "${package_root}/bin/su_recognition_agent.exe" \
     "${package_root}/bin/su_credential_provider.dll"
 do
     stage_deps "$binary"

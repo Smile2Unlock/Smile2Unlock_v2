@@ -13,10 +13,10 @@
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldState {
-    Hidden = 0,                       // CPFS_HIDDEN
-    DisplayInSelectedTile = 1,        // CPFS_DISPLAY_IN_SELECTED_TILE
-    DisplayInDeselectedTile = 2,      // CPFS_DISPLAY_IN_DESELECTED_TILE
-    DisplayInBoth = 3,                // CPFS_DISPLAY_IN_BOTH
+    Hidden = 0,                  // CPFS_HIDDEN
+    DisplayInSelectedTile = 1,   // CPFS_DISPLAY_IN_SELECTED_TILE
+    DisplayInDeselectedTile = 2, // CPFS_DISPLAY_IN_DESELECTED_TILE
+    DisplayInBoth = 3,           // CPFS_DISPLAY_IN_BOTH
 }
 
 /// CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE (official SDK, wincred.h/
@@ -24,10 +24,10 @@ pub enum FieldState {
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteractiveState {
-    None = 0,      // CPFIS_NONE
-    ReadOnly = 1,  // CPFIS_READONLY
-    Disabled = 2,  // CPFIS_DISABLED
-    Focused = 3,   // CPFIS_FOCUSED
+    None = 0,     // CPFIS_NONE
+    ReadOnly = 1, // CPFIS_READONLY
+    Disabled = 2, // CPFIS_DISABLED
+    Focused = 3,  // CPFIS_FOCUSED
 }
 
 /// CREDENTIAL_PROVIDER_FIELD_TYPE (official SDK values; the windows crate
@@ -36,18 +36,19 @@ pub enum InteractiveState {
 /// this local table to use the invalid 0..8 mapping; LogonUI rejects a
 /// descriptor whose cpft is CPFT_INVALID (0)).
 #[repr(i32)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldType {
-    Invalid = 0,       // CPFT_INVALID
-    LargeText = 1,     // CPFT_LARGE_TEXT
-    SmallText = 2,     // CPFT_SMALL_TEXT
-    CommandLink = 3,   // CPFT_COMMAND_LINK
-    EditText = 4,      // CPFT_EDIT_TEXT
-    PasswordText = 5,  // CPFT_PASSWORD_TEXT
-    TileImage = 6,     // CPFT_TILE_IMAGE
-    Checkbox = 7,      // CPFT_CHECKBOX
-    ComboBox = 8,      // CPFT_COMBOBOX
-    SubmitButton = 9,  // CPFT_SUBMIT_BUTTON
+    Invalid = 0,      // CPFT_INVALID
+    LargeText = 1,    // CPFT_LARGE_TEXT
+    SmallText = 2,    // CPFT_SMALL_TEXT
+    CommandLink = 3,  // CPFT_COMMAND_LINK
+    EditText = 4,     // CPFT_EDIT_TEXT
+    PasswordText = 5, // CPFT_PASSWORD_TEXT
+    TileImage = 6,    // CPFT_TILE_IMAGE
+    Checkbox = 7,     // CPFT_CHECKBOX
+    ComboBox = 8,     // CPFT_COMBOBOX
+    SubmitButton = 9, // CPFT_SUBMIT_BUTTON
 }
 
 /// Field ids of the Rust v1 tile (visible set only; the nine hidden
@@ -76,11 +77,26 @@ pub struct FieldStatePair {
 /// s_rgFieldStatePairs, hidden fields dropped).
 pub fn state_pairs() -> [FieldStatePair; FIELD_COUNT] {
     [
-        FieldStatePair { state: FieldState::DisplayInBoth, interactive: InteractiveState::None },    // TileImage
-        FieldStatePair { state: FieldState::Hidden, interactive: InteractiveState::None },            // Label
-        FieldStatePair { state: FieldState::DisplayInBoth, interactive: InteractiveState::None },     // LargeText
-        FieldStatePair { state: FieldState::DisplayInSelectedTile, interactive: InteractiveState::Focused }, // PasswordText
-        FieldStatePair { state: FieldState::DisplayInSelectedTile, interactive: InteractiveState::None },    // SubmitButton
+        FieldStatePair {
+            state: FieldState::DisplayInBoth,
+            interactive: InteractiveState::None,
+        }, // TileImage
+        FieldStatePair {
+            state: FieldState::Hidden,
+            interactive: InteractiveState::None,
+        }, // Label
+        FieldStatePair {
+            state: FieldState::DisplayInBoth,
+            interactive: InteractiveState::None,
+        }, // LargeText
+        FieldStatePair {
+            state: FieldState::DisplayInSelectedTile,
+            interactive: InteractiveState::Focused,
+        }, // PasswordText
+        FieldStatePair {
+            state: FieldState::DisplayInSelectedTile,
+            interactive: InteractiveState::None,
+        }, // SubmitButton
     ]
 }
 
@@ -99,9 +115,19 @@ pub fn field_type(id: FieldId) -> FieldType {
 pub fn field_type_guid(id: FieldId) -> (u32, u16, u16, [u8; 8]) {
     match id {
         // CPFG_CREDENTIAL_PROVIDER_LOGO
-        FieldId::TileImage => (0x2d837775, 0xf6cd, 0x464e, [0xa7, 0x45, 0x48, 0x2f, 0xd0, 0xb4, 0x74, 0x93]),
+        FieldId::TileImage => (
+            0x2d837775,
+            0xf6cd,
+            0x464e,
+            [0xa7, 0x45, 0x48, 0x2f, 0xd0, 0xb4, 0x74, 0x93],
+        ),
         // CPFG_CREDENTIAL_PROVIDER_LABEL
-        FieldId::Label => (0x286bbff3, 0xbad4, 0x438f, [0xb0, 0x07, 0x79, 0xb7, 0x26, 0x7c, 0x3d, 0x48]),
+        FieldId::Label => (
+            0x286bbff3,
+            0xbad4,
+            0x438f,
+            [0xb0, 0x07, 0x79, 0xb7, 0x26, 0x7c, 0x3d, 0x48],
+        ),
         _ => (0, 0, 0, [0; 8]),
     }
 }
@@ -172,9 +198,21 @@ mod tests {
 
         let pairs = state_pairs();
         assert_eq!(pairs[FieldId::Label as usize].state, FieldState::Hidden);
-        assert_eq!(pairs[FieldId::PasswordText as usize].state, FieldState::DisplayInSelectedTile);
-        assert_eq!(pairs[FieldId::PasswordText as usize].interactive, InteractiveState::Focused);
-        assert_eq!(pairs[FieldId::LargeText as usize].state, FieldState::DisplayInBoth);
-        assert_eq!(pairs[FieldId::SubmitButton as usize].state, FieldState::DisplayInSelectedTile);
+        assert_eq!(
+            pairs[FieldId::PasswordText as usize].state,
+            FieldState::DisplayInSelectedTile
+        );
+        assert_eq!(
+            pairs[FieldId::PasswordText as usize].interactive,
+            InteractiveState::Focused
+        );
+        assert_eq!(
+            pairs[FieldId::LargeText as usize].state,
+            FieldState::DisplayInBoth
+        );
+        assert_eq!(
+            pairs[FieldId::SubmitButton as usize].state,
+            FieldState::DisplayInSelectedTile
+        );
     }
 }

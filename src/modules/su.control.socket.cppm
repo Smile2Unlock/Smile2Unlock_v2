@@ -19,7 +19,10 @@ export namespace su::control {
 
 inline constexpr std::string_view kDefaultSocketPath = "/run/smile2unlock/control.sock";
 inline constexpr std::uint32_t kProtocolVersion = 1;
-inline constexpr std::size_t kMaximumFrameSize = 64 * 1024;
+// Profile summaries are variable-sized JSON. Keep a bounded frame while
+// leaving room for large installations instead of failing once the list
+// crosses the old 64 KiB ceiling.
+inline constexpr std::size_t kMaximumFrameSize = 1024 * 1024;
 
 enum class SocketError {
     kInvalidArgument,

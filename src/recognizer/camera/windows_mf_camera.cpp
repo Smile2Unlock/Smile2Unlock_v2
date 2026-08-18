@@ -21,6 +21,7 @@
 #include <wrl/client.h>
 
 #include <condition_variable>
+#include <cstring>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -384,33 +385,37 @@ private:
             finish_open(false);
             return;
         }
-        // MF_MT_FRAME_SIZE packs width in the high 16 bits and height in the
-        // low 16 bits; MFGetAttributeSize is missing from the mingw import
-        // library, so decode it directly.
-        UINT32 frame_size = 0;
-        if (FAILED(negotiated->GetUINT32(MF_MT_FRAME_SIZE, &frame_size))
+        // MF_MT_FRAME_SIZE is a UINT64: width occupies the high 32 bits and
+        // height the low 32 bits.
+        UINT64 frame_size = 0;
+        if (FAILED(negotiated->GetUINT64(MF_MT_FRAME_SIZE, &frame_size))
             || frame_size == 0) {
             finish_open(false);
             return;
         }
-        const UINT32 width = frame_size >> 16;
-        const UINT32 height = frame_size & 0xFFFF;
+        const UINT32 width = static_cast<UINT32>(frame_size >> 32);
+        const UINT32 height = static_cast<UINT32>(frame_size & 0xFFFF'FFFFULL);
         if (width == 0 || height == 0) {
             finish_open(false);
             return;
         }
-        UINT32 stride = 0;
-        if (FAILED(negotiated->GetUINT32(MF_MT_DEFAULT_STRIDE, &stride))) {
-            stride = width * 2; // packed 4:2:2
+        UINT32 raw_stride = 0;
+        INT32 stride = 0;
+        if (FAILED(negotiated->GetUINT32(MF_MT_DEFAULT_STRIDE, &raw_stride))) {
+            stride = static_cast<INT32>(width * 2); // packed 4:2:2
+        } else {
+            stride = static_cast<INT32>(raw_stride);
         }
         reader_ = std::move(reader);
         width_ = width;
         height_ = height;
-        stride_ = static_cast<std::size_t>(stride < 0 ? -stride : stride);
+        stride_ = static_cast<std::size_t>(
+            stride < 0 ? -static_cast<std::int64_t>(stride) : stride);
         if (stride_ == 0) {
             stride_ = static_cast<std::size_t>(width) * 2;
         }
         v4l2_format_ = v4l2_format_for(subtype);
+        bottom_up_ = stride < 0 && v4l2_format_ == kV4l2Yuyv;
         open_ = true;
         finish_open(true);
     }
@@ -460,7 +465,24 @@ private:
                 finish_grab(false);
                 return;
             }
-            grab_buffer_.assign(data, data + current);
+            const auto image_bytes = stride_ * static_cast<std::size_t>(height_);
+            if (bottom_up_ && stride_ != 0 && current >= image_bytes) {
+                grab_buffer_.resize(current);
+                for (std::size_t row = 0; row < height_; ++row) {
+                    std::memcpy(
+                        grab_buffer_.data() + row * stride_,
+                        data + (static_cast<std::size_t>(height_) - 1 - row) * stride_,
+                        stride_);
+                }
+                if (current > image_bytes) {
+                    std::memcpy(
+                        grab_buffer_.data() + image_bytes,
+                        data + image_bytes,
+                        current - image_bytes);
+                }
+            } else {
+                grab_buffer_.assign(data, data + current);
+            }
             buffer->Unlock();
             frame_.width = static_cast<int>(width_);
             frame_.height = static_cast<int>(height_);
@@ -515,6 +537,7 @@ private:
     UINT32 width_ = 0;
     UINT32 height_ = 0;
     std::size_t stride_ = 0;
+    bool bottom_up_ = false;
     std::uint32_t v4l2_format_ = 0;
 };
 

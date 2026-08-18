@@ -9,6 +9,10 @@ export module su.app.session;
 
 import std;
 
+#if defined(_WIN32)
+extern "C" int su_win_session_locked();
+#endif
+
 export namespace su::app {
 
 class SessionLockMonitor {
@@ -254,8 +258,47 @@ private:
 
 class SessionLockMonitor::Impl {
 public:
-    explicit Impl(LockCallback) {}
-    [[nodiscard]] bool available() const { return false; }
+    explicit Impl(LockCallback callback)
+        : callback_(std::move(callback)), thread_([this] { run(); }) {}
+
+    ~Impl() {
+        running_.store(false, std::memory_order_release);
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    [[nodiscard]] bool available() const {
+        return available_.load(std::memory_order_acquire);
+    }
+
+private:
+    static std::optional<bool> session_locked() {
+        const auto state = su_win_session_locked();
+        return state < 0 ? std::nullopt : std::optional<bool>{state != 0};
+    }
+
+    void run() {
+        auto was_locked = false;
+        while (running_.load(std::memory_order_acquire)) {
+            const auto queried = session_locked();
+            if (!queried) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{250});
+                continue;
+            }
+            available_.store(true, std::memory_order_release);
+            if (*queried && !was_locked && callback_) {
+                callback_();
+            }
+            was_locked = *queried;
+            std::this_thread::sleep_for(std::chrono::milliseconds{250});
+        }
+    }
+
+    LockCallback callback_;
+    std::atomic<bool> running_{true};
+    std::atomic<bool> available_{false};
+    std::thread thread_;
 };
 
 #endif

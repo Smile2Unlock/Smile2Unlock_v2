@@ -26,19 +26,18 @@ mod pipe_client;
 #[cfg(windows)]
 mod provider;
 #[cfg(windows)]
-mod recognition;
 #[cfg(windows)]
 mod serialization;
 
 pub use fields::{FieldId, FieldState, FieldStatePair, InteractiveState};
+#[cfg(windows)]
+pub use pipe_client::{PipeClient, PreparedPipePassword, current_user_sid};
 pub use secret_buffer::{SecretError, WindowsSecret};
 #[cfg(windows)]
-pub use pipe_client::{current_user_sid, PipeClient, PreparedPipePassword};
-#[cfg(windows)]
 pub use serialization::{
-    cred_pack_authentication_buffer, kerb_interactive_unlock_logon_init,
-    kerb_interactive_unlock_logon_pack, protect_password, retrieve_negotiate_auth_package,
-    split_domain_and_username, CPUS_LOGON, CPUS_UNLOCK_WORKSTATION,
+    CPUS_LOGON, CPUS_UNLOCK_WORKSTATION, cred_pack_authentication_buffer,
+    kerb_interactive_unlock_logon_init, kerb_interactive_unlock_logon_pack, protect_password,
+    retrieve_negotiate_auth_package, split_domain_and_username,
 };
 
 pub(crate) use windows_core::HRESULT;
@@ -53,7 +52,6 @@ pub(crate) const E_INVALIDARG: HRESULT = HRESULT(0x80070057u32 as i32);
 pub(crate) const S_FALSE: HRESULT = HRESULT(1);
 #[cfg(windows)]
 pub(crate) use pipe_client::win32_error;
-
 
 /// CLSID of the legacy C++ provider ({5fd3d285-0dd9-4362-8855-e0abaacd4af6}).
 /// Phase 5 decides between reusing it and switching to a new CLSID; the Rust
@@ -76,6 +74,7 @@ use windows_core::{IUnknown, Interface};
 
 #[cfg(windows)]
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "system" fn DllGetClassObject(
     rclsid: *const windows_core::GUID,
     riid: *const windows_core::GUID,
@@ -118,17 +117,11 @@ pub extern "system" fn DllGetClassObject(
 #[cfg(windows)]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
-    let locked = class_factory::LOCK_COUNT.load(core::sync::atomic::Ordering::SeqCst) > 0;
-    log::cp_log(if locked {
-        "DllCanUnloadNow: S_FALSE (locked)"
-    } else {
-        "DllCanUnloadNow: S_OK"
-    });
-    if locked {
-        HRESULT(1) // S_FALSE: still locked
-    } else {
-        HRESULT(0) // S_OK
-    }
+    // The generated COM wrappers do not expose a reliable process-wide count
+    // for every Provider/Credential interface. Keep the DLL loaded rather
+    // than allowing LogonUI to unload code while an object is still alive.
+    log::cp_log("DllCanUnloadNow: S_FALSE (conservative lifetime policy)");
+    HRESULT(1) // S_FALSE
 }
 
 #[cfg(not(windows))]
@@ -169,7 +162,10 @@ mod tests {
         assert_eq!(clsid.data1, 0x5fd3d285);
         assert_eq!(clsid.data2, 0x0dd9);
         assert_eq!(clsid.data3, 0x4362);
-        assert_eq!(clsid.data4, [0x88, 0x55, 0xe0, 0xab, 0xaa, 0xcd, 0x4a, 0xf6]);
+        assert_eq!(
+            clsid.data4,
+            [0x88, 0x55, 0xe0, 0xab, 0xaa, 0xcd, 0x4a, 0xf6]
+        );
     }
 
     #[test]
@@ -185,12 +181,24 @@ mod tests {
         let pairs = fields::state_pairs();
         assert_eq!(pairs.len(), fields::FIELD_COUNT);
         // Tile image is the only logo-field shown in both tiles.
-        assert_eq!(pairs[FieldId::TileImage as usize].state, FieldState::DisplayInBoth);
+        assert_eq!(
+            pairs[FieldId::TileImage as usize].state,
+            FieldState::DisplayInBoth
+        );
         // Large text is also shown in both tiles.
-        assert_eq!(pairs[FieldId::LargeText as usize].state, FieldState::DisplayInBoth);
+        assert_eq!(
+            pairs[FieldId::LargeText as usize].state,
+            FieldState::DisplayInBoth
+        );
         // Password field is focused in the selected tile, matching the C++ baseline.
-        assert_eq!(pairs[FieldId::PasswordText as usize].state, FieldState::DisplayInSelectedTile);
-        assert_eq!(pairs[FieldId::PasswordText as usize].interactive, InteractiveState::Focused);
+        assert_eq!(
+            pairs[FieldId::PasswordText as usize].state,
+            FieldState::DisplayInSelectedTile
+        );
+        assert_eq!(
+            pairs[FieldId::PasswordText as usize].interactive,
+            InteractiveState::Focused
+        );
     }
 
     #[test]
@@ -198,16 +206,37 @@ mod tests {
         use crate::fields::FieldType;
         // Logo/label fields carry their CPFG guids; text/submit fields are
         // zeroed so LogonUI treats them as plain fields.
-        assert_ne!(fields::field_type_guid(FieldId::TileImage), (0, 0, 0, [0; 8]));
-        assert_eq!(fields::field_type_guid(FieldId::LargeText), (0, 0, 0, [0; 8]));
+        assert_ne!(
+            fields::field_type_guid(FieldId::TileImage),
+            (0, 0, 0, [0; 8])
+        );
+        assert_eq!(
+            fields::field_type_guid(FieldId::LargeText),
+            (0, 0, 0, [0; 8])
+        );
         assert_ne!(fields::field_type_guid(FieldId::Label), (0, 0, 0, [0; 8]));
-        assert_eq!(fields::field_type_guid(FieldId::SubmitButton), (0, 0, 0, [0; 8]));
+        assert_eq!(
+            fields::field_type_guid(FieldId::SubmitButton),
+            (0, 0, 0, [0; 8])
+        );
         assert_eq!(fields::field_type(FieldId::TileImage), FieldType::TileImage);
         assert_eq!(fields::field_type(FieldId::LargeText), FieldType::LargeText);
         assert_eq!(fields::field_type(FieldId::Label), FieldType::SmallText);
-        assert_eq!(fields::field_type(FieldId::PasswordText), FieldType::PasswordText);
-        assert_eq!(fields::field_type(FieldId::SubmitButton), FieldType::SubmitButton);
-        for id in [FieldId::TileImage, FieldId::LargeText, FieldId::Label, FieldId::PasswordText, FieldId::SubmitButton] {
+        assert_eq!(
+            fields::field_type(FieldId::PasswordText),
+            FieldType::PasswordText
+        );
+        assert_eq!(
+            fields::field_type(FieldId::SubmitButton),
+            FieldType::SubmitButton
+        );
+        for id in [
+            FieldId::TileImage,
+            FieldId::LargeText,
+            FieldId::Label,
+            FieldId::PasswordText,
+            FieldId::SubmitButton,
+        ] {
             assert!(!fields::label(id).is_empty());
         }
     }
@@ -216,8 +245,8 @@ mod tests {
 #[cfg(all(test, windows))]
 mod com_tests {
     use super::*;
-    use windows::Win32::UI::Shell::ICredentialProvider;
     use windows::Win32::System::Com::{CoTaskMemFree, IClassFactory};
+    use windows::Win32::UI::Shell::ICredentialProvider;
     use windows_core::BOOL;
 
     fn call_dll_get_class_object(
@@ -254,7 +283,7 @@ mod com_tests {
         let mut bautologon: BOOL = BOOL(1);
         unsafe { provider.GetCredentialCount(&mut dwcount, &mut dwdefault, &mut bautologon) }
             .expect("GetCredentialCount should succeed");
-        assert_eq!(dwcount, 1);
+        assert_eq!(dwcount, 0);
         assert_eq!(dwdefault, 0);
         assert_eq!(bautologon, BOOL(0));
         // Factory is released when `factory` drops.
@@ -270,14 +299,19 @@ mod com_tests {
 
     #[test]
     fn com_wrong_riid_fails() {
-        let (hr, ppv) = call_dll_get_class_object(&CLSID_SU_PROVIDER, &windows_core::GUID::zeroed());
+        let (hr, ppv) =
+            call_dll_get_class_object(&CLSID_SU_PROVIDER, &windows_core::GUID::zeroed());
         assert_eq!(hr.0, 0x80004002u32 as i32); // E_NOINTERFACE
         assert!(ppv.is_null());
     }
 
     #[test]
     fn com_null_output_pointer_fails() {
-        let hr = DllGetClassObject(&CLSID_SU_PROVIDER, &IClassFactory::IID, core::ptr::null_mut());
+        let hr = DllGetClassObject(
+            &CLSID_SU_PROVIDER,
+            &IClassFactory::IID,
+            core::ptr::null_mut(),
+        );
         assert_eq!(hr.0, 0x80004003u32 as i32); // E_POINTER
     }
 
@@ -286,9 +320,8 @@ mod com_tests {
         let factory = factory_from_clsid();
         // A real interface instance (any implementor) as the outer unknown.
         let outer: windows_core::IUnknown = crate::provider::Provider::new().into();
-        let result: windows_core::Result<ICredentialProvider> = unsafe {
-            factory.CreateInstance::<_, ICredentialProvider>(Some(&outer))
-        };
+        let result: windows_core::Result<ICredentialProvider> =
+            unsafe { factory.CreateInstance::<_, ICredentialProvider>(Some(&outer)) };
         assert_eq!(
             result.err().unwrap().code().0,
             0x80040110u32 as i32 // CLASS_E_NOAGGREGATION
@@ -325,26 +358,29 @@ mod com_tests {
 
     #[test]
     fn com_usage_scenario_gate() {
-        use windows::Win32::UI::Shell::{CREDENTIAL_PROVIDER_USAGE_SCENARIO, CPUS_CREDUI, CPUS_LOGON};
+        use windows::Win32::UI::Shell::{
+            CPUS_CREDUI, CPUS_LOGON, CREDENTIAL_PROVIDER_USAGE_SCENARIO,
+        };
         let factory = factory_from_clsid();
         let provider: ICredentialProvider = unsafe {
             factory
                 .CreateInstance::<_, ICredentialProvider>(None::<&windows_core::IUnknown>)
                 .expect("CreateInstance should succeed")
         };
-        unsafe { provider.SetUsageScenario(CPUS_LOGON, 0) }
-            .expect("CPUS_LOGON must be accepted");
-        let rejected = unsafe { provider.SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO(CPUS_CREDUI.0), 0) };
+        unsafe { provider.SetUsageScenario(CPUS_LOGON, 0) }.expect("CPUS_LOGON must be accepted");
+        let rejected = unsafe {
+            provider.SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO(CPUS_CREDUI.0), 0)
+        };
         assert_eq!(rejected.err().unwrap().code().0, 0x80004001u32 as i32); // E_NOTIMPL
     }
 
     #[test]
-    fn com_lockserver_blocks_unload() {
+    fn com_unload_is_always_conservative() {
         let factory = factory_from_clsid();
         unsafe { factory.LockServer(true) }.expect("LockServer(TRUE) should succeed");
         assert_eq!(DllCanUnloadNow(), HRESULT(1)); // S_FALSE
         unsafe { factory.LockServer(false) }.expect("LockServer(FALSE) should succeed");
-        assert_eq!(DllCanUnloadNow(), HRESULT(0)); // S_OK
+        assert_eq!(DllCanUnloadNow(), HRESULT(1)); // S_FALSE
     }
 
     #[test]
@@ -356,7 +392,6 @@ mod com_tests {
         let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
             2, // CPUS_LOGON
             Some("S-1-5-21-123-456-789-1001".to_owned()),
-            None,
         )
         .into();
         let sid = unsafe { credential.GetUserSid() }.expect("GetUserSid should succeed");
@@ -376,7 +411,6 @@ mod com_tests {
         let credential: ICredentialProviderCredential = crate::credential::Credential::new(
             2, // CPUS_LOGON
             Some("S-1-5-21-123-456-789-1001".to_owned()),
-            None,
         )
         .into();
         let c2 = credential
@@ -396,7 +430,6 @@ mod com_tests {
         // it during enumeration. Verify the real vtable QI returns it.
         let credential: ICredentialProviderCredential = crate::credential::Credential::new(
             2, // CPUS_LOGON
-            None,
             None,
         )
         .into();
@@ -424,7 +457,6 @@ mod com_tests {
         // unwritten null out-param; native LogonUI sees S_FALSE + NULL.
         let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
             2, // CPUS_LOGON
-            None,
             None,
         )
         .into();

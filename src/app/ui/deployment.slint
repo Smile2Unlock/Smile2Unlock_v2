@@ -120,7 +120,11 @@ export component DeploymentPanel inherits Rectangle {
                         spacing: 12px;
                         Text {
                             horizontal-stretch: 1;
-                            text: target.service;
+                            text: target.id == "credential-provider"
+                                ? root.translate("deployment.target_credential_provider", root.language_index)
+                                : target.id == "auth-service"
+                                    ? root.translate("deployment.target_auth_service", root.language_index)
+                                    : target.service;
                             color: UiTheme.text-primary;
                             font-size: 14px;
                             font-weight: 700;
@@ -150,10 +154,22 @@ export component DeploymentPanel inherits Rectangle {
 
                     InlineStatus {
                         height: 22px;
-                        label: target.password_fallback
-                            ? root.translate("deployment.password_fallback_ready", root.language_index)
-                            : root.translate("deployment.password_fallback_unknown", root.language_index);
-                        tone: target.password_fallback ? "good" : "warn";
+                        label: target.id == "credential-provider"
+                            ? target.configured
+                                ? root.translate("deployment.cp_registered", root.language_index)
+                                : root.translate("deployment.cp_incomplete", root.language_index)
+                            : target.id == "auth-service"
+                                ? target.configured
+                                    ? root.translate("deployment.service_running", root.language_index)
+                                    : target.state == "conflict"
+                                        ? root.translate("deployment.service_legacy_path", root.language_index)
+                                        : target.state == "supported"
+                                        ? root.translate("deployment.service_stopped", root.language_index)
+                                        : root.translate("deployment.service_missing", root.language_index)
+                                : target.password_fallback
+                                    ? root.translate("deployment.password_fallback_ready", root.language_index)
+                                    : root.translate("deployment.password_fallback_unknown", root.language_index);
+                        tone: target.configured ? "good" : "warn";
                     }
                 }
 
@@ -184,24 +200,30 @@ export component DeploymentPanel inherits Rectangle {
                         if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
                             width: 128px;
                             label: root.pending_target == target.id
-                                ? target.managed
+                                ? target.managed && target.id != "auth-service"
                                     ? root.translate("deployment.confirm_rollback", root.language_index)
-                                    : root.translate("deployment.apply", root.language_index)
-                                : target.managed
+                                    : target.id == "auth-service"
+                                        ? root.translate("deployment.confirm_repair", root.language_index)
+                                        : root.translate("deployment.apply", root.language_index)
+                                : target.managed && target.id != "auth-service"
                                     ? root.translate("deployment.review_rollback", root.language_index)
-                                    : root.translate("deployment.review", root.language_index);
-                            primary: root.pending_target == target.id && !target.managed;
-                            danger: target.managed;
+                                    : target.id == "auth-service"
+                                        ? root.translate("deployment.repair_service", root.language_index)
+                                        : root.translate("deployment.review", root.language_index);
+                            primary: root.pending_target == target.id
+                                && !(target.managed && target.id != "auth-service");
+                            danger: target.managed && target.id != "auth-service";
                             enabled: root.helper_available && !root.busy
                                 && (target.managed || target.configurable);
                             activated => {
                                 if (root.pending_target != target.id) {
                                     root.pending_target = target.id;
-                                    root.pending_action = target.managed ? "rollback" : "configure";
+                                    root.pending_action = target.managed && target.id != "auth-service"
+                                        ? "rollback" : "configure";
                                 } else {
                                     root.pending_target = "";
                                     root.pending_action = "";
-                                    if (target.managed) {
+                                    if (target.managed && target.id != "auth-service") {
                                         root.rollback_requested(target.id);
                                     } else {
                                         root.configure_requested(target.id, wallet_selected);

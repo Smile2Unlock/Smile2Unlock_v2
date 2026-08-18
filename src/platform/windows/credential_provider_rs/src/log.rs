@@ -18,7 +18,7 @@ pub fn cp_log(msg: &str) {
         .unwrap_or(0);
     let mut line = String::with_capacity(msg.len() + 32);
     line.push_str(&millis.to_string());
-    line.push_str(" ");
+    line.push(' ');
     line.push_str(msg);
     line.push('\n');
 

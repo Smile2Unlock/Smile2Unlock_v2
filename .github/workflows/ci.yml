@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - "feature/**"
+      - "fix/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-core:
+    name: Rust core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path src/core-rs/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path src/core-rs/Cargo.toml --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path src/core-rs/Cargo.toml
+
+  windows-credential-provider:
+    name: Windows credential provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Windows target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml --check
+
+      - name: Run cross-target Clippy
+        run: >-
+          cargo clippy
+          --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
+          --all-targets
+          --target x86_64-pc-windows-gnu
+          -- -D warnings

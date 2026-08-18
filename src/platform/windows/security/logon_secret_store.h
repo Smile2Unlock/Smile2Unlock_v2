@@ -57,6 +57,7 @@ public:
         std::uint32_t logon_session_id) const;
     std::expected<void, LogonSecretError> mark_stale(std::string_view sid) const;
     std::expected<bool, LogonSecretError> clear(std::string_view sid) const;
+    std::expected<bool, LogonSecretError> configured(std::string_view sid) const;
 
 private:
     std::expected<std::filesystem::path, LogonSecretError> secret_path(

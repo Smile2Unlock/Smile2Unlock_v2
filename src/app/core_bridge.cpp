@@ -315,6 +315,10 @@ std::expected<std::vector<FaceProfileSummary>, CoreError> list_face_profile_summ
         return std::unexpected(map_status(status));
     }
 
+    if (count > ffi_profiles.size()) {
+        return std::unexpected(CoreError::kBufferTooSmall);
+    }
+    ffi_profiles.resize(count);
     auto profiles = std::vector<FaceProfileSummary>(count);
     std::ranges::transform(ffi_profiles, profiles.begin(), map_profile_summary);
     return profiles;
@@ -333,8 +337,7 @@ std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     float threshold,
     bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    auto decision = SuFaceAuthDecision{};
-    decision = su_core_authenticate_face_sample_with_liveness(
+    const auto decision = su_core_authenticate_face_sample_with_liveness(
         store_path.c_str(),
         owned_face_sample_source.c_str(),
         threshold,
@@ -482,6 +485,10 @@ std::expected<std::vector<FaceProfileSummary>, CoreError> list_encrypted_face_pr
     if (status != SuStatus_Ok) {
         return std::unexpected(map_status(status));
     }
+    if (count > ffi_profiles.size()) {
+        return std::unexpected(CoreError::kBufferTooSmall);
+    }
+    ffi_profiles.resize(count);
     auto profiles = std::vector<FaceProfileSummary>(count);
     std::ranges::transform(ffi_profiles, profiles.begin(), map_profile_summary);
     return profiles;

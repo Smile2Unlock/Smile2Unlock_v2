@@ -1,3 +1,5 @@
+#include <cstdio>
+
 import std;
 import su.app.controller;
 

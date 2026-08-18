@@ -1,15 +1,11 @@
 add_rules("mode.debug", "mode.release")
 
+-- Xmake's repository syntax is "<name> <path>"; both tokens are required.
 add_repositories("local-repo local-repo")
 
--- Project identity + version: single source of truth is version.txt. xmake
--- reads it so the version is available to targets (set_version also exposes
--- a PROJECT_VERSION define / version header for build-time embedding) and
--- stays in sync with the packaging scripts.
--- Project identity + version: single source of truth is version.txt (read by
--- packaging/version/*.sh and exported as SU_VERSION when invoking xmake). If
--- it is not set we keep a matching literal so a bare `xmake build` still
--- works. set_version also drives soname/soversion for shared libs.
+-- Project identity + version. CI may override SU_VERSION; the literal
+-- fallback is synchronized with version.txt by bump-version.sh because
+-- project files do not expose file I/O at top level.
 local _su_version = os.getenv("SU_VERSION")
 if not _su_version or _su_version == "" then
     _su_version = "2.2.0"
@@ -21,7 +17,6 @@ set_description("Smile2Unlock - local face authentication (Windows sign-in + Lin
 -- project metadata in this version.
 
 
-add_requires("slint v1.17.0", { system = false, optional = true })
 add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg")
 -- Static libyuv avoids a runtime dependency on the distro's libyuv.so,
@@ -43,6 +38,10 @@ option("with_slint")
     set_showmenu(true)
     set_description("Enable the Slint UI")
 option_end()
+
+if has_config("with_slint") then
+    add_requires("slint v1.17.0", { system = false })
+end
 
 option("with_zig")
     -- Default off: the Zig helper currently exports only a placeholder symbol
@@ -231,6 +230,8 @@ target("su_recognizer")
         add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     else
         add_files("src/app/windows_app_controller.cpp", "src/app/core_bridge.cpp")
+        add_files("src/platform/windows/auth_service/profile_client.cpp")
+        add_includedirs("src/platform/windows/auth_service")
     end
     if has_config("with_zig") then
         add_deps("su_platform_zig")
@@ -245,9 +246,8 @@ target("su_recognizer")
     if not is_plat("linux") then
         add_files("src/platform/windows/user/user_windows.cpp")
     end
-    -- Build-time version string for su_app (single source: version.txt via
-    -- SU_VERSION, fallback literal above).
-    add_defines("SU_VERSION_STR=\"" .. (_su_version or "2.2.0") .. "\"")
+    -- Build-time version string for su_app, using the resolved project version.
+    add_defines("SU_VERSION_STR=\"" .. _su_version .. "\"")
     if is_plat("linux") then
         add_files("src/modules/su.control.socket.cppm")
         add_files("src/platform/linux/deploy_client/*.cpp")
@@ -268,14 +268,12 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })
             -- Embed the application icon into the exe resource section.
             add_files("src/app/su_app.rc")
-            -- UDP face-recognition server for the credential provider.
-            add_files("src/platform/windows/udp_recognition_server.cpp")
             -- Windows deployment/integration library (CP registration, auth
             -- service status) used by the GUI deployment panel.
             add_files("src/platform/windows/deploy/deployment.cpp")
@@ -349,7 +347,7 @@ elseif is_plat("windows", "mingw") then
         add_files("src/platform/windows/deploy_helper/helper.rc")
         add_files("src/platform/windows/deploy/deployment.cpp")
         add_includedirs("src/platform/windows/deploy")
-        add_syslinks("advapi32", "user32")
+        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid")
         add_tests("version", {runargs = {"--version"}})
 end
 
@@ -458,6 +456,7 @@ if is_plat("windows", "mingw") then
         set_targetdir("$(builddir)/$(plat)/$(arch)/$(mode)")
         add_files("src/platform/windows/security/storage_key_provider.cpp")
         add_files("src/platform/windows/security/logon_secret_store.cpp")
+        add_files("src/platform/windows/security/face_profile_store.cpp")
         add_files("src/platform/windows/auth_service/logon_secret_server.cpp")
         add_files("src/platform/windows/auth_service/service_main.cpp")
         add_includedirs(
@@ -469,8 +468,28 @@ if is_plat("windows", "mingw") then
         add_ldflags("-static", "-municode", "-mwindows", {force = true})
         add_syslinks(
             "ncrypt", "bcrypt", "crypt32", "shell32", "ole32", "advapi32",
-            "userenv", "ntdll", "ws2_32", "uuid")
+            "userenv", "wtsapi32", "ntdll", "ws2_32", "uuid")
         add_deps("su_core")
+
+    -- Minimal camera worker launched by the LocalSystem broker in the target
+    -- console session. It has no UI and only returns liveness + embedding
+    -- evidence through inherited anonymous-pipe handles.
+    target("su_recognition_agent")
+        apply_cpp_target("binary")
+        add_files("src/platform/windows/recognition_agent/main.cpp")
+        add_files("src/modules/su.recognizer.*.cppm")
+        add_deps("su_recognizer")
+        add_ldflags("-municode", "-mwindows", {force = true})
+        add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
+
+    -- Interactive per-user password enrollment/clear utility. The service
+    -- validates the caller SID before accepting either operation.
+    target("su_password_tool")
+        apply_cpp_target("binary")
+        add_files("src/platform/windows/password_tool/main.cpp")
+        add_includedirs("src/platform/windows/auth_service")
+        add_ldflags("-static", "-municode", {force = true})
+        add_syslinks("advapi32", "userenv")
 end
 
 target("su_face_auth_smoke_test")

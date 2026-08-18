@@ -17,11 +17,9 @@
 //!   stores on every path (success, failure, drop).
 
 use windows::Win32::Foundation::GetLastError;
-use windows::Win32::System::Pipes::CallNamedPipeW;
-use windows::Win32::Security::{
-    GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
-};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+use windows::Win32::System::Pipes::CallNamedPipeW;
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_core::{Error, HRESULT, PCWSTR, PWSTR};
 
@@ -33,15 +31,17 @@ pub fn win32_error(code: u32) -> Error {
 }
 
 pub const kMagic: u32 = 0x5332_5350; // "S2SP"
-pub const kVersion: u16 = 1;
+pub const kVersion: u16 = 2;
 pub const kPipeName: PCWSTR = windows_core::w!(r"\\.\pipe\Smile2Unlock.LogonSecret.v1");
 
+#[cfg(test)]
 pub const kOperationPrepare: u16 = 1;
 pub const kOperationMarkStale: u16 = 2;
 #[allow(dead_code)] // Phase 5 (store/clear flow)
 pub const kOperationStore: u16 = 3;
 #[allow(dead_code)] // Phase 5 (store/clear flow)
 pub const kOperationClear: u16 = 4;
+pub const kOperationAuthenticateAndPrepare: u16 = 5;
 
 pub const kStatusOk: u32 = 0;
 pub const kStatusInvalidRequest: u32 = 1;
@@ -49,10 +49,13 @@ pub const kStatusAccessDenied: u32 = 2;
 pub const kStatusUnavailable: u32 = 3;
 pub const kStatusStaleOrConsumed: u32 = 4;
 pub const kStatusCorrupt: u32 = 5;
+pub const kStatusAuthenticationFailed: u32 = 6;
+pub const kStatusProfileNotFound: u32 = 7;
 
 pub const kSidCapacity: usize = 185;
 pub const kUsernameCapacity: usize = 513;
 pub const kPasswordCapacity: usize = 513;
+pub const kPayloadCapacity: usize = 48 * 1024;
 
 const kWin32ErrorInvalidData: u32 = 13;
 const kWin32ErrorPasswordRestriction: u32 = 37;
@@ -70,6 +73,8 @@ pub struct Request {
     pub sid: [u16; kSidCapacity],
     pub canonical_username: [u16; kUsernameCapacity],
     pub password: [u16; kPasswordCapacity],
+    pub payload_length: u32,
+    pub payload: [u8; kPayloadCapacity],
 }
 
 #[repr(C)]
@@ -83,6 +88,8 @@ pub struct Response {
     pub status: u32,
     pub password_length: u32,
     pub password: [u16; kPasswordCapacity],
+    pub payload_length: u32,
+    pub payload: [u8; kPayloadCapacity],
 }
 
 impl Request {
@@ -100,6 +107,8 @@ impl Request {
             sid: [0; kSidCapacity],
             canonical_username: [0; kUsernameCapacity],
             password: [0; kPasswordCapacity],
+            payload_length: 0,
+            payload: [0; kPayloadCapacity],
         }
     }
 
@@ -115,6 +124,8 @@ impl Request {
 
     pub fn clear_password(&mut self) {
         secure_clear(&mut self.password);
+        secure_clear_bytes(&mut self.payload);
+        self.payload_length = 0;
     }
 }
 
@@ -131,7 +142,9 @@ impl Response {
 
     pub fn clear_password(&mut self) {
         secure_clear(&mut self.password);
+        secure_clear_bytes(&mut self.payload);
         self.password_length = 0;
+        self.payload_length = 0;
     }
 }
 
@@ -141,6 +154,13 @@ pub fn secure_clear(buf: &mut [u16]) {
     for unit in buf.iter_mut() {
         // Safety: writes through a volatile pointer; never elided by DSE.
         unsafe { core::ptr::write_volatile(unit as *mut u16, 0) };
+    }
+}
+
+pub fn secure_clear_bytes(buf: &mut [u8]) {
+    for byte in buf.iter_mut() {
+        // Safety: the pointer is valid and volatile prevents dead-store removal.
+        unsafe { core::ptr::write_volatile(byte as *mut u8, 0) };
     }
 }
 
@@ -162,6 +182,8 @@ pub fn status_to_hresult(status: u32) -> Error {
         kStatusAccessDenied => win32_error(5),      // E_ACCESSDENIED
         kStatusStaleOrConsumed => win32_error(kWin32ErrorPasswordRestriction),
         kStatusCorrupt => win32_error(kWin32ErrorInvalidData),
+        kStatusAuthenticationFailed => win32_error(1326), // ERROR_LOGON_FAILURE
+        kStatusProfileNotFound => win32_error(1168),      // ERROR_NOT_FOUND
         kStatusUnavailable => win32_error(kWin32ErrorServiceNotActive),
         _ => win32_error(kWin32ErrorInvalidData),
     }
@@ -170,7 +192,11 @@ pub fn status_to_hresult(status: u32) -> Error {
 /// Validate a received response against the request and the protocol.
 /// `bytes_read` is the CallNamedPipeW reported byte count; it must equal the
 /// full response size (message-mode pipe guarantees atomic messages).
-pub fn validate_response(response: &Response, request: &Request, bytes_read: u32) -> Result<(), Error> {
+pub fn validate_response(
+    response: &Response,
+    request: &Request,
+    bytes_read: u32,
+) -> Result<(), Error> {
     if bytes_read as usize != core::mem::size_of::<Response>()
         || response.magic != kMagic
         || response.version != kVersion
@@ -196,6 +222,10 @@ impl PreparedPipePassword {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Run `f` with a UTF-16LE read view of the password directly into
     /// protected memory; no plain `Vec<u16>` copy is produced.
     pub fn with_password<F, R>(&mut self, f: F) -> Result<R, crate::secret_buffer::SecretError>
@@ -210,16 +240,21 @@ impl PreparedPipePassword {
 pub struct PipeClient;
 
 impl PipeClient {
-    /// Request the service to prepare a one-time logon secret for `sid`.
-    /// The returned password is single-use; do not retransmit after a failed
-    /// ReportResult (the credential layer marks it stale instead).
+    /// Ask the broker to run its trusted recognition agent, match the probe
+    /// against the SYSTEM-owned profile store, and atomically consume the
+    /// one-time logon secret. The service rejects the old unauthenticated
+    /// kPrepare operation.
     pub fn prepare(
         &self,
         sid: &[u16],
         request_id: u64,
         logon_session_id: u32,
     ) -> Result<PreparedPipePassword, Error> {
-        let mut request = Request::new(kOperationPrepare, request_id, logon_session_id);
+        let mut request = Request::new(
+            kOperationAuthenticateAndPrepare,
+            request_id,
+            logon_session_id,
+        );
         if !copy_fixed(sid, &mut request.sid) {
             secure_clear(&mut request.password);
             return Err(win32_error(0x57)); // E_INVALIDARG
@@ -233,6 +268,8 @@ impl PipeClient {
             status: 0,
             password_length: 0,
             password: [0; kPasswordCapacity],
+            payload_length: 0,
+            payload: [0; kPayloadCapacity],
         };
         let result = self.transact(&mut request, &mut response);
         if result.is_err() {
@@ -309,6 +346,8 @@ impl PipeClient {
             status: 0,
             password_length: 0,
             password: [0; kPasswordCapacity],
+            payload_length: 0,
+            payload: [0; kPayloadCapacity],
         };
         let result = self.transact(&mut request, &mut response);
         request.clear_password();
@@ -371,27 +410,29 @@ pub fn current_user_sid() -> Result<String, Error> {
             &mut 0u32,
         )
     };
-    if result.is_err() {
+    if let Err(error) = result {
         unsafe {
             let _ = windows::Win32::Foundation::CloseHandle(token);
         }
-        return Err(result.unwrap_err());
+        return Err(error);
     }
     // Safety: GetTokenInformation succeeded with a buffer large enough for
     // TOKEN_USER (the SID itself is at most 68 bytes).
     let token_user = unsafe { &*(buf.as_ptr().cast::<TOKEN_USER>()) };
     let mut sid_string: PWSTR = PWSTR::null();
     let conv = unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string) };
-    if conv.is_err() {
+    if let Err(error) = conv {
         unsafe {
             let _ = windows::Win32::Foundation::CloseHandle(token);
         }
-        return Err(conv.unwrap_err());
+        return Err(error);
     }
     let text = unsafe {
         // Safety: sid_string is a null-terminated string allocated by the
         // system, valid until LocalFree.
-        let len = (0..usize::MAX).find(|&i| *sid_string.as_ptr().add(i) == 0).unwrap_or(0);
+        let len = (0..usize::MAX)
+            .find(|&i| *sid_string.as_ptr().add(i) == 0)
+            .unwrap_or(0);
         String::from_utf16_lossy(core::slice::from_raw_parts(sid_string.as_ptr(), len))
     };
     unsafe {
@@ -413,7 +454,7 @@ mod tests {
 
     #[test]
     fn request_layout() {
-        assert_eq!(core::mem::size_of::<Request>(), 2448);
+        assert_eq!(core::mem::size_of::<Request>(), 51608);
         let r = request_fixture();
         let base = &r as *const Request as usize;
         let magic = &r.magic as *const u32 as usize - base;
@@ -424,13 +465,21 @@ mod tests {
         assert_eq!(&r.logon_session_id as *const u32 as usize - base, 16);
         assert_eq!(&r.account_kind as *const u32 as usize - base, 20);
         assert_eq!(&r.sid as *const [u16; 185] as usize - base, 24);
-        assert_eq!(&r.canonical_username as *const [u16; 513] as usize - base, 394);
+        assert_eq!(
+            &r.canonical_username as *const [u16; 513] as usize - base,
+            394
+        );
         assert_eq!(&r.password as *const [u16; 513] as usize - base, 1420);
+        assert_eq!(&r.payload_length as *const u32 as usize - base, 2448);
+        assert_eq!(
+            &r.payload as *const [u8; kPayloadCapacity] as usize - base,
+            2452
+        );
     }
 
     #[test]
     fn response_layout() {
-        assert_eq!(core::mem::size_of::<Response>(), 1056);
+        assert_eq!(core::mem::size_of::<Response>(), 50216);
         let mut r = Response {
             magic: 0,
             version: 0,
@@ -440,6 +489,8 @@ mod tests {
             status: 0,
             password_length: 0,
             password: [0; 513],
+            payload_length: 0,
+            payload: [0; kPayloadCapacity],
         };
         let base = &mut r as *mut Response as usize;
         assert_eq!(&mut r.magic as *mut u32 as usize - base, 0);
@@ -450,6 +501,11 @@ mod tests {
         assert_eq!(&mut r.status as *mut u32 as usize - base, 20);
         assert_eq!(&mut r.password_length as *mut u32 as usize - base, 24);
         assert_eq!(&mut r.password as *mut [u16; 513] as usize - base, 28);
+        assert_eq!(&mut r.payload_length as *mut u32 as usize - base, 1056);
+        assert_eq!(
+            &mut r.payload as *mut [u8; kPayloadCapacity] as usize - base,
+            1060
+        );
     }
 
     #[test]
@@ -475,6 +531,8 @@ mod tests {
             status: kStatusOk,
             password_length: 0,
             password: [0; 513],
+            payload_length: 0,
+            payload: [0; kPayloadCapacity],
         };
         assert!(validate_response(&good, &req, core::mem::size_of::<Response>() as u32).is_ok());
 
@@ -497,17 +555,34 @@ mod tests {
         good.logon_session_id = 7;
 
         assert!(validate_response(&good, &req, 0).is_err());
-        assert!(validate_response(&good, &req, core::mem::size_of::<Response>() as u32 + 1).is_err());
+        assert!(
+            validate_response(&good, &req, core::mem::size_of::<Response>() as u32 + 1).is_err()
+        );
     }
 
     #[test]
     fn status_mapping_table() {
         assert_eq!(status_to_hresult(kStatusOk).code().0, 0);
-        assert_eq!(status_to_hresult(kStatusInvalidRequest).code().0, 0x80070057u32 as i32);
-        assert_eq!(status_to_hresult(kStatusAccessDenied).code().0, 0x80070005u32 as i32);
-        assert_eq!(status_to_hresult(kStatusUnavailable).code().0, 0x80070426u32 as i32); // ERROR_SERVICE_NOT_ACTIVE=1062=0x426
-        assert_eq!(status_to_hresult(kStatusStaleOrConsumed).code().0, 0x80070025u32 as i32); // ERROR_PASSWORD_RESTRICTION
-        assert_eq!(status_to_hresult(kStatusCorrupt).code().0, 0x8007000Du32 as i32); // ERROR_INVALID_DATA
+        assert_eq!(
+            status_to_hresult(kStatusInvalidRequest).code().0,
+            0x80070057u32 as i32
+        );
+        assert_eq!(
+            status_to_hresult(kStatusAccessDenied).code().0,
+            0x80070005u32 as i32
+        );
+        assert_eq!(
+            status_to_hresult(kStatusUnavailable).code().0,
+            0x80070426u32 as i32
+        ); // ERROR_SERVICE_NOT_ACTIVE=1062=0x426
+        assert_eq!(
+            status_to_hresult(kStatusStaleOrConsumed).code().0,
+            0x80070025u32 as i32
+        ); // ERROR_PASSWORD_RESTRICTION
+        assert_eq!(
+            status_to_hresult(kStatusCorrupt).code().0,
+            0x8007000Du32 as i32
+        ); // ERROR_INVALID_DATA
         assert_eq!(status_to_hresult(99).code().0, 0x8007000Du32 as i32);
     }
 
@@ -544,12 +619,13 @@ mod tests {
             .unwrap();
         pp.buf.set_len_units(200).unwrap();
         pp.len = 200;
-        pp.buf.with_u16_slice(|units| {
-            assert_eq!(units.len(), 200);
-            assert_eq!(units[0], 1);
-            assert_eq!(units[199], 200);
-        })
-        .unwrap();
+        pp.buf
+            .with_u16_slice(|units| {
+                assert_eq!(units.len(), 200);
+                assert_eq!(units[0], 1);
+                assert_eq!(units[199], 200);
+            })
+            .unwrap();
         drop(pp);
     }
 

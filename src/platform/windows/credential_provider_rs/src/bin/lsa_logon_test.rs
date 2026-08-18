@@ -5,16 +5,18 @@
 //! Run via Task Scheduler as SYSTEM:
 //!   lsa_logon_test.exe <request_id>
 
-use su_credential_provider::{kerb_interactive_unlock_logon_init, kerb_interactive_unlock_logon_pack, protect_password};
+use su_credential_provider::{
+    kerb_interactive_unlock_logon_init, kerb_interactive_unlock_logon_pack, protect_password,
+};
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Foundation::{HANDLE, LUID};
+use windows::Win32::Security::Authentication::Identity::LSA_STRING;
 use windows::Win32::Security::Authentication::Identity::{
     LsaConnectUntrusted, LsaDeregisterLogonProcess, LsaLogonUser, LsaLookupAuthenticationPackage,
     SECURITY_LOGON_TYPE,
 };
-use windows::Win32::Security::{TOKEN_GROUPS, TOKEN_SOURCE};
-use windows::Win32::Security::Authentication::Identity::LSA_STRING;
-use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Security::QUOTA_LIMITS;
+use windows::Win32::Security::TOKEN_SOURCE;
 use windows_core::PSTR;
 
 const NEGOSSP_NAME_A: &[u8] = b"Negotiate";
@@ -39,7 +41,7 @@ fn main() {
     };
 
     // 2. protect the password exactly like GetSerialization
-    let protected = match password.with_password(|units| protect_password(units)) {
+    let protected = match password.with_password(protect_password) {
         Ok(Ok(p)) => p,
         Ok(Err(e)) => {
             println!("[lsa] protect_password FAILED {:08x}", e.code().0);
@@ -72,20 +74,25 @@ fn main() {
         return;
     }
 
-    let mut package_name = LSA_STRING {
+    let package_name = LSA_STRING {
         Length: NEGOSSP_NAME_A.len() as u16,
         MaximumLength: (NEGOSSP_NAME_A.len() + 1) as u16,
         Buffer: PSTR::from_raw(NEGOSSP_NAME_A.as_ptr() as *mut u8),
     };
     let mut package = 0u32;
-    let status = unsafe { LsaLookupAuthenticationPackage(handle, &mut package_name, &mut package) };
-    println!("[lsa] LsaLookupAuthenticationPackage nt={:#x} id={}", status.0, package);
+    let status = unsafe { LsaLookupAuthenticationPackage(handle, &package_name, &mut package) };
+    println!(
+        "[lsa] LsaLookupAuthenticationPackage nt={:#x} id={}",
+        status.0, package
+    );
     if status.0 != 0 {
-        unsafe { let _ = LsaDeregisterLogonProcess(handle); };
+        unsafe {
+            let _ = LsaDeregisterLogonProcess(handle);
+        };
         return;
     }
 
-    let mut origin = LSA_STRING {
+    let origin = LSA_STRING {
         Length: 6,
         MaximumLength: 7,
         Buffer: PSTR::from_raw(b"su_test".as_ptr() as *mut u8),
@@ -94,7 +101,9 @@ fn main() {
         SourceName: [0; 8],
         SourceIdentifier: LUID::default(),
     };
-    let name: [i8; 8] = [b's' as i8, b'u' as i8, b'_' as i8, b't' as i8, b'e' as i8, b's' as i8, b't' as i8, 0];
+    let name: [i8; 8] = [
+        b's' as i8, b'u' as i8, b'_' as i8, b't' as i8, b'e' as i8, b's' as i8, b't' as i8, 0,
+    ];
     source.SourceName = name;
     let mut profile: *mut core::ffi::c_void = core::ptr::null_mut();
     let mut profile_len: u32 = 0;
@@ -121,7 +130,10 @@ fn main() {
             &mut substatus,
         )
     };
-    println!("[lsa] LsaLogonUser nt={:#x} substatus={:#x}", status.0, substatus);
+    println!(
+        "[lsa] LsaLogonUser nt={:#x} substatus={:#x}",
+        status.0, substatus
+    );
     if status.0 == 0 {
         println!("[lsa] LOGON SUCCESS! token={:?}", token);
         unsafe {
@@ -129,7 +141,9 @@ fn main() {
         }
     }
 
-    unsafe { let _ = LsaDeregisterLogonProcess(handle); };
+    unsafe {
+        let _ = LsaDeregisterLogonProcess(handle);
+    };
     unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(blob as *const _)) };
     println!("[lsa] done");
 }

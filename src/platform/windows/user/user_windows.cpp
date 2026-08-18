@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <sddl.h>
 #include <tlhelp32.h>
+#include <wtsapi32.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -21,55 +22,6 @@ int su_win_username_for_uid(char* out, unsigned long cap) {
         return -1;
     }
     return 0;
-}
-
-// Write the recognition trigger policy to HKLM\SOFTWARE\Smile2Unlock\Recognition,
-// the key the credential provider reads at lock-screen time. Requires admin
-// rights (the GUI runs elevated). Failures are reported as non-zero so the
-// caller can surface a diagnostic; the config.toml copy remains authoritative
-// for the GUI itself.
-int su_win_write_recognition_registry(
-    unsigned int mode,
-    unsigned int auto_delay_sec,
-    unsigned int retry_delay_sec,
-    unsigned int timeout_sec) {
-    const wchar_t* const key_path = L"SOFTWARE\\Smile2Unlock\\Recognition";
-    HKEY key = nullptr;
-    if (::RegCreateKeyExW(
-            HKEY_LOCAL_MACHINE,
-            key_path,
-            0,
-            nullptr,
-            0,
-            KEY_SET_VALUE,
-            nullptr,
-            &key,
-            nullptr) != ERROR_SUCCESS) {
-        return -1;
-    }
-    struct RegKeyCloser {
-        void operator()(HKEY handle) const { ::RegCloseKey(handle); }
-    };
-    const auto close_key =
-        std::unique_ptr<std::remove_pointer_t<HKEY>, RegKeyCloser>(key);
-    const auto set_dword = [key](const wchar_t* name, unsigned int value) {
-        return ::RegSetValueExW(
-                   key,
-                   name,
-                   0,
-                   REG_DWORD,
-                   reinterpret_cast<const BYTE*>(&value),
-                   sizeof(value))
-            == ERROR_SUCCESS;
-    };
-    int result = 0;
-    if (!set_dword(L"RecognitionMode", mode)
-        || !set_dword(L"AutoDelaySec", auto_delay_sec)
-        || !set_dword(L"RetryDelaySec", retry_delay_sec)
-        || !set_dword(L"TimeoutSec", timeout_sec)) {
-        result = -2;
-    }
-    return result;
 }
 
 unsigned int su_win_current_uid() {
@@ -104,6 +56,39 @@ unsigned int su_win_current_uid() {
         return 0;
     }
     return static_cast<unsigned int>(*rid);
+}
+
+// Returns 1 for a locked current session, 0 for unlocked, and -1 when WTS
+// cannot provide a trustworthy state. Kept in this plain translation unit so
+// Win32 headers do not enter the C++ module that consumes the result.
+int su_win_session_locked() {
+    LPWSTR raw = nullptr;
+    DWORD bytes = 0;
+    if (!::WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &raw,
+            &bytes)) {
+        return -1;
+    }
+    const auto release = std::unique_ptr<void, decltype(&::WTSFreeMemory)>(
+        raw, &::WTSFreeMemory);
+    if (bytes < sizeof(WTSINFOEXW)) {
+        return -1;
+    }
+    const auto* info = reinterpret_cast<const WTSINFOEXW*>(raw);
+    if (info->Level != 1) {
+        return -1;
+    }
+    const auto flags = info->Data.WTSInfoExLevel1.SessionFlags;
+    if (flags == WTS_SESSIONSTATE_LOCK) {
+        return 1;
+    }
+    if (flags == WTS_SESSIONSTATE_UNLOCK) {
+        return 0;
+    }
+    return -1;
 }
 
 }  // extern "C"

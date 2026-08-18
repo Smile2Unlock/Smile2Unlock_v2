@@ -47,6 +47,7 @@ public:
     // the duration of `fn`, so no key-bearing span can outlive the seal.
     template <typename Fn>
     [[nodiscard]] auto with_bytes(Fn&& fn) const {
+        const auto access = std::scoped_lock{*access_mutex_};
         elevate();
         SealGuard guard{page_.get()};
         return std::forward<Fn>(fn)(bytes());
@@ -57,6 +58,7 @@ public:
     // span it carries) is guaranteed to live within the call.
     template <typename Fn>
     [[nodiscard]] auto with_context(std::uint32_t uid, Fn&& fn) const {
+        const auto access = std::scoped_lock{*access_mutex_};
         elevate();
         SealGuard guard{page_.get()};
         const su::app::EncryptedStoreContext context{
@@ -94,6 +96,9 @@ private:
     static constexpr std::size_t kSealLength = 4096;
 
     Page page_;
+    // The page protection applies to the whole mapping, so readers must not
+    // independently elevate/reseal it from different connection threads.
+    std::shared_ptr<std::mutex> access_mutex_ = std::make_shared<std::mutex>();
     KeyProtection protection_ = KeyProtection::kHostKey;
     std::uint32_t version_ = 0;
 };

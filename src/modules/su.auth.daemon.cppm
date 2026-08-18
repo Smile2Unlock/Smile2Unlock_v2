@@ -488,7 +488,7 @@ public:
         if (!migrated) {
             return {su::control::ControlResult::kUnavailable, "profile migration failed"};
         }
-        {
+        if (*migrated) {
             const auto fsuid = FsUidGuard{paths->uid};
             if (!fsuid.valid()) {
                 return {su::control::ControlResult::kUnavailable, "failed to restore user filesystem context"};
@@ -499,7 +499,9 @@ public:
             }
         }
         auto listed = list_profiles(username);
-        listed.reason = *migrated ? "legacy profiles migrated" : "legacy profile removed";
+        listed.reason = *migrated
+            ? "legacy profiles migrated"
+            : "encrypted profile store already exists; legacy profile retained";
         return listed;
     }
 

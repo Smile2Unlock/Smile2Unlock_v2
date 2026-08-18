@@ -461,7 +461,7 @@ std::optional<std::filesystem::path> gnome_wallpaper(
     return std::nullopt;
 }
 
-std::string source_name(ThemeSource source) {
+[[maybe_unused]] std::string source_name(ThemeSource source) {
     switch (source) {
         case ThemeSource::dms_cache:
             return "DMS cache";
@@ -471,10 +471,6 @@ std::string source_name(ThemeSource source) {
             return "built-in";
     }
     return "unknown";
-}
-
-int source_priority(ThemeSource source) {
-    return static_cast<int>(source);
 }
 
 #if defined(__linux__)
@@ -955,6 +951,13 @@ public:
     ~Impl() {
         thread_.request_stop();
         wake();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        const auto descriptor = wake_descriptor_.exchange(-1, std::memory_order_acq_rel);
+        if (descriptor >= 0) {
+            ::close(descriptor);
+        }
     }
 
     [[nodiscard]] bool available() const {
@@ -969,11 +972,12 @@ public:
 
 private:
     void wake() const {
-        if (wake_descriptor_ < 0) {
+        const auto descriptor = wake_descriptor_.load(std::memory_order_acquire);
+        if (descriptor < 0) {
             return;
         }
         constexpr auto value = std::uint64_t{1};
-        (void)::write(wake_descriptor_, &value, sizeof(value));
+        (void)::write(descriptor, &value, sizeof(value));
     }
 
     bool relevant_event(const inotify_event& event) const {
@@ -988,9 +992,6 @@ private:
     void reload() {
         auto loaded = load_desktop_theme(
             paths_, run_command_, preference_.load(std::memory_order_acquire));
-        if (source_priority(loaded.snapshot.source) < source_priority(current_.source)) {
-            return;
-        }
         if (loaded.snapshot == current_) {
             return;
         }
@@ -1003,7 +1004,7 @@ private:
 
     void run(std::stop_token stop) {
         const auto descriptor = ::inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
-        if (descriptor < 0 && wake_descriptor_ < 0) {
+        if (descriptor < 0 && wake_descriptor_.load(std::memory_order_acquire) < 0) {
             return;
         }
         auto directories = std::vector{
@@ -1030,7 +1031,8 @@ private:
             if (reload_requested_.exchange(false, std::memory_order_acq_rel)) {
                 reload();
             }
-            auto timeout = wake_descriptor_ >= 0 ? -1 : 250;
+            const auto wake_descriptor = wake_descriptor_.load(std::memory_order_acquire);
+            auto timeout = wake_descriptor >= 0 ? -1 : 250;
             if (pending) {
                 const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                     reload_at - std::chrono::steady_clock::now());
@@ -1038,9 +1040,9 @@ private:
             }
             auto poll_descriptors = std::array<pollfd, 2>{};
             auto descriptor_count = nfds_t{0};
-            if (wake_descriptor_ >= 0) {
+            if (wake_descriptor >= 0) {
                 poll_descriptors[descriptor_count++] = pollfd{
-                    .fd = wake_descriptor_, .events = POLLIN, .revents = 0};
+                    .fd = wake_descriptor, .events = POLLIN, .revents = 0};
             }
             const auto inotify_index = descriptor_count;
             if (descriptor >= 0 && watches > 0) {
@@ -1048,10 +1050,10 @@ private:
                     .fd = descriptor, .events = POLLIN, .revents = 0};
             }
             const auto polled = ::poll(poll_descriptors.data(), descriptor_count, timeout);
-            if (wake_descriptor_ >= 0 && polled > 0
+            if (wake_descriptor >= 0 && polled > 0
                 && (poll_descriptors[0].revents & POLLIN) != 0) {
                 auto value = std::uint64_t{};
-                while (::read(wake_descriptor_, &value, sizeof(value)) > 0) {}
+                while (::read(wake_descriptor, &value, sizeof(value)) > 0) {}
             }
             if (descriptor >= 0 && watches > 0 && polled > 0
                 && (poll_descriptors[inotify_index].revents & POLLIN) != 0) {
@@ -1075,10 +1077,6 @@ private:
         if (descriptor >= 0) {
             ::close(descriptor);
         }
-        if (wake_descriptor_ >= 0) {
-            ::close(wake_descriptor_);
-            wake_descriptor_ = -1;
-        }
     }
 
     ThemePaths paths_;
@@ -1088,7 +1086,7 @@ private:
     UpdateCallback callback_;
     std::atomic<bool> reload_requested_{false};
     std::atomic<bool> available_{false};
-    int wake_descriptor_ = -1;
+    std::atomic<int> wake_descriptor_{-1};
     std::jthread thread_;
 };
 
