@@ -2,7 +2,7 @@
 
 `packaging/linux/package.sh` builds one common filesystem staging tree and can
 produce a portable archive, an Arch package, or DEB/RPM packages through fpm.
-The staging tree is created under `build/packages`; it does not write to `/usr`
+The staging tree is created under `build/package-stage`; it does not write to `/usr`
 or modify PAM configuration.
 
 ## Build
@@ -42,13 +42,13 @@ packaging/linux/package.sh --format rpm
 ```
 
 The package layout is the same for every format. DEB dependencies default to
-`libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0,dbus,polkitd`;
+`libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd`;
 RPM dependencies default to
-`glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs,dbus,polkit`. Override
+`glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit`. Override
 `PACKAGE_DEPENDS` when a target distribution uses different package names:
 
 ```bash
-PACKAGE_DEPENDS='libc6,libstdc++6,libpam0g,libyuv0,libjpeg8,libgomp1,libsystemd0' \
+PACKAGE_DEPENDS='libc6,libstdc++6,libpam0g,libgomp1,libsystemd0' \
   packaging/linux/package.sh --format deb
 ```
 
@@ -113,9 +113,10 @@ package documentation for verification and rollback commands.
 
 ## Runtime dependencies
 
-The package bundles Slint and SeetaFace libraries, but intentionally uses the
-distribution's system libraries for PAM, libyuv, libjpeg, OpenMP, libc++
-runtime, libsystemd, V4L2 and the Wayland / X11 platform stack. The exact
+The package bundles Slint and SeetaFace libraries; libyuv and JPEG support are
+linked statically. It intentionally uses the distribution's system libraries
+for PAM, OpenMP, the C++ runtime, libsystemd, V4L2 and the Wayland / X11
+platform stack. The exact
 package names are distribution-specific, which is why DEB/RPM dependency names
 are configurable.
 
@@ -127,13 +128,13 @@ if a binary still references the build user's Xmake cache.
 Verify generated native packages on the matching distribution family:
 
 ```bash
-packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3.deb
-packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3.rpm
-packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3-x86_64.tar.gz
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.2.0-linux-x86_64.deb
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.2.0-linux-x86_64.rpm
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.2.0-linux-x86_64.tar.gz
 ```
 
 DEB verification requires `dpkg-deb` and `patchelf`. RPM verification requires
 `rpm`, `rpm2cpio`, `cpio`, and `patchelf`. The verifier checks package metadata,
-root ownership, required files, executable and configuration modes, relative
-RPATHs, and the absence of maintainer scripts. It extracts only under
-`build/packages/.verify`.
+required files, executable and configuration modes, relative RPATHs, runtime
+resolution, and `release-info.json` checksums. It extracts only under
+`build/package-stage/verify-linux`.

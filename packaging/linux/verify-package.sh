@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
-verify_dir="${project_dir}/build/packages/.verify"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/common.sh
+source "${script_dir}/../lib/common.sh"
 
-usage() {
-    echo "Usage: packaging/linux/verify-package.sh PACKAGE.tar.gz|PACKAGE.deb|PACKAGE.rpm [...]" >&2
-}
-
-[[ $# -gt 0 ]] || { usage; exit 64; }
+[[ $# -gt 0 ]] || package_die \
+    "usage: packaging/linux/verify-package.sh PACKAGE.tar.gz|PACKAGE.deb|PACKAGE.rpm|PACKAGE.pkg.tar.zst [...]"
+package_require_command patchelf
 
 required_paths=(
     usr/bin/su_app
-    usr/lib/security/pam_smile2unlock.so
     usr/lib/smile2unlock/libslint_cpp.so
     usr/lib/smile2unlock/libSeetaFaceDetector600.so
     usr/libexec/smile2unlock/su_authd
@@ -35,143 +32,139 @@ required_paths=(
     usr/share/smile2unlock/models/fas_first.csta
     usr/share/smile2unlock/models/fas_second.csta
     usr/share/smile2unlock/pam/dankshell-smile2unlock
+    usr/share/smile2unlock/release-info.json
 )
 
 require_mode() {
-    local root="$1"
-    local mode="$2"
-    local path="$3"
+    local root="$1" expected="$2" path="$3"
     local actual
     actual="$(stat -c '%a' "${root}/${path}")"
-    [[ "$actual" == "$mode" ]] || {
-        echo "unexpected mode ${actual} for ${path}; expected ${mode}" >&2
-        exit 1
-    }
+    [[ "$actual" == "$expected" ]] \
+        || package_die "unexpected mode ${actual} for /${path}; expected ${expected}"
 }
 
 verify_tree() {
     local root="$1"
     local path
     for path in "${required_paths[@]}"; do
-        [[ -f "${root}/${path}" ]] || {
-            echo "missing package path: /${path}" >&2
-            exit 1
-        }
+        package_require_file "${root}/${path}"
     done
 
-    for path in \
-        usr/bin/su_app \
-        usr/libexec/smile2unlock/su_authd \
+    mapfile -t pam_modules < <(find "$root" -type f -path '*/security/pam_smile2unlock.so' -print)
+    (( ${#pam_modules[@]} == 1 )) || package_die "expected exactly one PAM module"
+
+    for path in usr/bin/su_app usr/libexec/smile2unlock/su_authd \
         usr/libexec/smile2unlock/su_deploy_helper \
         usr/libexec/smile2unlock/install-dms-lock \
         usr/libexec/smile2unlock/setup-storage-key; do
         require_mode "$root" 755 "$path"
     done
-    require_mode "$root" 644 usr/lib/security/pam_smile2unlock.so
-    require_mode "$root" 644 usr/lib/systemd/system/su-authd.service
-    require_mode "$root" 644 usr/lib/systemd/system/su-deploy-helper.service
-    require_mode "$root" 644 usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
-    require_mode "$root" 644 usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf
-    require_mode "$root" 644 usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy
-    require_mode "$root" 644 usr/share/smile2unlock/pam/dankshell-smile2unlock
+    [[ "$(stat -c '%a' "${pam_modules[0]}")" == 755 ]] \
+        || package_die "PAM module must have mode 755"
+    for path in usr/lib/systemd/system/su-authd.service \
+        usr/lib/systemd/system/su-deploy-helper.service \
+        usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service \
+        usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf \
+        usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy \
+        usr/share/smile2unlock/pam/dankshell-smile2unlock; do
+        require_mode "$root" 644 "$path"
+    done
 
     local app_rpath authd_rpath helper_rpath
     app_rpath="$(patchelf --print-rpath "${root}/usr/bin/su_app")"
     authd_rpath="$(patchelf --print-rpath "${root}/usr/libexec/smile2unlock/su_authd")"
     helper_rpath="$(patchelf --print-rpath "${root}/usr/libexec/smile2unlock/su_deploy_helper")"
-    [[ "$app_rpath" == '$ORIGIN/../lib/smile2unlock' ]] || {
-        echo "unexpected su_app RPATH: ${app_rpath}" >&2
-        exit 1
-    }
-    [[ "$authd_rpath" == '$ORIGIN/../../lib/smile2unlock' ]] || {
-        echo "unexpected su_authd RPATH: ${authd_rpath}" >&2
-        exit 1
-    }
-    [[ -z "$helper_rpath" ]] || {
-        echo "unexpected su_deploy_helper RPATH: ${helper_rpath}" >&2
-        exit 1
-    }
-    if [[ "$app_rpath$authd_rpath$helper_rpath" == *"/home/"* \
-        || "$app_rpath$authd_rpath$helper_rpath" == *".xmake"* ]]; then
-        echo "package contains a development-machine RPATH" >&2
-        exit 1
+    [[ "$app_rpath" == '$ORIGIN/../lib/smile2unlock' ]] \
+        || package_die "unexpected su_app RPATH: ${app_rpath}"
+    [[ "$authd_rpath" == '$ORIGIN/../../lib/smile2unlock' ]] \
+        || package_die "unexpected su_authd RPATH: ${authd_rpath}"
+    [[ -z "$helper_rpath" ]] || package_die "unexpected su_deploy_helper RPATH: ${helper_rpath}"
+
+    if [[ "$app_rpath$authd_rpath$helper_rpath" == *'/home/'* \
+        || "$app_rpath$authd_rpath$helper_rpath" == *'.xmake'* ]]; then
+        package_die "package contains a development-machine RPATH"
     fi
+
+    local binary unresolved
+    for binary in "${root}/usr/bin/su_app" "${root}/usr/libexec/smile2unlock/su_authd"; do
+        unresolved="$(LD_LIBRARY_PATH="${root}/usr/lib/smile2unlock" ldd "$binary" \
+            | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p')"
+        [[ -z "$unresolved" ]] || package_die \
+            "unresolved runtime dependencies for ${binary#$root}: ${unresolved//$'\n'/, }"
+    done
+
+    package_verify_release_info "$root" \
+        "${root}/usr/share/smile2unlock/release-info.json"
+}
+
+verify_tar_paths() {
+    local archive="$1"
+    while IFS= read -r path; do
+        [[ "$path" != /* && "$path" != ../* && "$path" != */../* ]] \
+            || package_die "unsafe archive path: $path"
+    done < <(tar -tf "$archive")
 }
 
 verify_tarball() {
-    local package="$1"
-    if ! tar --numeric-owner -tvzf "$package" | awk '$2 != "0/0" { exit 1 }'; then
-        echo "tarball contains files not owned by root" >&2
-        exit 1
-    fi
-    local root="${verify_dir}/tar-root"
-    rm -rf "$root"
+    local archive="$1"
+    verify_tar_paths "$archive"
+    tar --numeric-owner -tvzf "$archive" | awk '$2 != "0/0" { exit 1 }' \
+        || package_die "tarball contains files not owned by root"
+    local root="${verify_root}/tar"
     mkdir -p "$root"
-    tar -xzf "$package" -C "$root"
-    verify_tree "${root}/smile2unlock-${version}"
+    tar -xzf "$archive" -C "$root"
+    verify_tree "${root}/${package_name}-${package_version}"
 }
 
 verify_deb() {
-    local package="$1"
-    command -v dpkg-deb >/dev/null || {
-        echo "dpkg-deb is required to verify ${package}" >&2
-        exit 1
-    }
-    [[ "$(dpkg-deb -f "$package" Package)" == "smile2unlock" ]]
-    [[ "$(dpkg-deb -f "$package" Version)" == "$version" ]]
-    [[ "$(dpkg-deb -f "$package" Architecture)" == "amd64" ]]
-    if ! dpkg-deb --contents "$package" \
-        | awk '$2 != "root/root" && $2 != "0/0" { exit 1 }'; then
-        echo "DEB contains files not owned by root" >&2
-        exit 1
-    fi
-
-    local root="${verify_dir}/deb-root"
-    local control="${verify_dir}/deb-control"
-    rm -rf "$root" "$control"
-    mkdir -p "$root" "$control"
-    dpkg-deb --extract "$package" "$root"
-    dpkg-deb --control "$package" "$control"
-    if find "$control" -maxdepth 1 -type f \
-        \( -name 'preinst' -o -name 'postinst' -o -name 'prerm' -o -name 'postrm' \) \
-        | grep -q .; then
-        echo "DEB unexpectedly contains maintainer scripts" >&2
-        exit 1
-    fi
+    local archive="$1"
+    package_require_command dpkg-deb
+    [[ "$(dpkg-deb -f "$archive" Package)" == "$package_name" ]] \
+        || package_die "unexpected DEB package name"
+    [[ "$(dpkg-deb -f "$archive" Version)" == "$package_version" ]] \
+        || package_die "unexpected DEB version"
+    local root="${verify_root}/deb"
+    mkdir -p "$root"
+    dpkg-deb --extract "$archive" "$root"
     verify_tree "$root"
 }
 
 verify_rpm() {
-    local package
-    package="$(realpath "$1")"
-    command -v rpm rpm2cpio cpio >/dev/null || {
-        echo "rpm, rpm2cpio and cpio are required to verify ${package}" >&2
-        exit 1
-    }
-    [[ "$(rpm -qp --queryformat '%{NAME}' "$package")" == "smile2unlock" ]]
-    [[ "$(rpm -qp --queryformat '%{VERSION}' "$package")" == "$version" ]]
-    [[ "$(rpm -qp --queryformat '%{ARCH}' "$package")" == "x86_64" ]]
-    rpm -qlvp "$package" | awk '$3 != "root" || $4 != "root" { exit 1 }'
-    [[ -z "$(rpm -qp --scripts "$package")" ]] || {
-        echo "RPM unexpectedly contains package scripts" >&2
-        exit 1
-    }
-
-    local root="${verify_dir}/rpm-root"
-    rm -rf "$root"
+    local archive="$1"
+    package_require_command rpm
+    package_require_command rpm2cpio
+    package_require_command cpio
+    [[ "$(rpm -qp --queryformat '%{NAME}' "$archive")" == "$package_name" ]] \
+        || package_die "unexpected RPM package name"
+    [[ "$(rpm -qp --queryformat '%{VERSION}' "$archive")" == "$package_version" ]] \
+        || package_die "unexpected RPM version"
+    local root="${verify_root}/rpm"
     mkdir -p "$root"
-    (cd "$root" && rpm2cpio "$package" | cpio -idmu --quiet)
+    (cd "$root" && rpm2cpio "$archive" | cpio -idmu --quiet)
     verify_tree "$root"
 }
 
-mkdir -p "$verify_dir"
-for package in "$@"; do
-    [[ -f "$package" ]] || { echo "package not found: ${package}" >&2; exit 1; }
-    case "$package" in
-        *.tar.gz) verify_tarball "$package" ;;
-        *.deb) verify_deb "$package" ;;
-        *.rpm) verify_rpm "$package" ;;
-        *) echo "unsupported package type: ${package}" >&2; exit 64 ;;
+verify_pacman() {
+    local archive="$1"
+    package_require_command tar
+    verify_tar_paths "$archive"
+    local root="${verify_root}/pacman"
+    mkdir -p "$root"
+    tar -xf "$archive" -C "$root"
+    verify_tree "$root"
+}
+
+for archive_arg in "$@"; do
+    archive="$(package_absolute_path "$archive_arg")"
+    package_require_file "$archive"
+    package_reset_stage "${project_dir}/build/package-stage/verify-linux"
+    verify_root="${project_dir}/build/package-stage/verify-linux"
+    case "$archive" in
+        *.pkg.tar.zst) verify_pacman "$archive" ;;
+        *.tar.gz) verify_tarball "$archive" ;;
+        *.deb) verify_deb "$archive" ;;
+        *.rpm) verify_rpm "$archive" ;;
+        *) package_die "unsupported package type: $archive" ;;
     esac
-    echo "verified ${package}"
+    echo "verified ${archive}"
 done
