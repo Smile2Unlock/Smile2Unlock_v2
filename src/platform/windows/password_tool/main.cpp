@@ -104,18 +104,16 @@ int run(Operation operation) {
         return 2;
     }
     std::array<wchar_t, 513> password{};
-    if (operation == Operation::kStore && !read_password(password)) {
+    if (!read_password(password)) {
         std::wcerr << L"Password input failed. Run this command from an interactive console.\n";
         wipe_request(request);
         return 2;
     }
-    if (operation == Operation::kStore) {
-        if (!copy_field(password.data(), request.password, std::size(request.password))) {
-            std::wcerr << L"Password is empty or too long.\n";
-            wipe_request(request);
-            SecureZeroMemory(password.data(), sizeof(password));
-            return 2;
-        }
+    if (!copy_field(password.data(), request.password, std::size(request.password))) {
+        std::wcerr << L"Password is empty or too long.\n";
+        wipe_request(request);
+        SecureZeroMemory(password.data(), sizeof(password));
+        return 2;
     }
 
     Response response{};

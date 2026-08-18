@@ -163,19 +163,23 @@ pub fn protect_password(password: &[u16]) -> windows_core::Result<Vec<u16>> {
         return Ok(vec![0]);
     }
 
-    // SAFETY: password points to a NUL-terminated buffer.
+    // Both CredIsProtectedW and CredProtectW require a NUL-terminated input.
+    // Credential::SetStringValue stores the logical characters only, so make
+    // the terminator explicit before calling either API.
+    let mut with_nul = password.to_vec();
+    if with_nul.last().copied() != Some(0) {
+        with_nul.push(0);
+    }
+
+    // SAFETY: with_nul is explicitly NUL terminated above.
     let mut protection_type = CRED_PROTECTION_TYPE::default();
     // CredIsProtectedW failure (e.g. malformed blob) -> treat as unprotected.
     let already_protected = unsafe {
-        CredIsProtectedW(
-            PWSTR::from_raw(password.as_ptr().cast_mut()),
-            &mut protection_type,
-        )
-        .is_ok()
+        CredIsProtectedW(PWSTR::from_raw(with_nul.as_mut_ptr()), &mut protection_type).is_ok()
             && protection_type.0 != 0
     };
     if already_protected {
-        return Ok(password.to_vec());
+        return Ok(with_nul);
     }
 
     // CredProtectW's cchCredentials must INCLUDE the terminating NUL (the
@@ -183,28 +187,30 @@ pub fn protect_password(password: &[u16]) -> windows_core::Result<Vec<u16>> {
     // length from the slice, so append the NUL to the input ourselves;
     // otherwise the encrypted blob covers only password[..len-1] and LSA
     // fails to unprotect it (logon rejected as bad password).
-    let mut with_nul = password.to_vec();
-    with_nul.push(0);
-
     // First pass: probe the required character count (including NUL).
     let mut cch = 0u32;
     // SAFETY: out buffer is null, cch starts at 0; the API reports the size.
     let _ = unsafe { CredProtectW(false, &with_nul, PWSTR::null(), &mut cch, None) };
     if cch == 0 || cch > 513 {
+        crate::pipe_client::secure_clear(&mut with_nul);
         return Err(crate::win32_error(122)); // ERROR_INSUFFICIENT_BUFFER
     }
     let mut out = vec![0u16; cch as usize];
     // SAFETY: out has cch elements; the API writes exactly cch chars + NUL.
-    unsafe {
+    let protected = unsafe {
         CredProtectW(
             false,
             &with_nul,
             PWSTR::from_raw(out.as_mut_ptr()),
             &mut cch,
             None,
-        )?
+        )
     };
     crate::pipe_client::secure_clear(&mut with_nul);
+    if let Err(error) = protected {
+        crate::pipe_client::secure_clear(&mut out);
+        return Err(error);
+    }
     out.truncate(cch as usize);
     Ok(out)
 }
@@ -252,16 +258,20 @@ pub unsafe fn cred_pack_authentication_buffer(
         return Err(Error::from_hresult(crate::E_OUTOFMEMORY));
     }
     // SAFETY: mem holds cb bytes; the API fills exactly cb bytes.
-    unsafe {
+    let packed = unsafe {
         CredPackAuthenticationBufferW(
             CRED_PACK_PROTECTED_CREDENTIALS,
             PCWSTR(user.as_ptr()),
             PCWSTR(pass.as_ptr()),
             Some(mem as *mut u8),
             &mut cb,
-        )?
+        )
     };
     crate::pipe_client::secure_clear(&mut pass);
+    if let Err(error) = packed {
+        unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(mem)) };
+        return Err(error);
+    }
     Ok((mem as *mut u8, cb as usize))
 }
 

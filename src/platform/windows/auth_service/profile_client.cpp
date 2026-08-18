@@ -6,7 +6,9 @@
 #include <sddl.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -17,6 +19,41 @@ using smile2unlock::logon_secret_ipc::Operation;
 using smile2unlock::logon_secret_ipc::Request;
 using smile2unlock::logon_secret_ipc::Response;
 using smile2unlock::logon_secret_ipc::Status;
+
+constexpr auto kManagementTokenCharacters = std::size_t{64};
+auto management_token = std::array<wchar_t, kManagementTokenCharacters + 1>{};
+auto management_token_mutex = std::mutex{};
+
+void clear_management_token() {
+    const auto lock = std::scoped_lock{management_token_mutex};
+    SecureZeroMemory(management_token.data(), sizeof(management_token));
+}
+
+bool attach_management_token(Request& request) {
+    const auto lock = std::scoped_lock{management_token_mutex};
+    if (wcsnlen(management_token.data(), management_token.size())
+        != kManagementTokenCharacters) {
+        return false;
+    }
+    std::ranges::copy(management_token, request.password);
+    SecureZeroMemory(management_token.data(), sizeof(management_token));
+    return true;
+}
+
+bool remember_management_token(Response& response) {
+    if (response.password_length != kManagementTokenCharacters
+        || response.password[kManagementTokenCharacters] != L'\0') {
+        clear_management_token();
+        return false;
+    }
+    const auto lock = std::scoped_lock{management_token_mutex};
+    SecureZeroMemory(management_token.data(), sizeof(management_token));
+    std::copy_n(
+        response.password, kManagementTokenCharacters + 1, management_token.data());
+    SecureZeroMemory(response.password, sizeof(response.password));
+    response.password_length = 0;
+    return true;
+}
 
 std::expected<std::wstring, std::string> current_sid() {
     HANDLE token_raw = nullptr;
@@ -168,7 +205,12 @@ std::expected<void, std::string> store_account_credential(
     SecureZeroMemory(wide_password->data(), wide_password->size() * sizeof(wchar_t));
     auto response = transact(*request);
     if (!response) {
+        clear_management_token();
         return std::unexpected(response.error());
+    }
+    if (!remember_management_token(*response)) {
+        smile2unlock::logon_secret_ipc::clear_response(*response);
+        return std::unexpected("auth service did not issue a management authorization");
     }
     smile2unlock::logon_secret_ipc::clear_response(*response);
     return {};
@@ -204,11 +246,20 @@ std::expected<std::string, std::string> enroll_profile(
         if (request) smile2unlock::logon_secret_ipc::clear_request(*request);
         return std::unexpected("profile label or embedding is invalid");
     }
+    if (!attach_management_token(*request)) {
+        smile2unlock::logon_secret_ipc::clear_request(*request);
+        return std::unexpected("re-enter the Windows password before managing face profiles");
+    }
     std::ranges::copy(embedding_source, request->payload);
     request->payload_length = static_cast<std::uint32_t>(embedding_source.size());
     auto response = transact(*request);
     if (!response) {
+        clear_management_token();
         return std::unexpected(response.error());
+    }
+    if (!remember_management_token(*response)) {
+        smile2unlock::logon_secret_ipc::clear_response(*response);
+        return std::unexpected("auth service did not renew management authorization");
     }
     return response_payload(*response);
 }
@@ -219,11 +270,20 @@ std::expected<bool, std::string> delete_profile(std::string_view profile_id) {
         if (request) smile2unlock::logon_secret_ipc::clear_request(*request);
         return std::unexpected("profile id is invalid");
     }
+    if (!attach_management_token(*request)) {
+        smile2unlock::logon_secret_ipc::clear_request(*request);
+        return std::unexpected("re-enter the Windows password before managing face profiles");
+    }
     std::ranges::copy(profile_id, request->payload);
     request->payload_length = static_cast<std::uint32_t>(profile_id.size());
     auto response = transact(*request);
     if (!response) {
+        clear_management_token();
         return std::unexpected(response.error());
+    }
+    if (!remember_management_token(*response)) {
+        smile2unlock::logon_secret_ipc::clear_response(*response);
+        return std::unexpected("auth service did not renew management authorization");
     }
     smile2unlock::logon_secret_ipc::clear_response(*response);
     return true;

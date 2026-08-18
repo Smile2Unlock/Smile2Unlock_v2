@@ -33,6 +33,7 @@ constexpr auto kLivenessAuthenticationTimeout = std::chrono::seconds{12};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
 constexpr auto kAuthenticationRateLimit = std::chrono::seconds{1};
+constexpr auto kMaxConcurrentConnections = std::ptrdiff_t{16};
 
 struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
@@ -694,14 +695,26 @@ int run_daemon(std::string_view socket_path) {
         socket_path,
         service.available(),
         service.storage_status());
+    auto connection_slots = std::counting_semaphore<kMaxConcurrentConnections>{
+        kMaxConcurrentConnections};
     while (true) {
         auto connection = listener->accept_one();
         if (!connection) {
             continue;
         }
+        if (!connection_slots.try_acquire()) {
+            std::println(stderr, "su_authd event=connection_rejected reason=capacity");
+            continue;
+        }
         // Authentication is intentionally detached from accept so status and
-        // cancellation requests remain responsive during camera capture.
-        std::thread([&service, client = std::move(*connection)]() mutable {
+        // cancellation requests remain responsive during camera capture. The
+        // semaphore bounds detached worker lifetime and memory consumption.
+        std::thread([&service, &connection_slots, client = std::move(*connection)]() mutable {
+            struct SlotRelease {
+                std::counting_semaphore<kMaxConcurrentConnections>& slots;
+                ~SlotRelease() { slots.release(); }
+            };
+            const auto release_slot = SlotRelease{connection_slots};
             service.handle(std::move(client));
         }).detach();
     }

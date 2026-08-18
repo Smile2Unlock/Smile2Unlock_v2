@@ -1,6 +1,8 @@
 module;
 
 #include <nlohmann/json.hpp>
+#include <windows.h>
+#include <shellapi.h>
 #include "../platform/windows/auth_service/profile_client.h"
 #include "../platform/windows/deploy/deployment.h"
 
@@ -10,17 +12,6 @@ import su.recognizer.service;
 import su.recognizer.image;
 import su.app.user;
 import su.core.types;
-
-extern "C" int __stdcall ShellExecuteExW(void* exec_info);
-extern "C" int __stdcall GetModuleFileNameW(void* module, wchar_t* buffer, unsigned long size);
-extern "C" unsigned long __stdcall GetTempPathW(unsigned long length, wchar_t* buffer);
-extern "C" int __stdcall WaitForSingleObject(void* handle, unsigned long milliseconds);
-extern "C" int __stdcall CloseHandle(void* handle);
-extern "C" int __stdcall DeleteFileA(const char* name);
-extern "C" void* __stdcall CreateFileA(const char* name, unsigned long access, unsigned long share, void* security, unsigned long creation, unsigned long flags, void* template_file);
-extern "C" int __stdcall ReadFile(void* file, void* buffer, unsigned long to_read, unsigned long* read, void* overlapped);
-extern "C" int __stdcall WideCharToMultiByte(unsigned int code_page, unsigned long flags, const wchar_t* wide, int wide_length, char* narrow, int narrow_length, const char* default_char, int* used_default);
-extern "C" int __stdcall MultiByteToWideChar(unsigned int code_page, unsigned long flags, const char* narrow, int narrow_length, wchar_t* wide, int wide_length);
 
 namespace su::app {
 
@@ -164,6 +155,39 @@ std::expected<FaceAuthReport, std::string> auth_report_from_json(std::string_vie
 // load_system_status().
 std::string deploy_helper_path();
 
+bool save_recognition_settings(const CoreConfig& config) {
+    auto raw_key = HKEY{};
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            L"Software\\Smile2Unlock\\Recognition",
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            nullptr,
+            &raw_key,
+            nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    const auto key = std::unique_ptr<std::remove_pointer_t<HKEY>, decltype(&RegCloseKey)>{
+        raw_key, &RegCloseKey};
+    const auto camera_index = static_cast<DWORD>(std::max(config.selected_camera, 0));
+    const auto recognition_threshold = static_cast<DWORD>(
+        std::clamp(config.recognition_threshold, 0.5F, 1.0F) * 1000.0F);
+    const auto liveness_enabled = DWORD{config.liveness_detection ? 1U : 0U};
+    const auto liveness_threshold = static_cast<DWORD>(
+        std::clamp(config.liveness_threshold, 0.3F, 1.0F) * 1000.0F);
+    const auto set = [raw_key](const wchar_t* name, const DWORD& value) {
+        return RegSetValueExW(
+            raw_key, name, 0, REG_DWORD,
+            reinterpret_cast<const BYTE*>(&value), sizeof(value)) == ERROR_SUCCESS;
+    };
+    return set(L"CameraIndex", camera_index)
+        && set(L"RecognitionThresholdMilli", recognition_threshold)
+        && set(L"LivenessEnabled", liveness_enabled)
+        && set(L"LivenessThresholdMilli", liveness_threshold);
+}
+
 }  // namespace
 
 std::string AppController::config_path() const {
@@ -241,6 +265,9 @@ std::expected<void, std::string> AppController::save_config_snapshot(const CoreC
     const auto saved = save_config(path, config);
     if (!saved) {
         return std::unexpected(std::format("failed to save config through Rust core: {}", path));
+    }
+    if (!save_recognition_settings(config)) {
+        return std::unexpected("failed to save Windows lock-screen recognition settings");
     }
     return {};
 }
@@ -488,24 +515,6 @@ std::wstring utf8_to_wide(std::string_view value) {
 // Runs su_deploy_helper elevated via UAC (ShellExecuteEx runas) and waits
 // for its result file. Returns the helper's JSON result.
 std::expected<std::string, std::string> run_elevated_deploy(std::string_view arguments) {
-    struct ShellExecuteInfoW {
-        unsigned long cb_size;
-        unsigned long f_mask;
-        void* hwnd;
-        const wchar_t* verb;
-        const wchar_t* file;
-        const wchar_t* parameters;
-        const wchar_t* directory;
-        int n_show;
-        void* h_inst_app;
-        void* lp_id_list;
-        const wchar_t* lp_class;
-        void* hkey_class;
-        unsigned long dw_hot_key;
-        void* h_icon;
-        void* h_process;
-    };
-
     const auto helper = deploy_helper_path();
     if (helper.empty()) {
         return std::unexpected("failed to locate su_deploy_helper.exe");
@@ -532,38 +541,38 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
     const auto result_path = narrow_temp + "su_deploy_result.json";
     (void)::DeleteFileA(result_path.c_str());
 
-    ShellExecuteInfoW info{};
-    info.cb_size = sizeof(info);
-    info.f_mask = 0x40;  // SEE_MASK_NOCLOSEPROCESS
-    info.verb = L"runas";
-    info.file = wide_helper.c_str();
-    info.parameters = wide_args.c_str();
-    info.n_show = 0;  // SW_HIDE
+    auto info = SHELLEXECUTEINFOW{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"runas";
+    info.lpFile = wide_helper.c_str();
+    info.lpParameters = wide_args.c_str();
+    info.nShow = SW_HIDE;
 
     if (::ShellExecuteExW(&info) == 0) {
         return std::unexpected("UAC launch of su_deploy_helper was denied or failed");
     }
-    if (info.h_process == nullptr) {
+    if (info.hProcess == nullptr) {
         return std::unexpected("UAC helper did not return a process handle");
     }
-    const auto wait_result = ::WaitForSingleObject(info.h_process, 60000);
-    (void)::CloseHandle(info.h_process);
-    if (wait_result == 258 /* WAIT_TIMEOUT */) {
+    const auto wait_result = ::WaitForSingleObject(info.hProcess, 60000);
+    (void)::CloseHandle(info.hProcess);
+    if (wait_result == WAIT_TIMEOUT) {
         return std::unexpected("su_deploy_helper timed out");
     }
-    if (wait_result != 0 /* WAIT_OBJECT_0 */) {
+    if (wait_result != WAIT_OBJECT_0) {
         return std::unexpected("failed while waiting for su_deploy_helper");
     }
 
-    void* file = ::CreateFileA(
+    const auto file = ::CreateFileA(
         result_path.c_str(),
-        0x80000000 /* GENERIC_READ */,
-        1 /* FILE_SHARE_READ */,
+        GENERIC_READ,
+        FILE_SHARE_READ,
         nullptr,
-        3 /* OPEN_EXISTING */,
+        OPEN_EXISTING,
         0,
         nullptr);
-    if (file == nullptr || file == reinterpret_cast<void*>(-1)) {
+    if (file == INVALID_HANDLE_VALUE) {
         return std::unexpected("su_deploy_helper produced no result file");
     }
     char buffer[8192] = {};

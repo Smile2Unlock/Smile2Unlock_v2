@@ -10,6 +10,7 @@ use core::cell::{Cell, RefCell};
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::CoTaskMemAlloc;
+use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::UI::Shell::{
     CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS, CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION,
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE, CREDENTIAL_PROVIDER_FIELD_STATE,
@@ -33,7 +34,8 @@ pub struct Credential {
     advised: Cell<bool>,
     /// usage scenario captured at creation (CPUS_LOGON/CPUS_UNLOCK_WORKSTATION).
     scenario: Cell<i32>,
-    /// Set when ReportResult reports a failed login; forbids re-submission.
+    /// Set after a successful ReportResult; prevents accidental re-submission
+    /// while LogonUI tears down the credential.
     stale: Cell<bool>,
     /// Set once GetSerialization returned a credential; forbids re-submission.
     serialized: Cell<bool>,
@@ -364,8 +366,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             return Err(Error::from_hresult(crate::E_POINTER));
         }
 
-        // One submission per pipe token: a failed login (ReportResult) or a
-        // previous serialization must not produce a second credential.
+        // Only one serialization may be outstanding. ReportResult resets the
+        // state after a failed Windows logon so the user can retry.
         if self.stale.get() || self.serialized.get() {
             crate::log::cp_log(&format!(
                 "GetSerialization: rejected stale={} serialized={}",
@@ -408,19 +410,27 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             entered.clear();
             result?
         } else {
-            let mut password = match crate::pipe_client::PipeClient.prepare(&sid, request_id, 0) {
-                Ok(pw) => {
-                    crate::log::cp_log("GetSerialization: broker authenticate-and-prepare OK");
-                    pw
-                }
-                Err(err) => {
-                    crate::log::cp_log(&format!(
-                        "GetSerialization: broker authenticate-and-prepare FAILED {:08x}",
-                        err.code().0
-                    ));
-                    return Err(err);
-                }
+            let mut session_id = 0u32;
+            let _ = unsafe {
+                ProcessIdToSessionId(
+                    windows::Win32::System::Threading::GetCurrentProcessId(),
+                    &mut session_id,
+                )
             };
+            let mut password =
+                match crate::pipe_client::PipeClient.prepare(&sid, request_id, session_id) {
+                    Ok(pw) => {
+                        crate::log::cp_log("GetSerialization: broker authenticate-and-prepare OK");
+                        pw
+                    }
+                    Err(err) => {
+                        crate::log::cp_log(&format!(
+                            "GetSerialization: broker authenticate-and-prepare FAILED {:08x}",
+                            err.code().0
+                        ));
+                        return Err(err);
+                    }
+                };
             match password.with_password(crate::serialization::protect_password) {
                 Ok(Ok(p)) => p,
                 Ok(Err(err)) => return Err(err),
@@ -507,12 +517,11 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             "Credential::ReportResult status={:#x}",
             ntsstatus.0
         ));
-        // STATUS_SUCCESS (0) means the login went through; anything else
-        // marks the one-shot credential stale so the same pipe token can
-        // never be re-submitted.
-        if ntsstatus.0 != 0 {
-            self.stale.set(true);
-        }
+        // Each brokered retry gets a fresh request id and a fresh face check.
+        // A failed Windows logon must therefore return the tile to its input
+        // state instead of permanently disabling it.
+        self.serialized.set(false);
+        self.stale.set(ntsstatus.0 == 0);
         Ok(())
     }
 }
