@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -172,33 +171,14 @@ std::expected<std::filesystem::path, std::string> stage_credential_provider(
         return std::unexpected("failed to create the protected install directory: "
             + error.message());
     }
-    // LogonUI can keep the previous provider DLL mapped for the entire login
-    // session. Publish immutable, content-addressed filenames so an update
-    // never needs to overwrite a loaded image; the registry switch is atomic
-    // from the next LogonUI activation onward.
-    std::ifstream input(source_dll, std::ios::binary);
-    if (!input) {
-        return std::unexpected("required deployment file is missing: " + source_dll.string());
-    }
-    auto hash = std::uint64_t{1469598103934665603ULL};
-    std::array<char, 64 * 1024> buffer{};
-    while (input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()))
-        || input.gcount() != 0) {
-        for (std::streamsize index = 0; index < input.gcount(); ++index) {
-            hash ^= static_cast<unsigned char>(buffer[static_cast<std::size_t>(index)]);
-            hash *= 1099511628211ULL;
-        }
-    }
-    if (input.bad()) {
-        return std::unexpected("failed to read the credential provider: " + source_dll.string());
-    }
-    const auto destination = install_bin
-        / std::format("su_credential_provider_{:016x}.dll", hash);
-    if (std::filesystem::is_regular_file(destination, error)) {
-        return destination;
-    }
+    // Keep a stable provider path in the registry. LogonUI loads the DLL for
+    // the lifetime of a logon session, so an in-use update is rejected with a
+    // clear error instead of silently switching the registry to an opaque
+    // content-addressed filename. The user can sign out or reboot, then retry.
+    const auto destination = install_bin / "su_credential_provider.dll";
     if (const auto copied = copy_required_file(source_dll, destination); !copied) {
-        return std::unexpected(copied.error());
+        return std::unexpected(copied.error()
+            + "; sign out or reboot Windows before updating the credential provider");
     }
     return destination;
 }
@@ -624,10 +604,40 @@ std::expected<void, std::string> ensure_auth_service() {
     }
     const auto started = ::StartServiceW(service, 0, nullptr);
     const auto start_error = started ? ERROR_SUCCESS : ::GetLastError();
+    auto final_state = SERVICE_STOPPED;
+    auto final_error = start_error;
+    if (started || start_error == ERROR_SERVICE_ALREADY_RUNNING) {
+        SERVICE_STATUS_PROCESS status{};
+        DWORD status_size = 0;
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            if (!::QueryServiceStatusEx(
+                    service, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status),
+                    sizeof(status), &status_size)) {
+                final_error = ::GetLastError();
+                break;
+            }
+            final_state = status.dwCurrentState;
+            if (final_state == SERVICE_RUNNING) {
+                final_error = NO_ERROR;
+                break;
+            }
+            if (final_state == SERVICE_STOPPED) {
+                final_error = status.dwWin32ExitCode != NO_ERROR
+                    ? status.dwWin32ExitCode
+                    : ERROR_SERVICE_NOT_ACTIVE;
+                break;
+            }
+            ::Sleep(100);
+        }
+        if (final_state != SERVICE_RUNNING && final_error == NO_ERROR) {
+            final_error = ERROR_SERVICE_REQUEST_TIMEOUT;
+        }
+    }
     ::CloseServiceHandle(service);
     ::CloseServiceHandle(manager);
-    if (!started && start_error != ERROR_SERVICE_ALREADY_RUNNING) {
-        return std::unexpected("failed to start the auth service");
+    if (final_state != SERVICE_RUNNING) {
+        return std::unexpected(std::format(
+            "failed to start the auth service (Win32 error {})", final_error));
     }
     return {};
 }
