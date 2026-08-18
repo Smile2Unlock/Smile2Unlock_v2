@@ -9,6 +9,7 @@ import su.app.preview;
 import su.app.preferences;
 import su.app.session;
 import su.app.theme;
+import su.recognizer.types;
 
 #ifdef _WIN32
 extern "C" int su_win_enum_own_windows(char* out, size_t cap);
@@ -38,11 +39,32 @@ using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
 
 constexpr std::string_view xdg_app_id = "smile2unlock";
 
-std::string camera_summary(const su::app::AppSnapshot& snapshot) {
-    if (snapshot.cameras.size() == 1) {
-        return snapshot.cameras.front().name;
+void update_camera_controls(
+    const WindowHandle& window,
+    const std::vector<su::recognizer::CameraInfo>& cameras,
+    const std::shared_ptr<slint::VectorModel<slint::SharedString>>& camera_model,
+    const std::shared_ptr<std::vector<int>>& camera_indices,
+    std::optional<int> selected_camera_id = std::nullopt) {
+    auto names = std::vector<slint::SharedString>{};
+    names.reserve(cameras.size());
+    camera_indices->clear();
+    camera_indices->reserve(cameras.size());
+
+    auto selected_index = cameras.empty() ? -1 : 0;
+    for (std::size_t index = 0; index < cameras.size(); ++index) {
+        const auto& camera = cameras[index];
+        if (selected_camera_id && camera.index == *selected_camera_id) {
+            selected_index = static_cast<int>(index);
+        }
+        names.emplace_back(std::format("{}: {}", camera.index, camera.name));
+        camera_indices->push_back(camera.index);
     }
-    return {};
+
+    camera_model->set_vector(std::move(names));
+    window->set_camera_count(static_cast<int>(cameras.size()));
+    window->set_camera_text(slint::SharedString(
+        cameras.size() == 1 ? cameras.front().name : std::string{}));
+    window->set_selected_camera(selected_index);
 }
 
 slint::Color slint_color(su::app::ThemeColor color) {
@@ -719,18 +741,8 @@ int main(int argc, char** argv) {
             }
         });
 
-    std::vector<slint::SharedString> camera_names;
-    std::vector<int> camera_indices;
-    camera_names.reserve(snapshot->cameras.size());
-    camera_indices.reserve(snapshot->cameras.size());
-    auto selected_camera = 0;
-    for (const auto& camera : snapshot->cameras) {
-        if (camera.index == snapshot->config.selected_camera) {
-            selected_camera = static_cast<int>(camera_indices.size());
-        }
-        camera_names.emplace_back(std::format("{}: {}", camera.index, camera.name));
-        camera_indices.push_back(camera.index);
-    }
+    auto camera_model = std::make_shared<slint::VectorModel<slint::SharedString>>();
+    auto camera_indices = std::make_shared<std::vector<int>>();
 
     const auto username = su::app::current_username(
         catalog->translate(selected_language, "common.current_user"));
@@ -752,16 +764,15 @@ int main(int argc, char** argv) {
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profiles(profiles);
     window->set_deployment_targets(deployment_targets);
-    window->set_camera_options(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(camera_names)));
-    window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
-    window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
+    window->set_camera_options(camera_model);
+    update_camera_controls(
+        window, snapshot->cameras, camera_model, camera_indices, snapshot->config.selected_camera);
     gui_log_t(std::format("cameras enumerated: {} (first='{}')",
         snapshot->cameras.size(),
         snapshot->cameras.empty() ? "<none>" : snapshot->cameras.front().name));
     window->set_seetaface_available(snapshot->seetaface_available);
     apply_system_status(window, controller->load_system_status(), deployment_targets);
     window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
-    window->set_selected_camera(selected_camera);
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
@@ -783,12 +794,47 @@ int main(int argc, char** argv) {
             : "activity.not_checked")));
     window->set_settings_status(slint::SharedString(catalog->translate(selected_language, "settings.saved")));
 
-    window->on_refresh_system_status_requested([weak_window, controller, deployment_targets] {
-        std::thread([weak_window, controller, deployment_targets] {
+    window->on_refresh_system_status_requested([
+        weak_window,
+        controller,
+        deployment_targets,
+        camera_model,
+        camera_indices,
+        preview,
+        catalog] {
+        std::thread([
+            weak_window,
+            controller,
+            deployment_targets,
+            camera_model,
+            camera_indices,
+            preview,
+            catalog] {
             const auto status = controller->load_system_status();
-            slint::invoke_from_event_loop([weak_window, deployment_targets, status] {
+            const auto cameras = controller->enumerate_cameras();
+            const auto config = controller->load_config_snapshot();
+            slint::invoke_from_event_loop([
+                weak_window,
+                deployment_targets,
+                camera_model,
+                camera_indices,
+                preview,
+                catalog,
+                status,
+                cameras,
+                config] {
                 if (const auto window = weak_window.lock()) {
                     apply_system_status(*window, status, deployment_targets);
+                    if (cameras.empty() && preview->is_running()) {
+                        preview->stop();
+                        set_preview_idle(*window, *catalog);
+                    }
+                    update_camera_controls(
+                        *window,
+                        cameras,
+                        camera_model,
+                        camera_indices,
+                        config ? std::optional<int>(config->selected_camera) : std::nullopt);
                 }
             });
         }).detach();
@@ -1124,8 +1170,8 @@ int main(int argc, char** argv) {
                 return;
             }
             if (camera_selection >= 0
-                && static_cast<std::size_t>(camera_selection) < camera_indices.size()) {
-                config->selected_camera = camera_indices[static_cast<std::size_t>(camera_selection)];
+                && static_cast<std::size_t>(camera_selection) < camera_indices->size()) {
+                config->selected_camera = (*camera_indices)[static_cast<std::size_t>(camera_selection)];
             }
             config->recognition_threshold = recognition_threshold;
             config->liveness_detection = liveness_enabled;

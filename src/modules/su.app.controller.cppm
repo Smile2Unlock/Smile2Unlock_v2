@@ -67,6 +67,7 @@ struct SystemStatus {
 class AppController {
 public:
     std::expected<AppSnapshot, std::string> load_initial_snapshot();
+    std::vector<su::recognizer::CameraInfo> enumerate_cameras() const;
     std::expected<bool, std::string> evaluate_demo_auth(std::string_view username);
     std::expected<CoreConfig, std::string> load_config_snapshot();
     std::expected<void, std::string> save_config_snapshot(const CoreConfig& config);

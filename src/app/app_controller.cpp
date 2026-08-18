@@ -242,6 +242,10 @@ std::string AppController::profile_store_path() const {
 #endif
 }
 
+std::vector<su::recognizer::CameraInfo> AppController::enumerate_cameras() const {
+    return recognizer_.enumerate_cameras();
+}
+
 std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
     const auto path = config_path();
     const auto loaded_config = load_config(path);

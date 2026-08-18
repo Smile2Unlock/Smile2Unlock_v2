@@ -237,9 +237,20 @@ public:
         : master_key_(std::move(master_key)) {}
 
     bool available() const {
-        return master_key_.has_value()
-            && recognizer_.seetaface_available()
-            && !recognizer_.enumerate_cameras().empty();
+        return availability_reason() == "service available";
+    }
+
+    std::string availability_reason() const {
+        if (!master_key_) {
+            return "encrypted storage key unavailable";
+        }
+        if (!recognizer_.seetaface_available()) {
+            return "face recognition models unavailable";
+        }
+        if (recognizer_.enumerate_cameras().empty()) {
+            return "no V4L2 camera detected";
+        }
+        return "service available";
     }
 
     std::string_view storage_status() const {
@@ -574,11 +585,13 @@ public:
         case su::app::ControlMessageType::kAuthenticate:
             response = authenticate(request->request_id, request->username);
             break;
-        case su::app::ControlMessageType::kStatus:
-            response = available()
-                ? AttemptResult{su::control::ControlResult::kAccepted, "service available"}
-                : AttemptResult{su::control::ControlResult::kUnavailable, "service unavailable"};
+        case su::app::ControlMessageType::kStatus: {
+            const auto reason = availability_reason();
+            response = reason == "service available"
+                ? AttemptResult{su::control::ControlResult::kAccepted, reason}
+                : AttemptResult{su::control::ControlResult::kUnavailable, reason};
             break;
+        }
         case su::app::ControlMessageType::kCancel:
             response = cancel(request->target_request_id)
                 ? AttemptResult{su::control::ControlResult::kCancelled, "cancel requested"}
