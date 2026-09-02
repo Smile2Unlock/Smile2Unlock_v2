@@ -86,6 +86,10 @@ typedef struct SuCoreConfig {
     bool liveness_detection;
     float liveness_threshold;
     uint32_t preview_fps;
+    uint32_t recognition_mode;
+    uint32_t auto_delay_sec;
+    uint32_t retry_delay_sec;
+    uint32_t timeout_sec;
 } SuCoreConfig;
 
 typedef struct SuFaceAuthDecision {

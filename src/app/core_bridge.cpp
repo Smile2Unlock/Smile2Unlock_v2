@@ -48,6 +48,10 @@ CoreConfig map_config(const SuCoreConfig& config) {
         .liveness_detection = config.liveness_detection,
         .liveness_threshold = config.liveness_threshold,
         .preview_fps = config.preview_fps,
+        .recognition_mode = config.recognition_mode,
+        .auto_delay_sec = config.auto_delay_sec,
+        .retry_delay_sec = config.retry_delay_sec,
+        .timeout_sec = config.timeout_sec,
     };
 }
 
@@ -59,6 +63,10 @@ SuCoreConfig map_config(const CoreConfig& config) {
         .liveness_detection = config.liveness_detection,
         .liveness_threshold = config.liveness_threshold,
         .preview_fps = config.preview_fps,
+        .recognition_mode = config.recognition_mode,
+        .auto_delay_sec = config.auto_delay_sec,
+        .retry_delay_sec = config.retry_delay_sec,
+        .timeout_sec = config.timeout_sec,
     };
 }
 

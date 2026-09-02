@@ -83,7 +83,7 @@ require_file "${build_dir}/pam_smile2unlock.so"
 require_file "${build_dir}/assets/i18n/en.json"
 require_file "${build_dir}/assets/i18n/zh-CN.json"
 for model in face_detector.csta face_landmarker_pts5.csta face_recognizer.csta fas_first.csta fas_second.csta; do
-    require_file "${build_dir}/assets/models/${model}"
+    require_file "${build_dir}/assets/models/seeta/${model}"
 done
 
 command -v patchelf >/dev/null || {
@@ -132,7 +132,7 @@ install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployme
     "${root_dir}/usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy"
 install -m 0644 "${project_dir}/packaging/linux/smile2unlock.desktop" \
     "${root_dir}/usr/share/applications/smile2unlock.desktop"
-install -m 0644 "${project_dir}/common/resources/img/Smile2Unlock.png" \
+install -m 0644 "${project_dir}/assets/icons/Smile2Unlock.png" \
     "${root_dir}/usr/share/icons/hicolor/128x128/apps/smile2unlock.png"
 install -m 0644 "${project_dir}/LICENSE" \
     "${root_dir}/usr/share/doc/smile2unlock/LICENSE"
@@ -147,7 +147,7 @@ install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
 
 install -m 0644 "${build_dir}/assets/i18n/"*.json \
     "${root_dir}/usr/share/smile2unlock/i18n/"
-install -m 0644 "${build_dir}/assets/models/"*.csta \
+install -m 0644 "${build_dir}/assets/models/seeta/"*.csta \
     "${root_dir}/usr/share/smile2unlock/models/"
 
 mapfile -t rpath_dirs < <(
@@ -218,7 +218,7 @@ pkgdesc='Local face authentication enrollment and diagnostics'
 arch=('${architecture}')
 license=('MIT')
 options=('!debug')
-depends=('pam' 'libyuv' 'libjpeg-turbo' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
+depends=('pam' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
 _stage_root='${root_dir}'
 
 package() {
@@ -243,10 +243,12 @@ build_fpm() {
     local default_depends
     case "$target" in
         deb)
-            default_depends="libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0,dbus,polkitd"
+            # libyuv and libjpeg-turbo are linked statically (see xmake.lua),
+            # so the package needs no libyuv0/libjpeg system dependency.
+            default_depends="libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd"
             ;;
         rpm)
-            default_depends="glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs,dbus,polkit"
+            default_depends="glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit"
             ;;
     esac
     local -a depends=()

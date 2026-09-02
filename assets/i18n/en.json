@@ -207,6 +207,17 @@
     "status.ready": "Ready",
     "status.unavailable": "Unavailable",
     "status.unknown": "Unknown",
-    "status.working": "Working"
+    "status.working": "Working",
+    "settings.recognition_trigger": "Recognition trigger",
+    "settings.trigger_detail": "How and when the credential provider starts face recognition at the lock screen",
+    "settings.recognition_mode": "Recognition mode",
+    "settings.mode_manual": "Manual (Enter)",
+    "settings.mode_auto": "Auto",
+    "settings.auto_delay": "Auto-start delay",
+    "settings.auto_delay_detail": "Seconds after the lock screen before auto recognition starts (sleep/hibernate pauses it)",
+    "settings.retry_delay": "Retry interval",
+    "settings.retry_delay_detail": "Seconds between failed auto recognition attempts",
+    "settings.timeout": "Recognition timeout",
+    "settings.timeout_detail": "Maximum seconds to wait for one recognition attempt"
   }
 }

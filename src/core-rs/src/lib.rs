@@ -19,6 +19,17 @@ mod storage;
 #[cfg(test)]
 mod tests;
 
+// The windows-gnu std links ntdll (NtReadFile/NtCreateFile/...) and userenv
+// (GetUserProfileDirectoryW) directly. Declare them here so both the xmake
+// C++ link path and the standalone cdylib link resolve these symbols.
+#[cfg(target_os = "windows")]
+#[link(name = "ntdll")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "windows")]
+#[link(name = "userenv")]
+unsafe extern "C" {}
+
 use profile::{PROFILE_ID_CAP, PROFILE_LABEL_CAP};
 use std::ffi::c_char;
 
@@ -80,6 +91,15 @@ pub struct SuCoreConfig {
     pub liveness_detection: bool,
     pub liveness_threshold: f32,
     pub preview_fps: u32,
+    /// 0 = manual (password-box Enter triggers recognition), 1 = auto
+    /// (lock-screen delay). Mirrors HKLM\SOFTWARE\Smile2Unlock\Recognition.
+    pub recognition_mode: u32,
+    /// Auto mode: seconds after the lock screen before triggering.
+    pub auto_delay_sec: u32,
+    /// Auto mode: seconds between failed recognition attempts.
+    pub retry_delay_sec: u32,
+    /// Per-attempt wait for a terminal status.
+    pub timeout_sec: u32,
 }
 
 pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};

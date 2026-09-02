@@ -5,11 +5,19 @@ add_repositories("local-repo local-repo")
 add_requires("slint v1.17.0", { system = false, optional = true })
 add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg")
-add_requires("libyuv")
+-- Static libyuv avoids a runtime dependency on the distro's libyuv.so,
+-- which is not present on many distributions (Arch/Debian/Fedora shipping
+-- different sonames or none at all). Built with JPEG (MJPEG decode) from the
+-- local-repo package; mingw builds pull libjpeg-turbo automatically.
+add_requires("libyuv", { system = false, configs = { shared = false, jpeg = true, jpeg_library = "libjpeg-turbo" } })
 
 set_encodings("utf-8")
 set_languages("c++26")
-set_toolchains("gcc")
+if is_plat("linux") then
+    set_toolchains("gcc")
+elseif is_plat("mingw") then
+    set_toolchains("mingw")
+end
 
 option("with_slint")
     set_default(true)
@@ -108,7 +116,7 @@ local function apply_cpp_target(kind)
         add_syslinks("pthread", "dl")
     elseif is_plat("windows", "mingw") then
         add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
-        add_syslinks("ws2_32", "advapi32")
+        add_syslinks("ws2_32", "advapi32", "ntdll", "userenv")
     end
 end
 
@@ -128,12 +136,21 @@ target("su_core")
             "--manifest-path", manifest,
             "--target-dir", path.join(os.projectdir(), "build", "cargo")
         }
+        local cargo_target = nil
+        if is_plat("mingw") then
+            cargo_target = "x86_64-pc-windows-gnu"
+            table.insert(cargo_args, "--target")
+            table.insert(cargo_args, cargo_target)
+        end
         if is_mode("release") then
             table.insert(cargo_args, "--release")
         end
         os.mkdir(outdir)
         os.execv("cargo", cargo_args)
-        os.cp(path.join(os.projectdir(), "build", "cargo", cargo_mode, "libsu_core.a"), path.join(outdir, "libsu_core.a"))
+        local cargo_out = cargo_target
+            and path.join(os.projectdir(), "build", "cargo", cargo_target, cargo_mode, "libsu_core.a")
+            or path.join(os.projectdir(), "build", "cargo", cargo_mode, "libsu_core.a")
+        os.cp(cargo_out, path.join(outdir, "libsu_core.a"))
     end)
 
 target("su_platform_zig")
@@ -151,20 +168,26 @@ target("su_recognizer")
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
     add_files("src/recognizer/image/*.cpp")
-    add_files("src/recognizer/camera/*.cpp")
+    if is_plat("linux") then
+        add_files("src/recognizer/camera/v4l2_camera.cpp")
+    else
+        add_files("src/recognizer/camera/windows_camera.cpp")
+        add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
+    end
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
     add_packages("cimg")
     add_packages("libyuv")
-    if is_plat("linux") then
-        add_syslinks("jpeg")  -- libyuv MJPEG decode links libjpeg
+    if is_plat("mingw") then
+        add_files("src/platform/windows/print_shim.cpp")
     end
     if has_config("with_seetaface") then
         add_defines("SU_HAS_SEETAFACE=1", { public = true })
         add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
         add_seetaface_backend()
         before_build( function ()
-            local srcdir = path.join(os.projectdir(), "FaceRecognizer", "resources", "models")
+            local srcdir = path.join(os.projectdir(), "assets", "models", "seeta")
             local dstdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
             os.mkdir(dstdir)
             for _, file in ipairs(os.files(path.join(srcdir, "*.csta"))) do
@@ -177,10 +200,19 @@ target("su_recognizer")
 
     target("su_app")
     apply_cpp_target("binary")
-    add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     add_includedirs("src/core-rs/include", {public = true})
     add_packages("nlohmann_json")
     add_deps("su_core", "su_recognizer")
+    if is_plat("mingw") then
+        -- Ship the Rust Credential Provider DLL next to the GUI binary so a
+        -- plain `xmake build` produces the full deployable set.
+        add_deps("su_credential_provider")
+    end
+    if is_plat("linux") then
+        add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
+    else
+        add_files("src/app/windows_app_controller.cpp", "src/app/core_bridge.cpp")
+    end
     if has_config("with_zig") then
         add_deps("su_platform_zig")
         add_defines("SU_HAS_ZIG_PLATFORM=1")
@@ -191,12 +223,16 @@ target("su_recognizer")
     add_files("src/modules/su.core.*.cppm")
     add_files("src/modules/su.app.controller.cppm")
     add_files("src/modules/su.app.user.cppm")
+    if not is_plat("linux") then
+        add_files("src/platform/windows/user/user_windows.cpp")
+    end
     if is_plat("linux") then
         add_files("src/modules/su.control.socket.cppm")
         add_files("src/platform/linux/deploy_client/*.cpp")
         add_deps("su_deploy")
     end
     if has_config("with_slint") then
+        set_policy("check.target_package_licenses", false)
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
         add_files("src/app/slint_main.cpp")
@@ -208,6 +244,20 @@ target("su_recognizer")
         add_files("src/modules/su.app.theme.cppm")
         if is_plat("linux") then
             add_syslinks("systemd")
+        elseif is_plat("windows", "mingw") then
+            -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32")
+            -- GUI subsystem: without -mwindows the PE subsystem is Console and
+            -- Windows opens a command-line window alongside the GUI.
+            add_ldflags("-mwindows", { force = true })
+            -- Embed the application icon into the exe resource section.
+            add_files("src/app/su_app.rc")
+            -- UDP face-recognition server for the credential provider.
+            add_files("src/platform/windows/udp_recognition_server.cpp")
+            -- Windows deployment/integration library (CP registration, auth
+            -- service status) used by the GUI deployment panel.
+            add_files("src/platform/windows/deploy/deployment.cpp")
+            add_includedirs("src/platform/windows/deploy")
         end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
@@ -240,6 +290,11 @@ target("su_recognizer")
             for _, file in ipairs(os.files(path.join(os.projectdir(), "assets", "i18n", "*.json"))) do
                 os.cp(file, outputdir)
             end
+            -- Ship the .ico next to the executable; the GUI applies it to the
+            -- native window (title bar / taskbar) at startup via WM_SETICON.
+            if is_plat("windows", "mingw") then
+                os.cp(path.join(os.projectdir(), "assets", "icons", "Smile2Unlock.ico"), target:targetdir())
+            end
         end)
     else
         add_defines("SU_HAS_SLINT=0")
@@ -262,6 +317,21 @@ if is_plat("linux") then
         add_syslinks("systemd")
         add_tests("version", {runargs = {"--version"}})
 
+elseif is_plat("windows", "mingw") then
+    -- Windows counterpart of su_deploy_helper: runs elevated (UAC) to
+    -- perform credential-provider registration and auth-service actions
+    -- triggered from the GUI deployment panel.
+    target("su_deploy_helper")
+        apply_cpp_target("binary")
+        add_files("src/platform/windows/deploy_helper/main.cpp")
+        add_files("src/platform/windows/deploy_helper/helper.rc")
+        add_files("src/platform/windows/deploy/deployment.cpp")
+        add_includedirs("src/platform/windows/deploy")
+        add_syslinks("advapi32", "user32")
+        add_tests("version", {runargs = {"--version"}})
+end
+
+if is_plat("linux") then
     target("pam_smile2unlock")
         apply_cpp_target("shared")
         set_filename("pam_smile2unlock.so")
@@ -313,6 +383,9 @@ if is_plat("linux") then
             "src/modules/su.auth.user.cppm",
             "src/modules/su.app.user.cppm",
             "src/modules/su.core.types.cppm")
+        if not is_plat("linux") then
+            add_files("src/platform/windows/user/user_windows.cpp")
+        end
         add_tests("default")
 
     target("su_pam_integration_test")
@@ -355,6 +428,27 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/security/*.cpp")
         add_headerfiles("src/platform/windows/security/*.h")
         add_syslinks("ncrypt", "bcrypt", "crypt32", "shell32", "ole32")
+
+    -- LocalSystem auth service: named-pipe host for the logon-secret store,
+    -- used by the C++ Credential Provider baseline and the Rust CP client.
+    target("su_auth_service")
+        apply_cpp_target("binary")
+        set_targetdir("$(builddir)/$(plat)/$(arch)/$(mode)")
+        add_files("src/platform/windows/security/storage_key_provider.cpp")
+        add_files("src/platform/windows/security/logon_secret_store.cpp")
+        add_files("src/platform/windows/auth_service/logon_secret_server.cpp")
+        add_files("src/platform/windows/auth_service/service_main.cpp")
+        add_includedirs(
+            "src/platform/windows/security",
+            "src/platform/windows/auth_service",
+            "src/core-rs/include")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        add_ldflags("-static", "-municode", "-mwindows", {force = true})
+        add_syslinks(
+            "ncrypt", "bcrypt", "crypt32", "shell32", "ole32", "advapi32",
+            "userenv", "ntdll", "ws2_32", "uuid")
+        add_deps("su_core")
 end
 
 target("su_face_auth_smoke_test")
@@ -367,7 +461,9 @@ target("su_face_auth_smoke_test")
     add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
-    add_tests("default")
+    if not is_plat("mingw") then
+        add_tests("default")
+    end
 
 target("su_theme_test")
     apply_cpp_target("binary")
@@ -376,7 +472,9 @@ target("su_theme_test")
         "src/modules/su.app.preferences.cppm",
         "src/modules/su.app.theme.cppm")
     add_packages("nlohmann_json")
-    add_tests("default")
+    if not is_plat("mingw") then
+        add_tests("default")
+    end
 
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
@@ -393,6 +491,62 @@ target("su_core_rust_tests")
         }, { try = true })
         if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
             os.raise("cargo test failed: " .. tostring(ok))
+        end
+        return true
+    end)
+    add_tests("default")
+
+target("su_credential_provider")
+    -- Rust cdylib Credential Provider, cross-built from the Linux host.
+    -- Mirrors su_core's cargo integration: only active for mingw (the crate
+    -- is cfg(windows)-only); a phony target so `xmake build` produces the
+    -- DLL next to su_app.exe without a manual cargo invocation.
+    set_kind("phony")
+    on_build( function ()
+        if not is_plat("mingw") then
+            return
+        end
+        local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
+        local manifest = path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml")
+        local cargo_mode = is_mode("release") and "release" or "debug"
+        local cargo_args = {
+            "build",
+            "--manifest-path", manifest,
+            "--target", "x86_64-pc-windows-gnu",
+            "--target-dir", path.join(os.projectdir(), "build", "cargo", "credential_provider_rs")
+        }
+        if is_mode("release") then
+            table.insert(cargo_args, "--release")
+        end
+        os.mkdir(outdir)
+        os.execv("cargo", cargo_args)
+        local cargo_out = path.join(
+            os.projectdir(), "build", "cargo", "credential_provider_rs",
+            "x86_64-pc-windows-gnu", cargo_mode, "su_credential_provider.dll")
+        os.cp(cargo_out, path.join(outdir, "su_credential_provider.dll"))
+    end)
+
+target("su_credential_provider_rust_tests")
+    apply_cpp_target("binary")
+    add_files("tests/rust/main.cpp")
+    on_test(function (target)
+        -- The crate is Windows-only (cfg(windows) modules, windows crate
+        -- dependency); native cargo test cannot compile it on Linux. The
+        -- mingw build runs the COM/IPC suite under wine via the crate-local
+        -- .cargo/config.toml runner.
+        if not is_plat("mingw") then
+            return true
+        end
+        local args = {
+            "test",
+            "--manifest-path",
+            path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml"),
+            "--target",
+            "x86_64-pc-windows-gnu",
+        }
+        local ok = os.execv("cargo", args, { try = true })
+        if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
+            os.raise("credential provider cargo test failed: " .. tostring(ok))
         end
         return true
     end)
@@ -441,7 +595,9 @@ if has_config("with_seetaface") then
             os.cp(path.join(recognizer_samples, "1.png"), path.join(dstdir, "official_face_1.png"))
             os.cp(path.join(fas_samples, "hu.ge.jpg"), path.join(dstdir, "official_face_2.jpg"))
         end)
-        add_tests("default")
+        if not is_plat("mingw") then
+            add_tests("default")
+        end
 end
 
 -- Auto-generate compile_commands.json for clangd LSP after each full build.

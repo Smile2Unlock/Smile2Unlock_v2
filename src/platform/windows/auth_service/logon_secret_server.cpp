@@ -1,17 +1,25 @@
 #include "logon_secret_server.h"
 
-#include "windows/logon_secret_protocol.h"
+#include "logon_secret_protocol.h"
 
 #include <aclapi.h>
 #include <sddl.h>
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace su::windows::auth_service {
+
+// Diagnostic log (SYSTEM-writable). Diagnostic only.
+void server_log(const char* message) {
+    std::ofstream log(L"C:\\su-deploy\\authsvc.log", std::ios::app);
+    log << message << "\n";
+}
+
 namespace {
 
 using smile2unlock::logon_secret_ipc::Operation;
@@ -387,8 +395,10 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             3000,
             &attributes);
         if (raw_pipe == INVALID_HANDLE_VALUE) {
+            server_log("serve: CreateNamedPipeW FAILED");
             return std::unexpected(GetLastError());
         }
+        server_log("serve: pipe created, waiting for client");
         const auto pipe = ScopedHandle{raw_pipe};
         const auto connected = wait_for_pipe_client(raw_pipe, stop_event);
         if (!connected) {
@@ -401,6 +411,7 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
         if (!*connected) {
             break;
         }
+        server_log("serve: client connected");
 
         auto request = Request{};
         auto bytes_read = DWORD{0};
@@ -414,9 +425,11 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             continue;
         }
         if (bytes_read == sizeof(request)) {
+            server_log("serve: request received");
             response.request_id = request.request_id;
             response.logon_session_id = request.logon_session_id;
             response.status = process_request(raw_pipe, request, response, secret_store_);
+            server_log(("serve: response status=" + std::to_string(static_cast<int>(response.status))).c_str());
         } else {
             response.status = Status::kInvalidRequest;
         }

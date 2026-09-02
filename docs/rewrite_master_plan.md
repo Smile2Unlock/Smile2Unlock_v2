@@ -4,9 +4,11 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-07-26)
+## Current Status (2026-08-17)
 
-Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 加密密码存储和 LocalSystem 认证服务已实现，Rust Credential Provider 重写尚未开始**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
+Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 基础设施、纯 Rust Credential Provider、UDP 识别服务端、GUI profile 操作 (FFI) 与认证服务全部接通；剩余项仅为需要真实摄像头 / 物理 TPM / LogonUI 的现场验收**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
+
+当前 Windows 构建包含 `su_app` (Slint GUI + UDP 识别服务端)、`su_deploy_helper` (UAC 提权部署)、`su_auth_service` (LocalSystem 命名管道服务)、`su_credential_provider.dll` (Rust CP, 46 单元测试)；仓库资源统一在 `assets/`（icons / i18n / models/seeta），Windows 部署采用可执行文件与 `assets/` 平级的单一目录布局（默认 `C:\su-deploy\`）。
 
 当前 Linux 配置包含 19 个 Xmake target；`xmake build` 和 12 个 Xmake test case 已通过，其中 Rust core 包含 42 个单元测试。Linux GUI 已支持 DMS / Matugen Monet 配色、外部语言包、system-owned 加密档案、桌面 PAM 目标管理，以及在 helper 缺失时通过 `pkexec` 直接安装源码树内完整 Release 构建的系统组件。
 
@@ -474,6 +476,141 @@ Smile2Unlock_v2/
 - Linux 使用 peer credential 校验。
 - Windows 使用启动时生成的 local auth token。
 
+## Windows GUI Recognition Settings + Camera Backend (implemented 2026-08-14)
+
+- Media Foundation camera backend replaces the Windows camera stub
+  (`src/recognizer/camera/windows_mf_camera.{h,cpp}` + module wrapper
+  `windows_camera.cpp`): MFEnumDeviceSources enumeration, IMFSourceReader
+  capture on a private MTA worker thread, YUY2 output reported as V4L2 YUYV
+  (identical packing) so the shared pixel-conversion pipeline works unchanged.
+  `MFEnumDeviceSources`/`MFGetAttributeSize` are missing from the mingw-w64
+  import library and are resolved at runtime / decoded in-place.
+- GUI settings page (Windows only): recognition mode (manual/auto), auto
+  delay, retry interval, timeout. Saved through the Rust core into
+  config.toml and mirrored to `HKLM\SOFTWARE\Smile2Unlock\Recognition`
+  (best-effort, requires elevation), which the credential provider reads.
+- Platform-conditional UI: the recognition-trigger block shows only on
+  Windows; the PAM/deployment/desktop-auth checks show only on Linux
+  (`platform_windows` property driven by `_WIN32` in slint_main.cpp).
+- Linux native `cargo test` for the credential-provider crate is skipped by
+  xmake (crate is windows-only); duplicate `mem_noaccess` import in vendored
+  memsafe fixed.
+
+## KVM Guest Graphics (Windows 10, solved 2026-08-14)
+
+The win10 KVM guest uses a QXL display (2D only) over SPICE; Windows then
+falls back to GDI Generic OpenGL 1.1, so Slint/winit fails with "Could not
+locate glCreateShader symbol". Fix without touching the VM hardware config:
+
+- Deploy Mesa3D llvmpipe software GL next to the GUI binary:
+  `opengl32.dll` (loader) + `libgallium_wgl.dll` (llvmpipe, OpenGL 4.5,
+  CPU-rendered) from mesa-dist-win release-mingw into `C:\su-deploy\bin\`.
+  DLL search order loads the app-local copy before system32.
+- Verified: su_app.exe starts and enters its GUI event loop (no GL panic).
+- Optional hardware path (not needed for acceptance): libvirt video model
+  `virtio` + accel3d with virglrenderer (host has virglrenderer 1.3), plus
+  the virtio-win viogpudo guest driver; Windows-side virtio-gpu 3D support
+  is experimental, so software GL remains the reliable baseline.
+
+### Why the window did not appear (diagnosed 2026-08-15, root cause + fix)
+
+Even with Mesa deployed the GUI produced no visible window, while the
+process stayed alive with one thread. Methodical debugging (fresh full
+minidump + TID/timestamp instrumentation + in-process Win32 probes) pinned
+it down:
+
+1. **slint 1.17 has no `SLINT_RENDERER` env var.** The renderer is chosen at
+   runtime via `SLINT_BACKEND` (selector: `gl`|`winit`|`femtovg`|`skia`|
+   `sw`|`software`), and the prebuilt `libslint_cpp.a` contains all three
+   renderers with femtovg (GL) preferred. The old `_putenv_s("SLINT_RENDERER",
+   "software")` did nothing, and `_putenv_s` only updates the C-runtime
+   `environ` anyway, not the OS environment block that Rust's `std::env`
+   reads.
+2. **The GL renderer then initialized Mesa's d3d12 driver, which fell back
+   to WARP (`d3d10warp.dll`) and hung** inside D3D12/D3D12Core on this VM
+   (proven by the minidump's thread stack: libgallium_wgl + D3D12 +
+   D3D12Core + d3d10warp + ntdll wait).
+3. `slint::run_event_loop()` returns `void`; when the winit backend errors
+   out (GL init failure / invalid backend name), the error is only
+   `eprintln!`-ed to an invisible stderr in GUI-subsystem builds. `main()`
+   then returned, `ExitProcess` terminated all other threads, and the
+   process became a **zombie stuck in a DLL's `DLL_PROCESS_DETACH`**
+   (one thread, `TerminateProcess` reports success but the process never
+   dies). This produced the misleading "1 thread, no window" state; the
+   old watcher probe also appeared stuck because ExitProcess killed it
+   mid-`EnumWindows`.
+4. **Fix in `slint_main.cpp` (Windows):**
+   `SetEnvironmentVariableW(L"SLINT_BACKEND", L"software")` before any slint
+   window creation. This selects the winit backend with the CPU software
+   renderer — no GL context at all (Mesa DLLs still load as import
+   dependencies but are never called). stderr is redirected to
+   `C:/Windows/Temp/su_stderr.log` for future Rust-side diagnostics.
+5. **Additional gotchas found while testing:**
+   - The window title is `Smile2Unlock core v0` (from `config.title`), so a
+     probe doing exact-match `FindWindowW(L"Smile2Unlock")` reports "no
+     window" even when the window exists and is visible.
+   - The VM session auto-locks after idle; a locked session shows only the
+     lock screen (LogonUI), so "no window" reports can be the environment.
+     Disabled via `InactivityTimeoutSecs=0` + `ScreenSaveActive=0`
+     (+ `powercfg /change standby-timeout-ac 0`).
+   - `taskkill`/`schtasks` interplay: scheduled-task-launched processes live
+     in job objects; `taskkill` from another task cannot kill them
+     ("no instance of this task is running"); `Stop-Process`
+     (`TerminateProcess`) works — except for the teardown zombies, which
+     need a reboot.
+
+### Window sizing on small screens (fixed 2026-08-15)
+
+The design size is 1560x880, larger than the VM's 1280x800 SPICE console,
+and the window had an explicit `width/height` in `app.slint`, which the
+winit backend re-applies from the window-item properties on every layout
+pass (`update_window_properties`), making the window effectively
+fixed-size and oversized. Fix:
+
+- `app.slint`: removed the explicit `width/height` on the AppWindow (kept
+  `preferred-width/height: 1560x880` as layout hints only).
+- `slint_main.cpp` (Windows): `fit_window_to_screen()` queries
+  `SPI_GETWORKAREA` and calls `window->window().set_size()` with the design
+  size scaled to ≤ the work area (min scale 0.5); applied right after
+  `show()` (the window is created lazily inside `run_event_loop`, so the
+  size lands in the winit attributes) and once more via
+  `slint::Timer::single_shot(100ms)` after the first layout pass settles.
+- Result: window opens at ~1256x708 on the 1280x800 console, has no
+  minimum-size or aspect-ratio constraints, and stays freely resizable
+  (the layout switches to a compact mode below 1020px width by design).
+
+## Face Recognition Trigger Flow (Windows, implemented 2026-08-14)
+
+Implemented in `src/platform/windows/credential_provider_rs/src/recognition.rs`
+(v28 deployed; 46 unit tests green incl. full UDP round-trips).
+
+- Transport: C++-parity UDP. Request on 127.0.0.1:51236
+  (`UdpAuthRequestPacket`, magic "AUTH", v1, 88 B); status on 127.0.0.1:51234
+  (`UdpStatusPacket`, magic 0x8581DAF3, v2, 49244 B). The provider is a pure
+  client: it never runs a camera or recognizer inside LogonUI.
+- Security: loopback-only, status accepted only when the session_id matches
+  the most recent request and the timestamp is within 30 s (anti-injection /
+  anti-replay, verified live: mismatched session packets are rejected).
+  Forgery resistance at the same trust level as the C++ baseline; signing is
+  a tracked hardening item. Face success only gates the stored-secret fetch
+  through the SYSTEM pipe; the pipe never trusts UDP.
+- Manual mode (RecognitionMode=0, default): password-box Enter calls
+  GetSerialization, which arms the worker and waits for the terminal status.
+  Success submits the stored secret; failure rejects the submit with
+  CPSI_ERROR + status text.
+- Auto mode (RecognitionMode=1): worker waits AutoDelaySec after the lock
+  screen (sleep/hibernate/lid suspension pauses the countdown via
+  GetTickCount64; resume triggers immediately), retries every RetryDelaySec
+  until success, then sets face_ready and fires CredentialsChanged through
+  the Global Interface Table (cross-thread marshalled). LogonUI re-enumerates
+  with auto-logon; GetSerialization skips the manual gate via auto_grant.
+- Registry: `HKLM\SOFTWARE\Smile2Unlock\Recognition` (RecognitionMode,
+  AutoDelaySec, RetryDelaySec, TimeoutSec). Missing key degrades to defaults.
+- VM test harness: `mock_recognizer` bin stands in for su_app.exe (no camera
+  needed); deployed as SYSTEM scheduled task SU_Mock. Live acceptance passed
+  end-to-end in auto mode (lock -> auto trigger -> SUCCESS -> logon).
+  Manual mode awaits interactive Enter on the VM console.
+
 ## Recognizer Plan
 
 识别模块第一阶段作为 `su_recognizer` 静态库接入 `su_app`。
@@ -536,7 +673,10 @@ Camera
 凭据存储：
 
 - 第一阶段采用 Rust 管理的版本化 XChaCha20-Poly1305 加密文件，不引入普通 SQLite。
-- profile 迁到 system-owned store，GUI 只通过认证服务 IPC 进行录入、列出和删除。
+- profile 存储必须是 system-owned（Linux `/var/lib/smile2unlock/users/<uid>/`；Windows `C:/ProgramData/smile2unlock/users/<uid>/`）。
+- profile 访问路径按平台（2026-08-16 决策，取代早期"GUI 一律走认证服务 IPC"的通用要求）：
+  - **Linux：GUI 只通过认证服务 IPC（control socket → root `su_authd`）进行录入、列出、删除和认证**。已实现：`su.auth.daemon.cppm` 处理 `EnrollProfile/ListProfiles/DeleteProfile/VerifyProfile`，`su.auth.storage.cppm` 以 root 权限 + mmap 页对齐 + mlock + `MADV_DONTDUMP` + `mprotect(PROT_NONE)` 空闲封存 + O_NOFOLLOW + 严格权限校验读写；主密钥读取限定在 `with_bytes`/`with_context` 的临时 `PROT_READ` 提升内（memsafe Unix 语义的 C++ 同款实现）；GUI 侧 `AppController` 一律 `send_control_request(...)`。
+  - **Windows：由 su_app（交互会话内的 GUI 宿主）直接经 Rust core FFI 读写 ProgramData 加密 store，不走认证服务 IPC**。理由：Windows 登录消费方（Credential Provider）不读 profile——识别结果通过回环 UDP（51236/51234）传给 LogonUI；profile 的唯一读写方就是桌面会话里的 su_app，Windows 认证服务只负责登录密钥管道（logon secret）。若未来需要在 SYSTEM/LogonUI 上下文直接比对，再迁移到认证服务 IPC。
 - Linux 使用 systemd encrypted credential；TPM2 机器使用 `host+tpm2`，无 TPM2 时明确回退 `host` key，并建议配合全盘加密。
 - Windows 登录密码使用与 profile 分离的 encrypted envelope；TPM 由 CNG Platform Crypto Provider 保护 master key，无 TPM 时回退 machine DPAPI。
 - 完整格式、密钥、迁移和 Windows stale password 规则见 `docs/credential_storage_encryption_plan.md`。
@@ -663,15 +803,20 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
-### Phase 4: Windows compatibility ⚠️ 基础设施完成，Rust Provider 待实现
+### Phase 4: Windows compatibility ✅ 基础设施、Rust CP、UDP 服务端与 profile 操作全部接通；现场验收待真实硬件
 
 - ✅ Windows password XChaCha20-Poly1305 envelope 和 stale-password 状态
 - ✅ CNG TPM wrapping、machine DPAPI fallback、SYSTEM-only ACL 和 LocalSystem 服务
 - ✅ 认证命名管道和现有 C++ Credential Provider 的 LOGON / UNLOCK 序列化
 - ✅ MinGW 交叉构建和 Windows Rust core 静态库
-- ❌ `docs/windows_credential_provider_rust_plan.md` 中的纯 Rust COM Provider
-- ❌ Windows system-service owned encrypted face profiles
-- ❌ MSVC 原生构建、物理 TPM / 无 TPM 机器和真实 LogonUI 验收
+- ✅ 纯 Rust COM Provider（`credential_provider_rs`，v28）：CP 客户端、UDP 识别触发（manual/auto）、46 单元测试、自动模式 VM 端到端验收（mock 服务端）
+- ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
+- ✅ su_app UDP 识别服务端（`udp_recognition_server`，监听 127.0.0.1:51236/51234，协议与 CP 对齐；VM 上协议链路实测：magic/version/session 回显正确，回调执行识别并回状态；mock_recognizer 已停用）
+- ✅ Windows GUI profile 操作（注册/列表/删除/认证经 Rust core FFI 直连 ProgramData store；VM 上受限于无摄像头，识别路径返回 camera unavailable）
+- ✅ Windows 部署布局平级化（可执行文件与 `assets/` 同目录，无嵌套 `bin\`）；CP 注册与认证服务 ImagePath 已按新布局在 VM 上重新注册并用仓库构建的服务二进制运行
+- ✅ `logon_secret_protocol.h` 恢复至 `src/platform/windows/auth_service/`（随 `common/` 删除而丢失），`su_auth_service` 加入 xmake 主构建（此前仅由已删除的 tests/windows 构建）
+- ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 锁屏 CP 触发）
+- ❌ 物理 TPM / 无 TPM 机器和真实 LogonUI 验收
 
 ### Phase 5: Optimization and optional split ✅ 第一版决策完成
 
@@ -686,6 +831,7 @@ Slint 是唯一计划内 GUI。
 | Slint 版本 pin | ✅ 已决定 | v1.17.0 |
 | Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
 | 凭据存储 | ✅ 已决定 | system-owned XChaCha20-Poly1305 envelope；SQLite 暂不引入，详见加密存储计划 |
+| Windows profile 访问 | ✅ 已决定 (2026-08-16) | su_app 本地 FFI 直读 ProgramData 加密 store（不走认证服务 IPC）；Linux 保持 control socket IPC。理由见"凭据存储"小节 |
 | Linux 摄像头 | ✅ 已决定 | V4L2（第一阶段），暂不预留 PipeWire |
 | Zig target 启用 | ✅ 已决定 | 默认不启用（`with_zig` defaults to false），仅 placeholder |
 | 汇编优化 | ✅ 已决定 | 不入第一版（`with_simd` defaults to false） |

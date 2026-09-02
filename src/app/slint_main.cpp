@@ -10,6 +10,22 @@ import su.app.preferences;
 import su.app.session;
 import su.app.theme;
 
+#ifdef _WIN32
+extern "C" int su_win_enum_own_windows(char* out, size_t cap);
+extern "C" int su_win_find_window(const char* needle, char* out, size_t cap);
+extern "C" int su_win_count_own_threads(void);
+extern "C" unsigned long __stdcall GetCurrentThreadId(void);
+extern "C" int __stdcall GetEnvironmentVariableW(const wchar_t* name, wchar_t* buffer, unsigned long size);
+extern "C" int __stdcall SetEnvironmentVariableW(const wchar_t* name, const wchar_t* value);
+extern "C" unsigned long __stdcall GetLastError(void);
+extern "C" int __stdcall SystemParametersInfoW(unsigned int action, unsigned int param, void* value, unsigned int win_ini);
+extern "C" void* __stdcall LoadImageW(void* instance, const wchar_t* name, unsigned int type, int width, int height, unsigned int flags);
+extern "C" unsigned long long __stdcall SendMessageW(void* window, unsigned int message, unsigned long long wparam, long long lparam);
+extern "C" void* __stdcall FindWindowW(const wchar_t* class_name, const wchar_t* window_name);
+extern "C" unsigned long __stdcall GetModuleFileNameW(void* module, wchar_t* buffer, unsigned long size);
+extern "C" void __stdcall DestroyIcon(void* icon);
+#endif
+
 namespace {
 
 namespace ui = su::app::ui;
@@ -149,6 +165,75 @@ void set_activity(
     window->set_busy(busy);
 }
 
+// Diagnostic log for GUI bring-up (window creation, GL, event loop). File
+// based because GUI-subsystem builds have no console; fail-silent.
+void gui_log(const std::string& message) {
+    if (auto file = std::ofstream("C:/Windows/Temp/su_gui.log", std::ios::app)) {
+        file << message << "\n";
+    }
+}
+
+#ifdef _WIN32
+extern "C" unsigned long __stdcall GetCurrentThreadId(void);
+#endif
+
+double now_seconds() {
+    namespace chrono = std::chrono;
+    return chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+unsigned long thread_id() {
+#ifdef _WIN32
+    return ::GetCurrentThreadId();
+#else
+    return static_cast<unsigned long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+#endif
+}
+
+// Timed + thread-id variant so we can tell WHICH thread wrote a line and
+// measure how long each stage took (a stuck thread stops producing lines).
+void gui_log_t(const std::string& message) {
+    gui_log(std::format("[{:>9.3f}s tid=0x{:X}] {}", now_seconds(), thread_id(), message));
+}
+
+#ifdef _WIN32
+// Set the title-bar and taskbar icon from the .ico file next to the
+// executable. slint 1.17 cannot embed Window.icon (the compiler emits
+// Image::load_from_path with the build machine's absolute path), so apply
+// the icon directly via WM_SETICON once the native window exists. Call on
+// the event-loop thread (e.g. from a timer callback).
+void apply_window_icon() {
+    wchar_t exe_path[260] = {};
+    if (::GetModuleFileNameW(nullptr, exe_path, 260) == 0) {
+        return;
+    }
+    std::wstring icon_path(exe_path);
+    const auto slash = icon_path.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return;
+    }
+    icon_path.resize(slash + 1);
+    icon_path += L"Smile2Unlock.ico";
+    if (void* hwnd = ::FindWindowW(nullptr, L"Smile2Unlock"); hwnd != nullptr) {
+        const auto set_icon = [hwnd, &icon_path](int size, unsigned long long which) {
+            if (void* icon = ::LoadImageW(
+                    nullptr,
+                    icon_path.c_str(),
+                    1 /* IMAGE_ICON */,
+                    size,
+                    size,
+                    0x10 /* LR_LOADFROMFILE */);
+                icon != nullptr) {
+                ::SendMessageW(hwnd, 0x80 /* WM_SETICON */, which, reinterpret_cast<long long>(icon));
+            }
+        };
+        set_icon(32, 1 /* ICON_BIG: taskbar / alt-tab */);
+        set_icon(16, 0 /* ICON_SMALL: title bar */);
+        gui_log_t("window icon applied");
+    }
+}
+#endif
+
 std::size_t language_index(const WindowHandle& window) {
     return static_cast<std::size_t>(std::max(window->get_language_index(), 0));
 }
@@ -186,15 +271,22 @@ std::filesystem::path executable_directory(const char* argument_zero) {
 }
 
 std::filesystem::path language_directory(const std::filesystem::path& executable_dir) {
-    const auto candidates = std::array{
-        executable_dir / "assets" / "i18n",
-        executable_dir / ".." / "share" / "smile2unlock" / "i18n",
-    };
-    const auto found = std::ranges::find_if(candidates, [](const auto& candidate) {
+    // Walk up from the executable looking for assets/i18n, matching the
+    // model-dir lookup, so both flat (exe + assets side by side) and
+    // bin/assets layouts resolve. Falls back to the Linux system location.
+    auto directory = executable_dir;
+    while (true) {
         auto error = std::error_code{};
-        return std::filesystem::is_directory(candidate, error);
-    });
-    return found == candidates.end() ? candidates.front() : *found;
+        const auto candidate = directory / "assets" / "i18n";
+        if (std::filesystem::is_directory(candidate, error)) {
+            return candidate;
+        }
+        if (!directory.has_parent_path() || directory == directory.parent_path()) {
+            break;
+        }
+        directory = directory.parent_path();
+    }
+    return executable_dir / ".." / "share" / "smile2unlock" / "i18n";
 }
 
 std::filesystem::path ui_preference_path() {
@@ -285,6 +377,8 @@ void apply_system_status(
     window->set_pam_configured(status.pam_configured);
     window->set_pam_service(slint::SharedString(status.pam_service));
     window->set_deployment_helper_available(status.deployment_helper_available);
+    gui_log_t(std::format("deployment helper available: {}",
+        status.deployment_helper_available ? "yes" : "no"));
     window->set_deployment_installer_available(status.deployment_installer_available);
     window->set_login_pam_configured(status.login_pam_configured);
     window->set_lock_pam_configured(status.lock_pam_configured);
@@ -339,22 +433,114 @@ void start_deployment_operation(
     }).detach();
 }
 
+#ifndef _WIN32
+// Resolve the desktop size on Linux without linking X11/Wayland client
+// libraries (su_app is a Wayland-first GUI; adding libX11 would pull in a
+// long display-manager dependency chain). Probe the compositor through CLI
+// tools that ship alongside it:
+//   - Wayland (sway/niri/labwc/…): `wlr-randr` (widely installed with wlr
+//     compositors; falls back to nothing if missing)
+//   - X11: `xdpyinfo`
+// Returns false when no probe yields a size; the caller keeps the design size.
+bool detect_linux_desktop_size(float& width, float& height) {
+    const bool wayland = std::getenv("WAYLAND_DISPLAY") != nullptr;
+    const bool x11 = std::getenv("DISPLAY") != nullptr;
+    if (!wayland && !x11) {
+        return false;
+    }
+    auto run = [](const std::string& cmd) {
+        std::array<char, 4096> buffer{};
+        if (FILE* pipe = ::popen(cmd.c_str(), "r")) {
+            std::string text;
+            std::size_t n = 0;
+            while ((n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) {
+                text.append(buffer.data(), n);
+            }
+            ::pclose(pipe);
+            return text;
+        }
+        return std::string{};
+    };
+    if (wayland) {
+        // wlr-randr output lines like "HDMI-A-1 connected 2560x1600@...".
+        // Take the largest WxH across all listed outputs (single-display and
+        // the primary of a multi-head setup both land correctly).
+        const auto out = run("wlr-randr");
+        if (!out.empty()) {
+            std::regex mode{R"((\d+)\s*x\s*(\d+))"};
+            std::smatch match;
+            std::size_t best_w = 0, best_h = 0;
+            auto it = std::sregex_iterator(out.begin(), out.end(), mode);
+            auto end = std::sregex_iterator{};
+            for (; it != end; ++it) {
+                const auto w = std::stoul((*it)[1].str());
+                const auto h = std::stoul((*it)[2].str());
+                if (w * h > best_w * best_h) {
+                    best_w = w;
+                    best_h = h;
+                }
+            }
+            if (best_w != 0 && best_h != 0) {
+                width = static_cast<float>(best_w);
+                height = static_cast<float>(best_h);
+                return true;
+            }
+        }
+    }
+    if (x11) {
+        // xdpyinfo: "dimensions:    2560x1600 pixels"
+        const auto out = run("xdpyinfo");
+        std::regex dimensions{R"(\b(\d+)x(\d+)\s+pixels)"};
+        std::smatch match;
+        if (std::regex_search(out, match, dimensions)) {
+            width = static_cast<float>(std::stoul(match[1].str()));
+            height = static_cast<float>(std::stoul(match[2].str()));
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // GUI-subsystem builds have no console: capture stderr so Rust-side
+    // diagnostics from slint (backend/renderer errors, panics) are visible.
+    if (auto* log = std::freopen("C:/Windows/Temp/su_stderr.log", "w", stderr)) {
+        (void)log;
+    }
+#endif
+    gui_log_t("main enter");
+#ifdef _WIN32
+    // Force slint's software renderer. Two requirements:
+    //  1. slint reads SLINT_BACKEND from the OS environment block (Rust
+    //     std::env), not from the C runtime environ that mingw's _putenv_s
+    //     updates; SetEnvironmentVariableW updates the OS block.
+    //  2. Valid values in slint 1.17: gl|winit|femtovg|skia|sw|software.
+    //     "software" selects the winit backend with the CPU renderer, so no
+    //     GL context (Mesa) is created.
+    if (::GetEnvironmentVariableW(L"SLINT_BACKEND", nullptr, 0) == 0) {
+        ::SetEnvironmentVariableW(L"SLINT_BACKEND", L"software");
+    }
+#endif
     slint::set_xdg_app_id(xdg_app_id);
     const auto preference_path = ui_preference_path();
+    gui_log_t("preference path: " + preference_path.string());
     auto preferences = std::make_shared<su::app::UiPreferences>();
     if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
         *preferences = std::move(*loaded);
     } else {
         std::println(stderr, "[preferences] {}", loaded.error());
     }
+    gui_log_t("preferences loaded");
     const auto theme_paths = su::app::default_theme_paths();
     const auto theme_commands = su::app::system_theme_command_runner();
     auto initial_theme = su::app::load_desktop_theme(
         theme_paths, theme_commands, preferences->theme);
     log_theme_diagnostics(initial_theme.diagnostics);
+    gui_log_t("theme loaded");
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
@@ -362,18 +548,22 @@ int main(int argc, char** argv) {
         std::cerr << "su_app failed to load language packs: " << loaded_catalog.error() << '\n';
         return 1;
     }
+    gui_log_t("language loaded");
     const auto catalog = std::make_shared<const su::app::LanguageCatalog>(std::move(*loaded_catalog));
     const auto selected_language = catalog->select_language(preferences->language, system_locale());
 
     auto controller = std::make_shared<su::app::AppController>();
+    gui_log_t("controller constructed");
     auto preview = std::make_shared<su::app::PreviewController>();
     const auto snapshot = controller->load_initial_snapshot();
+    gui_log_t("snapshot loaded");
     if (!snapshot) {
         std::cerr << "su_app failed to start: " << snapshot.error() << '\n';
         return 1;
     }
 
     auto window = ui::AppWindow::create();
+    gui_log_t("AppWindow::create ok");
     apply_theme(window, initial_theme.snapshot.theme);
     const WeakWindowHandle weak_window(window);
     const auto theme_monitor = std::make_shared<su::app::ThemeMonitor>(
@@ -488,7 +678,9 @@ int main(int argc, char** argv) {
 
     const auto username = su::app::current_username(
         catalog->translate(selected_language, "common.current_user"));
-    window->set_title_text(slint::SharedString(snapshot->title));
+    // Window title: plain product name (the versioned string stays in
+    // snapshot->title for the diagnostics view).
+    window->set_title_text(slint::SharedString("Smile2Unlock"));
     window->set_username(slint::SharedString(username));
     window->set_username_initial(slint::SharedString(username_initial(username)));
     window->set_core_version(slint::SharedString(catalog->translate_value(
@@ -502,6 +694,9 @@ int main(int argc, char** argv) {
     window->set_camera_options(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(camera_names)));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
+    gui_log_t(std::format("cameras enumerated: {} (first='{}')",
+        snapshot->cameras.size(),
+        snapshot->cameras.empty() ? "<none>" : snapshot->cameras.front().name));
     window->set_seetaface_available(snapshot->seetaface_available);
     apply_system_status(window, controller->load_system_status(), deployment_targets);
     window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
@@ -510,6 +705,15 @@ int main(int argc, char** argv) {
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
+    // Recognition trigger policy (Windows only; the UI hides these on Linux,
+    // but the values are still carried in the config struct everywhere).
+    window->set_recognition_mode(static_cast<int>(snapshot->config.recognition_mode));
+    window->set_auto_delay_sec(static_cast<int>(snapshot->config.auto_delay_sec));
+    window->set_retry_delay_sec(static_cast<int>(snapshot->config.retry_delay_sec));
+    window->set_timeout_sec(static_cast<int>(snapshot->config.timeout_sec));
+#ifdef _WIN32
+    window->set_platform_windows(true);
+#endif
     set_preview_idle(window, *catalog);
     window->set_activity_title(slint::SharedString(catalog->translate(
         selected_language,
@@ -780,7 +984,11 @@ int main(int argc, char** argv) {
             float recognition_threshold,
             bool liveness_enabled,
             float liveness_threshold,
-            int preview_fps) {
+            int preview_fps,
+            int recognition_mode,
+            int auto_delay_sec,
+            int retry_delay_sec,
+            int timeout_sec) {
             const auto window = weak_window.lock();
             if (!window) {
                 return;
@@ -804,6 +1012,10 @@ int main(int argc, char** argv) {
             config->liveness_detection = liveness_enabled;
             config->liveness_threshold = liveness_threshold;
             config->preview_fps = static_cast<std::uint32_t>(std::clamp(preview_fps, 1, 60));
+            config->recognition_mode = static_cast<std::uint32_t>(recognition_mode <= 1 ? recognition_mode : 0);
+            config->auto_delay_sec = static_cast<std::uint32_t>(std::clamp(auto_delay_sec, 0, 3600));
+            config->retry_delay_sec = static_cast<std::uint32_t>(std::clamp(retry_delay_sec, 1, 3600));
+            config->timeout_sec = static_cast<std::uint32_t>(std::clamp(timeout_sec, 5, 600));
 
             const auto saved = controller->save_config_snapshot(*config);
             if (!saved) {
@@ -891,7 +1103,141 @@ int main(int argc, char** argv) {
         }
     });
 
-    window->run();
+    gui_log_t(std::format("before run: visible={} size={}x{}",
+        window->window().is_visible(),
+        static_cast<int>(window->window().size().width),
+        static_cast<int>(window->window().size().height)));
+    // Poll window state once a second while the event loop runs, to see
+    // whether show() actually makes the window visible.
+    slint::Timer state_timer(std::chrono::milliseconds(1000), [weak_window] {
+        auto w = weak_window.lock();
+        if (w.has_value()) {
+            auto handle = *w;
+            auto& win = handle->window();
+            gui_log_t(std::format("tick: visible={} size={}x{}",
+                win.is_visible(),
+                static_cast<int>(win.size().width),
+                static_cast<int>(win.size().height)));
+        }
+    });
+    gui_log_t(std::format("renderer env: SLINT_BACKEND={}",
+        std::getenv("SLINT_BACKEND") ? std::getenv("SLINT_BACKEND") : "(unset)"));
+    window->show();
+#ifdef _WIN32
+    gui_log_t(std::format("show() returned (lastError=0x{:X})", ::GetLastError()));
+#else
+    gui_log_t("show() returned");
+#endif
+    // Fit the window to the desktop so it is never larger than the screen.
+    // Windows: SPI_GETWORKAREA reports PHYSICAL pixels; set_size takes a
+    // logical size, so the design size must be compared in physical units.
+    // Linux: the compositor's reported mode is physical pixels too. No
+    // minimum-size or aspect-ratio constraints are set: this only picks a
+    // proportional initial size, the window stays freely resizable. A
+    // one-shot timer re-applies the size after the first layout pass.
+    const auto fit_window_to_screen = [window] {
+        float avail_w = 0.0f;
+        float avail_h = 0.0f;
+        float center_x = 0.0f;
+        float center_y = 0.0f;
+#ifdef _WIN32
+        struct SuRect {
+            long left;
+            long top;
+            long right;
+            long bottom;
+        };
+        SuRect work{};
+        if (::SystemParametersInfoW(0x0030 /* SPI_GETWORKAREA */, 0, &work, 0) == 0) {
+            return;
+        }
+        avail_w = static_cast<float>(work.right - work.left) - 24.0f;
+        avail_h = static_cast<float>(work.bottom - work.top) - 48.0f;
+        center_x = (work.left + work.right) / 2.0f;
+        center_y = (work.top + work.bottom) / 2.0f;
+#else
+        if (!detect_linux_desktop_size(avail_w, avail_h)) {
+            return;
+        }
+        // Physical resolution: leave a small margin so the window is not
+        // edge-to-edge on a tiling compositor.
+        avail_w -= 24.0f;
+        avail_h -= 48.0f;
+        center_x = 0.0f;
+        center_y = 0.0f;
+#endif
+        const float sf = window->window().scale_factor();
+        const float scale = std::clamp(
+            std::min(1.0f, std::min(avail_w / (1560.0f * sf), avail_h / (880.0f * sf))),
+            0.5f,
+            1.0f);
+        const auto fitted = slint::LogicalSize({1560.0f * scale, 880.0f * scale});
+        window->window().set_size(fitted);
+#ifdef _WIN32
+        // Center the window on the work area: winit's default placement can
+        // leave it partly off-screen when the initial size exceeds the
+        // screen (e.g. 1560x880 logical at 125% scaling on a 1920x1080
+        // console). set_position takes logical coordinates.
+        center_x -= fitted.width * sf / 2.0f;
+        center_y -= fitted.height * sf / 2.0f;
+        window->window().set_position(slint::LogicalPosition({center_x / sf, center_y / sf}));
+#endif
+        gui_log_t(std::format("window fitted: avail={}x{} sf={:.2f} -> {}x{} physical {}x{}",
+            static_cast<int>(avail_w),
+            static_cast<int>(avail_h),
+            sf,
+            static_cast<int>(fitted.width),
+            static_cast<int>(fitted.height),
+            static_cast<int>(fitted.width * sf),
+            static_cast<int>(fitted.height * sf)));
+    };
+    fit_window_to_screen();
+    // One-shot: re-apply the fitted size once the first layout pass has
+    // settled (the layout may otherwise grow the window back to the
+    // preferred size). A repeating timer would fight manual resizing.
+    // Also apply the window icon here: at this point the native window
+    // exists and the event loop is running.
+    slint::Timer::single_shot(std::chrono::milliseconds(100), [window, fit_window_to_screen] {
+        fit_window_to_screen();
+#ifdef _WIN32
+        apply_window_icon();
+#endif
+    });
+    // Independent watcher: enumerates this process's top-level windows every
+    // second (Win32 only, no slint main-thread calls) to see whether the
+    // winit window is actually created/visible. Also logs the real OS thread
+    // count so we can verify this watcher thread is actually alive.
+#ifdef _WIN32
+    std::thread window_watcher([] {
+        gui_log_t("watcher thread started");
+        for (int i = 0; i < 120; ++i) {
+            if (i > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            char buffer[2048] = {};
+            gui_log_t("watch: before find_window");
+            const int f = su_win_find_window("Smile2Unlock", buffer, sizeof(buffer));
+            gui_log_t(std::format("watch: find_window -> {} ({})", f, buffer));
+            gui_log_t("watch: before enum_own");
+            const int n = su_win_enum_own_windows(buffer, sizeof(buffer));
+            const int threads = su_win_count_own_threads();
+            gui_log_t(std::format("watch tick {} ({} bytes, threads={}): {}", i, n, threads, buffer));
+        }
+        gui_log_t("watcher thread done");
+    });
+    window_watcher.detach();
+#endif
+#ifdef _WIN32
+    // UDP face-recognition server for the credential provider (loopback
+    // 51236/51234). Runs until the process exits; recognition requests are
+    // answered by AppController on the server thread.
+    controller->start_udp_recognition_server();
+    gui_log_t("udp recognition server started");
+#endif
+    gui_log_t("calling run_event_loop");
+    slint::run_event_loop();
+    gui_log_t("run returned");
     preview->stop();
+    gui_log_t("main exiting");
     return 0;
 }

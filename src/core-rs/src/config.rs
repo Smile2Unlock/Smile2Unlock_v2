@@ -23,6 +23,14 @@ pub struct AppConfig {
     pub liveness_threshold: f32,
     #[serde(default = "default_preview_fps")]
     pub preview_fps: u32,
+    #[serde(default = "default_recognition_mode")]
+    pub recognition_mode: u32,
+    #[serde(default = "default_auto_delay_sec")]
+    pub auto_delay_sec: u32,
+    #[serde(default = "default_retry_delay_sec")]
+    pub retry_delay_sec: u32,
+    #[serde(default = "default_timeout_sec")]
+    pub timeout_sec: u32,
 }
 
 fn default_version() -> u32 {
@@ -40,6 +48,18 @@ fn default_liveness_threshold() -> f32 {
 fn default_preview_fps() -> u32 {
     15
 }
+fn default_recognition_mode() -> u32 {
+    0 // manual
+}
+fn default_auto_delay_sec() -> u32 {
+    3
+}
+fn default_retry_delay_sec() -> u32 {
+    5
+}
+fn default_timeout_sec() -> u32 {
+    30
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -50,6 +70,10 @@ impl Default for AppConfig {
             liveness_detection: default_liveness_detection(),
             liveness_threshold: default_liveness_threshold(),
             preview_fps: default_preview_fps(),
+            recognition_mode: default_recognition_mode(),
+            auto_delay_sec: default_auto_delay_sec(),
+            retry_delay_sec: default_retry_delay_sec(),
+            timeout_sec: default_timeout_sec(),
         }
     }
 }
@@ -63,6 +87,10 @@ impl From<AppConfig> for SuCoreConfig {
             liveness_detection: value.liveness_detection,
             liveness_threshold: value.liveness_threshold,
             preview_fps: value.preview_fps,
+            recognition_mode: value.recognition_mode,
+            auto_delay_sec: value.auto_delay_sec,
+            retry_delay_sec: value.retry_delay_sec,
+            timeout_sec: value.timeout_sec,
         }
     }
 }
@@ -80,6 +108,10 @@ impl From<SuCoreConfig> for AppConfig {
             liveness_detection: value.liveness_detection,
             liveness_threshold: value.liveness_threshold,
             preview_fps: value.preview_fps,
+            recognition_mode: value.recognition_mode,
+            auto_delay_sec: value.auto_delay_sec,
+            retry_delay_sec: value.retry_delay_sec,
+            timeout_sec: value.timeout_sec,
         })
     }
 }
@@ -103,6 +135,18 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
     }
     if config.preview_fps == 0 || config.preview_fps > MAX_PREVIEW_FPS {
         config.preview_fps = default_preview_fps();
+    }
+    if config.recognition_mode > 1 {
+        config.recognition_mode = default_recognition_mode();
+    }
+    if config.auto_delay_sec > 3600 {
+        config.auto_delay_sec = default_auto_delay_sec();
+    }
+    if config.retry_delay_sec == 0 || config.retry_delay_sec > 3600 {
+        config.retry_delay_sec = default_retry_delay_sec();
+    }
+    if config.timeout_sec < 5 || config.timeout_sec > 600 {
+        config.timeout_sec = default_timeout_sec();
     }
     config
 }
