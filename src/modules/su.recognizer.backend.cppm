@@ -31,6 +31,7 @@ public:
         ImageView image, bool liveness_enabled) const;
     std::expected<RecognitionResult, RecognizerError> predict_liveness(
         ImageView image, bool liveness_enabled) const;
+    void reset_liveness();
     bool available() const;
     bool liveness_available() const;
 

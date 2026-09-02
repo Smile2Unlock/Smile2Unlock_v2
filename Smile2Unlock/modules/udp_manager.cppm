@@ -19,8 +19,6 @@ export namespace smile2unlock::udp {
     using StatusReceiver = ::smile2unlock::udp::StatusReceiver;
     using AuthRequestSender = ::smile2unlock::udp::AuthRequestSender;
     using AuthRequestReceiver = ::smile2unlock::udp::AuthRequestReceiver;
-    using PasswordSender = ::smile2unlock::udp::PasswordSender;
-    using PasswordReceiver = ::smile2unlock::udp::PasswordReceiver;
 }
 
 // 向后兼容性别名
@@ -34,6 +32,4 @@ export namespace smile2unlock::managers {
     // UdpReceiverFromCP: 接收来自 CP 的认证请求 (端口 51236)
     using UdpReceiverFromCP = ::smile2unlock::udp::AuthRequestReceiver;
     
-    // UdpPasswordSenderToCP: 发送密码响应到 CP (端口 51237)
-    using UdpPasswordSenderToCP = ::smile2unlock::udp::PasswordSender;
 }

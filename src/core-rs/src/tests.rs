@@ -11,10 +11,88 @@ use crate::embedding::{
     EMBEDDING_DIM, FaceEmbeddingError, FaceSample, cosine_similarity, embedding_from_face_sample,
     normalize, parse_face_sample_source, try_embedding_from_face_sample,
 };
+use crate::encrypted_store::AccountId;
 use crate::pipeline::authenticate_sample_with_liveness;
-use crate::profile::{copy_str_to_fixed, delete_profile, enroll_profile, load_store};
+use crate::profile::{
+    EncryptedProfileContext, copy_str_to_fixed, delete_profile, delete_profile_encrypted,
+    enroll_profile, enroll_profile_encrypted, load_encrypted_store, load_store,
+    migrate_plaintext_store,
+};
+use crate::protocol::{ControlRequest, parse_control_request};
 
 static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn control_protocol_parses_versioned_requests() {
+    let auth = parse_control_request(
+        br#"{"version":1,"msg_type":"authenticate","request_id":42,"username":" alice "}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        auth,
+        ControlRequest::Authenticate {
+            request_id: 42,
+            username: "alice".to_owned(),
+        }
+    );
+
+    let status =
+        parse_control_request(br#"{"version":1,"msg_type":"status","request_id":43}"#).unwrap();
+    assert_eq!(status, ControlRequest::Status { request_id: 43 });
+
+    let cancel = parse_control_request(
+        br#"{"version":1,"msg_type":"cancel","request_id":44,"target_request_id":42}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        cancel,
+        ControlRequest::Cancel {
+            request_id: 44,
+            target_request_id: 42,
+        }
+    );
+
+    let enroll = parse_control_request(
+        br#"{"version":1,"msg_type":"enroll_profile","request_id":45,"username":"alice","label":"Front","face_sample_source":"embedding:1,0"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        enroll,
+        ControlRequest::EnrollProfile {
+            request_id: 45,
+            username: "alice".to_owned(),
+            label: "Front".to_owned(),
+            face_sample_source: "embedding:1,0".to_owned(),
+        }
+    );
+
+    let verify = parse_control_request(
+        br#"{"version":1,"msg_type":"verify_profile","request_id":46,"username":"alice","face_sample_source":"embedding:1,0","liveness_ok":false}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        verify,
+        ControlRequest::VerifyProfile {
+            request_id: 46,
+            username: "alice".to_owned(),
+            face_sample_source: "embedding:1,0".to_owned(),
+            liveness_ok: false,
+        }
+    );
+}
+
+#[test]
+fn control_protocol_rejects_untrusted_input() {
+    for input in [
+        br#"{"version":2,"msg_type":"status","request_id":1}"#.as_slice(),
+        br#"{"version":1,"msg_type":"authenticate","request_id":0,"username":"alice"}"#,
+        br#"{"version":1,"msg_type":"authenticate","request_id":1,"username":""}"#,
+        br#"{"version":1,"msg_type":"authenticate","request_id":1,"username":"a\nb"}"#,
+        br#"{"version":1,"msg_type":"unknown","request_id":1}"#,
+    ] {
+        assert!(parse_control_request(input).is_err());
+    }
+}
 
 fn temp_path(name: &str, extension: &str) -> PathBuf {
     let sequence = TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -225,6 +303,91 @@ fn enroll_list_delete_profile() {
     assert!(delete_profile(&path, &profile.id).unwrap());
     assert!(load_store(&path).unwrap().profiles.is_empty());
     let _ = fs::remove_file(path);
+}
+
+fn encrypted_context(uid: u32) -> EncryptedProfileContext<'static> {
+    static MASTER_KEY: [u8; 32] = [0x5a; 32];
+    EncryptedProfileContext {
+        master_key: &MASTER_KEY,
+        key_version: 1,
+        account: AccountId::LinuxUid(uid),
+    }
+}
+
+#[test]
+fn encrypted_profile_store_round_trip_hides_plaintext() {
+    let path = temp_path("encrypted_profile_store", "s2u");
+    let _ = fs::remove_file(&path);
+    let context = encrypted_context(1000);
+
+    let profile =
+        enroll_profile_encrypted(&path, &context, "Private label", "mock:face:private").unwrap();
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(&bytes[..4], b"S2UE");
+    assert!(
+        !bytes
+            .windows(b"Private label".len())
+            .any(|window| window == b"Private label")
+    );
+    assert!(serde_json::from_slice::<serde_json::Value>(&bytes).is_err());
+
+    let store = load_encrypted_store(&path, &context).unwrap();
+    assert_eq!(store.profiles.len(), 1);
+    assert_eq!(store.profiles[0].id, profile.id);
+    assert!(delete_profile_encrypted(&path, &context, &profile.id).unwrap());
+    assert!(
+        load_encrypted_store(&path, &context)
+            .unwrap()
+            .profiles
+            .is_empty()
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn encrypted_profile_store_rejects_wrong_account_and_key() {
+    let path = temp_path("encrypted_profile_wrong_identity", "s2u");
+    let _ = fs::remove_file(&path);
+    let context = encrypted_context(1000);
+    enroll_profile_encrypted(&path, &context, "Alice", "mock:face:alice").unwrap();
+
+    assert_eq!(
+        load_encrypted_store(&path, &encrypted_context(1001)).unwrap_err(),
+        SuStatus::CryptoError
+    );
+    let different_key = [0x99; 32];
+    let wrong_key_context = EncryptedProfileContext {
+        master_key: &different_key,
+        key_version: 1,
+        account: AccountId::LinuxUid(1000),
+    };
+    assert_eq!(
+        load_encrypted_store(&path, &wrong_key_context).unwrap_err(),
+        SuStatus::CryptoError
+    );
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn plaintext_profile_migration_verifies_and_removes_source() {
+    let legacy_path = temp_path("legacy_profile_migration", "json");
+    let encrypted_path = temp_path("encrypted_profile_migration", "s2u");
+    let _ = fs::remove_file(&legacy_path);
+    let _ = fs::remove_file(&encrypted_path);
+    enroll_profile(&legacy_path, "Legacy Alice", "mock:face:alice").unwrap();
+
+    let context = encrypted_context(1000);
+    assert!(migrate_plaintext_store(&legacy_path, &encrypted_path, &context, true).unwrap());
+    assert!(!legacy_path.exists());
+    assert_eq!(
+        load_encrypted_store(&encrypted_path, &context)
+            .unwrap()
+            .profiles[0]
+            .label,
+        "Legacy Alice"
+    );
+    assert!(!migrate_plaintext_store(&legacy_path, &encrypted_path, &context, true).unwrap());
+    let _ = fs::remove_file(encrypted_path);
 }
 
 #[test]

@@ -56,6 +56,15 @@ Root: HKCR; Subkey: "CLSID\{{5fd3d285-0dd9-4362-8855-e0abaacd4af6}}\InprocServer
 ; Remove application configuration on uninstall
 Root: HKLM; Subkey: "SOFTWARE\Smile2Unlock_v2"; ValueType: string; ValueName: "__installer_cleanup__"; ValueData: ""; Flags: uninsdeletekey
 
+[Run]
+Filename: "{sys}\sc.exe"; Parameters: "create Smile2UnlockAuthService binPath= ""{app}\Smile2UnlockAuthService.exe"" start= auto obj= LocalSystem DisplayName= ""Smile2Unlock Authentication Service"""; Flags: runhidden waituntilterminated; StatusMsg: "Registering authentication service..."
+Filename: "{sys}\sc.exe"; Parameters: "description Smile2UnlockAuthService ""Protects Smile2Unlock profiles and one-time Windows logon credentials."""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "start Smile2UnlockAuthService"; Flags: runhidden waituntilterminated; StatusMsg: "Starting authentication service..."
+
+[UninstallRun]
+Filename: "{sys}\sc.exe"; Parameters: "stop Smile2UnlockAuthService"; Flags: runhidden waituntilterminated; RunOnceId: "StopSmile2UnlockAuthService"
+Filename: "{sys}\sc.exe"; Parameters: "delete Smile2UnlockAuthService"; Flags: runhidden waituntilterminated; RunOnceId: "DeleteSmile2UnlockAuthService"
+
 [UninstallDelete]
 ; Remove the whole installation directory, including files generated after install
 Type: filesandordirs; Name: "{app}"
@@ -75,4 +84,3 @@ begin
     Result := False;
   end;
 end;
-

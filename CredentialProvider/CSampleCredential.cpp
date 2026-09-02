@@ -11,7 +11,6 @@
 // 必须在其他 Windows 头文件之前包含 Winsock（用于 UDP 通讯）
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <wincrypt.h>
 
 #ifndef WIN32_NO_STATUS
 #define WIN32_NO_STATUS
@@ -26,11 +25,11 @@
 #include "managers/ipc/udp/auth_request_sender.h"
 #include "managers/ipc/udp/udp_receiver.h"
 #include "models/gui_ipc_protocol.h"
-#include "models/udp_password_packet.h"
 #include "registryhelper.h"
 #include "utils/logger.h"
 #include "CSampleProvider.h"
 #include "hresult_helper.h"
+#include "logon_secret_client.h"
 #include <chrono>
 #include <cwchar>
 #include <mutex>
@@ -60,8 +59,6 @@ bool IsAckStatusForRequest(AuthRequestType request_type, RecognitionStatus statu
              status == RecognitionStatus::PROCESS_ENDED;
     case AuthRequestType::QUERY_STATUS:
       return true;
-    case AuthRequestType::GET_PASSWORD:
-      return false;
     default:
       return false;
   }
@@ -72,6 +69,26 @@ bool IsTerminalFailureStatus(RecognitionStatus status) {
          status == RecognitionStatus::TIMEOUT ||
          status == RecognitionStatus::RECOGNITION_ERROR ||
          status == RecognitionStatus::PROCESS_ENDED;
+}
+
+void SecureFreePassword(PWSTR& password) {
+  if (password == nullptr) {
+    return;
+  }
+  SecureZeroMemory(password, wcslen(password) * sizeof(*password));
+  CoTaskMemFree(password);
+  password = nullptr;
+}
+
+HRESULT ClearPasswordValue(PWSTR& password) {
+  PWSTR empty = nullptr;
+  const auto copied = SHStrDupW(L"", &empty);
+  if (FAILED(copied)) {
+    return copied;
+  }
+  SecureFreePassword(password);
+  password = empty;
+  return S_OK;
 }
 
 bool Utf8ToWideString(const std::string& utf8_text, PWSTR* ppwszText) {
@@ -257,6 +274,10 @@ CSampleCredential::CSampleCredential():
     _fFaceRecognitionRunning(false),
     _fWarmupModeEnabled(false),
     _fHideCredentialInputFields(false),
+    _fFaceCredentialReady(false),
+    _fLastSerializationUsedStoredSecret(false),
+    _lastSecretRequestId(0),
+    _lastSecretSessionId(0),
     _pwzUsername(nullptr),
     _pwzPassword(nullptr),
     _pProvider(nullptr)
@@ -572,6 +593,7 @@ HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
         _rgFieldStatePairs[SFI_EDIT_TEXT] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_FOCUSED };
         _rgFieldStatePairs[SFI_PASSWORD] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE };
         _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE };
+        return S_OK;
     }
 
     extern std::atomic<RecognitionStatus> face_recognition_status;
@@ -611,7 +633,14 @@ HRESULT CSampleCredential::SetSelected(_Out_ BOOL *pbAutoLogon)
 HRESULT CSampleCredential::SetDeselected()
 {
     LogDebugMessage(L"[INFO] CSampleCredential::SetDeselected - 开始清理当前识别会话");
-    _fHideCredentialInputFields = false;
+    {
+        std::lock_guard<std::mutex> lock(_faceMutex);
+        _fHideCredentialInputFields = false;
+        _fFaceCredentialReady = false;
+    }
+    _fLastSerializationUsedStoredSecret = false;
+    _lastSecretRequestId = 0;
+    _lastSecretSessionId = 0;
     if (_pProvider) {
         _pProvider->ResetCredentialReady();
     }
@@ -1107,132 +1136,27 @@ HRESULT CSampleCredential::WaitForFaceRecognitionResult() {
   return E_FAIL;
 }
 
-HRESULT CSampleCredential::RequestAndDecryptPasswordFromSU(PWSTR *ppwszPassword) {
+HRESULT CSampleCredential::RequestOneTimeLogonSecret(PWSTR *ppwszPassword) {
   *ppwszPassword = nullptr;
-
-  WSADATA wsaData{};
-  const int wsaStartupResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-  if (wsaStartupResult != 0) {
-    LogDebugMessage(L"[ERROR] WSAStartup 失败: %d", wsaStartupResult);
-    return E_FAIL;
+  if (_pszUserSid == nullptr || _pszUserSid[0] == L'\0') {
+    return E_INVALIDARG;
   }
-
-  HRESULT hr = E_FAIL;
-  SOCKET sock = INVALID_SOCKET;
-
-  do {
-    sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (sock == INVALID_SOCKET) {
-      LogDebugMessage(L"[ERROR] 创建 UDP socket 失败: %d", WSAGetLastError());
-      break;
-    }
-
-    DWORD timeout_ms = 5000;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
-
-    sockaddr_in local_addr{};
-    local_addr.sin_family = AF_INET;
-    local_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    local_addr.sin_port = htons(51237);
-
-    if (bind(sock, reinterpret_cast<sockaddr*>(&local_addr), sizeof(local_addr)) == SOCKET_ERROR) {
-      LogDebugMessage(L"[ERROR] 绑定密码响应端口失败: %d", WSAGetLastError());
-      break;
-    }
-
-    extern std::string recognized_username;
-    std::string username_hint = recognized_username;
-    if (username_hint.empty() && _pwzUsername != nullptr) {
-      int required = WideCharToMultiByte(CP_UTF8, 0, _pwzUsername, -1, nullptr, 0, nullptr, nullptr);
-      if (required > 1) {
-        username_hint.resize(static_cast<size_t>(required));
-        WideCharToMultiByte(CP_UTF8, 0, _pwzUsername, -1, username_hint.data(), required, nullptr, nullptr);
-        username_hint.resize(static_cast<size_t>(required - 1));
-      }
-    }
-
-    if (username_hint.empty()) {
-      LogDebugMessage(L"[ERROR] 无法确定请求密码的用户名");
-      break;
-    }
-
-    const uint32_t session_id = GetTickCount();
-    AuthRequestSender sender("127.0.0.1", 51236);
-    if (!sender.send_request(AuthRequestType::GET_PASSWORD, username_hint, session_id)) {
-      LogDebugMessage(L"[ERROR] 发送 GET_PASSWORD 请求失败");
-      break;
-    }
-
-    LogDebugMessage(L"[INFO] 已向 SU 请求密码，用户名: %hs, session=%u", username_hint.c_str(), session_id);
-
-    UdpPasswordResponsePacket response{};
-    sockaddr_in remote_addr{};
-    int remote_addr_len = sizeof(remote_addr);
-    const int received = recvfrom(sock,
-                                  reinterpret_cast<char*>(&response),
-                                  sizeof(response),
-                                  0,
-                                  reinterpret_cast<sockaddr*>(&remote_addr),
-                                  &remote_addr_len);
-    if (received == SOCKET_ERROR) {
-      LogDebugMessage(L"[ERROR] 接收密码响应失败: %d", WSAGetLastError());
-      break;
-    }
-
-    if (static_cast<size_t>(received) < sizeof(UdpPasswordResponsePacket)) {
-      LogDebugMessage(L"[ERROR] 密码响应包长度非法: %d", received);
-      break;
-    }
-    if (response.magic_number != PASSWORD_RESPONSE_MAGIC ||
-        response.version != PASSWORD_RESPONSE_VERSION ||
-        response.session_id != session_id) {
-      LogDebugMessage(L"[ERROR] 密码响应包校验失败");
-      break;
-    }
-    if (response.result_code != 0) {
-      LogDebugMessage(L"[ERROR] SU 返回密码失败，result=%d", response.result_code);
-      break;
-    }
-    if (response.protected_password_size == 0 ||
-        response.protected_password_size > sizeof(response.protected_password)) {
-      LogDebugMessage(L"[ERROR] 受保护密码长度非法: %u", response.protected_password_size);
-      break;
-    }
-
-    DATA_BLOB input_blob{};
-    input_blob.pbData = response.protected_password;
-    input_blob.cbData = response.protected_password_size;
-
-    DATA_BLOB output_blob{};
-    if (!CryptUnprotectData(&input_blob, nullptr, nullptr, nullptr, nullptr, 0, &output_blob)) {
-      LogDebugMessage(L"[ERROR] CryptUnprotectData 失败: %u", GetLastError());
-      break;
-    }
-
-    std::string decrypted_password(reinterpret_cast<const char*>(output_blob.pbData), output_blob.cbData);
-    if (!Utf8ToWideString(decrypted_password, ppwszPassword)) {
-      SecureZeroMemory(decrypted_password.data(), decrypted_password.size());
-      SecureZeroMemory(output_blob.pbData, output_blob.cbData);
-      LocalFree(output_blob.pbData);
-      LogDebugMessage(L"[ERROR] 密码 UTF-8 转宽字符失败");
-      hr = E_FAIL;
-      break;
-    }
-
-    SecureZeroMemory(decrypted_password.data(), decrypted_password.size());
-    SecureZeroMemory(output_blob.pbData, output_blob.cbData);
-    LocalFree(output_blob.pbData);
-
-    LogDebugMessage(L"[INFO] 已从 SU 获取并解密密码");
-    LogDebugMessage(L"[INFO] 密码解密结果长度=%u", static_cast<unsigned>(wcslen(*ppwszPassword)));
-    hr = S_OK;
-  } while (false);
-
-  if (sock != INVALID_SOCKET) {
-    closesocket(sock);
+  auto session_id = DWORD{0};
+  if (!ProcessIdToSessionId(GetCurrentProcessId(), &session_id)) {
+    return HRESULT_FROM_WIN32(GetLastError());
   }
-  WSACleanup();
-  return hr;
+  const auto request_id =
+      (_serviceGeneration.load(std::memory_order_acquire) << 32) ^ GetTickCount64();
+  auto prepared = LogonSecretClient{}.prepare(_pszUserSid, request_id, session_id);
+  if (!prepared) {
+    return prepared.error();
+  }
+  const auto copied = SHStrDupW(prepared->c_str(), ppwszPassword);
+  if (SUCCEEDED(copied)) {
+    _lastSecretRequestId = request_id;
+    _lastSecretSessionId = session_id;
+  }
+  return copied;
 }
 
 HRESULT CSampleCredential::CommandLinkClicked(DWORD dwFieldID)
@@ -1331,6 +1255,7 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     *ppwszOptionalStatusText = nullptr;
     *pcpsiOptionalStatusIcon = CPSI_NONE;
     ZeroMemory(pcpcs, sizeof(*pcpcs));
+    _fLastSerializationUsedStoredSecret = false;
 
     LogDebugMessage(L"[INFO] GetSerialization被调用");
     LogDebugMessage(L"[DEBUG] _pwzUsername: %s", _pwzUsername ? _pwzUsername : L"NULL");
@@ -1338,7 +1263,7 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     LogDebugMessage(L"[DEBUG] 密码字段长度: %u", _rgFieldStrings[SFI_PASSWORD] ? static_cast<unsigned>(wcslen(_rgFieldStrings[SFI_PASSWORD])) : 0);
     LogDebugMessage(L"[DEBUG] QualifiedUserName: %s", _pszQualifiedUserName ? _pszQualifiedUserName : L"NULL");
 
-    // 设置 _pwzPassword 为当前密码字段值（来自Sparkin的方式）
+    // CredUI only supports the password entered into the visible system field.
     _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
 
     if (_cpus == CPUS_CREDUI)
@@ -1419,6 +1344,15 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
     {
         PWSTR pwzDomain = nullptr;
         PWSTR pwzUsername = nullptr;
+        PWSTR pwzOneTimePassword = nullptr;
+        PWSTR pwzProtectedPassword = nullptr;
+        bool useStoredSecret = false;
+
+        {
+            std::lock_guard<std::mutex> lock(_faceMutex);
+            useStoredSecret = _fFaceCredentialReady
+                && (_cpus == CPUS_LOGON || _cpus == CPUS_UNLOCK_WORKSTATION);
+        }
 
         if (_pszQualifiedUserName != nullptr && wcschr(_pszQualifiedUserName, L'\\') != nullptr)
         {
@@ -1462,18 +1396,51 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
 
         LogDebugMessage(L"[INFO] 序列化登录名 domain=%s username=%s", pwzDomain, pwzUsername);
 
+        PCWSTR password = _rgFieldStrings[SFI_PASSWORD];
+        if (useStoredSecret)
+        {
+            hr = RequestOneTimeLogonSecret(&pwzOneTimePassword);
+            if (FAILED(hr))
+            {
+                LogDebugMessage(L"[ERROR] 获取一次性登录凭据失败: 0x%08X", hr);
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                SHStrDupW(L"已保存的登录凭据不可用，请使用 Windows 密码登录。", ppwszOptionalStatusText);
+                {
+                    std::lock_guard<std::mutex> lock(_faceMutex);
+                    _fFaceCredentialReady = false;
+                    _fHideCredentialInputFields = false;
+                    _rgFieldStatePairs[SFI_PASSWORD] = {
+                        CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_FOCUSED};
+                    _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = {
+                        CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE};
+                }
+                if (_pCredProvCredentialEvents)
+                {
+                    _pCredProvCredentialEvents->BeginFieldUpdates();
+                    _pCredProvCredentialEvents->SetFieldState(
+                        this, SFI_PASSWORD, CPFS_DISPLAY_IN_SELECTED_TILE);
+                    _pCredProvCredentialEvents->SetFieldState(
+                        this, SFI_SUBMIT_BUTTON, CPFS_DISPLAY_IN_SELECTED_TILE);
+                    _pCredProvCredentialEvents->EndFieldUpdates();
+                }
+                SAFE_COTASK_MEM_FREE(pwzDomain);
+                SAFE_COTASK_MEM_FREE(pwzUsername);
+                return hr;
+            }
+            password = pwzOneTimePassword;
+        }
+
         LogDebugMessage(L"[INFO] 使用KerbInteractiveUnlockLogon方式处理凭证");
-        PWSTR pwzProtectedPassword;
-        hr = ProtectIfNecessaryAndCopyPassword(_rgFieldStrings[SFI_PASSWORD], _cpus, &pwzProtectedPassword);
+        hr = ProtectIfNecessaryAndCopyPassword(password, _cpus, &pwzProtectedPassword);
         LogDebugMessage(L"[DEBUG] ProtectIfNecessaryAndCopyPassword返回: 0x%08X", hr);
 
         if (SUCCEEDED(hr))
         {
             KERB_INTERACTIVE_UNLOCK_LOGON kiul;
 
-            hr = KerbInteractiveUnlockLogonInit(pwzDomain, pwzUsername, _pwzPassword, _cpus, &kiul);
+            hr = KerbInteractiveUnlockLogonInit(pwzDomain, pwzUsername, pwzProtectedPassword, _cpus, &kiul);
             LogDebugMessage(L"[DEBUG] KerbInteractiveUnlockLogonInit返回: 0x%08X, 使用用户名: %s, 密码: %s",
-                           hr, pwzUsername ? pwzUsername : L"NULL", _pwzPassword ? L"****" : L"NULL");
+                           hr, pwzUsername ? pwzUsername : L"NULL", pwzProtectedPassword ? L"****" : L"NULL");
 
             if (SUCCEEDED(hr))
             {
@@ -1493,6 +1460,7 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
                         pcpcs->ulAuthenticationPackage = ulAuthPackage;
                         pcpcs->clsidCredentialProvider = CLSID_CSample;
                         *pcpgsr = CPGSR_RETURN_CREDENTIAL_FINISHED;
+                        _fLastSerializationUsedStoredSecret = useStoredSecret;
                         LogDebugMessage(L"[INFO] GetSerialization成功！凭证已打包，状态设为CPGSR_RETURN_CREDENTIAL_FINISHED");
                     } else {
                         LogDebugMessage(L"[ERROR] RetrieveNegotiateAuthPackage失败");
@@ -1503,15 +1471,23 @@ HRESULT CSampleCredential::GetSerialization(_Out_ CREDENTIAL_PROVIDER_GET_SERIAL
             } else {
                 LogDebugMessage(L"[ERROR] KerbInteractiveUnlockLogonInit失败");
             }
-            CoTaskMemFree(pwzProtectedPassword);
         } else {
             LogDebugMessage(L"[ERROR] ProtectIfNecessaryAndCopyPassword失败");
         }
 
+        SecureFreePassword(pwzProtectedPassword);
+        SecureFreePassword(pwzOneTimePassword);
         SAFE_COTASK_MEM_FREE(pwzDomain);
         SAFE_COTASK_MEM_FREE(pwzUsername);
     }
     
+    if (FAILED(hr) && pcpcs->rgbSerialization != nullptr)
+    {
+        SecureZeroMemory(pcpcs->rgbSerialization, pcpcs->cbSerialization);
+        CoTaskMemFree(pcpcs->rgbSerialization);
+        pcpcs->rgbSerialization = nullptr;
+        pcpcs->cbSerialization = 0;
+    }
     LogDebugMessage(L"[INFO] GetSerialization返回: hr=0x%08X, pcpgsr=%d", hr, *pcpgsr);
     return hr;
 }
@@ -1562,12 +1538,54 @@ HRESULT CSampleCredential::ReportResult(NTSTATUS ntsStatus,
         }
     }
 
-    // If we failed the logon, try to erase the password field.
-    if (FAILED(HRESULT_FROM_NT(ntsStatus)))
+    const bool logonFailed = FAILED(HRESULT_FROM_NT(ntsStatus));
+    if (_fLastSerializationUsedStoredSecret && logonFailed
+        && _pszUserSid != nullptr && _lastSecretRequestId != 0)
     {
+        const auto staleHr = LogonSecretClient{}.mark_stale(
+            _pszUserSid, _lastSecretRequestId, _lastSecretSessionId);
+        if (FAILED(staleHr))
+        {
+            LogDebugMessage(L"[ERROR] 标记已保存登录凭据失效失败: 0x%08X", staleHr);
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(_faceMutex);
+        _fFaceCredentialReady = false;
+        _fHideCredentialInputFields = false;
+        if (logonFailed)
+        {
+            _rgFieldStatePairs[SFI_PASSWORD] = {
+                CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_FOCUSED};
+            _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = {
+                CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE};
+        }
+    }
+    _fLastSerializationUsedStoredSecret = false;
+    _lastSecretRequestId = 0;
+    _lastSecretSessionId = 0;
+    if (_pProvider)
+    {
+        _pProvider->ResetCredentialReady();
+    }
+
+    // Keep the normal password path available after any rejected submission.
+    if (logonFailed)
+    {
+        const auto clearHr = ClearPasswordValue(_rgFieldStrings[SFI_PASSWORD]);
+        _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
         if (_pCredProvCredentialEvents)
         {
-            _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, L"");
+            _pCredProvCredentialEvents->BeginFieldUpdates();
+            _pCredProvCredentialEvents->SetFieldState(this, SFI_PASSWORD, CPFS_DISPLAY_IN_SELECTED_TILE);
+            _pCredProvCredentialEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, CPFS_DISPLAY_IN_SELECTED_TILE);
+            if (SUCCEEDED(clearHr))
+            {
+                _pCredProvCredentialEvents->SetFieldString(
+                    this, SFI_PASSWORD, _rgFieldStrings[SFI_PASSWORD]);
+            }
+            _pCredProvCredentialEvents->EndFieldUpdates();
         }
     }
 
@@ -1783,77 +1801,25 @@ HRESULT CSampleCredential::StartFaceRecognitionAsync() {
                 HRESULT waitResult = WaitForFaceRecognitionResult();
 
                 if (SUCCEEDED(waitResult) && is_session_current()) {
-                    LogDebugMessage(L"[INFO] 人脸识别成功，开始向 SU 请求密码");
-
-                    // 识别成功，请求 SU 返回受保护密码并在本地解密
-                    PWSTR pwszPassword = nullptr;
-                    HRESULT decryptResult = RequestAndDecryptPasswordFromSU(&pwszPassword);
-
-                    if (SUCCEEDED(decryptResult) && pwszPassword && is_session_current()) {
-                        LogDebugMessage(L"[INFO] 密码解密成功，设置凭证字段");
-
-                        extern std::string recognized_username;
-                        PWSTR pwszRecognizedUsername = nullptr;
-                        if (!recognized_username.empty()) {
-                            if (!Utf8ToWideString(recognized_username, &pwszRecognizedUsername)) {
-                                LogDebugMessage(L"[WARNING] 识别用户名转宽字符失败，username=%hs", recognized_username.c_str());
-                            }
-                        } else {
-                            LogDebugMessage(L"[WARNING] 识别成功但未收到用户名回填，继续沿用现有用户名");
-                        }
-
-                        // 设置用户名和密码到字段缓存
-                        {
-                            std::lock_guard<std::mutex> lock(_faceMutex);
-                            _fHideCredentialInputFields = true;
-                            _rgFieldStatePairs[SFI_EDIT_TEXT] = { CPFS_HIDDEN, CPFIS_NONE };
-                            _rgFieldStatePairs[SFI_PASSWORD] = { CPFS_HIDDEN, CPFIS_NONE };
-                            _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = { CPFS_HIDDEN, CPFIS_NONE };
-
-                            if (pwszRecognizedUsername != nullptr) {
-                                if (_rgFieldStrings[SFI_EDIT_TEXT]) {
-                                    CoTaskMemFree(_rgFieldStrings[SFI_EDIT_TEXT]);
-                                }
-                                _rgFieldStrings[SFI_EDIT_TEXT] = pwszRecognizedUsername;
-                                _pwzUsername = _rgFieldStrings[SFI_EDIT_TEXT];
-                            }
-
-                            if (_rgFieldStrings[SFI_PASSWORD]) {
-                                CoTaskMemFree(_rgFieldStrings[SFI_PASSWORD]);
-                            }
-                            _rgFieldStrings[SFI_PASSWORD] = pwszPassword;
-                            _pwzPassword = _rgFieldStrings[SFI_PASSWORD];
-                        }
-
-                        // 更新UI
-                        if (_pCredProvCredentialEvents) {
-                            LogDebugMessage(L"[INFO] 更新CP字段并准备触发自动登录，events=%p provider=%p",
-                                            _pCredProvCredentialEvents, _pProvider);
-                            _pCredProvCredentialEvents->BeginFieldUpdates();
-                            if (pwszRecognizedUsername != nullptr) {
-                                _pCredProvCredentialEvents->SetFieldString(this, SFI_EDIT_TEXT, pwszRecognizedUsername);
-                            }
-                            _pCredProvCredentialEvents->SetFieldString(this, SFI_PASSWORD, pwszPassword);
-                            _pCredProvCredentialEvents->SetFieldState(this, SFI_EDIT_TEXT, CPFS_HIDDEN);
-                            _pCredProvCredentialEvents->SetFieldState(this, SFI_PASSWORD, CPFS_HIDDEN);
-                            _pCredProvCredentialEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, CPFS_HIDDEN);
-                            _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"人脸识别成功，正在登录...");
-                            _pCredProvCredentialEvents->EndFieldUpdates();
-
-                            // 通知Provider凭证已准备好
-                            if (_pProvider) {
-                                LogDebugMessage(L"[INFO] 通知Provider凭证已准备好");
-                                _pProvider->OnCredentialReady();
-                            }
-                        } else {
-                            LogDebugMessage(L"[ERROR] 识别成功但 _pCredProvCredentialEvents 为空，无法通知LogonUI更新字段");
-                        }
-                    } else if (SUCCEEDED(decryptResult) && pwszPassword) {
-                        CoTaskMemFree(pwszPassword);
-                    } else {
-                        LogDebugMessage(L"[ERROR] 密码解密失败: 0x%08X", decryptResult);
-                        if (is_session_current() && _pCredProvCredentialEvents) {
-                            _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"密码解密失败");
+                    LogDebugMessage(L"[INFO] 人脸识别成功，等待一次性凭证序列化");
+                    {
+                        std::lock_guard<std::mutex> lock(_faceMutex);
+                        _fFaceCredentialReady = true;
+                        _fHideCredentialInputFields = true;
+                        _rgFieldStatePairs[SFI_EDIT_TEXT] = { CPFS_HIDDEN, CPFIS_NONE };
+                        _rgFieldStatePairs[SFI_PASSWORD] = { CPFS_HIDDEN, CPFIS_NONE };
+                        _rgFieldStatePairs[SFI_SUBMIT_BUTTON] = { CPFS_HIDDEN, CPFIS_NONE };
+                    }
+                    if (_pCredProvCredentialEvents) {
+                        _pCredProvCredentialEvents->BeginFieldUpdates();
+                        _pCredProvCredentialEvents->SetFieldState(this, SFI_EDIT_TEXT, CPFS_HIDDEN);
+                        _pCredProvCredentialEvents->SetFieldState(this, SFI_PASSWORD, CPFS_HIDDEN);
+                        _pCredProvCredentialEvents->SetFieldState(this, SFI_SUBMIT_BUTTON, CPFS_HIDDEN);
+                        _pCredProvCredentialEvents->SetFieldString(
+                            this, SFI_LARGE_TEXT, L"人脸识别成功，正在登录...");
+                        _pCredProvCredentialEvents->EndFieldUpdates();
+                        if (_pProvider) {
+                            _pProvider->OnCredentialReady();
                         }
                     }
                 } else if (FAILED(waitResult) && is_session_current()) {

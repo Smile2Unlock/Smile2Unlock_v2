@@ -3,6 +3,7 @@ add_rules("mode.debug", "mode.release")
 add_repositories("local-repo local-repo")
 
 add_requires("slint v1.17.0", { system = false, optional = true })
+add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg")
 add_requires("libyuv")
 
@@ -18,8 +19,7 @@ option_end()
 
 option("with_zig")
     -- Default off: the Zig helper currently exports only a placeholder symbol
-    -- with no callers. It becomes meaningful in Phase 3 (control socket runtime
-    -- helpers). Flip to true once there is real C ABI surface to consume.
+    -- with no callers. Phase 5 will decide whether it gains a real platform ABI.
     set_default(false)
     set_showmenu(true)
     set_description("Build the optional Zig platform helper target")
@@ -189,12 +189,21 @@ target("su_app")
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
     add_files("src/modules/su.app.controller.cppm")
+    add_files("src/modules/su.app.user.cppm")
+    if is_plat("linux") then
+        add_files("src/modules/su.control.socket.cppm")
+    end
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
-        add_packages("slint")
+        add_packages("slint", "nlohmann_json")
         add_files("src/app/slint_main.cpp")
         add_files("src/app/preview_controller.cpp")
         add_files("src/modules/su.app.preview.cppm")
+        add_files("src/modules/su.app.session.cppm")
+        add_files("src/modules/su.app.i18n.cppm")
+        if is_plat("linux") then
+            add_syslinks("systemd")
+        end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
         on_load( function (target)
@@ -219,6 +228,14 @@ target("su_app")
                 path.join(os.projectdir(), "src", "app", "ui", "app.slint")
             })
         end)
+        after_build( function (target)
+            local outputdir = path.join(target:targetdir(), "assets", "i18n")
+            os.rm(outputdir)
+            os.mkdir(outputdir)
+            for _, file in ipairs(os.files(path.join(os.projectdir(), "assets", "i18n", "*.json"))) do
+                os.cp(file, outputdir)
+            end
+        end)
     else
         add_defines("SU_HAS_SLINT=0")
         add_files("src/app/console_main.cpp")
@@ -226,15 +243,95 @@ target("su_app")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
 
-target("pam_smile2unlock")
-    apply_cpp_target("shared")
-    set_filename("pam_smile2unlock.so")
-    set_prefixname("")
-    add_files("src/platform/linux/pam/*.cpp")
-    add_headerfiles("src/platform/linux/pam/*.h")
-    if is_plat("linux") then
+if is_plat("linux") then
+    target("pam_smile2unlock")
+        apply_cpp_target("shared")
+        set_filename("pam_smile2unlock.so")
+        set_prefixname("")
+        add_files("src/platform/linux/pam/*.cpp")
+        add_files("src/modules/su.control.socket.cppm")
+        add_packages("nlohmann_json")
+        add_headerfiles("src/platform/linux/pam/*.h")
         add_syslinks("pam")
-    end
+
+    target("su_authd")
+        apply_cpp_target("binary")
+        add_files("src/platform/linux/authd/*.cpp", "src/app/core_bridge.cpp")
+        add_files(
+            "src/modules/su.auth.daemon.cppm",
+            "src/modules/su.auth.storage.cppm",
+            "src/modules/su.auth.user.cppm",
+            "src/modules/su.control.socket.cppm")
+        add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
+        add_includedirs("src/core-rs/include")
+        add_packages("nlohmann_json")
+        add_deps("su_core", "su_recognizer")
+        add_rpathdirs("/usr/lib/smile2unlock")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+
+    target("su_control_socket_smoke_test")
+        apply_cpp_target("binary")
+        add_files("tests/control/*.cpp", "src/modules/su.control.socket.cppm")
+        add_packages("nlohmann_json")
+        add_tests("default")
+
+    target("su_session_lock_monitor_smoke_test")
+        apply_cpp_target("binary")
+        add_files("tests/session/*.cpp", "src/modules/su.app.session.cppm")
+        add_syslinks("systemd")
+        add_tests("default")
+
+    target("su_multi_user_auth_test")
+        apply_cpp_target("binary")
+        add_files(
+            "tests/multi_user/*.cpp",
+            "src/modules/su.auth.user.cppm",
+            "src/modules/su.app.user.cppm",
+            "src/modules/su.core.types.cppm")
+        add_tests("default")
+
+    target("su_pam_integration_test")
+        apply_cpp_target("binary")
+        add_files("tests/pam/*.cpp", "src/modules/su.control.socket.cppm")
+        add_deps("pam_smile2unlock")
+        add_packages("nlohmann_json")
+        add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
+            os.projectdir(), "build", get_config("plat"), get_config("arch"),
+            get_config("mode"), "pam_smile2unlock.so")) .. "\"")
+        add_syslinks("pam")
+        add_tests("default")
+
+    target("su_key_provider_test")
+        apply_cpp_target("binary")
+        add_files("tests/storage/*.cpp")
+        add_files("src/modules/su.auth.storage.cppm", "src/modules/su.core.types.cppm")
+        add_tests("default")
+
+    target("su_pam_acceptance")
+        apply_cpp_target("binary")
+        add_files("src/platform/linux/pam_acceptance/*.cpp")
+        add_files("src/modules/su.control.socket.cppm")
+        add_deps("pam_smile2unlock")
+        add_packages("nlohmann_json")
+        add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
+            os.projectdir(), "build", get_config("plat"), get_config("arch"),
+            get_config("mode"), "pam_smile2unlock.so")) .. "\"")
+        add_syslinks("pam")
+        add_tests("help", {
+            runargs = {"--help"}
+        })
+end
+
+if is_plat("windows", "mingw") then
+    target("su_windows_storage")
+        apply_cpp_target("static")
+        set_default(false)
+        set_toolchains("mingw")
+        add_files("src/platform/windows/security/*.cpp")
+        add_headerfiles("src/platform/windows/security/*.h")
+        add_syslinks("ncrypt", "bcrypt", "crypt32", "shell32", "ole32")
+end
 
 target("su_face_auth_smoke_test")
     apply_cpp_target("binary")

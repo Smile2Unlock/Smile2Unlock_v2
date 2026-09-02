@@ -1,261 +1,911 @@
-import { Button, LineEdit } from "std-widgets.slint";
+import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
+
+export struct ProfileRow {
+    id: string,
+    label: string,
+    enrolled_at: string,
+}
+
+component NavButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected: false;
+    callback activated();
+
+    height: 44px;
+    border-radius: 6px;
+    background: selected ? #dcece7 : nav-touch.has-hover ? #edf3f1 : transparent;
+
+    Text {
+        x: 14px;
+        width: parent.width - 28px;
+        height: parent.height;
+        text: root.label;
+        color: root.selected ? #123e34 : #40534e;
+        font-size: 14px;
+        font-weight: root.selected ? 700 : 500;
+        vertical-alignment: center;
+    }
+
+    nav-touch := TouchArea {
+        clicked => { root.activated(); }
+    }
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback activated();
+
+    height: 40px;
+    min-width: 104px;
+    border-radius: 6px;
+    border-width: primary ? 0px : 1px;
+    border-color: danger ? #d9a4a4 : #b9c8c3;
+    background: !enabled ? #e9eeec
+        : primary ? (button-touch.pressed ? #0e3a30 : button-touch.has-hover ? #1c594a : #164b3f)
+        : danger ? (button-touch.has-hover ? #fff1f1 : #fff8f8)
+        : button-touch.has-hover ? #edf3f1 : #ffffff;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: !root.enabled ? #8b9894
+            : root.primary ? #ffffff
+            : root.danger ? #a53333
+            : #243b35;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    button-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.activated(); }
+    }
+}
+
+component StatusPill inherits Rectangle {
+    in property <string> label;
+    in property <string> tone: "neutral";
+
+    height: 26px;
+    border-radius: 13px;
+    background: tone == "good" ? #d8eee5
+        : tone == "warn" ? #f5e7c5
+        : tone == "bad" ? #f5dcdc
+        : #e8eeec;
+
+    Text {
+        x: 11px;
+        width: parent.width - 22px;
+        height: parent.height;
+        text: root.label;
+        color: root.tone == "good" ? #165c46
+            : root.tone == "warn" ? #775514
+            : root.tone == "bad" ? #983535
+            : #52635e;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component CenteredActionButton inherits VerticalLayout {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback activated();
+
+    Rectangle { vertical-stretch: 1; background: transparent; }
+    ActionButton {
+        width: parent.width;
+        label: root.label;
+        primary: root.primary;
+        danger: root.danger;
+        enabled: root.enabled;
+        activated => { root.activated(); }
+    }
+    Rectangle { vertical-stretch: 1; background: transparent; }
+}
+
+component CenteredStatusPill inherits VerticalLayout {
+    in property <string> label;
+    in property <string> tone: "neutral";
+
+    Rectangle { vertical-stretch: 1; background: transparent; }
+    StatusPill { width: parent.width; label: root.label; tone: root.tone; }
+    Rectangle { vertical-stretch: 1; background: transparent; }
+}
+
+component MetricBlock inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <string> detail;
+
+    height: 104px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #d7dfdc;
+    background: #ffffff;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 5px;
+
+        Text { text: root.label; color: #64736f; font-size: 12px; }
+        Text { text: root.value; color: #162b25; font-size: 22px; font-weight: 700; }
+        Text { text: root.detail; color: #73817d; font-size: 12px; overflow: elide; }
+    }
+}
+
+component SectionTitle inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> detail;
+
+    height: 48px;
+    spacing: 12px;
+
+    VerticalLayout {
+        spacing: 3px;
+        Text { text: root.title; color: #182d27; font-size: 16px; font-weight: 700; }
+        Text { text: root.detail; color: #71807c; font-size: 12px; overflow: elide; }
+    }
+}
 
 export component AppWindow inherits Window {
     in property <string> title_text: "Smile2Unlock";
-    in property <string> core_version: "Core v0";
-    in property <string> threshold_text: "0.65";
-    in property <string> preview_fps_text: "15";
-    in property <string> liveness_text: "Enabled";
+    in property <string> username: "";
+    in property <string> username_initial: "U";
+    in property <string> core_version: "";
     in property <string> config_path_text: "";
     in property <string> profile_store_path_text: "";
-    in property <string> camera_text: "No cameras";
-    in property <string> seetaface_text: "Unavailable";
-    in property <string> profile_text: "";
+    in property <string> camera_text: "";
+    in property <int> camera_count: 0;
+    in property <bool> seetaface_available: false;
+    in property <bool> control_socket_present: false;
+    in property <[ProfileRow]> profiles;
+    in property <[string]> camera_options;
+    in property <[string]> language_names;
+
     in property <image> preview_image;
     in property <float> face_box_x;
     in property <float> face_box_y;
     in property <float> face_box_w;
     in property <float> face_box_h;
     in property <bool> face_box_visible: false;
-    in property <string> preview_status_text: "Idle";
-    in-out property <string> delete_profile_id_text: "";
-    in-out property <string> enroll_label_text: "Demo Face";
-    in-out property <string> enroll_sample_source_text: "mock:face:demo:front";
-    in-out property <string> probe_sample_source_text: "mock:face:demo:front";
-    in-out property <string> auth_text: "Not checked";
-    in-out property <string> auth_score_text: "-";
-    in-out property <string> auth_best_profile_text: "-";
-    in-out property <string> auth_reason_text: "-";
-    in-out property <string> debug_json_text: "Sample sources: mock:<id>, image:<path> (real SeetaFace when available), embedding:<comma-separated floats>";
+    in property <int> preview_source_width;
+    in property <int> preview_source_height;
+    in-out property <string> preview_status_text: "";
 
-    callback demo_auth_requested();
-    callback enroll_requested(string, string);
+    in-out property <int> current_page: 0;
+    in-out property <int> language_index: 0;
+    in-out property <string> enroll_label_text: "";
+    in-out property <string> activity_title: "";
+    in-out property <string> activity_detail: "";
+    in-out property <string> activity_tone: "neutral";
+    in-out property <bool> busy: false;
+    in-out property <int> selected_camera: 0;
+    in-out property <float> recognition_threshold: 0.65;
+    in-out property <bool> liveness_enabled: true;
+    in-out property <float> liveness_threshold: 0.5;
+    in-out property <int> preview_fps: 15;
+    in-out property <string> settings_status: "";
+
     callback enroll_current_frame_requested(string);
-    callback face_auth_requested(string);
     callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
+    callback migrate_profiles_requested();
     callback start_preview_requested();
     callback stop_preview_requested();
+    callback save_settings_requested(int, float, bool, float, int);
+    callback language_selected(int);
+    pure callback translate(string, int) -> string;
+    pure callback translate_value(string, int, string) -> string;
+
+    init => { Palette.color-scheme = ColorScheme.light; }
 
     title: title_text;
-    width: 960px;
-    height: 640px;
+    width: 1180px;
+    height: 760px;
+    background: #f4f7f6;
 
-    VerticalLayout {
-        padding: 28px;
-        spacing: 18px;
+    HorizontalLayout {
+        spacing: 0px;
 
-        Text {
-            text: title_text;
-            font-size: 28px;
-            font-weight: 700;
-        }
-
-        Text {
-            text: core_version;
-            font-size: 16px;
-        }
-
-        GridLayout {
-            spacing: 8px;
-
-            Row {
-                Text { text: "Threshold"; font-weight: 700; }
-                Text { text: threshold_text; }
-            }
-
-            Row {
-                Text { text: "Preview FPS"; font-weight: 700; }
-                Text { text: preview_fps_text; }
-            }
-
-            Row {
-                Text { text: "Liveness"; font-weight: 700; }
-                Text { text: liveness_text; }
-            }
-
-            Row {
-                Text { text: "Camera"; font-weight: 700; }
-                Text { text: camera_text; }
-            }
-
-            Row {
-                Text { text: "SeetaFace"; font-weight: 700; }
-                Text { text: seetaface_text; }
-            }
-
-            Row {
-                Text { text: "Config"; font-weight: 700; }
-                Text { text: config_path_text; }
-            }
-
-            Row {
-                Text { text: "Profiles"; font-weight: 700; }
-                Text { text: profile_store_path_text; }
-            }
-
-            Row {
-                Text { text: "Auth"; font-weight: 700; }
-                Text { text: auth_text; }
-            }
-        }
-
-        GridLayout {
-            spacing: 8px;
-
-            Row {
-                Text { text: "Label"; font-weight: 700; }
-                LineEdit { text <=> root.enroll_label_text; }
-            }
-
-            Row {
-                Text { text: "Enroll Source"; font-weight: 700; }
-                LineEdit { text <=> root.enroll_sample_source_text; }
-            }
-
-            Row {
-                Text { text: "Probe Source"; font-weight: 700; }
-                LineEdit { text <=> root.probe_sample_source_text; }
-            }
-
-            Row {
-                Text { text: "Delete ID"; font-weight: 700; }
-                LineEdit { text <=> root.delete_profile_id_text; }
-            }
-        }
-
-        HorizontalLayout {
-            spacing: 8px;
-
-            Button {
-                text: "Enroll";
-                clicked => {
-                    root.enroll_requested(root.enroll_label_text, root.enroll_sample_source_text);
-                }
-            }
-
-            Button {
-                text: "Enroll Frame";
-                clicked => {
-                    root.enroll_current_frame_requested(root.enroll_label_text);
-                }
-            }
-
-            Button {
-                text: "Authenticate";
-                clicked => {
-                    root.face_auth_requested(root.probe_sample_source_text);
-                }
-            }
-
-            Button {
-                text: "Auth Frame";
-                clicked => {
-                    root.current_frame_auth_requested();
-                }
-            }
-
-            Button {
-                text: "Refresh";
-                clicked => {
-                    root.refresh_profiles_requested();
-                }
-            }
-
-            Button {
-                text: "Delete";
-                clicked => {
-                    root.delete_profile_requested(root.delete_profile_id_text);
-                }
-            }
-
-            Button {
-                text: "Run Demo Auth";
-                clicked => {
-                    root.demo_auth_requested();
-                }
-            }
-
-            Button {
-                text: "Start Preview";
-                clicked => {
-                    root.start_preview_requested();
-                }
-            }
-
-            Button {
-                text: "Stop Preview";
-                clicked => {
-                    root.stop_preview_requested();
-                }
-            }
-        }
-
-        // Preview area: the camera image fills a fixed-size container, with the
-        // face box and status overlaid via absolute positioning. Children of a
-        // plain Rectangle (no layout) are positioned with x/y/width/height.
         Rectangle {
-            height: 240px;
-            width: 320px;
-            background: #000000;
+            width: 232px;
+            background: #ffffff;
+            border-width: 0px;
 
-            Image {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: parent.height;
-                source: root.preview_image;
-                image-fit: contain;
+            VerticalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                padding-top: 24px;
+                padding-bottom: 20px;
+                spacing: 8px;
+
+                VerticalLayout {
+                    height: 72px;
+                    spacing: 4px;
+                    Text { text: "Smile2Unlock"; color: #123e34; font-size: 19px; font-weight: 800; }
+                    Text { text: root.translate("app.subtitle", root.language_index); color: #74827e; font-size: 12px; }
+                }
+
+                NavButton {
+                    label: root.translate("nav.overview", root.language_index);
+                    selected: root.current_page == 0;
+                    activated => { root.current_page = 0; }
+                }
+                NavButton {
+                    label: root.translate("nav.enrollment", root.language_index);
+                    selected: root.current_page == 1;
+                    activated => { root.current_page = 1; }
+                }
+                NavButton {
+                    label: root.translate("nav.settings", root.language_index);
+                    selected: root.current_page == 2;
+                    activated => { root.current_page = 2; }
+                }
+                NavButton {
+                    label: root.translate("nav.diagnostics", root.language_index);
+                    selected: root.current_page == 3;
+                    activated => { root.current_page = 3; }
+                }
+
+                Rectangle { vertical-stretch: 1; background: transparent; }
+
+                Rectangle {
+                    height: 66px;
+                    border-radius: 6px;
+                    background: #eef4f2;
+
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 3px;
+                        Text { text: root.username; color: #18352d; font-size: 14px; font-weight: 700; overflow: elide; }
+                        Text {
+                            text: root.profiles.length == 0
+                                ? root.translate("account.enrollment_required", root.language_index)
+                                : root.translate("account.enabled", root.language_index);
+                            color: root.profiles.length == 0 ? #8b651b : #32715e;
+                            font-size: 11px;
+                        }
+                    }
+                }
             }
 
             Rectangle {
-                x: root.face_box_x * 1px;
-                y: root.face_box_y * 1px;
-                width: root.face_box_w * 1px;
-                height: root.face_box_h * 1px;
-                visible: root.face_box_visible;
-                border-color: #00ff00;
-                border-width: 2px;
-                background: transparent;
-            }
-
-            Text {
-                x: 4px;
-                y: 4px;
-                text: root.preview_status_text;
-                color: #00ff00;
-                font-size: 12px;
+                x: parent.width - 1px;
+                width: 1px;
+                height: parent.height;
+                background: #dce3e1;
             }
         }
 
-        GridLayout {
-            spacing: 8px;
+        Rectangle {
+            horizontal-stretch: 1;
+            background: #f4f7f6;
 
-            Row {
-                Text { text: "Score"; font-weight: 700; }
-                Text { text: auth_score_text; }
+            if root.current_page == 0: ScrollView {
+                viewport-width: self.width;
+                viewport-height: 636px;
+
+                overview-content := VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 22px;
+
+                    VerticalLayout {
+                        height: 62px;
+                        spacing: 5px;
+                        Text { text: root.translate("nav.overview", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
+                        Text {
+                            text: root.translate_value("overview.status_for", root.language_index, root.username);
+                            color: #6e7d78;
+                            font-size: 13px;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 104px;
+                        spacing: 12px;
+                        MetricBlock {
+                            horizontal-stretch: 1;
+                            label: root.translate("overview.system_auth", root.language_index);
+                            value: root.control_socket_present
+                                ? root.translate("status.online", root.language_index)
+                                : root.translate("status.offline", root.language_index);
+                            detail: root.control_socket_present
+                                ? root.translate("overview.socket_available", root.language_index)
+                                : root.translate("overview.service_unavailable", root.language_index);
+                        }
+                        MetricBlock {
+                            horizontal-stretch: 1;
+                            label: root.translate("overview.face_samples", root.language_index);
+                            value: root.profiles.length;
+                            detail: root.profiles.length == 1
+                                ? root.translate("overview.one_sample", root.language_index)
+                                : root.translate_value("overview.sample_count", root.language_index, root.profiles.length);
+                        }
+                        MetricBlock {
+                            horizontal-stretch: 1;
+                            label: root.translate("overview.recognizer", root.language_index);
+                            value: root.seetaface_available
+                                ? root.translate("status.ready", root.language_index)
+                                : root.translate("status.unavailable", root.language_index);
+                            detail: root.camera_count == 0
+                                ? root.translate("camera.none", root.language_index)
+                                : root.camera_count == 1
+                                    ? root.camera_text
+                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
+                        }
+                    }
+
+                    Rectangle {
+                        height: 196px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+
+                        VerticalLayout {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            spacing: 12px;
+                            SectionTitle {
+                                title: root.translate("account.current", root.language_index);
+                                detail: root.translate("account.protected_detail", root.language_index);
+                            }
+
+                            HorizontalLayout {
+                                height: 52px;
+                                spacing: 16px;
+                                Rectangle {
+                                    width: 52px;
+                                    height: 52px;
+                                    border-radius: 6px;
+                                    background: #dcece7;
+                                    Text {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        text: root.username_initial;
+                                        color: #174b3f;
+                                        font-size: 22px;
+                                        font-weight: 800;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 4px;
+                                    Text { text: root.username; color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text {
+                                        text: root.profiles.length == 0
+                                            ? root.translate("account.no_samples", root.language_index)
+                                            : root.translate_value("account.sample_count", root.language_index, root.profiles.length);
+                                        color: #697873;
+                                        font-size: 13px;
+                                    }
+                                }
+                                CenteredStatusPill {
+                                    width: root.profiles.length == 0 ? 132px : 92px;
+                                    label: root.profiles.length == 0
+                                        ? root.translate("status.action_required", root.language_index)
+                                        : root.translate("status.protected", root.language_index);
+                                    tone: root.profiles.length == 0 ? "warn" : "good";
+                                }
+                                CenteredActionButton {
+                                    width: 124px;
+                                    label: root.profiles.length == 0
+                                        ? root.translate("action.enroll_face", root.language_index)
+                                        : root.translate("action.manage_faces", root.language_index);
+                                    primary: root.profiles.length == 0;
+                                    activated => { root.current_page = 1; }
+                                }
+                            }
+
+                            Rectangle { height: 1px; background: #e2e8e6; }
+
+                            HorizontalLayout {
+                                height: 26px;
+                                spacing: 12px;
+                                Text { text: root.translate("overview.last_check", root.language_index); color: #65746f; font-size: 12px; vertical-alignment: center; }
+                                Text { text: root.activity_title; color: #243a34; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                Rectangle { horizontal-stretch: 1; background: transparent; }
+                                StatusPill {
+                                    width: 92px;
+                                    label: root.busy
+                                        ? root.translate("status.working", root.language_index)
+                                        : root.activity_tone == "good"
+                                            ? root.translate("status.passed", root.language_index)
+                                            : root.activity_tone == "bad"
+                                                ? root.translate("status.failed", root.language_index)
+                                                : root.translate("status.idle", root.language_index);
+                                    tone: root.busy ? "warn" : root.activity_tone;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 144px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+
+                        HorizontalLayout {
+                            padding: 20px;
+                            spacing: 20px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                VerticalLayout {
+                                    height: 50px;
+                                    spacing: 7px;
+                                    Text { text: root.translate("overview.verify_account", root.language_index); color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text {
+                                        text: root.activity_detail == ""
+                                            ? root.translate("overview.verify_hint", root.language_index)
+                                            : root.activity_detail;
+                                        color: #6c7b76;
+                                        font-size: 13px;
+                                        wrap: word-wrap;
+                                    }
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                            }
+                            CenteredActionButton {
+                                width: 150px;
+                                label: root.busy
+                                    ? root.translate("status.checking", root.language_index)
+                                    : root.translate("action.test_auth", root.language_index);
+                                primary: true;
+                                enabled: !root.busy && root.profiles.length > 0;
+                                activated => { root.current_frame_auth_requested(); }
+                            }
+                        }
+                    }
+                }
             }
 
-            Row {
-                Text { text: "Best Profile"; font-weight: 700; }
-                Text { text: auth_best_profile_text; }
+            if root.current_page == 1: ScrollView {
+                viewport-width: self.width;
+                viewport-height: root.profiles.length == 0
+                    ? 692px
+                    : 578px + root.profiles.length * 86px;
+
+                enrollment-content := VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 22px;
+
+                    VerticalLayout {
+                        height: 62px;
+                        spacing: 5px;
+                        Text { text: root.translate("nav.enrollment", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
+                        Text {
+                            text: root.translate_value("enrollment.manage_for", root.language_index, root.username);
+                            color: #6e7d78;
+                            font-size: 13px;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 360px;
+                        spacing: 20px;
+
+                        preview-frame := Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 6px;
+                            background: #101816;
+                            clip: true;
+                            property <length> fitted_width: root.preview_source_width > 0 && root.preview_source_height > 0
+                                ? Math.min(self.width, self.height * root.preview_source_width / root.preview_source_height)
+                                : self.width;
+                            property <length> fitted_height: root.preview_source_width > 0 && root.preview_source_height > 0
+                                ? Math.min(self.height, self.width * root.preview_source_height / root.preview_source_width)
+                                : self.height;
+                            property <float> source_scale: root.preview_source_width > 0
+                                ? self.fitted_width / 1px / root.preview_source_width
+                                : 1;
+
+                            Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: root.preview_image;
+                                image-fit: contain;
+                            }
+                            Rectangle {
+                                x: (preview-frame.width - preview-frame.fitted_width) / 2
+                                    + root.face_box_x * preview-frame.source_scale * 1px;
+                                y: (preview-frame.height - preview-frame.fitted_height) / 2
+                                    + root.face_box_y * preview-frame.source_scale * 1px;
+                                width: root.face_box_w * preview-frame.source_scale * 1px;
+                                height: root.face_box_h * preview-frame.source_scale * 1px;
+                                visible: root.face_box_visible;
+                                border-color: #4dd3a7;
+                                border-width: 2px;
+                                background: transparent;
+                            }
+                            Rectangle {
+                                x: 14px;
+                                y: parent.height - 42px;
+                                width: 180px;
+                                height: 28px;
+                                border-radius: 4px;
+                                background: #15201ecc;
+                                Text {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    height: parent.height;
+                                    text: root.preview_status_text;
+                                    color: #e8f6f1;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            width: 300px;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #d7dfdc;
+                            background: #ffffff;
+
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 14px;
+                                SectionTitle {
+                                    title: root.translate("enrollment.capture", root.language_index);
+                                    detail: root.camera_count == 0
+                                        ? root.translate("camera.none", root.language_index)
+                                        : root.camera_count == 1
+                                            ? root.camera_text
+                                            : root.translate_value("camera.count", root.language_index, root.camera_count);
+                                }
+                                Text { text: root.translate("enrollment.sample_name", root.language_index); color: #53635e; font-size: 12px; font-weight: 600; }
+                                LineEdit { text <=> root.enroll_label_text; enabled: !root.busy; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy; activated => { root.start_preview_requested(); } }
+                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.stop", root.language_index); enabled: !root.busy; activated => { root.stop_preview_requested(); } }
+                                }
+                                ActionButton {
+                                    label: root.busy
+                                        ? root.translate("status.capturing", root.language_index)
+                                        : root.translate("action.capture_sample", root.language_index);
+                                    primary: true;
+                                    enabled: !root.busy && root.seetaface_available;
+                                    activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? #a23c3c : #64736f; font-size: 12px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+
+                    SectionTitle {
+                        title: root.translate("enrollment.enrolled_samples", root.language_index);
+                        detail: root.profiles.length == 0
+                            ? root.translate("enrollment.no_samples", root.language_index)
+                            : root.translate_value("enrollment.sample_count", root.language_index, root.profiles.length);
+                    }
+
+                    if root.profiles.length == 0: Rectangle {
+                        height: 92px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+                        Text { width: parent.width; height: parent.height; text: root.translate("enrollment.empty", root.language_index); color: #77847f; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    for profile in root.profiles: Rectangle {
+                        height: 64px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 12px;
+                            spacing: 14px;
+                            VerticalLayout {
+                                width: 8px;
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3a9d7c; }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                VerticalLayout {
+                                    height: 37px;
+                                    spacing: 3px;
+                                    Text { text: profile.label; color: #203730; font-size: 14px; font-weight: 700; overflow: elide; }
+                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: #75827e; font-size: 11px; }
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                            }
+                            CenteredActionButton {
+                                width: 86px;
+                                label: root.translate("action.remove", root.language_index);
+                                danger: true;
+                                enabled: !root.busy;
+                                activated => { root.delete_profile_requested(profile.id); }
+                            }
+                        }
+                    }
+                }
             }
 
-            Row {
-                Text { text: "Reason"; font-weight: 700; }
-                Text { text: auth_reason_text; }
+            if root.current_page == 2: ScrollView {
+                viewport-width: self.width;
+                viewport-height: 710px;
+
+                settings-content := VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 22px;
+
+                    VerticalLayout {
+                        height: 62px;
+                        spacing: 5px;
+                        Text { text: root.translate("nav.settings", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
+                        Text { text: root.translate("settings.subtitle", root.language_index); color: #6e7d78; font-size: 13px; }
+                    }
+
+                    Rectangle {
+                        height: 214px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            SectionTitle {
+                                title: root.translate("settings.camera", root.language_index);
+                                detail: root.translate("settings.camera_detail", root.language_index);
+                            }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                ComboBox { horizontal-stretch: 1; model: root.camera_options; current-index <=> root.selected_camera; }
+                                Text { width: 90px; text: root.translate("settings.preview_fps", root.language_index); color: #53635e; font-size: 12px; vertical-alignment: center; }
+                                SpinBox { width: 100px; minimum: 1; maximum: 60; value <=> root.preview_fps; }
+                            }
+                            Rectangle { height: 1px; background: #e2e8e6; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text { width: 90px; text: root.translate("settings.language", root.language_index); color: #53635e; font-size: 12px; vertical-alignment: center; }
+                                ComboBox {
+                                    horizontal-stretch: 1;
+                                    model: root.language_names;
+                                    current-index <=> root.language_index;
+                                    selected(_) => {
+                                        root.activity_title = root.translate("activity.not_checked", root.language_index);
+                                        root.activity_detail = "";
+                                        root.settings_status = root.translate("settings.saved", root.language_index);
+                                        root.language_selected(root.language_index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 260px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 14px;
+                            SectionTitle {
+                                title: root.translate("settings.recognition_policy", root.language_index);
+                                detail: root.translate("settings.policy_detail", root.language_index);
+                            }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 6px;
+                                    Text { text: root.translate("settings.recognition_threshold", root.language_index); color: #30463f; font-size: 13px; font-weight: 600; }
+                                    Slider { minimum: 0.35; maximum: 0.95; value <=> root.recognition_threshold; }
+                                }
+                                StatusPill { width: 70px; label: Math.round(root.recognition_threshold * 100) + "%"; tone: root.recognition_threshold < 0.5 ? "warn" : "neutral"; }
+                            }
+                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Switch {
+                                text: root.translate("settings.liveness_enabled", root.language_index);
+                                checked <=> root.liveness_enabled;
+                                toggled => { root.settings_status = root.translate("settings.unsaved", root.language_index); }
+                            }
+                            HorizontalLayout {
+                                spacing: 16px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 6px;
+                                    Text { text: root.translate("settings.liveness_threshold", root.language_index); color: #30463f; font-size: 13px; font-weight: 600; }
+                                    Slider { enabled: root.liveness_enabled; minimum: 0.2; maximum: 0.95; value <=> root.liveness_threshold; }
+                                }
+                                StatusPill { width: 70px; label: Math.round(root.liveness_threshold * 100) + "%"; tone: "neutral"; }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 44px;
+                        spacing: 12px;
+                        Text { text: root.settings_status; color: #63726d; font-size: 12px; vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        ActionButton {
+                            width: 128px;
+                            label: root.translate("action.save_settings", root.language_index);
+                            primary: true;
+                            enabled: !root.busy;
+                            activated => {
+                                root.save_settings_requested(
+                                    root.selected_camera,
+                                    root.recognition_threshold,
+                                    root.liveness_enabled,
+                                    root.liveness_threshold,
+                                    root.preview_fps);
+                            }
+                        }
+                    }
+                }
             }
-        }
 
-        Text {
-            text: profile_text;
-            font-size: 12px;
-        }
+            if root.current_page == 3: ScrollView {
+                viewport-width: self.width;
+                viewport-height: 678px;
 
-        Text {
-            text: debug_json_text;
-            font-size: 12px;
+                diagnostics-content := VerticalLayout {
+                    width: parent.width;
+                    padding: 32px;
+                    spacing: 22px;
+
+                    VerticalLayout {
+                        height: 62px;
+                        spacing: 5px;
+                        Text { text: root.translate("nav.diagnostics", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
+                        Text { text: root.translate("diagnostics.subtitle", root.language_index); color: #6e7d78; font-size: 13px; }
+                    }
+
+                    Rectangle {
+                        height: 192px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 14px;
+                            SectionTitle { title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { width: 180px; text: root.translate("diagnostics.auth_service", root.language_index); color: #65746f; font-size: 13px; }
+                                Text {
+                                    text: root.control_socket_present
+                                        ? root.translate("diagnostics.socket_available", root.language_index)
+                                        : root.translate("diagnostics.socket_unavailable", root.language_index);
+                                    color: root.control_socket_present ? #277159 : #a13b3b;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { width: 180px; text: root.translate("diagnostics.recognizer", root.language_index); color: #65746f; font-size: 13px; }
+                                Text {
+                                    text: root.seetaface_available
+                                        ? root.translate("status.available", root.language_index)
+                                        : root.translate("status.unavailable", root.language_index);
+                                    color: root.seetaface_available ? #277159 : #a13b3b;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                }
+                            }
+                            HorizontalLayout {
+                                height: 20px;
+                                Text { width: 180px; text: root.translate("settings.camera", root.language_index); color: #65746f; font-size: 13px; }
+                                Text {
+                                    text: root.camera_count == 0
+                                        ? root.translate("camera.none", root.language_index)
+                                        : root.camera_count == 1
+                                            ? root.camera_text
+                                            : root.translate_value("camera.count", root.language_index, root.camera_count);
+                                    color: #263c36;
+                                    font-size: 13px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 226px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            spacing: 10px;
+                            SectionTitle { title: root.translate("diagnostics.local_data", root.language_index); detail: root.translate("diagnostics.local_data_detail", root.language_index); }
+                            VerticalLayout {
+                                height: 36px;
+                                spacing: 3px;
+                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
+                                Text { text: root.config_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                            }
+                            VerticalLayout {
+                                height: 36px;
+                                spacing: 3px;
+                                Text { text: root.translate("overview.face_samples", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
+                                Text { text: root.profile_store_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                            }
+                            ActionButton {
+                                width: 176px;
+                                label: root.translate("action.import_legacy", root.language_index);
+                                enabled: root.control_socket_present && !root.busy;
+                                activated => { root.migrate_profiles_requested(); }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 118px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #d7dfdc;
+                        background: #ffffff;
+                        HorizontalLayout {
+                            padding: 20px;
+                            spacing: 16px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                VerticalLayout {
+                                    height: 44px;
+                                    spacing: 6px;
+                                    Text { text: root.translate("diagnostics.auth_check", root.language_index); color: #203730; font-size: 15px; font-weight: 700; }
+                                    Text { text: root.activity_title; color: #6d7b77; font-size: 12px; overflow: elide; }
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                            }
+                            CenteredActionButton {
+                                width: 140px;
+                                label: root.busy
+                                    ? root.translate("status.checking", root.language_index)
+                                    : root.translate("action.run_check", root.language_index);
+                                primary: true;
+                                enabled: !root.busy && root.profiles.length > 0;
+                                activated => { root.current_frame_auth_requested(); }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

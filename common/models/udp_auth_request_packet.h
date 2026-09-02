@@ -12,8 +12,7 @@
 enum class AuthRequestType : int32_t {
     START_RECOGNITION = 1,  // 开始人脸识别
     CANCEL_RECOGNITION = 2, // 取消识别
-    QUERY_STATUS = 3,       // 查询状态
-    GET_PASSWORD = 4        // 获取识别用户的密码
+    QUERY_STATUS = 3        // 查询状态
 };
 
 // UDP 认证请求数据包结构

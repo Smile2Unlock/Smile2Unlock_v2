@@ -4,19 +4,19 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-07-01)
+## Current Status (2026-07-20)
 
-Phase 0, 1, 2 — **全部完成**。Phase 3 — **部分完成**（Rust auth policy 就绪，PAM module skeleton 就绪，缺 control socket 和端到端集成）。Phase 4, 5 — 未开始。
+Phase 0, 1, 2 — **全部完成**。Phase 3 — **实现完成、部署验证待完成**（Rust control protocol、root `su_authd`、Unix control socket、PAM client、systemd unit 均已实现并通过构建/自动测试；尚未修改本机 PAM 栈并重启验证真实开机登录）。Phase 4, 5 — 未开始。
 
-已构建 8 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 25 个单元测试 + 2 个 C++ smoke test 均通过）。
+已构建 14 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 7 个 C++ 集成/smoke test 均通过，共 8 个 Xmake test case）。
 
 重写后的第一阶段目标：
 
 - Linux 成为一等平台，完整覆盖桌面 GUI、摄像头识别、用户管理、配置、PAM 认证链路。
 - Windows 保留 Credential Provider 路径，但作为平台适配层维护，不再牵引整体架构。
 - GUI 从 EUI 切换到 Slint，避免 EUI 频繁 breaking change 影响重写节奏。
-- 默认采用单进程桌面宿主 `su_app`，识别模块先库化接入，不再第一阶段拆出 `su_facerecognizer` 独立进程。
-- 外部 IPC 第一阶段只保留 PAM / Windows Credential Provider 到 `su_app` 的 control socket。
+- 桌面功能采用单进程宿主 `su_app`；为支持用户会话建立前的开机登录，Linux 认证链路由最小系统服务 `su_authd` 承接。
+- 外部 IPC 第一阶段只保留 PAM / Windows Credential Provider 到平台认证宿主的 control socket。
 - 核心 C++ 代码继续使用 C++26，并保持函数式编程风格。
 - C++ 主工具链优先使用 g++，clang 可作为辅助验证工具链，但不作为第一阶段主线。
 - Rust 用于安全敏感、数据模型、配置、协议解析、认证策略等核心逻辑。
@@ -28,7 +28,7 @@ Phase 0, 1, 2 — **全部完成**。Phase 3 — **部分完成**（Rust auth po
 第一阶段不做这些事情：
 
 - 不把所有模块都改成 Rust 或 Zig。
-- 不实现常驻独立 backend daemon。
+- 不实现承载 GUI、配置管理或通用业务的独立 backend daemon；`su_authd` 仅作为开机登录所需的系统认证边界。
 - 不把人脸识别进程化为默认路径。
 - 不引入远程认证服务。
 - 不把汇编作为必须依赖。
@@ -56,11 +56,15 @@ Slint UI
 外部认证调用模型：
 
 ```text
-Linux PAM / Windows Credential Provider
+Linux PAM
   -> control socket
-  -> su_app
+  -> su_authd
   -> Rust su_core auth policy
   -> C++ recognizer adapter
+
+Windows Credential Provider
+  -> control socket
+  -> su_app Windows runtime
 ```
 
 架构图：
@@ -82,10 +86,13 @@ flowchart TB
         Rec --> Simd
     end
 
-    subgraph Linux["Linux"]
+    subgraph Linux["Linux system authentication"]
         PAM["pam_smile2unlock<br/>C/C++ thin PAM module"]
         PAMSock["/run/smile2unlock/control.sock"]
-        PAM --> PAMSock --> Controller
+        Authd["su_authd<br/>root system service"]
+        PAM --> PAMSock --> Authd
+        Authd --> Core
+        Authd --> Rec
     end
 
     subgraph Windows["Windows"]
@@ -137,7 +144,9 @@ Rust 建议库：
 - `toml`
 - `thiserror`
 - `tracing`
-- `rusqlite`
+- `chacha20poly1305`
+- `hkdf`
+- `sha2`
 - `zeroize`
 
 Rust 和 C++ 的边界：
@@ -237,6 +246,11 @@ Zig 边界规则：
   - C/C++ thin shim。
   - 只负责 PAM 生命周期和 control socket，不承载认证策略。
 
+- `su_authd`
+  - Linux root system service。
+  - 在 display manager 前启动，拥有 Unix control socket，并按 PAM 用户调用 Rust auth policy 与 recognizer。
+  - 只处理 `status` / `authenticate` / `cancel`，不承载 GUI 或用户管理。
+
 - `SampleV2CredentialProvider`
   - Windows-only C++ target。
   - 只负责 Windows 登录入口和 control socket。
@@ -272,17 +286,16 @@ Zig 边界规则：
 - `libyuv`
   - 摄像头帧格式转换。
 
-- `sqlite3`
-  - 如果 Rust 侧使用 `rusqlite`，由 Rust 依赖链管理。
-  - 如果 C++ 侧直接访问数据库，则显式 xmake 依赖。
-  - 第一阶段建议数据库归 Rust `su_core` 管理。
-
 ### Replace
 
 - `EUI` -> `Slint`
   - EUI breaking change 风险过高。
 
 ### Remove or Defer
+
+- `sqlite3` / SQLCipher
+  - 当前 profile 体积小且人脸匹配仍需扫描 embedding，第一阶段使用 Rust AEAD 文件。
+  - 出现需要索引的复杂查询后再评估 SQLCipher；C++ 不直接访问凭据数据库。
 
 - `glad`
   - Slint 接管 GUI 渲染路径，第一阶段不手写 OpenGL。
@@ -345,6 +358,12 @@ su_recognizer
 pam_smile2unlock
   depends on:
     minimal C/C++ socket client code
+
+su_authd
+  depends on:
+    su_core
+    su_recognizer
+    control socket runtime
 
 SampleV2CredentialProvider
   depends on:
@@ -432,7 +451,7 @@ Smile2Unlock_v2/
 
 - PAM 发起认证请求。
 - Windows Credential Provider 发起认证请求。
-- 认证入口查询 `su_app` 当前可用状态。
+- 认证入口查询平台认证宿主当前可用状态。
 - 取消认证会话。
 
 不用于：
@@ -506,15 +525,17 @@ Camera
 - 人脸识别阈值。
 - 活体检测开关。
 - UI 偏好。
-- Linux control socket 路径。
+- Linux control socket 路径由 systemd unit/daemon 参数管理，不由用户配置覆盖。
 - 日志级别。
 - 开发诊断开关。
 
-数据库：
+凭据存储：
 
-- 第一阶段建议 Rust `rusqlite` 管理。
-- C++ 不直接拼 SQL。
-- 用户、人脸元数据、特征索引由 Rust core 提供稳定 API。
+- 第一阶段采用 Rust 管理的版本化 XChaCha20-Poly1305 加密文件，不引入普通 SQLite。
+- profile 迁到 system-owned store，GUI 只通过认证服务 IPC 进行录入、列出和删除。
+- Linux 使用 systemd encrypted credential；TPM2 机器使用 `host+tpm2`，无 TPM2 时明确回退 `host` key，并建议配合全盘加密。
+- Windows 登录密码使用与 profile 分离的 encrypted envelope；TPM 由 CNG Platform Crypto Provider 保护 master key，无 TPM 时回退 machine DPAPI。
+- 完整格式、密钥、迁移和 Windows stale password 规则见 `docs/credential_storage_encryption_plan.md`。
 
 ## UI Plan
 
@@ -545,7 +566,7 @@ Slint 是唯一计划内 GUI。
 
 - PAM 使用原生 `pam_smile2unlock.so`。
 - PAM 模块只做 thin bridge。
-- PAM 到 `su_app` 使用 control socket。
+- PAM 到 root `su_authd` 使用 control socket；服务在 display manager 前启动。
 - 认证策略由 Rust `su_core` 决定。
 - `/run/smile2unlock` 路径和权限策略必须明确。
 - 使用 peer credential 校验。
@@ -557,6 +578,9 @@ Slint 是唯一计划内 GUI。
 - CP 只做登录入口和 control socket。
 - 不让 Win32/COM 类型泄漏到 core。
 - 旧的命名管道、UDP、共享内存不作为新架构主路径。
+- Windows 人脸登录所需账户密码必须独立加密保存，不能进入 profile store、普通 SQLite、日志或用户级 Credential Manager。
+- 密码错误后通过 Credential Provider `ReportResult` 标记为 stale，停止自动提交并要求用户重新确认密码。
+- TPM 使用 CNG hardware key，无 TPM 使用 machine DPAPI fallback；两者都不能声称抵御已控制 LocalSystem 的攻击者。
 
 ## Test Plan
 
@@ -577,7 +601,7 @@ Slint 是唯一计划内 GUI。
 集成测试：
 
 - control socket 请求/响应。
-- PAM mock client 到 `su_app`。
+- Linux-PAM loader 到 control socket mock server。
 - 用户注册到识别结果链路。
 - 配置损坏恢复。
 - 数据库迁移。
@@ -621,18 +645,26 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux V4L2 摄像头预览可用 — V4L2Camera + PreviewController（背景线程 + Slint 事件循环）
 - ✅ 人脸注册和特征提取可用 — capture_and_extract / extract_from_image（支持 image: 和 mock: 源）
 
-### Phase 3: Auth path ⚠️ 部分完成
+### Phase 3: Auth path ⚠️ 实现完成，部署验证待完成
 
-- ⚠️ Linux PAM thin module — target 定义 + 源码 skeleton，当前仅返回 PAM_AUTHINFO_UNAVAIL，尚未接入 control socket
-- ❌ control socket — 未实现（第一阶段规划中的 `/run/smile2unlock/control.sock`）
+- ✅ Linux PAM thin module — 获取 PAM 用户名，通过带超时的 Unix socket 请求认证，并映射为 PAM 返回码
+- ✅ root `su_authd` — systemd 开机启动，在 display manager 前提供认证服务
+- ✅ control socket — `/run/smile2unlock/control.sock`，长度帧、16 KiB 上限、`SO_PEERCRED` 授权；root 可使用完整协议，普通用户只能认证与自身 uid 匹配的 NSS 用户
 - ✅ Rust auth policy — auth.rs 完整实现，支持 liveness_ok 参数透传
-- ❌ 端到端认证 mock 和真实 PAM 验证 — 未实现
+- ✅ Rust control protocol — version/msg_type/request_id 校验及 authenticate/status/cancel typed request
+- ✅ control socket smoke test — listener/client/framing/response 自动测试通过
+- ✅ Linux-PAM 集成测试 — 通过 `pam_start_confdir` 加载真实模块，覆盖 accepted/rejected/unavailable 和 request ID 不匹配
+- ✅ Linux 多用户隔离测试 — 策略测试和一次性本地账户系统验收覆盖 peer uid、独立 home、权限、符号链接、损坏档案和不可访问 home
+- ✅ Linux 多用户 GUI 验收 — 打包 runtime 在一次性第二账户下显示 NSS 身份、加载私有档案并通过 GUI 删除，测试账户和授权已清理
+- ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
+- ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
 ### Phase 4: Windows compatibility ❌ 未开始
 
 - ❌ Credential Provider thin adapter
 - ❌ control socket Windows 路径
 - ❌ 保持 core 与平台隔离
+- ❌ Windows password encrypted store、TPM CNG provider、machine DPAPI fallback 和 stale-password 更新流程
 
 ### Phase 5: Optimization and optional split ❌ 未开始
 
@@ -646,7 +678,7 @@ Slint 是唯一计划内 GUI。
 |------|------|----------|
 | Slint 版本 pin | ✅ 已决定 | v1.17.0 |
 | Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
-| 数据库 | ❌ 未决定 | 当前用 JSON 文件存储；后续 `rusqlite` vs `sqlx` 待选 |
+| 凭据存储 | ✅ 已决定 | system-owned XChaCha20-Poly1305 envelope；SQLite 暂不引入，详见加密存储计划 |
 | Linux 摄像头 | ✅ 已决定 | V4L2（第一阶段），暂不预留 PipeWire |
 | Zig target 启用 | ✅ 已决定 | 默认不启用（`with_zig` defaults to false），仅 placeholder |
 | 汇编优化 | ✅ 已决定 | 不入第一版（`with_simd` defaults to false） |

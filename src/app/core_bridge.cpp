@@ -30,6 +30,12 @@ CoreError map_status(SuStatus status) {
         return CoreError::kInvalidArgument;
     case SuStatus_BufferTooSmall:
         return CoreError::kBufferTooSmall;
+    case SuStatus_CryptoError:
+        return CoreError::kCryptoError;
+    case SuStatus_KeyUnavailable:
+        return CoreError::kKeyUnavailable;
+    case SuStatus_MigrationRequired:
+        return CoreError::kMigrationRequired;
     }
     return CoreError::kUnknown;
 }
@@ -102,10 +108,89 @@ FaceAuthReport map_auth_report(const SuFaceAuthReport& report) {
     };
 }
 
+SuEncryptedStoreContext map_encrypted_context(const EncryptedStoreContext& context) {
+    auto mapped = SuEncryptedStoreContext{
+        .master_key = context.master_key.data(),
+        .master_key_len = context.master_key.size(),
+        .key_version = context.key_version,
+        .account_kind = static_cast<std::uint32_t>(SuAccountKind_LinuxUid),
+        .linux_uid = 0,
+        .windows_sid = nullptr,
+    };
+    std::visit(
+        [&mapped](const auto& account) {
+            using Account = std::decay_t<decltype(account)>;
+            if constexpr (std::same_as<Account, std::uint32_t>) {
+                mapped.account_kind = static_cast<std::uint32_t>(SuAccountKind_LinuxUid);
+                mapped.linux_uid = account;
+                mapped.windows_sid = nullptr;
+            } else {
+                mapped.account_kind = static_cast<std::uint32_t>(SuAccountKind_WindowsSid);
+                mapped.windows_sid = account.c_str();
+            }
+        },
+        context.account);
+    return mapped;
+}
+
 }  // namespace
 
 std::uint32_t core_version_major() {
     return su_core_version_major();
+}
+
+std::expected<ControlRequest, CoreError> parse_control_request(std::string_view json) {
+    SuControlRequest request{};
+    const auto status = su_core_parse_control_request(
+        reinterpret_cast<const std::uint8_t*>(json.data()),
+        json.size(),
+        &request);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+
+    auto type = ControlMessageType::kStatus;
+    switch (request.msg_type) {
+    case SuControlMessageType_Authenticate:
+        type = ControlMessageType::kAuthenticate;
+        break;
+    case SuControlMessageType_Status:
+        type = ControlMessageType::kStatus;
+        break;
+    case SuControlMessageType_Cancel:
+        type = ControlMessageType::kCancel;
+        break;
+    case SuControlMessageType_StorageStatus:
+        type = ControlMessageType::kStorageStatus;
+        break;
+    case SuControlMessageType_ListProfiles:
+        type = ControlMessageType::kListProfiles;
+        break;
+    case SuControlMessageType_EnrollProfile:
+        type = ControlMessageType::kEnrollProfile;
+        break;
+    case SuControlMessageType_DeleteProfile:
+        type = ControlMessageType::kDeleteProfile;
+        break;
+    case SuControlMessageType_MigrateProfiles:
+        type = ControlMessageType::kMigrateProfiles;
+        break;
+    case SuControlMessageType_VerifyProfile:
+        type = ControlMessageType::kVerifyProfile;
+        break;
+    }
+
+    return ControlRequest{
+        .type = type,
+        .request_id = request.request_id,
+        .target_request_id = request.target_request_id,
+        .username = fixed_string(request.username, SuControlUsernameCap),
+        .profile_id = fixed_string(request.profile_id, SuControlProfileIdCap),
+        .label = fixed_string(request.label, SuControlProfileLabelCap),
+        .face_sample_source = fixed_string(
+            request.face_sample_source, SuControlSampleSourceCap),
+        .liveness_ok = request.liveness_ok,
+    };
 }
 
 std::expected<float, CoreError> default_threshold() {
@@ -306,6 +391,129 @@ std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
         return std::unexpected(map_status(report.status));
     }
     return map_auth_report(report);
+}
+
+std::expected<void, CoreError> enroll_encrypted_face_profile(
+    const EncryptedStoreContext& context,
+    const std::string& store_path,
+    std::string_view label,
+    std::string_view face_sample_source) {
+    const auto ffi_context = map_encrypted_context(context);
+    const auto owned_label = std::string(label);
+    const auto owned_source = std::string(face_sample_source);
+    const auto status = su_core_encrypted_enroll_face_profile(
+        &ffi_context,
+        store_path.c_str(),
+        owned_label.c_str(),
+        owned_source.c_str());
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    return {};
+}
+
+std::expected<bool, CoreError> delete_encrypted_face_profile(
+    const EncryptedStoreContext& context,
+    const std::string& store_path,
+    std::string_view profile_id) {
+    const auto ffi_context = map_encrypted_context(context);
+    const auto owned_profile_id = std::string(profile_id);
+    auto deleted = false;
+    const auto status = su_core_encrypted_delete_face_profile(
+        &ffi_context,
+        store_path.c_str(),
+        owned_profile_id.c_str(),
+        &deleted);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    return deleted;
+}
+
+std::expected<std::string, CoreError> list_encrypted_face_profiles_json(
+    const EncryptedStoreContext& context,
+    const std::string& store_path) {
+    const auto ffi_context = map_encrypted_context(context);
+    return read_json_from_core([&ffi_context, &store_path](
+                                   std::uint8_t* buffer,
+                                   std::uintptr_t buffer_len,
+                                   std::uintptr_t* required_len) {
+        return su_core_encrypted_list_face_profiles_json(
+            &ffi_context,
+            store_path.c_str(),
+            buffer,
+            buffer_len,
+            required_len);
+    });
+}
+
+std::expected<std::vector<FaceProfileSummary>, CoreError> list_encrypted_face_profile_summaries(
+    const EncryptedStoreContext& context,
+    const std::string& store_path) {
+    const auto ffi_context = map_encrypted_context(context);
+    auto count = std::uintptr_t{0};
+    auto status = su_core_encrypted_list_face_profile_summaries(
+        &ffi_context,
+        store_path.c_str(),
+        nullptr,
+        0,
+        &count);
+    if (status != SuStatus_BufferTooSmall && status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    if (count == 0) {
+        return std::vector<FaceProfileSummary>{};
+    }
+    auto ffi_profiles = std::vector<SuFaceProfileSummary>(count);
+    status = su_core_encrypted_list_face_profile_summaries(
+        &ffi_context,
+        store_path.c_str(),
+        ffi_profiles.data(),
+        ffi_profiles.size(),
+        &count);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    auto profiles = std::vector<FaceProfileSummary>(count);
+    std::ranges::transform(ffi_profiles, profiles.begin(), map_profile_summary);
+    return profiles;
+}
+
+std::expected<FaceAuthReport, CoreError> authenticate_encrypted_face_sample_report(
+    const EncryptedStoreContext& context,
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok) {
+    const auto ffi_context = map_encrypted_context(context);
+    const auto owned_source = std::string(face_sample_source);
+    const auto report = su_core_encrypted_authenticate_face_sample_report(
+        &ffi_context,
+        store_path.c_str(),
+        owned_source.c_str(),
+        threshold,
+        liveness_ok);
+    if (report.status != SuStatus_Ok) {
+        return std::unexpected(map_status(report.status));
+    }
+    return map_auth_report(report);
+}
+
+std::expected<bool, CoreError> migrate_plaintext_face_profiles(
+    const EncryptedStoreContext& context,
+    const std::string& legacy_path,
+    const std::string& encrypted_path) {
+    const auto ffi_context = map_encrypted_context(context);
+    auto migrated = false;
+    const auto status = su_core_migrate_plaintext_face_profiles(
+        &ffi_context,
+        legacy_path.c_str(),
+        encrypted_path.c_str(),
+        &migrated);
+    if (status != SuStatus_Ok) {
+        return std::unexpected(map_status(status));
+    }
+    return migrated;
 }
 
 }  // namespace su::app

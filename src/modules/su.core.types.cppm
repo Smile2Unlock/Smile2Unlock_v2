@@ -13,7 +13,16 @@ enum class CoreError {
     kWriteError,
     kInvalidArgument,
     kBufferTooSmall,
+    kCryptoError,
+    kKeyUnavailable,
+    kMigrationRequired,
     kUnknown,
+};
+
+struct EncryptedStoreContext {
+    std::span<const std::uint8_t, 32> master_key;
+    std::uint32_t key_version = 1;
+    std::variant<std::uint32_t, std::string> account;
 };
 
 struct CoreConfig {
@@ -27,6 +36,29 @@ struct CoreConfig {
 
 struct AuthDecision {
     bool accepted = false;
+};
+
+enum class ControlMessageType {
+    kAuthenticate,
+    kStatus,
+    kCancel,
+    kStorageStatus,
+    kListProfiles,
+    kEnrollProfile,
+    kDeleteProfile,
+    kMigrateProfiles,
+    kVerifyProfile,
+};
+
+struct ControlRequest {
+    ControlMessageType type = ControlMessageType::kStatus;
+    std::uint64_t request_id = 0;
+    std::uint64_t target_request_id = 0;
+    std::string username;
+    std::string profile_id;
+    std::string label;
+    std::string face_sample_source;
+    bool liveness_ok = false;
 };
 
 struct FaceAuthDecision {
@@ -53,6 +85,7 @@ struct FaceAuthReport {
 };
 
 std::uint32_t core_version_major();
+std::expected<ControlRequest, CoreError> parse_control_request(std::string_view json);
 std::expected<float, CoreError> default_threshold();
 CoreConfig default_config();
 std::expected<CoreConfig, CoreError> load_config(const std::string& path);
@@ -99,5 +132,30 @@ std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
     std::string_view face_sample_source,
     float threshold,
     bool liveness_ok);
+std::expected<void, CoreError> enroll_encrypted_face_profile(
+    const EncryptedStoreContext& context,
+    const std::string& store_path,
+    std::string_view label,
+    std::string_view face_sample_source);
+std::expected<bool, CoreError> delete_encrypted_face_profile(
+    const EncryptedStoreContext& context,
+    const std::string& store_path,
+    std::string_view profile_id);
+std::expected<std::string, CoreError> list_encrypted_face_profiles_json(
+    const EncryptedStoreContext& context,
+    const std::string& store_path);
+std::expected<std::vector<FaceProfileSummary>, CoreError> list_encrypted_face_profile_summaries(
+    const EncryptedStoreContext& context,
+    const std::string& store_path);
+std::expected<FaceAuthReport, CoreError> authenticate_encrypted_face_sample_report(
+    const EncryptedStoreContext& context,
+    const std::string& store_path,
+    std::string_view face_sample_source,
+    float threshold,
+    bool liveness_ok);
+std::expected<bool, CoreError> migrate_plaintext_face_profiles(
+    const EncryptedStoreContext& context,
+    const std::string& legacy_path,
+    const std::string& encrypted_path);
 
 } // namespace su::app

@@ -7,11 +7,7 @@ import su.recognizer.backend;
 namespace su::recognizer {
 
 RecognizerService::RecognizerService()
-#if SU_HAS_SEETAFACE
-    : seetaface_init_flag_(std::make_unique<std::once_flag>()) {}
-#else
     = default;
-#endif
 
 RecognizerService::~RecognizerService() = default;
 
@@ -66,7 +62,7 @@ std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_
 }
 
 std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
-RecognizerService::capture_and_extract() const {
+RecognizerService::capture_and_extract(bool liveness_enabled) const {
     auto preview = PreviewFrame{};
     {
         std::lock_guard lock(camera_mutex_);
@@ -95,20 +91,23 @@ RecognizerService::capture_and_extract() const {
             .rgba_or_rgb = std::move(*rgb),
         };
     }
-    auto result = extract_from_image(ImageView{
-        .width = preview.width,
-        .height = preview.height,
-        .channels = 3,
-        .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
-    });
+    auto result = extract_from_image(
+        ImageView{
+            .width = preview.width,
+            .height = preview.height,
+            .channels = 3,
+            .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
+        },
+        liveness_enabled);
     if (!result) {
         return std::unexpected(result.error());
     }
     return std::make_pair(std::move(preview), std::move(*result));
 }
 
-std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_features() const {
-    auto captured = capture_and_extract();
+std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_features(
+    bool liveness_enabled) const {
+    auto captured = capture_and_extract(liveness_enabled);
     if (!captured) {
         return std::unexpected(captured.error());
     }
@@ -178,27 +177,31 @@ std::string embedding_sample_source(std::span<const float> feature) {
 #if SU_HAS_SEETAFACE
 
 std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
-    // Moved-from state: seetaface_init_flag_ is null.
-    if (!seetaface_init_flag_) {
+    auto lock = std::lock_guard{seetaface_mutex_};
+    if (seetaface_backend_) {
+        return {};
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_seetaface_retry_) {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
-
-    // std::call_once guarantees the init lambda runs at most once. The
-    // seetaface_backend_ pointer is the authoritative success indicator: if
-    // the lambda completes without throwing and the backend loaded, the
-    // pointer is set; otherwise it stays null and we return an error.
-    std::call_once(*seetaface_init_flag_, [this] {
+    // A missing model directory is recoverable after package installation or
+    // a mount becoming available. Retry lazily instead of caching failure for
+    // the lifetime of the daemon.
+    next_seetaface_retry_ = now + std::chrono::seconds{5};
+    try {
         auto paths = seetaface_model_paths(default_seetaface_model_dir());
-        if (!paths) {
-            return;  // seetaface_backend_ stays null; failure handled below
+        if (paths) {
+            auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
+            if (backend->available()) {
+                seetaface_backend_ = std::move(backend);
+                next_seetaface_retry_ = {};
+            }
         }
-        auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
-        if (!backend->available()) {
-            return;  // seetaface_backend_ stays null; failure handled below
-        }
-        seetaface_backend_ = std::move(backend);
-    });
-
+    } catch (...) {
+        // Model constructors are third-party code; expose a safe unavailable
+        // result and allow the bounded retry above to recover later.
+    }
     if (seetaface_backend_) {
         return {};
     }
@@ -244,6 +247,18 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::predict_liv
 #else
     (void)image;
     (void)liveness_enabled;
+    return std::unexpected(RecognizerError::kModelUnavailable);
+#endif
+}
+
+std::expected<void, RecognizerError> RecognizerService::reset_liveness() const {
+#if SU_HAS_SEETAFACE
+    if (auto ensured = ensure_seetaface_backend(); !ensured) {
+        return std::unexpected(ensured.error());
+    }
+    seetaface_backend_->reset_liveness();
+    return {};
+#else
     return std::unexpected(RecognizerError::kModelUnavailable);
 #endif
 }

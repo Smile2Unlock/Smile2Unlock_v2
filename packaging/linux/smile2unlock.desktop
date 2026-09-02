@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Smile2Unlock
+Comment=Local face authentication enrollment and diagnostics
+Exec=/usr/bin/su_app
+Icon=smile2unlock
+Terminal=false
+Categories=Utility;Security;
+Keywords=face;authentication;camera;login;

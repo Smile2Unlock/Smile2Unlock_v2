@@ -50,9 +50,7 @@ PreviewOverlay overlay_from_result(const su::recognizer::RecognitionResult& resu
     PreviewOverlay overlay;
     overlay.face_box = result.face_box;
     overlay.liveness_score = result.liveness_score;
-    overlay.status_text = result.has_face
-        ? "face: liveness " + std::to_string(result.liveness_score)
-        : "no face";
+    overlay.status_text = result.has_face ? "preview.face_liveness" : "preview.no_face";
     return overlay;
 }
 
@@ -82,6 +80,13 @@ public:
             std::println(stderr, "[preview] open_camera failed");
             return;
         }
+        if (liveness_enabled) {
+            if (const auto reset = recognizer.reset_liveness(); !reset) {
+                recognizer.close_camera();
+                std::println(stderr, "[preview] liveness reset failed");
+                return;
+            }
+        }
         recognizer_ = &recognizer;
         running_ = std::make_shared<std::atomic<bool>>(true);
 
@@ -99,7 +104,7 @@ public:
                             [running, callback]() {
                                 if (running->load(std::memory_order_relaxed)) {
                                     (*callback)(slint::Image(),
-                                                PreviewOverlay{.face_box = {}, .status_text = "capture failed"});
+                                                PreviewOverlay{.face_box = {}, .status_text = "preview.capture_failed"});
                                 }
                             });
                         std::this_thread::sleep_for(interval);
@@ -124,12 +129,12 @@ public:
                     if (result && result->has_face) {
                         overlay = overlay_from_result(*result);
                         if (!liveness_enabled) {
-                            overlay.status_text = "face: liveness disabled";
+                            overlay.status_text = "preview.liveness_disabled";
                         }
                     } else if (result && !result->has_face) {
-                        overlay.status_text = "no face";
+                        overlay.status_text = "preview.no_face";
                     } else {
-                        overlay.status_text = "detect failed";
+                        overlay.status_text = "preview.detect_failed";
                     }
                     overlay.source_width = frame->width;
                     overlay.source_height = frame->height;
