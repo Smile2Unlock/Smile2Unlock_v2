@@ -1,162 +1,14 @@
 import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
-
-export struct ProfileRow {
-    id: string,
-    label: string,
-    enrolled_at: string,
-}
-
-component NavButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> selected: false;
-    callback activated();
-
-    height: 44px;
-    border-radius: 6px;
-    background: selected ? #dcece7 : nav-touch.has-hover ? #edf3f1 : transparent;
-
-    Text {
-        x: 14px;
-        width: parent.width - 28px;
-        height: parent.height;
-        text: root.label;
-        color: root.selected ? #123e34 : #40534e;
-        font-size: 14px;
-        font-weight: root.selected ? 700 : 500;
-        vertical-alignment: center;
-    }
-
-    nav-touch := TouchArea {
-        clicked => { root.activated(); }
-    }
-}
-
-component ActionButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> primary: false;
-    in property <bool> danger: false;
-    in property <bool> enabled: true;
-    callback activated();
-
-    height: 40px;
-    min-width: 104px;
-    border-radius: 6px;
-    border-width: primary ? 0px : 1px;
-    border-color: danger ? #d9a4a4 : #b9c8c3;
-    background: !enabled ? #e9eeec
-        : primary ? (button-touch.pressed ? #0e3a30 : button-touch.has-hover ? #1c594a : #164b3f)
-        : danger ? (button-touch.has-hover ? #fff1f1 : #fff8f8)
-        : button-touch.has-hover ? #edf3f1 : #ffffff;
-
-    Text {
-        width: parent.width;
-        height: parent.height;
-        text: root.label;
-        color: !root.enabled ? #8b9894
-            : root.primary ? #ffffff
-            : root.danger ? #a53333
-            : #243b35;
-        font-size: 14px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    button-touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.activated(); }
-    }
-}
-
-component StatusPill inherits Rectangle {
-    in property <string> label;
-    in property <string> tone: "neutral";
-
-    height: 26px;
-    border-radius: 13px;
-    background: tone == "good" ? #d8eee5
-        : tone == "warn" ? #f5e7c5
-        : tone == "bad" ? #f5dcdc
-        : #e8eeec;
-
-    Text {
-        x: 11px;
-        width: parent.width - 22px;
-        height: parent.height;
-        text: root.label;
-        color: root.tone == "good" ? #165c46
-            : root.tone == "warn" ? #775514
-            : root.tone == "bad" ? #983535
-            : #52635e;
-        font-size: 12px;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-component CenteredActionButton inherits VerticalLayout {
-    in property <string> label;
-    in property <bool> primary: false;
-    in property <bool> danger: false;
-    in property <bool> enabled: true;
-    callback activated();
-
-    Rectangle { vertical-stretch: 1; background: transparent; }
-    ActionButton {
-        width: parent.width;
-        label: root.label;
-        primary: root.primary;
-        danger: root.danger;
-        enabled: root.enabled;
-        activated => { root.activated(); }
-    }
-    Rectangle { vertical-stretch: 1; background: transparent; }
-}
-
-component CenteredStatusPill inherits VerticalLayout {
-    in property <string> label;
-    in property <string> tone: "neutral";
-
-    Rectangle { vertical-stretch: 1; background: transparent; }
-    StatusPill { width: parent.width; label: root.label; tone: root.tone; }
-    Rectangle { vertical-stretch: 1; background: transparent; }
-}
-
-component MetricBlock inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    in property <string> detail;
-
-    height: 104px;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: #d7dfdc;
-    background: #ffffff;
-
-    VerticalLayout {
-        padding: 15px;
-        spacing: 5px;
-
-        Text { text: root.label; color: #64736f; font-size: 12px; }
-        Text { text: root.value; color: #162b25; font-size: 22px; font-weight: 700; }
-        Text { text: root.detail; color: #73817d; font-size: 12px; overflow: elide; }
-    }
-}
-
-component SectionTitle inherits HorizontalLayout {
-    in property <string> title;
-    in property <string> detail;
-
-    height: 48px;
-    spacing: 12px;
-
-    VerticalLayout {
-        spacing: 3px;
-        Text { text: root.title; color: #182d27; font-size: 16px; font-weight: 700; }
-        Text { text: root.detail; color: #71807c; font-size: 12px; overflow: elide; }
-    }
-}
+export { UiTheme } from "theme.slint";
+export { ProfileRow } from "components.slint";
+export { DeploymentTargetRow } from "deployment.slint";
+import { UiTheme } from "theme.slint";
+import { DeploymentPanel, DeploymentTargetRow } from "deployment.slint";
+import {
+    ActionButton, CenteredActionButton, CenteredStatusPill, DiagnosticRow,
+    MetricBlock, NavButton, PageHeader, ProfileRow, SectionTitle,
+    SegmentedSelector, SetupStep, StatusPill,
+} from "components.slint";
 
 export component AppWindow inherits Window {
     in property <string> title_text: "Smile2Unlock";
@@ -168,7 +20,18 @@ export component AppWindow inherits Window {
     in property <string> camera_text: "";
     in property <int> camera_count: 0;
     in property <bool> seetaface_available: false;
-    in property <bool> control_socket_present: false;
+    in property <bool> service_available: false;
+    in property <int> storage_protection_index: 0;
+    in property <bool> pam_status_known: false;
+    in property <bool> pam_configured: false;
+    in property <string> pam_service: "";
+    in property <bool> deployment_helper_available: false;
+    in property <bool> deployment_installer_available: false;
+    in property <bool> login_pam_configured: false;
+    in property <bool> lock_pam_configured: false;
+    in property <[DeploymentTargetRow]> deployment_targets;
+    in-out property <string> deployment_operation_status: "";
+    in-out property <bool> desktop_auth_passed: false;
     in property <[ProfileRow]> profiles;
     in property <[string]> camera_options;
     in property <[string]> language_names;
@@ -185,6 +48,9 @@ export component AppWindow inherits Window {
 
     in-out property <int> current_page: 0;
     in-out property <int> language_index: 0;
+    in-out property <int> theme_mode_index: 0;
+    in-out property <int> window_controls_index: 0;
+    in property <bool> window_frame_visible: true;
     in-out property <string> enroll_label_text: "";
     in-out property <string> activity_title: "";
     in-out property <string> activity_detail: "";
@@ -201,32 +67,53 @@ export component AppWindow inherits Window {
     callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
-    callback migrate_profiles_requested();
+    callback refresh_system_status_requested();
+    callback install_deployment_helper_requested();
+    callback initialize_system_deployment_requested();
+    callback configure_desktop_target_requested(string, bool);
+    callback rollback_desktop_target_requested(string);
     callback start_preview_requested();
     callback stop_preview_requested();
     callback save_settings_requested(int, float, bool, float, int);
     callback language_selected(int);
+    callback theme_mode_selected(int);
+    callback window_controls_selected(int);
     pure callback translate(string, int) -> string;
     pure callback translate_value(string, int, string) -> string;
 
-    init => { Palette.color-scheme = ColorScheme.light; }
+    private property <bool> dark-mode: UiTheme.dark-mode;
+
+    init => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
+    changed dark-mode => {
+        Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
+    }
 
     title: title_text;
-    width: 1180px;
-    height: 760px;
-    background: #f4f7f6;
+    no-frame: !root.window_frame_visible;
+    preferred-width: 1560px;
+    preferred-height: 880px;
+    min-width: 1180px;
+    min-height: 700px;
+    background: UiTheme.canvas;
+
+    private property <bool> compact-layout: root.width < 1020px;
+    private property <bool> storage-ready: root.storage_protection_index == 1 || root.storage_protection_index == 2;
+    private property <bool> auth-ready: root.service_available && root.seetaface_available && root.camera_count > 0;
+    private property <bool> runtime-ready: root.auth-ready && root.storage-ready;
+    private property <bool> setup-complete: root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured;
+    private property <length> page-padding: 18px;
 
     HorizontalLayout {
         spacing: 0px;
 
         Rectangle {
-            width: 232px;
-            background: #ffffff;
+            width: 176px;
+            background: UiTheme.surface;
             border-width: 0px;
 
             VerticalLayout {
-                padding-left: 18px;
-                padding-right: 18px;
+                padding-left: 16px;
+                padding-right: 16px;
                 padding-top: 24px;
                 padding-bottom: 20px;
                 spacing: 8px;
@@ -234,8 +121,8 @@ export component AppWindow inherits Window {
                 VerticalLayout {
                     height: 72px;
                     spacing: 4px;
-                    Text { text: "Smile2Unlock"; color: #123e34; font-size: 19px; font-weight: 800; }
-                    Text { text: root.translate("app.subtitle", root.language_index); color: #74827e; font-size: 12px; }
+                    Text { text: "Smile2Unlock"; color: UiTheme.primary; font-size: 19px; font-weight: 800; }
+                    Text { text: root.translate("app.subtitle", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
                 }
 
                 NavButton {
@@ -264,17 +151,17 @@ export component AppWindow inherits Window {
                 Rectangle {
                     height: 66px;
                     border-radius: 6px;
-                    background: #eef4f2;
+                    background: UiTheme.surface-subtle;
 
                     VerticalLayout {
                         padding: 12px;
                         spacing: 3px;
-                        Text { text: root.username; color: #18352d; font-size: 14px; font-weight: 700; overflow: elide; }
+                        Text { text: root.username; color: UiTheme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
                         Text {
                             text: root.profiles.length == 0
                                 ? root.translate("account.enrollment_required", root.language_index)
                                 : root.translate("account.enabled", root.language_index);
-                            color: root.profiles.length == 0 ? #8b651b : #32715e;
+                            color: root.profiles.length == 0 ? UiTheme.warning-text : UiTheme.success-text;
                             font-size: 11px;
                         }
                     }
@@ -285,45 +172,41 @@ export component AppWindow inherits Window {
                 x: parent.width - 1px;
                 width: 1px;
                 height: parent.height;
-                background: #dce3e1;
+                background: UiTheme.border;
             }
         }
 
         Rectangle {
             horizontal-stretch: 1;
-            background: #f4f7f6;
+            background: UiTheme.canvas;
 
             if root.current_page == 0: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 636px;
+                viewport-height: root.setup-complete
+                    ? (root.compact-layout ? 826px : 614px)
+                    : (root.compact-layout ? 1196px : 984px);
 
                 overview-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.overview", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text {
-                            text: root.translate_value("overview.status_for", root.language_index, root.username);
-                            color: #6e7d78;
-                            font-size: 13px;
-                        }
+                    PageHeader {
+                        title: root.translate("nav.overview", root.language_index);
+                        detail: root.translate_value("overview.status_for", root.language_index, root.username);
                     }
 
-                    HorizontalLayout {
-                        height: 104px;
+                    if !root.compact-layout: HorizontalLayout {
+                        height: 100px;
                         spacing: 12px;
                         MetricBlock {
                             horizontal-stretch: 1;
                             label: root.translate("overview.system_auth", root.language_index);
-                            value: root.control_socket_present
+                            value: root.service_available
                                 ? root.translate("status.online", root.language_index)
                                 : root.translate("status.offline", root.language_index);
-                            detail: root.control_socket_present
-                                ? root.translate("overview.socket_available", root.language_index)
+                            detail: root.service_available
+                                ? root.translate("overview.service_available", root.language_index)
                                 : root.translate("overview.service_unavailable", root.language_index);
                         }
                         MetricBlock {
@@ -348,12 +231,126 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    if root.compact-layout: VerticalLayout {
+                        height: 312px;
+                        spacing: 6px;
+                        MetricBlock {
+                            label: root.translate("overview.system_auth", root.language_index);
+                            value: root.service_available
+                                ? root.translate("status.online", root.language_index)
+                                : root.translate("status.offline", root.language_index);
+                            detail: root.service_available
+                                ? root.translate("overview.service_available", root.language_index)
+                                : root.translate("overview.service_unavailable", root.language_index);
+                        }
+                        MetricBlock {
+                            label: root.translate("overview.face_samples", root.language_index);
+                            value: root.profiles.length;
+                            detail: root.profiles.length == 1
+                                ? root.translate("overview.one_sample", root.language_index)
+                                : root.translate_value("overview.sample_count", root.language_index, root.profiles.length);
+                        }
+                        MetricBlock {
+                            label: root.translate("overview.recognizer", root.language_index);
+                            value: root.seetaface_available
+                                ? root.translate("status.ready", root.language_index)
+                                : root.translate("status.unavailable", root.language_index);
+                            detail: root.camera_count == 0
+                                ? root.translate("camera.none", root.language_index)
+                                : root.camera_count == 1
+                                    ? root.camera_text
+                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
+                        }
+                    }
+
+                    if !root.setup-complete: Rectangle {
+                        height: 356px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 6px;
+                            SectionTitle {
+                                title: root.translate("onboarding.title", root.language_index);
+                                detail: root.translate("onboarding.subtitle", root.language_index);
+                            }
+                            SetupStep {
+                                number: "1";
+                                title: root.translate("onboarding.service", root.language_index);
+                                detail: root.service_available && root.storage-ready
+                                    ? root.translate("onboarding.service_ready", root.language_index)
+                                    : root.translate("onboarding.service_action", root.language_index);
+                                status: root.service_available && root.storage-ready
+                                    ? root.translate("status.ready", root.language_index)
+                                    : root.translate("status.action_required", root.language_index);
+                                tone: root.service_available && root.storage-ready ? "good" : "warn";
+                                action-label: root.translate("action.review", root.language_index);
+                                activated => { root.current_page = 3; }
+                            }
+                            SetupStep {
+                                number: "2";
+                                title: root.translate("onboarding.hardware", root.language_index);
+                                detail: root.seetaface_available && root.camera_count > 0
+                                    ? root.translate("onboarding.hardware_ready", root.language_index)
+                                    : root.translate("onboarding.hardware_action", root.language_index);
+                                status: root.seetaface_available && root.camera_count > 0
+                                    ? root.translate("status.ready", root.language_index)
+                                    : root.translate("status.action_required", root.language_index);
+                                tone: root.seetaface_available && root.camera_count > 0 ? "good" : "warn";
+                                action-label: root.translate("action.review", root.language_index);
+                                activated => { root.current_page = 3; }
+                            }
+                            SetupStep {
+                                number: "3";
+                                title: root.translate("onboarding.enrollment", root.language_index);
+                                detail: root.profiles.length > 0
+                                    ? root.translate("onboarding.enrollment_ready", root.language_index)
+                                    : root.translate("onboarding.enrollment_action", root.language_index);
+                                status: root.profiles.length > 0
+                                    ? root.translate("status.ready", root.language_index)
+                                    : root.translate("status.action_required", root.language_index);
+                                tone: root.profiles.length > 0 ? "good" : "warn";
+                                action-label: root.translate("action.enroll_face", root.language_index);
+                                activated => { root.current_page = 1; }
+                            }
+                            SetupStep {
+                                number: "4";
+                                title: root.translate("onboarding.desktop_test", root.language_index);
+                                detail: root.desktop_auth_passed
+                                    ? root.translate("onboarding.desktop_test_ready", root.language_index)
+                                    : root.translate("onboarding.desktop_test_action", root.language_index);
+                                status: root.desktop_auth_passed
+                                    ? root.translate("status.passed", root.language_index)
+                                    : root.translate("status.not_tested", root.language_index);
+                                tone: root.desktop_auth_passed ? "good" : "warn";
+                                action-label: root.translate("action.test_auth", root.language_index);
+                                action-enabled: root.auth-ready && root.profiles.length > 0 && !root.busy;
+                                activated => { root.current_frame_auth_requested(); }
+                            }
+                            SetupStep {
+                                number: "5";
+                                title: root.translate("onboarding.pam", root.language_index);
+                                detail: root.pam_configured
+                                    ? root.translate_value("onboarding.pam_ready", root.language_index, root.pam_service)
+                                    : root.translate("onboarding.pam_action", root.language_index);
+                                status: root.pam_configured
+                                    ? root.translate("status.configured", root.language_index)
+                                    : root.translate("status.not_configured", root.language_index);
+                                tone: root.pam_configured ? "good" : "warn";
+                                action-label: root.translate("action.review", root.language_index);
+                                activated => { root.current_page = 3; }
+                            }
+                        }
+                    }
+
                     Rectangle {
                         height: 196px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
 
                         VerticalLayout {
                             padding-left: 20px;
@@ -373,12 +370,12 @@ export component AppWindow inherits Window {
                                     width: 52px;
                                     height: 52px;
                                     border-radius: 6px;
-                                    background: #dcece7;
+                                    background: UiTheme.surface-selected;
                                     Text {
                                         width: parent.width;
                                         height: parent.height;
                                         text: root.username_initial;
-                                        color: #174b3f;
+                                        color: UiTheme.primary;
                                         font-size: 22px;
                                         font-weight: 800;
                                         horizontal-alignment: center;
@@ -388,12 +385,12 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 4px;
-                                    Text { text: root.username; color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text { text: root.username; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
                                     Text {
                                         text: root.profiles.length == 0
                                             ? root.translate("account.no_samples", root.language_index)
                                             : root.translate_value("account.sample_count", root.language_index, root.profiles.length);
-                                        color: #697873;
+                                        color: UiTheme.text-secondary;
                                         font-size: 13px;
                                     }
                                 }
@@ -414,13 +411,13 @@ export component AppWindow inherits Window {
                                 }
                             }
 
-                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
 
                             HorizontalLayout {
                                 height: 26px;
                                 spacing: 12px;
-                                Text { text: root.translate("overview.last_check", root.language_index); color: #65746f; font-size: 12px; vertical-alignment: center; }
-                                Text { text: root.activity_title; color: #243a34; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                Text { text: root.translate("overview.last_check", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
+                                Text { text: root.activity_title; color: UiTheme.text-primary; font-size: 13px; font-weight: 600; vertical-alignment: center; overflow: elide; }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                                 StatusPill {
                                     width: 92px;
@@ -441,8 +438,8 @@ export component AppWindow inherits Window {
                         height: 144px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
 
                         HorizontalLayout {
                             padding: 20px;
@@ -453,12 +450,12 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 50px;
                                     spacing: 7px;
-                                    Text { text: root.translate("overview.verify_account", root.language_index); color: #1b302a; font-size: 16px; font-weight: 700; }
+                                    Text { text: root.translate("overview.verify_account", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; }
                                     Text {
                                         text: root.activity_detail == ""
                                             ? root.translate("overview.verify_hint", root.language_index)
                                             : root.activity_detail;
-                                        color: #6c7b76;
+                                        color: UiTheme.text-secondary;
                                         font-size: 13px;
                                         wrap: word-wrap;
                                     }
@@ -471,7 +468,7 @@ export component AppWindow inherits Window {
                                     ? root.translate("status.checking", root.language_index)
                                     : root.translate("action.test_auth", root.language_index);
                                 primary: true;
-                                enabled: !root.busy && root.profiles.length > 0;
+                                enabled: !root.busy && root.auth-ready && root.profiles.length > 0;
                                 activated => { root.current_frame_auth_requested(); }
                             }
                         }
@@ -482,33 +479,27 @@ export component AppWindow inherits Window {
             if root.current_page == 1: ScrollView {
                 viewport-width: self.width;
                 viewport-height: root.profiles.length == 0
-                    ? 692px
-                    : 578px + root.profiles.length * 86px;
+                    ? 674px
+                    : 560px + root.profiles.length * 82px;
 
                 enrollment-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.enrollment", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text {
-                            text: root.translate_value("enrollment.manage_for", root.language_index, root.username);
-                            color: #6e7d78;
-                            font-size: 13px;
-                        }
+                    PageHeader {
+                        title: root.translate("nav.enrollment", root.language_index);
+                        detail: root.translate_value("enrollment.manage_for", root.language_index, root.username);
                     }
 
                     HorizontalLayout {
-                        height: 360px;
-                        spacing: 20px;
+                        height: 352px;
+                        spacing: 18px;
 
                         preview-frame := Rectangle {
                             horizontal-stretch: 1;
                             border-radius: 6px;
-                            background: #101816;
+                            background: UiTheme.preview-surface;
                             clip: true;
                             property <length> fitted_width: root.preview_source_width > 0 && root.preview_source_height > 0
                                 ? Math.min(self.width, self.height * root.preview_source_width / root.preview_source_height)
@@ -534,23 +525,23 @@ export component AppWindow inherits Window {
                                 width: root.face_box_w * preview-frame.source_scale * 1px;
                                 height: root.face_box_h * preview-frame.source_scale * 1px;
                                 visible: root.face_box_visible;
-                                border-color: #4dd3a7;
+                                border-color: UiTheme.face-indicator;
                                 border-width: 2px;
                                 background: transparent;
                             }
                             Rectangle {
                                 x: 14px;
                                 y: parent.height - 42px;
-                                width: 180px;
+                                width: Math.min(220px, parent.width - 28px);
                                 height: 28px;
                                 border-radius: 4px;
-                                background: #15201ecc;
+                                background: UiTheme.preview-overlay;
                                 Text {
                                     x: 10px;
                                     width: parent.width - 20px;
                                     height: parent.height;
                                     text: root.preview_status_text;
-                                    color: #e8f6f1;
+                                    color: UiTheme.preview-text;
                                     font-size: 12px;
                                     vertical-alignment: center;
                                     overflow: elide;
@@ -559,11 +550,11 @@ export component AppWindow inherits Window {
                         }
 
                         Rectangle {
-                            width: 300px;
+                            width: 284px;
                             border-radius: 6px;
                             border-width: 1px;
-                            border-color: #d7dfdc;
-                            background: #ffffff;
+                            border-color: UiTheme.border;
+                            background: UiTheme.surface;
 
                             VerticalLayout {
                                 padding: 20px;
@@ -576,11 +567,11 @@ export component AppWindow inherits Window {
                                             ? root.camera_text
                                             : root.translate_value("camera.count", root.language_index, root.camera_count);
                                 }
-                                Text { text: root.translate("enrollment.sample_name", root.language_index); color: #53635e; font-size: 12px; font-weight: 600; }
+                                Text { text: root.translate("enrollment.sample_name", root.language_index); color: UiTheme.text-secondary; font-size: 12px; font-weight: 600; }
                                 LineEdit { text <=> root.enroll_label_text; enabled: !root.busy; }
                                 HorizontalLayout {
                                     spacing: 8px;
-                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy; activated => { root.start_preview_requested(); } }
+                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy && root.camera_count > 0; activated => { root.start_preview_requested(); } }
                                     ActionButton { horizontal-stretch: 1; label: root.translate("action.stop", root.language_index); enabled: !root.busy; activated => { root.stop_preview_requested(); } }
                                 }
                                 ActionButton {
@@ -588,11 +579,11 @@ export component AppWindow inherits Window {
                                         ? root.translate("status.capturing", root.language_index)
                                         : root.translate("action.capture_sample", root.language_index);
                                     primary: true;
-                                    enabled: !root.busy && root.seetaface_available;
+                                    enabled: !root.busy && root.auth-ready;
                                     activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
-                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? #a23c3c : #64736f; font-size: 12px; wrap: word-wrap; }
+                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? UiTheme.danger-text : UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; max-height: 42px; }
                             }
                         }
                     }
@@ -608,17 +599,17 @@ export component AppWindow inherits Window {
                         height: 92px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
-                        Text { width: parent.width; height: parent.height; text: root.translate("enrollment.empty", root.language_index); color: #77847f; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        Text { width: parent.width; height: parent.height; text: root.translate("enrollment.empty", root.language_index); color: UiTheme.text-tertiary; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     for profile in root.profiles: Rectangle {
                         height: 64px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
 
                         HorizontalLayout {
                             padding-left: 16px;
@@ -627,7 +618,7 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 width: 8px;
                                 Rectangle { vertical-stretch: 1; background: transparent; }
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #3a9d7c; }
+                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: UiTheme.success-text; }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
                             VerticalLayout {
@@ -636,8 +627,8 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 37px;
                                     spacing: 3px;
-                                    Text { text: profile.label; color: #203730; font-size: 14px; font-weight: 700; overflow: elide; }
-                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: #75827e; font-size: 11px; }
+                                    Text { text: profile.label; color: UiTheme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
+                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: UiTheme.text-tertiary; font-size: 11px; }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
@@ -655,26 +646,24 @@ export component AppWindow inherits Window {
 
             if root.current_page == 2: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 710px;
+                viewport-height: 896px;
 
                 settings-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.settings", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text { text: root.translate("settings.subtitle", root.language_index); color: #6e7d78; font-size: 13px; }
+                    PageHeader {
+                        title: root.translate("nav.settings", root.language_index);
+                        detail: root.translate("settings.subtitle", root.language_index);
                     }
 
                     Rectangle {
                         height: 214px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
                             spacing: 12px;
@@ -685,13 +674,13 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 12px;
                                 ComboBox { horizontal-stretch: 1; model: root.camera_options; current-index <=> root.selected_camera; }
-                                Text { width: 90px; text: root.translate("settings.preview_fps", root.language_index); color: #53635e; font-size: 12px; vertical-alignment: center; }
+                                Text { width: 84px; text: root.translate("settings.preview_fps", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
                                 SpinBox { width: 100px; minimum: 1; maximum: 60; value <=> root.preview_fps; }
                             }
-                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
                             HorizontalLayout {
                                 spacing: 12px;
-                                Text { width: 90px; text: root.translate("settings.language", root.language_index); color: #53635e; font-size: 12px; vertical-alignment: center; }
+                                Text { width: 84px; text: root.translate("settings.language", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
                                 ComboBox {
                                     horizontal-stretch: 1;
                                     model: root.language_names;
@@ -708,11 +697,67 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
+                        height: 184px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 12px;
+                            SectionTitle {
+                                title: root.translate("settings.appearance", root.language_index);
+                                detail: root.translate("settings.appearance_detail", root.language_index);
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text {
+                                    width: 132px;
+                                    text: root.translate("settings.theme_mode", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                SegmentedSelector {
+                                    horizontal-stretch: 1;
+                                    options: [
+                                        root.translate("settings.theme_system", root.language_index),
+                                        root.translate("settings.theme_light", root.language_index),
+                                        root.translate("settings.theme_dark", root.language_index),
+                                    ];
+                                    current-index <=> root.theme_mode_index;
+                                    selected(index) => { root.theme_mode_selected(index); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 14px;
+                                Text {
+                                    width: 132px;
+                                    text: root.translate("settings.window_controls", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+                                SegmentedSelector {
+                                    horizontal-stretch: 1;
+                                    options: [
+                                        root.translate("settings.window_controls_auto", root.language_index),
+                                        root.translate("settings.window_controls_show", root.language_index),
+                                        root.translate("settings.window_controls_hide", root.language_index),
+                                    ];
+                                    current-index <=> root.window_controls_index;
+                                    selected(index) => { root.window_controls_selected(index); }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
                         height: 260px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
                             spacing: 14px;
@@ -725,12 +770,12 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 6px;
-                                    Text { text: root.translate("settings.recognition_threshold", root.language_index); color: #30463f; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.recognition_threshold", root.language_index); color: UiTheme.text-primary; font-size: 13px; font-weight: 600; }
                                     Slider { minimum: 0.35; maximum: 0.95; value <=> root.recognition_threshold; }
                                 }
                                 StatusPill { width: 70px; label: Math.round(root.recognition_threshold * 100) + "%"; tone: root.recognition_threshold < 0.5 ? "warn" : "neutral"; }
                             }
-                            Rectangle { height: 1px; background: #e2e8e6; }
+                            Rectangle { height: 1px; background: UiTheme.divider; }
                             Switch {
                                 text: root.translate("settings.liveness_enabled", root.language_index);
                                 checked <=> root.liveness_enabled;
@@ -741,7 +786,7 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     horizontal-stretch: 1;
                                     spacing: 6px;
-                                    Text { text: root.translate("settings.liveness_threshold", root.language_index); color: #30463f; font-size: 13px; font-weight: 600; }
+                                    Text { text: root.translate("settings.liveness_threshold", root.language_index); color: root.liveness_enabled ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
                                     Slider { enabled: root.liveness_enabled; minimum: 0.2; maximum: 0.95; value <=> root.liveness_threshold; }
                                 }
                                 StatusPill { width: 70px; label: Math.round(root.liveness_threshold * 100) + "%"; tone: "neutral"; }
@@ -752,7 +797,7 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         height: 44px;
                         spacing: 12px;
-                        Text { text: root.settings_status; color: #63726d; font-size: 12px; vertical-alignment: center; }
+                        Text { text: root.settings_status; color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
                         Rectangle { horizontal-stretch: 1; background: transparent; }
                         ActionButton {
                             width: 128px;
@@ -774,77 +819,125 @@ export component AppWindow inherits Window {
 
             if root.current_page == 3: ScrollView {
                 viewport-width: self.width;
-                viewport-height: 678px;
+                viewport-height: 1042px + root.deployment_targets.length * 122px;
 
                 diagnostics-content := VerticalLayout {
                     width: parent.width;
-                    padding: 32px;
-                    spacing: 22px;
+                    padding: root.page-padding;
+                    spacing: 20px;
 
-                    VerticalLayout {
-                        height: 62px;
-                        spacing: 5px;
-                        Text { text: root.translate("nav.diagnostics", root.language_index); color: #142923; font-size: 25px; font-weight: 800; }
-                        Text { text: root.translate("diagnostics.subtitle", root.language_index); color: #6e7d78; font-size: 13px; }
+                    PageHeader {
+                        title: root.translate("nav.diagnostics", root.language_index);
+                        detail: root.translate("diagnostics.subtitle", root.language_index);
+                    }
+
+                    DeploymentPanel {
+                        targets: root.deployment_targets;
+                        helper_available: root.deployment_helper_available;
+                        installer_available: root.deployment_installer_available;
+                        runtime_ready: root.runtime-ready;
+                        busy: root.busy;
+                        language_index: root.language_index;
+                        operation_status: root.deployment_operation_status;
+                        translate(key, index) => { root.translate(key, index) }
+                        initialize_requested => { root.initialize_system_deployment_requested(); }
+                        install_helper_requested => { root.install_deployment_helper_requested(); }
+                        configure_requested(target, wallet) => {
+                            root.configure_desktop_target_requested(target, wallet);
+                        }
+                        rollback_requested(target) => {
+                            root.rollback_desktop_target_requested(target);
+                        }
                     }
 
                     Rectangle {
-                        height: 192px;
+                        height: 438px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding: 20px;
-                            spacing: 14px;
-                            SectionTitle { title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
+                            spacing: 6px;
                             HorizontalLayout {
-                                height: 20px;
-                                Text { width: 180px; text: root.translate("diagnostics.auth_service", root.language_index); color: #65746f; font-size: 13px; }
-                                Text {
-                                    text: root.control_socket_present
-                                        ? root.translate("diagnostics.socket_available", root.language_index)
-                                        : root.translate("diagnostics.socket_unavailable", root.language_index);
-                                    color: root.control_socket_present ? #277159 : #a13b3b;
-                                    font-size: 13px;
-                                    font-weight: 600;
+                                height: 48px;
+                                SectionTitle { horizontal-stretch: 1; title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
+                                CenteredActionButton {
+                                    width: 112px;
+                                    label: root.translate("action.refresh", root.language_index);
+                                    enabled: !root.busy;
+                                    activated => { root.refresh_system_status_requested(); }
                                 }
                             }
-                            HorizontalLayout {
-                                height: 20px;
-                                Text { width: 180px; text: root.translate("diagnostics.recognizer", root.language_index); color: #65746f; font-size: 13px; }
-                                Text {
-                                    text: root.seetaface_available
-                                        ? root.translate("status.available", root.language_index)
-                                        : root.translate("status.unavailable", root.language_index);
-                                    color: root.seetaface_available ? #277159 : #a13b3b;
-                                    font-size: 13px;
-                                    font-weight: 600;
-                                }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.auth_service", root.language_index);
+                                status: root.service_available ? root.translate("status.online", root.language_index) : root.translate("status.offline", root.language_index);
+                                detail: root.service_available ? root.translate("diagnostics.service_ready_detail", root.language_index) : root.translate("diagnostics.service_action", root.language_index);
+                                tone: root.service_available ? "good" : "bad";
                             }
-                            HorizontalLayout {
-                                height: 20px;
-                                Text { width: 180px; text: root.translate("settings.camera", root.language_index); color: #65746f; font-size: 13px; }
-                                Text {
-                                    text: root.camera_count == 0
-                                        ? root.translate("camera.none", root.language_index)
-                                        : root.camera_count == 1
-                                            ? root.camera_text
-                                            : root.translate_value("camera.count", root.language_index, root.camera_count);
-                                    color: #263c36;
-                                    font-size: 13px;
-                                    overflow: elide;
-                                }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.storage", root.language_index);
+                                status: root.storage_protection_index == 2
+                                    ? root.translate("diagnostics.storage_tpm", root.language_index)
+                                    : root.storage_protection_index == 1
+                                        ? root.translate("diagnostics.storage_host", root.language_index)
+                                        : root.storage_protection_index == 3
+                                            ? root.translate("status.unknown", root.language_index)
+                                            : root.translate("status.unavailable", root.language_index);
+                                detail: root.storage-ready ? root.translate("diagnostics.storage_ready_detail", root.language_index) : root.translate("diagnostics.storage_action", root.language_index);
+                                tone: root.storage-ready ? "good" : "bad";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.recognizer", root.language_index);
+                                status: root.seetaface_available ? root.translate("status.available", root.language_index) : root.translate("status.unavailable", root.language_index);
+                                detail: root.seetaface_available ? root.translate("diagnostics.recognizer_ready_detail", root.language_index) : root.translate("diagnostics.recognizer_action", root.language_index);
+                                tone: root.seetaface_available ? "good" : "bad";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("settings.camera", root.language_index);
+                                status: root.camera_count == 0 ? root.translate("camera.none", root.language_index) : root.camera_text;
+                                detail: root.camera_count == 0 ? root.translate("diagnostics.camera_action", root.language_index) : root.translate("diagnostics.camera_ready_detail", root.language_index);
+                                tone: root.camera_count > 0 ? "good" : "bad";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("overview.face_samples", root.language_index);
+                                status: root.profiles.length == 0 ? root.translate("enrollment.no_samples", root.language_index) : root.translate_value("enrollment.sample_count", root.language_index, root.profiles.length);
+                                detail: root.profiles.length == 0 ? root.translate("diagnostics.profiles_action", root.language_index) : root.translate("diagnostics.profiles_ready_detail", root.language_index);
+                                tone: root.profiles.length > 0 ? "good" : "warn";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.login_pam", root.language_index);
+                                status: !root.pam_status_known
+                                    ? root.translate("status.unknown", root.language_index)
+                                    : root.login_pam_configured
+                                        ? root.translate("status.configured", root.language_index)
+                                        : root.translate("status.not_configured", root.language_index);
+                                detail: root.login_pam_configured
+                                    ? root.translate("diagnostics.login_pam_ready", root.language_index)
+                                    : root.translate("diagnostics.login_pam_action", root.language_index);
+                                tone: root.login_pam_configured ? "good" : "warn";
+                            }
+                            DiagnosticRow {
+                                label: root.translate("diagnostics.lock_pam", root.language_index);
+                                status: !root.pam_status_known
+                                    ? root.translate("status.unknown", root.language_index)
+                                    : root.lock_pam_configured
+                                        ? root.translate("status.configured", root.language_index)
+                                        : root.translate("status.not_configured", root.language_index);
+                                detail: root.lock_pam_configured
+                                    ? root.translate("diagnostics.lock_pam_ready", root.language_index)
+                                    : root.translate("diagnostics.lock_pam_action", root.language_index);
+                                tone: root.lock_pam_configured ? "good" : "warn";
                             }
                         }
                     }
 
                     Rectangle {
-                        height: 226px;
+                        height: 170px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         VerticalLayout {
                             padding-left: 20px;
                             padding-right: 20px;
@@ -855,20 +948,14 @@ export component AppWindow inherits Window {
                             VerticalLayout {
                                 height: 36px;
                                 spacing: 3px;
-                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
-                                Text { text: root.config_path_text; color: #283e37; font-size: 12px; overflow: elide; }
+                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
+                                Text { text: root.config_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
                             }
                             VerticalLayout {
                                 height: 36px;
                                 spacing: 3px;
-                                Text { text: root.translate("overview.face_samples", root.language_index); color: #687772; font-size: 11px; font-weight: 600; }
-                                Text { text: root.profile_store_path_text; color: #283e37; font-size: 12px; overflow: elide; }
-                            }
-                            ActionButton {
-                                width: 176px;
-                                label: root.translate("action.import_legacy", root.language_index);
-                                enabled: root.control_socket_present && !root.busy;
-                                activated => { root.migrate_profiles_requested(); }
+                                Text { text: root.translate("overview.face_samples", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
+                                Text { text: root.profile_store_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
                             }
                         }
                     }
@@ -877,8 +964,8 @@ export component AppWindow inherits Window {
                         height: 118px;
                         border-radius: 6px;
                         border-width: 1px;
-                        border-color: #d7dfdc;
-                        background: #ffffff;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
                         HorizontalLayout {
                             padding: 20px;
                             spacing: 16px;
@@ -888,8 +975,8 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     height: 44px;
                                     spacing: 6px;
-                                    Text { text: root.translate("diagnostics.auth_check", root.language_index); color: #203730; font-size: 15px; font-weight: 700; }
-                                    Text { text: root.activity_title; color: #6d7b77; font-size: 12px; overflow: elide; }
+                                    Text { text: root.translate("diagnostics.desktop_auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
+                                    Text { text: root.translate("diagnostics.desktop_auth_detail", root.language_index); color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                             }
@@ -899,7 +986,7 @@ export component AppWindow inherits Window {
                                     ? root.translate("status.checking", root.language_index)
                                     : root.translate("action.run_check", root.language_index);
                                 primary: true;
-                                enabled: !root.busy && root.profiles.length > 0;
+                                enabled: !root.busy && root.auth-ready && root.profiles.length > 0;
                                 activated => { root.current_frame_auth_requested(); }
                             }
                         }

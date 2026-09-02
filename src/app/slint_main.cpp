@@ -6,21 +6,67 @@ import su.app.i18n;
 import su.app.user;
 import su.core.types;
 import su.app.preview;
+import su.app.preferences;
 import su.app.session;
+import su.app.theme;
 
 namespace {
 
 namespace ui = su::app::ui;
 
 using ProfileModel = slint::VectorModel<ui::ProfileRow>;
+using DeploymentTargetModel = slint::VectorModel<ui::DeploymentTargetRow>;
 using WindowHandle = slint::ComponentHandle<ui::AppWindow>;
 using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
+
+constexpr std::string_view xdg_app_id = "smile2unlock";
 
 std::string camera_summary(const su::app::AppSnapshot& snapshot) {
     if (snapshot.cameras.size() == 1) {
         return snapshot.cameras.front().name;
     }
     return {};
+}
+
+slint::Color slint_color(su::app::ThemeColor color) {
+    return slint::Color::from_argb_uint8(color.alpha, color.red, color.green, color.blue);
+}
+
+void apply_theme(const WindowHandle& window, const su::app::AppTheme& snapshot) {
+    const auto& theme = window->global<ui::UiTheme>();
+    theme.set_canvas(slint_color(snapshot.canvas));
+    theme.set_surface(slint_color(snapshot.surface));
+    theme.set_surface_subtle(slint_color(snapshot.surface_subtle));
+    theme.set_surface_selected(slint_color(snapshot.surface_selected));
+    theme.set_border(slint_color(snapshot.border));
+    theme.set_divider(slint_color(snapshot.divider));
+    theme.set_text_primary(slint_color(snapshot.text_primary));
+    theme.set_text_secondary(slint_color(snapshot.text_secondary));
+    theme.set_text_tertiary(slint_color(snapshot.text_tertiary));
+    theme.set_primary(slint_color(snapshot.primary));
+    theme.set_primary_hover(slint_color(snapshot.primary_hover));
+    theme.set_primary_pressed(slint_color(snapshot.primary_pressed));
+    theme.set_on_primary(slint_color(snapshot.on_primary));
+    theme.set_success_surface(slint_color(snapshot.success_surface));
+    theme.set_success_text(slint_color(snapshot.success_text));
+    theme.set_warning_surface(slint_color(snapshot.warning_surface));
+    theme.set_warning_text(slint_color(snapshot.warning_text));
+    theme.set_danger_surface(slint_color(snapshot.danger_surface));
+    theme.set_danger_hover(slint_color(snapshot.danger_hover));
+    theme.set_danger_text(slint_color(snapshot.danger_text));
+    theme.set_disabled_surface(slint_color(snapshot.disabled_surface));
+    theme.set_disabled_text(slint_color(snapshot.disabled_text));
+    theme.set_preview_surface(slint_color(snapshot.preview_surface));
+    theme.set_preview_overlay(slint_color(snapshot.preview_overlay));
+    theme.set_preview_text(slint_color(snapshot.preview_text));
+    theme.set_face_indicator(slint_color(snapshot.face_indicator));
+    theme.set_dark_mode(snapshot.mode == su::app::ThemeMode::dark);
+}
+
+void log_theme_diagnostics(const std::vector<std::string>& diagnostics) {
+    for (const auto& diagnostic : diagnostics) {
+        std::println(stderr, "[theme] {}", diagnostic);
+    }
 }
 
 std::string username_initial(std::string_view username) {
@@ -67,6 +113,28 @@ void update_profiles(
     const std::shared_ptr<ProfileModel>& model,
     const std::vector<su::app::FaceProfileSummary>& profiles) {
     model->set_vector(profile_rows(profiles));
+}
+
+std::vector<ui::DeploymentTargetRow> deployment_target_rows(
+    const std::vector<su::app::DeploymentTargetStatus>& targets) {
+    auto rows = std::vector<ui::DeploymentTargetRow>{};
+    rows.reserve(targets.size());
+    for (const auto& target : targets) {
+        rows.push_back(ui::DeploymentTargetRow{
+            .id = slint::SharedString(target.id),
+            .service = slint::SharedString(target.service),
+            .effective_path = slint::SharedString(target.effective_path),
+            .role = slint::SharedString(target.role),
+            .state = slint::SharedString(target.state),
+            .password_fallback = target.password_fallback,
+            .configured = target.configured,
+            .configurable = target.configurable,
+            .managed = target.managed,
+            .wallet_available = target.wallet_available,
+            .wallet_enabled = target.wallet_enabled,
+        });
+    }
+    return rows;
 }
 
 void set_activity(
@@ -149,9 +217,144 @@ std::string system_locale() {
     return "en";
 }
 
+int theme_preference_index(su::app::ThemePreference preference) {
+    switch (preference) {
+        case su::app::ThemePreference::system:
+            return 0;
+        case su::app::ThemePreference::light:
+            return 1;
+        case su::app::ThemePreference::dark:
+            return 2;
+    }
+    return 0;
+}
+
+std::optional<su::app::ThemePreference> theme_preference_at(int index) {
+    switch (index) {
+        case 0:
+            return su::app::ThemePreference::system;
+        case 1:
+            return su::app::ThemePreference::light;
+        case 2:
+            return su::app::ThemePreference::dark;
+        default:
+            return std::nullopt;
+    }
+}
+
+int window_controls_preference_index(su::app::WindowControlsPreference preference) {
+    switch (preference) {
+        case su::app::WindowControlsPreference::automatic:
+            return 0;
+        case su::app::WindowControlsPreference::visible:
+            return 1;
+        case su::app::WindowControlsPreference::hidden:
+            return 2;
+    }
+    return 0;
+}
+
+std::optional<su::app::WindowControlsPreference> window_controls_preference_at(int index) {
+    switch (index) {
+        case 0:
+            return su::app::WindowControlsPreference::automatic;
+        case 1:
+            return su::app::WindowControlsPreference::visible;
+        case 2:
+            return su::app::WindowControlsPreference::hidden;
+        default:
+            return std::nullopt;
+    }
+}
+
+void persist_ui_preferences(
+    const std::filesystem::path& path,
+    const su::app::UiPreferences& preferences) {
+    if (const auto saved = su::app::save_ui_preferences(path, preferences); !saved) {
+        std::println(stderr, "[preferences] {}", saved.error());
+    }
+}
+
+void apply_system_status(
+    const WindowHandle& window,
+    const su::app::SystemStatus& status,
+    const std::shared_ptr<DeploymentTargetModel>& deployment_targets) {
+    window->set_service_available(status.service_available);
+    window->set_storage_protection_index(static_cast<int>(status.storage_protection));
+    window->set_pam_status_known(status.pam_status_known);
+    window->set_pam_configured(status.pam_configured);
+    window->set_pam_service(slint::SharedString(status.pam_service));
+    window->set_deployment_helper_available(status.deployment_helper_available);
+    window->set_deployment_installer_available(status.deployment_installer_available);
+    window->set_login_pam_configured(status.login_pam_configured);
+    window->set_lock_pam_configured(status.lock_pam_configured);
+    deployment_targets->set_vector(deployment_target_rows(status.deployment_targets));
+}
+
+using DeploymentOperation = std::function<std::expected<std::string, std::string>()>;
+
+void start_deployment_operation(
+    const WeakWindowHandle& weak_window,
+    const std::shared_ptr<su::app::AppController>& controller,
+    const std::shared_ptr<DeploymentTargetModel>& deployment_targets,
+    const std::shared_ptr<const su::app::LanguageCatalog>& catalog,
+    std::string success_key,
+    DeploymentOperation operation) {
+    if (const auto window = weak_window.lock()) {
+        (*window)->set_busy(true);
+        (*window)->set_deployment_operation_status(slint::SharedString(
+            translated(*catalog, *window, "deployment.operation_working")));
+    }
+    std::thread([
+        weak_window,
+        controller,
+        deployment_targets,
+        catalog,
+        success_key = std::move(success_key),
+        operation = std::move(operation)]() mutable {
+        auto result = operation();
+        auto status = controller->load_system_status();
+        slint::invoke_from_event_loop([
+            weak_window,
+            deployment_targets,
+            catalog,
+            success_key = std::move(success_key),
+            result = std::move(result),
+            status = std::move(status)]() mutable {
+            const auto window = weak_window.lock();
+            if (!window) {
+                return;
+            }
+            apply_system_status(*window, status, deployment_targets);
+            (*window)->set_busy(false);
+            (*window)->set_deployment_operation_status(slint::SharedString(
+                result
+                    ? translated(*catalog, *window, success_key)
+                    : translated_value(
+                        *catalog,
+                        *window,
+                        "deployment.operation_failed",
+                        result.error())));
+        });
+    }).detach();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    slint::set_xdg_app_id(xdg_app_id);
+    const auto preference_path = ui_preference_path();
+    auto preferences = std::make_shared<su::app::UiPreferences>();
+    if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
+        *preferences = std::move(*loaded);
+    } else {
+        std::println(stderr, "[preferences] {}", loaded.error());
+    }
+    const auto theme_paths = su::app::default_theme_paths();
+    const auto theme_commands = su::app::system_theme_command_runner();
+    auto initial_theme = su::app::load_desktop_theme(
+        theme_paths, theme_commands, preferences->theme);
+    log_theme_diagnostics(initial_theme.diagnostics);
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
@@ -160,15 +363,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     const auto catalog = std::make_shared<const su::app::LanguageCatalog>(std::move(*loaded_catalog));
-    const auto preference_path = ui_preference_path();
-    auto loaded_preference = su::app::load_language_preference(preference_path);
-    std::optional<std::string> preferred_language;
-    if (loaded_preference) {
-        preferred_language = std::move(*loaded_preference);
-    } else {
-        std::println(stderr, "[i18n] {}", loaded_preference.error());
-    }
-    const auto selected_language = catalog->select_language(preferred_language, system_locale());
+    const auto selected_language = catalog->select_language(preferences->language, system_locale());
 
     auto controller = std::make_shared<su::app::AppController>();
     auto preview = std::make_shared<su::app::PreviewController>();
@@ -179,8 +374,24 @@ int main(int argc, char** argv) {
     }
 
     auto window = ui::AppWindow::create();
+    apply_theme(window, initial_theme.snapshot.theme);
     const WeakWindowHandle weak_window(window);
+    const auto theme_monitor = std::make_shared<su::app::ThemeMonitor>(
+        theme_paths,
+        theme_commands,
+        initial_theme.snapshot,
+        preferences->theme,
+        [weak_window](su::app::ThemeLoadResult loaded) {
+            log_theme_diagnostics(loaded.diagnostics);
+            slint::invoke_from_event_loop(
+                [weak_window, snapshot = std::move(loaded.snapshot)] {
+                    if (const auto window = weak_window.lock()) {
+                        apply_theme(*window, snapshot.theme);
+                    }
+                });
+        });
     const auto profiles = std::make_shared<ProfileModel>(profile_rows(snapshot->profiles));
+    const auto deployment_targets = std::make_shared<DeploymentTargetModel>();
     const auto session_lock_monitor = std::make_unique<su::app::SessionLockMonitor>(
         [weak_window, controller, preview, catalog] {
             slint::invoke_from_event_loop([weak_window, controller, preview, catalog] {
@@ -216,16 +427,51 @@ int main(int argc, char** argv) {
     window->set_language_names(
         std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(language_names)));
     window->set_language_index(static_cast<int>(selected_language));
-    window->on_language_selected([catalog, preference_path](int index) {
-        if (index < 0 || static_cast<std::size_t>(index) >= catalog->size()) {
-            return;
-        }
-        if (const auto saved = su::app::save_language_preference(
-                preference_path, catalog->language_code(static_cast<std::size_t>(index)));
-            !saved) {
-            std::println(stderr, "[i18n] {}", saved.error());
-        }
-    });
+    window->set_theme_mode_index(theme_preference_index(preferences->theme));
+    window->set_window_controls_index(
+        window_controls_preference_index(preferences->window_controls));
+    window->set_window_frame_visible(su::app::window_controls_visible(
+        preferences->window_controls, theme_paths.desktop));
+    window->on_language_selected(
+        [weak_window, preview, catalog, preference_path, preferences](int index) {
+            if (index < 0 || static_cast<std::size_t>(index) >= catalog->size()) {
+                return;
+            }
+            preferences->language = catalog->language_code(static_cast<std::size_t>(index));
+            persist_ui_preferences(preference_path, *preferences);
+            if (const auto window = weak_window.lock()) {
+                if (!preview->is_running()) {
+                    set_preview_idle(*window, *catalog);
+                }
+                if ((*window)->get_desktop_auth_passed()) {
+                    (*window)->set_activity_title(slint::SharedString(
+                        translated(*catalog, *window, "activity.auth_passed")));
+                }
+            }
+        });
+    window->on_theme_mode_selected(
+        [preference_path, preferences, theme_monitor](int index) {
+            const auto selected = theme_preference_at(index);
+            if (!selected) {
+                return;
+            }
+            preferences->theme = *selected;
+            persist_ui_preferences(preference_path, *preferences);
+            theme_monitor->set_theme_preference(*selected);
+        });
+    window->on_window_controls_selected(
+        [weak_window, preference_path, preferences, desktop = theme_paths.desktop](int index) {
+            const auto selected = window_controls_preference_at(index);
+            if (!selected) {
+                return;
+            }
+            preferences->window_controls = *selected;
+            persist_ui_preferences(preference_path, *preferences);
+            if (const auto window = weak_window.lock()) {
+                (*window)->set_window_frame_visible(
+                    su::app::window_controls_visible(*selected, desktop));
+            }
+        });
 
     std::vector<slint::SharedString> camera_names;
     std::vector<int> camera_indices;
@@ -252,19 +498,86 @@ int main(int argc, char** argv) {
     window->set_config_path_text(slint::SharedString(snapshot->config_path));
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profiles(profiles);
+    window->set_deployment_targets(deployment_targets);
     window->set_camera_options(std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(camera_names)));
     window->set_camera_text(slint::SharedString(camera_summary(*snapshot)));
     window->set_camera_count(static_cast<int>(snapshot->cameras.size()));
     window->set_seetaface_available(snapshot->seetaface_available);
-    window->set_control_socket_present(std::filesystem::exists("/run/smile2unlock/control.sock"));
+    apply_system_status(window, controller->load_system_status(), deployment_targets);
+    window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
     window->set_selected_camera(selected_camera);
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
     set_preview_idle(window, *catalog);
-    window->set_activity_title(slint::SharedString(catalog->translate(selected_language, "activity.not_checked")));
+    window->set_activity_title(slint::SharedString(catalog->translate(
+        selected_language,
+        preferences->desktop_auth_test_passed
+            ? "activity.auth_passed"
+            : "activity.not_checked")));
     window->set_settings_status(slint::SharedString(catalog->translate(selected_language, "settings.saved")));
+
+    window->on_refresh_system_status_requested([weak_window, controller, deployment_targets] {
+        std::thread([weak_window, controller, deployment_targets] {
+            const auto status = controller->load_system_status();
+            slint::invoke_from_event_loop([weak_window, deployment_targets, status] {
+                if (const auto window = weak_window.lock()) {
+                    apply_system_status(*window, status, deployment_targets);
+                }
+            });
+        }).detach();
+    });
+
+    window->on_initialize_system_deployment_requested(
+        [weak_window, controller, deployment_targets, catalog] {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.initialize_success",
+                [controller] { return controller->initialize_system_deployment(); });
+        });
+
+    window->on_install_deployment_helper_requested(
+        [weak_window, controller, deployment_targets, catalog] {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.install_helper_success",
+                [controller] { return controller->install_deployment_helper(); });
+        });
+
+    window->on_configure_desktop_target_requested(
+        [weak_window, controller, deployment_targets, catalog](
+            slint::SharedString target,
+            bool wallet_token) {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.configure_success",
+                [controller, target = std::string(target), wallet_token] {
+                    return controller->configure_desktop_target(target, wallet_token);
+                });
+        });
+
+    window->on_rollback_desktop_target_requested(
+        [weak_window, controller, deployment_targets, catalog](slint::SharedString target) {
+            start_deployment_operation(
+                weak_window,
+                controller,
+                deployment_targets,
+                catalog,
+                "deployment.rollback_success",
+                [controller, target = std::string(target)] {
+                    return controller->rollback_desktop_target(target);
+                });
+        });
 
     window->on_enroll_current_frame_requested(
         [weak_window, controller, preview, profiles, catalog](slint::SharedString requested_label) {
@@ -316,7 +629,14 @@ int main(int argc, char** argv) {
             }).detach();
         });
 
-    window->on_current_frame_auth_requested([weak_window, controller, preview, profiles, catalog] {
+    window->on_current_frame_auth_requested([
+        weak_window,
+        controller,
+        preview,
+        profiles,
+        catalog,
+        preference_path,
+        preferences] {
         if (auto window = weak_window.lock()) {
             preview->stop();
             set_preview_idle(*window, *catalog);
@@ -328,10 +648,22 @@ int main(int argc, char** argv) {
                 true);
         }
 
-        std::thread([weak_window, controller, profiles, catalog] {
+        std::thread([
+            weak_window,
+            controller,
+            profiles,
+            catalog,
+            preference_path,
+            preferences] {
             auto result = controller->authenticate_current_frame();
             slint::invoke_from_event_loop(
-                [weak_window, profiles, catalog, result = std::move(result)]() mutable {
+                [
+                    weak_window,
+                    profiles,
+                    catalog,
+                    preference_path,
+                    preferences,
+                    result = std::move(result)]() mutable {
                     const auto window = weak_window.lock();
                     if (!window) {
                         return;
@@ -346,6 +678,11 @@ int main(int argc, char** argv) {
                     }
 
                     update_profiles(profiles, result->profiles);
+                    if (result->decision.accepted) {
+                        (*window)->set_desktop_auth_passed(true);
+                        preferences->desktop_auth_test_passed = true;
+                        persist_ui_preferences(preference_path, *preferences);
+                    }
                     const auto detail = result->report.best_profile_label.empty()
                         ? translated_value(
                             *catalog,
@@ -435,44 +772,6 @@ int main(int argc, char** argv) {
             translated(*catalog, *window, "activity.refreshed"),
             translated(*catalog, *window, "activity.refreshed_detail"),
             "good");
-    });
-
-    window->on_migrate_profiles_requested([weak_window, controller, profiles, catalog] {
-        if (const auto window = weak_window.lock()) {
-            (*window)->set_busy(true);
-        }
-        std::thread([weak_window, controller, profiles, catalog] {
-            const auto migrated = controller->migrate_legacy_profiles();
-            auto rows = migrated
-                ? controller->list_face_profile_rows()
-                : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
-                    std::unexpected(migrated.error())};
-            slint::invoke_from_event_loop(
-                [weak_window, profiles, catalog, migrated, rows = std::move(rows)]() mutable {
-                    const auto window = weak_window.lock();
-                    if (!window) {
-                        return;
-                    }
-                    (*window)->set_busy(false);
-                    if (!migrated || !rows) {
-                        set_activity(
-                            *window,
-                            translated(*catalog, *window, "activity.migration_failed"),
-                            migrated ? rows.error() : migrated.error(),
-                            "bad");
-                        return;
-                    }
-                    update_profiles(profiles, *rows);
-                    set_activity(
-                        *window,
-                        translated(
-                            *catalog,
-                            *window,
-                            *migrated ? "activity.migration_done" : "activity.migration_none"),
-                        translated(*catalog, *window, "activity.refreshed_detail"),
-                        *migrated ? "good" : "neutral");
-                });
-        }).detach();
     });
 
     window->on_save_settings_requested(

@@ -160,9 +160,10 @@ therefore continues to DMS password authentication.
 Keep DMS's `loginctlLockIntegration` enabled (its default). The desktop app
 listens to the current logind session's standard `Lock` signal, stops preview or
 an in-progress capture, and releases V4L2 before lock-screen authentication.
-The daemon also retries camera acquisition for up to 1.2 seconds within its
-six-second authentication budget. Preview remains stopped after unlock until
-the user explicitly starts it again.
+The daemon also retries camera acquisition for up to 1.2 seconds. Authentication
+uses a six-second budget normally and a twelve-second budget when liveness
+detection is enabled. Preview remains stopped after unlock until the user
+explicitly starts it again.
 
 Before removing the PAM service, reset DMS to its automatically resolved stack
 as the desktop user, then remove the file as root:
@@ -178,30 +179,31 @@ password fallback while `su-authd.service` is stopped.
 
 ## User data
 
-At boot, the service resolves the PAM username through NSS and reads:
+At boot, the service resolves the PAM username through NSS and uses:
 
 ```text
 ~/.config/smile2unlock/config.toml
-~/.local/share/smile2unlock/profiles.json
+/var/lib/smile2unlock/users/<uid>/profiles.s2u
 ```
 
-Both files must be regular files owned by that user and must not be group- or
-world-writable. The profile store must already exist from enrollment in `su_app`.
-The daemon resolves the username through NSS for every request, so a rename or
-home migration follows the current NSS record; the old name fails as unknown.
-An NSS backend error or an empty/non-absolute home is reported as unavailable.
-Deleted users are not retained in a daemon-side identity cache.
+The config remains a user-owned regular file and must not be group- or
+world-writable. The profile store is a root-owned, per-UID XChaCha20-Poly1305
+envelope created only through the daemon control protocol; the GUI never reads
+the master key or encrypted file directly. The daemon resolves the username
+through NSS for every request. An NSS backend error or an empty/non-absolute
+home is reported as unavailable, and deleted users are not retained in a
+daemon-side identity cache.
 
-On Linux, the daemon opens the NSS home and fixed relative data paths with
-`openat2`, pins the regular files by descriptor, and gives Rust only the pinned
-`/proc/self/fd` path. Service environments that filter `openat2` use a
-descriptor-relative `openat(O_NOFOLLOW)` traversal instead. Config files larger
-than 1 MiB and profile stores larger than 16 MiB are rejected.
+On Linux, the daemon opens the NSS home and config path with `openat2`, pins the
+regular file by descriptor, and gives Rust only the pinned `/proc/self/fd` path.
+Service environments that filter `openat2` use a descriptor-relative
+`openat(O_NOFOLLOW)` traversal instead. Config files larger than 1 MiB and
+encrypted profile stores larger than 16 MiB are rejected.
 
 Homes that remain encrypted and unavailable until after password authentication
-cannot supply their face profile during initial login. Supporting that setup
-requires moving encrypted profile data and key management into a system-owned
-store; the service fails closed when the home data is unavailable.
+cannot supply the per-user recognition policy during initial login. Face
+profiles no longer depend on the home because they are system-owned, but the
+service still fails closed while the required user config is unavailable.
 
 Authentication starts are limited to one per uid per second. The limit is
 memory-only and returns PAM unavailable so the existing password stack can run;

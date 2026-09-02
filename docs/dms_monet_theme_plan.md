@@ -6,7 +6,13 @@
 
 实现时优先复用 DMS 已经生成的完整 Material 3 色板，不重复从壁纸推导颜色；只有 DMS 色板不可用时，才通过当前壁纸和 `matugen` 生成临时色板。所有主题输入最终转换为 Smile2Unlock 自己的语义化主题模型，再由 C++ 在 Slint 事件循环中更新 UI。
 
-本文只描述实现方案，不包含主题功能的代码改动。
+本文最初用于描述实现方案；当前实现状态记录如下。
+
+## Implementation Status
+
+Phase 1 至 Phase 5 已完成：Slint 使用应用自身的语义主题角色，Linux 端会优先加载 DMS Material 3 色板，支持 DMS 会话模式、目录级实时刷新，以及通过受控参数调用 Matugen 的壁纸取色回退。成功、提醒和错误状态分别使用 Material 3 的 tertiary、secondary 和 error 容器角色，并进行前景对比度校正；不再在动态主题中固定使用绿色或黄色。所有外部来源不可用时使用内置主题。
+
+设置页现已提供 `跟随系统 / 浅色 / 深色` 和 `自动 / 显示 / 隐藏` 原生窗口按键偏好。自动模式在 Niri、Sway、Hyprland、i3、dwm 等独立窗口管理器下隐藏窗口装饰，在 GNOME、KDE Plasma 等完整桌面环境和未知环境下保留原生最小化、最大化、关闭按键。当前实现不会修改 DMS 或桌面配置。
 
 ## Goals
 
@@ -48,7 +54,7 @@ DMS 内部也通过 `/usr/share/quickshell/dms/Common/Theme.qml` 消费 `dms-col
 
 1. 读取 DMS 的 `dms-colors.json`，并根据 DMS 当前模式选择 dark 或 light 色板。
 2. DMS 色板不可用时，通过 DMS IPC 获取当前壁纸，使用 `matugen --dry-run` 生成内存中的临时色板。
-3. DMS IPC 不可用时，尝试桌面通用来源获取壁纸和深浅模式；只有获得可靠壁纸路径后才运行 `matugen`。
+3. DMS IPC 不可用时，尝试桌面通用来源获取壁纸和深浅模式；GNOME 通过 `gsettings` 的 `picture-uri` / `picture-uri-dark` 获取本地壁纸，只有获得可靠路径后才运行 `matugen`。
 4. 任一外部步骤失败时，使用 Smile2Unlock 内置的深色或浅色主题。
 
 外部主题加载失败不得阻止应用启动，也不得覆盖或改写 DMS 缓存。
@@ -123,7 +129,7 @@ JSON 解析应使用项目已有的结构化解析能力；如果现有依赖不
 | `danger` | `error` | 失败和危险操作 |
 | `danger_container` | `error_container` | 错误提示背景 |
 
-成功、警告和识别失败状态不能简单映射到 `primary`。第一阶段保留经过对比度验证的语义色，并根据当前 surface 调整前景 / 容器色；后续只有在 Material 3 扩展色板提供稳定角色时才切换到动态扩展色。
+成功、警告和识别失败状态不能全部简单映射到 `primary`。当前实现使用 Material 3 的 `tertiary_container` / `on_tertiary_container` 表示成功，使用 `secondary_container` / `on_secondary_container` 表示提醒，并继续使用 `error_container` 表示失败；每组前景色都会进行对比度校正。色板缺少扩展角色时，分别回退到同一色板的 `primary_container` 和高层级 surface，不再回退到固定的绿色或黄色。
 
 ### Slint Theme Global
 
@@ -133,15 +139,24 @@ C++ 负责把完整 `AppTheme` 一次性投递到 Slint 事件循环。更新过
 
 ## Dark And Light Mode
 
-模式选择优先级：
+选择 `跟随系统` 时，模式来源优先级：
 
 1. DMS IPC 的 `theme getMode`。
 2. DMS `session.json` 中的当前模式。
 3. XDG portal `org.freedesktop.appearance color-scheme`。
-4. Smile2Unlock 配置中的显式选择。
-5. 内置默认模式。
+4. 内置默认模式。
 
-未来设置页可提供 `跟随系统 / 浅色 / 深色` 三种模式。第一阶段默认使用 `跟随系统`；显式浅色或深色只改变从色板中选择的 scheme，不修改 DMS 或桌面设置。
+设置页提供 `跟随系统 / 浅色 / 深色` 三种模式，默认使用 `跟随系统`。显式浅色或深色优先于上述系统来源，只改变从色板中选择的 scheme，不修改 DMS 或桌面设置。
+
+## Native Window Controls
+
+窗口按键使用 Slint 的原生窗口装饰，不在应用内容区自绘最小化、最大化和关闭按钮。设置页提供以下模式：
+
+- `自动`：根据桌面会话环境判断。独立窗口管理器默认无边框，完整桌面环境及未知环境默认保留原生装饰。
+- `显示`：强制请求系统原生窗口装饰。
+- `隐藏`：强制使用无边框窗口。
+
+该偏好与主题模式、语言一起保存在用户级 `~/.config/smile2unlock/ui.json`（遵循 `XDG_CONFIG_HOME`），不会生成或修改 Niri、dwm 或其他窗口管理器配置。
 
 ## Live Refresh
 
@@ -170,7 +185,7 @@ C++ 负责把完整 `AppTheme` 一次性投递到 Slint 事件循环。更新过
 - DMS IPC 超时：快速失败并进入回退路径，不能阻塞 UI 启动。
 - 壁纸路径不可读：跳过 Matugen，使用内置主题。
 - `matugen` 未安装或退出失败：使用内置主题。
-- 动态颜色对比度不足：替换问题角色为内置语义色，而不是拒绝所有动态颜色。
+- 动态颜色对比度不足：为问题角色选择高对比度前景色，而不是拒绝整张动态色板。
 - 运行中外部来源消失：保留当前主题；只有用户模式变化或下一次有效主题出现时再更新。
 
 日志中只记录来源类型、失败阶段和必要的文件路径，不输出无关环境变量或完整外部命令行。
@@ -206,9 +221,10 @@ C++ 负责把完整 `AppTheme` 一次性投递到 Slint 事件循环。更新过
 
 ### Phase 5: Settings And Additional Desktops
 
-- 在设置页加入 `跟随系统 / 浅色 / 深色`。
-- 评估 KDE、GNOME 等环境的稳定壁纸接口。
-- 根据实际需求扩展主题来源，不改变上层 `AppTheme` 合约。
+- [x] 在设置页加入 `跟随系统 / 浅色 / 深色`，支持运行时切换和持久化。
+- [x] 加入 `自动 / 显示 / 隐藏` 原生窗口按键设置；独立窗口管理器自动隐藏，其他环境默认显示。
+- [x] 使用 GNOME 稳定的 `gsettings` 壁纸键作为非 DMS 回退来源。
+- [x] 保持上层 `AppTheme` 合约不变；KDE 暂不解析 Plasma 私有配置，因为目前没有找到稳定的只读壁纸接口。
 
 ## Tests
 
@@ -219,6 +235,8 @@ C++ 负责把完整 `AppTheme` 一次性投递到 Slint 事件循环。更新过
 - 验证 Material 3 role 到 `AppTheme` 的映射。
 - 验证来源优先级和每一级失败后的回退。
 - 验证显式模式覆盖和系统模式选择。
+- 验证窗口按键自动判断及显式显示 / 隐藏覆盖。
+- 验证旧版语言偏好文件可兼容升级，保存任一设置不会覆盖其他字段。
 - 验证相同主题不会触发重复 UI 更新。
 - 验证低对比度颜色会使用安全语义色回退。
 
@@ -245,6 +263,7 @@ C++ 负责把完整 `AppTheme` 一次性投递到 Slint 事件循环。更新过
 - UI 层不存在对 DMS 文件格式、IPC 命令或 Matugen 输出的直接依赖。
 - 动态色板不会降低认证结果和危险操作的语义辨识度。
 - 自动测试不依赖当前用户的真实 DMS 配置。
+- 独立窗口管理器默认无原生装饰，其他桌面环境默认保留原生窗口按键，且用户可以显式覆盖。
 
 ## Suggested Commit Breakdown
 

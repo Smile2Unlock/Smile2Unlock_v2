@@ -9,7 +9,7 @@
 ## 当前状态
 
 - 现有 C++ Provider 和 Windows LocalSystem 认证服务仍是当前可构建路径。
-- 加密 profile / Windows password envelope、TPM CNG provider、machine DPAPI fallback 的设计见 `docs/credential_storage_encryption_plan.md`。
+- Rust 加密 envelope、Windows password store、TPM CNG provider、machine DPAPI fallback 和 LocalSystem 服务已经按 `docs/credential_storage_encryption_plan.md` 实现；Windows face profile 的 service-owned 存储仍待完成。
 - `po0uyan/memsafe` `v1.0.2` 的 Linux 测试已通过，但尚未完成 Windows 原生验证，也没有第三方安全审计。
 - 本计划阶段只写文档，不替换当前 DLL、不修改注册表、不删除旧目录。
 

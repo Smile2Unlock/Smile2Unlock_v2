@@ -27,6 +27,42 @@ struct FaceDemoSnapshot {
     FaceAuthReport report;
 };
 
+enum class StorageProtection {
+    kUnavailable,
+    kHostKey,
+    kHostTpm2,
+    kUnknown,
+};
+
+struct DeploymentTargetStatus {
+    std::string id;
+    std::string service;
+    std::string effective_path;
+    std::string role;
+    std::string state;
+    std::string detail;
+    bool password_fallback = false;
+    bool configured = false;
+    bool configurable = false;
+    bool managed = false;
+    bool wallet_available = false;
+    bool wallet_enabled = false;
+};
+
+struct SystemStatus {
+    bool service_available = false;
+    std::string service_reason;
+    StorageProtection storage_protection = StorageProtection::kUnavailable;
+    bool pam_status_known = false;
+    bool pam_configured = false;
+    std::string pam_service;
+    bool deployment_helper_available = false;
+    bool deployment_installer_available = false;
+    bool login_pam_configured = false;
+    bool lock_pam_configured = false;
+    std::vector<DeploymentTargetStatus> deployment_targets;
+};
+
 class AppController {
 public:
     std::expected<AppSnapshot, std::string> load_initial_snapshot();
@@ -51,7 +87,14 @@ public:
     std::expected<std::string, std::string> list_face_profiles();
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
-    std::expected<bool, std::string> migrate_legacy_profiles();
+    SystemStatus load_system_status();
+    std::expected<std::string, std::string> install_deployment_helper();
+    std::expected<std::string, std::string> initialize_system_deployment();
+    std::expected<std::string, std::string> configure_desktop_target(
+        std::string_view target,
+        bool wallet_token);
+    std::expected<std::string, std::string> rollback_desktop_target(
+        std::string_view target);
     void cancel_camera_operation();
 
     su::recognizer::RecognizerService& recognizer() { return recognizer_; }

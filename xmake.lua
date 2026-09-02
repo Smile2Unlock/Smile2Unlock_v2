@@ -175,10 +175,11 @@ target("su_recognizer")
         add_defines("SU_HAS_SEETAFACE=0", { public = true })
     end
 
-target("su_app")
+    target("su_app")
     apply_cpp_target("binary")
     add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
     add_includedirs("src/core-rs/include", {public = true})
+    add_packages("nlohmann_json")
     add_deps("su_core", "su_recognizer")
     if has_config("with_zig") then
         add_deps("su_platform_zig")
@@ -192,15 +193,19 @@ target("su_app")
     add_files("src/modules/su.app.user.cppm")
     if is_plat("linux") then
         add_files("src/modules/su.control.socket.cppm")
+        add_files("src/platform/linux/deploy_client/*.cpp")
+        add_deps("su_deploy")
     end
     if has_config("with_slint") then
         add_defines("SU_HAS_SLINT=1")
-        add_packages("slint", "nlohmann_json")
+        add_packages("slint")
         add_files("src/app/slint_main.cpp")
         add_files("src/app/preview_controller.cpp")
         add_files("src/modules/su.app.preview.cppm")
         add_files("src/modules/su.app.session.cppm")
         add_files("src/modules/su.app.i18n.cppm")
+        add_files("src/modules/su.app.preferences.cppm")
+        add_files("src/modules/su.app.theme.cppm")
         if is_plat("linux") then
             add_syslinks("systemd")
         end
@@ -244,6 +249,19 @@ target("su_app")
     add_links("su_core")
 
 if is_plat("linux") then
+    target("su_deploy")
+        apply_cpp_target("static")
+        add_files("src/platform/linux/deploy/*.cpp")
+        add_headerfiles("src/platform/linux/deploy/*.h")
+        add_packages("nlohmann_json", { public = true })
+
+    target("su_deploy_helper")
+        apply_cpp_target("binary")
+        add_files("src/platform/linux/deploy_helper/*.cpp")
+        add_deps("su_deploy")
+        add_syslinks("systemd")
+        add_tests("version", {runargs = {"--version"}})
+
     target("pam_smile2unlock")
         apply_cpp_target("shared")
         set_filename("pam_smile2unlock.so")
@@ -280,6 +298,12 @@ if is_plat("linux") then
         apply_cpp_target("binary")
         add_files("tests/session/*.cpp", "src/modules/su.app.session.cppm")
         add_syslinks("systemd")
+        add_tests("default")
+
+    target("su_deploy_test")
+        apply_cpp_target("binary")
+        add_files("tests/deploy/*.cpp")
+        add_deps("su_deploy")
         add_tests("default")
 
     target("su_multi_user_auth_test")
@@ -343,6 +367,15 @@ target("su_face_auth_smoke_test")
     add_includedirs("src/core-rs/include")
     add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
+    add_tests("default")
+
+target("su_theme_test")
+    apply_cpp_target("binary")
+    add_files(
+        "tests/theme/*.cpp",
+        "src/modules/su.app.preferences.cppm",
+        "src/modules/su.app.theme.cppm")
+    add_packages("nlohmann_json")
     add_tests("default")
 
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.

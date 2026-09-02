@@ -20,9 +20,10 @@ Create the portable archive:
 packaging/linux/package.sh --format tar.gz
 ```
 
-The archive contains `su_app`, `su_authd`, the PAM module, bundled Slint and
-SeetaFace libraries, models, language packs, the systemd unit, desktop entry,
-icon, DMS lock-screen PAM template and installer, and license files.
+The archive contains `su_app`, `su_authd`, the restricted deployment helper,
+the PAM module, bundled Slint and SeetaFace libraries, models, language packs,
+systemd, D-Bus and Polkit integration, the desktop entry, DMS PAM resources,
+and license files.
 
 ## Native packages
 
@@ -40,15 +41,21 @@ packaging/linux/package.sh --format deb
 packaging/linux/package.sh --format rpm
 ```
 
-The package layout is the same for every format. fpm dependencies default to
-`pam`; set `PACKAGE_DEPENDS` to the names used by the target distribution when
-packaging the system libraries required by Slint, libyuv, libjpeg, OpenMP and
-libsystemd:
+The package layout is the same for every format. DEB dependencies default to
+`libc6,libstdc++6,libpam0g,libyuv0,libjpeg62-turbo,libgomp1,libsystemd0,dbus,polkitd`;
+RPM dependencies default to
+`glibc,libstdc++,pam,libyuv,libjpeg-turbo,libgomp,systemd-libs,dbus,polkit`. Override
+`PACKAGE_DEPENDS` when a target distribution uses different package names:
 
 ```bash
-PACKAGE_DEPENDS='libpam0g,libyuv0,libjpeg8,libgomp1,libsystemd0' \
+PACKAGE_DEPENDS='libc6,libstdc++6,libpam0g,libyuv0,libjpeg8,libgomp1,libsystemd0' \
   packaging/linux/package.sh --format deb
 ```
+
+Build each native package on the oldest release in its supported distribution
+family. The packaged executables still use the build environment's glibc ABI;
+an Arch-built binary is not expected to run on an older Debian or Fedora
+release merely because it was wrapped in a DEB or RPM.
 
 If the target distribution uses a multiarch PAM directory, override it while
 building the package:
@@ -59,8 +66,19 @@ PAM_MODULE_DIR=/lib/x86_64-linux-gnu/security \
 ```
 
 The package never enables `su-authd.service` and never edits `/etc/pam.d`.
-Install the package first, initialize the machine storage key, then start the
-service:
+Install the package, open `su_app`, then use the Desktop Integration section to
+initialize storage and configure a detected login or lock-screen target. The
+GUI requests administrator authorization through the restricted deployment
+helper and shows password fallback before applying a PAM change.
+
+When running `su_app` directly from a complete Release build, the same section
+can bootstrap missing system components through `pkexec`. The GUI accepts only
+the installer and artifacts found beside that build, requests administrator
+authorization, reloads systemd and D-Bus, and verifies the helper response
+before enabling integration actions. An installed application with missing
+package files instead asks the user to repair the native package.
+
+For headless recovery, storage initialization remains available directly:
 
 ```bash
 sudo /usr/libexec/smile2unlock/setup-storage-key
@@ -69,13 +87,14 @@ sudo systemctl enable --now su-authd.service
 
 The setup command preserves an existing key. It selects TPM2-bound protection
 when TPM2 is available and the systemd host-key fallback otherwise; it never
-falls back to plaintext. Then follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
-to enable and validate the desired PAM entry point.
+falls back to plaintext. Follow [linux_pam_setup.md](../../docs/linux_pam_setup.md)
+for manual diagnostics or recovery.
 
 ## DMS lock screen
 
-After installing the package and starting `su-authd.service`, install the
-dedicated PAM service as root:
+The GUI detects the DMS command-line API and configures both the root-owned PAM
+service and the current user's `lockPamPath`. The following commands are kept
+for headless recovery:
 
 ```bash
 sudo /usr/libexec/smile2unlock/install-dms-lock
@@ -102,3 +121,19 @@ are configurable.
 
 The script patches application RPATHs to package-relative locations and fails
 if a binary still references the build user's Xmake cache.
+
+## Verify packages
+
+Verify generated native packages on the matching distribution family:
+
+```bash
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3.deb
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3.rpm
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.1.3-x86_64.tar.gz
+```
+
+DEB verification requires `dpkg-deb` and `patchelf`. RPM verification requires
+`rpm`, `rpm2cpio`, `cpio`, and `patchelf`. The verifier checks package metadata,
+root ownership, required files, executable and configuration modes, relative
+RPATHs, and the absence of maintainer scripts. It extracts only under
+`build/packages/.verify`.

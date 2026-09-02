@@ -3,9 +3,26 @@ set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 build_dir="${1:-${project_dir}/build/linux/x86_64/release}"
-pam_module_dir="${PAM_MODULE_DIR:-/usr/lib/security}"
+pam_module_dir="${PAM_MODULE_DIR:-}"
 systemd_unit_dir="${SYSTEMD_UNIT_DIR:-/usr/lib/systemd/system}"
+dbus_service_dir="${DBUS_SERVICE_DIR:-/usr/share/dbus-1/system-services}"
+dbus_policy_dir="${DBUS_POLICY_DIR:-/usr/share/dbus-1/system.d}"
+polkit_action_dir="${POLKIT_ACTION_DIR:-/usr/share/polkit-1/actions}"
 destination_root="${DESTDIR:-}"
+
+if [[ -z "${pam_module_dir}" ]]; then
+    for candidate in \
+        /usr/lib/security \
+        /usr/lib64/security \
+        /lib/x86_64-linux-gnu/security \
+        /usr/lib/x86_64-linux-gnu/security; do
+        if [[ -f "${candidate}/pam_unix.so" ]]; then
+            pam_module_dir="${candidate}"
+            break
+        fi
+    done
+    pam_module_dir="${pam_module_dir:-/usr/lib/security}"
+fi
 
 if [[ -z "${destination_root}" && "${EUID}" -ne 0 ]]; then
     echo "install-linux-auth.sh must run as root" >&2
@@ -17,7 +34,10 @@ destination() {
     printf '%s%s' "${destination_root}" "$1"
 }
 
-for file in "${build_dir}/su_authd" "${build_dir}/pam_smile2unlock.so"; do
+for file in \
+    "${build_dir}/su_authd" \
+    "${build_dir}/su_deploy_helper" \
+    "${build_dir}/pam_smile2unlock.so"; do
     if [[ ! -f "${file}" ]]; then
         echo "missing build artifact: ${file}" >&2
         exit 1
@@ -27,6 +47,8 @@ done
 install -d -m 0755 "$(destination /usr/libexec/smile2unlock)"
 install -m 0755 "${build_dir}/su_authd" \
     "$(destination /usr/libexec/smile2unlock/su_authd)"
+install -m 0755 "${build_dir}/su_deploy_helper" \
+    "$(destination /usr/libexec/smile2unlock/su_deploy_helper)"
 install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" \
     "$(destination /usr/libexec/smile2unlock/install-dms-lock)"
 install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" \
@@ -82,13 +104,27 @@ install -m 0755 "${seeta_libraries[@]}" \
 install -d -m 0755 "$(destination "${systemd_unit_dir}")"
 install -m 0644 "${project_dir}/packaging/systemd/su-authd.service" \
     "$(destination "${systemd_unit_dir}/su-authd.service")"
+install -m 0644 "${project_dir}/packaging/systemd/su-deploy-helper.service" \
+    "$(destination "${systemd_unit_dir}/su-deploy-helper.service")"
+
+install -d -m 0755 "$(destination "${dbus_service_dir}")"
+install -m 0644 "${project_dir}/packaging/dbus/io.github.smile2unlock.Deployment1.service" \
+    "$(destination "${dbus_service_dir}/io.github.smile2unlock.Deployment1.service")"
+install -d -m 0755 "$(destination "${dbus_policy_dir}")"
+install -m 0644 "${project_dir}/packaging/dbus/io.github.smile2unlock.Deployment1.conf" \
+    "$(destination "${dbus_policy_dir}/io.github.smile2unlock.Deployment1.conf")"
+install -d -m 0755 "$(destination "${polkit_action_dir}")"
+install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployment.policy" \
+    "$(destination "${polkit_action_dir}/io.github.smile2unlock.deployment.policy")"
 
 if [[ -z "${destination_root}" ]]; then
-    "${project_dir}/packaging/setup-storage-key.sh"
     systemctl daemon-reload
-    systemctl enable su-authd.service
-    systemctl restart su-authd.service
-    echo "su-authd installed and started. Add pam_smile2unlock.so to the desired PAM stack."
+    busctl --system call \
+        org.freedesktop.DBus \
+        /org/freedesktop/DBus \
+        org.freedesktop.DBus \
+        ReloadConfig >/dev/null
+    echo "Smile2Unlock system components installed. Open the GUI to initialize and configure authentication."
 else
     echo "su-authd staged under ${destination_root}."
 fi

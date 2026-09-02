@@ -1,0 +1,265 @@
+import { Switch } from "std-widgets.slint";
+import { UiTheme } from "theme.slint";
+import {
+    CenteredActionButton, InlineStatus, SectionTitle,
+} from "components.slint";
+
+export struct DeploymentTargetRow {
+    id: string,
+    service: string,
+    effective_path: string,
+    role: string,
+    state: string,
+    password_fallback: bool,
+    configured: bool,
+    configurable: bool,
+    managed: bool,
+    wallet_available: bool,
+    wallet_enabled: bool,
+}
+
+export component DeploymentPanel inherits Rectangle {
+    in property <[DeploymentTargetRow]> targets;
+    in property <bool> helper_available: false;
+    in property <bool> installer_available: false;
+    in property <bool> runtime_ready: false;
+    in property <bool> busy: false;
+    in property <int> language_index: 0;
+    in property <string> operation_status: "";
+
+    callback initialize_requested();
+    callback install_helper_requested();
+    callback configure_requested(string, bool);
+    callback rollback_requested(string);
+    pure callback translate(string, int) -> string;
+
+    private property <string> pending_target: "";
+    private property <string> pending_action: "";
+
+    height: root.targets.length == 0 ? 150px : 84px + root.targets.length * 122px;
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 10px;
+
+        HorizontalLayout {
+            height: 56px;
+            spacing: 20px;
+            SectionTitle {
+                horizontal-stretch: 1;
+                title: root.translate("deployment.title", root.language_index);
+                detail: root.helper_available
+                    ? root.translate("deployment.helper_ready", root.language_index)
+                    : root.installer_available
+                        ? root.translate("deployment.helper_installable", root.language_index)
+                        : root.translate("deployment.helper_missing", root.language_index);
+            }
+            if root.runtime_ready: InlineStatus {
+                width: 112px;
+                label: root.translate("status.ready", root.language_index);
+                tone: "accent";
+            }
+            if !root.runtime_ready && !root.helper_available && !root.installer_available: InlineStatus {
+                width: 148px;
+                label: root.translate("deployment.helper_required", root.language_index);
+                tone: "warn";
+            }
+            if !root.helper_available && root.installer_available: CenteredActionButton {
+                width: 168px;
+                label: root.translate("deployment.install_helper", root.language_index);
+                primary: true;
+                enabled: !root.busy;
+                activated => { root.install_helper_requested(); }
+            }
+            if !root.runtime_ready && root.helper_available: CenteredActionButton {
+                width: 156px;
+                label: root.translate("deployment.initialize", root.language_index);
+                primary: true;
+                enabled: !root.busy;
+                activated => { root.initialize_requested(); }
+            }
+        }
+
+        if root.targets.length == 0: Rectangle {
+            height: 56px;
+            background: UiTheme.surface-subtle;
+            border-width: 1px;
+            border-color: UiTheme.border;
+            border-radius: 4px;
+            Text {
+                x: 14px;
+                width: parent.width - 28px;
+                height: parent.height;
+                text: root.translate("deployment.no_targets", root.language_index);
+                color: UiTheme.text-secondary;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        for target in root.targets: Rectangle {
+            height: 112px;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.pending_target == target.id ? UiTheme.primary : UiTheme.border;
+            background: root.pending_target == target.id ? UiTheme.surface-selected : UiTheme.surface;
+            property <bool> wallet_selected: target.wallet_enabled;
+
+            HorizontalLayout {
+                padding: 16px;
+                spacing: 24px;
+
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 7px;
+
+                    HorizontalLayout {
+                        height: 24px;
+                        spacing: 12px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: target.service;
+                            color: UiTheme.text-primary;
+                            font-size: 14px;
+                            font-weight: 700;
+                            overflow: elide;
+                        }
+                        Text {
+                            width: 142px;
+                            text: target.role == "login"
+                                ? root.translate("deployment.role_login", root.language_index)
+                                : target.role == "lock"
+                                    ? root.translate("deployment.role_lock", root.language_index)
+                                    : root.translate("deployment.role_both", root.language_index);
+                            color: UiTheme.text-tertiary;
+                            font-size: 11px;
+                            horizontal-alignment: right;
+                            overflow: elide;
+                        }
+                    }
+
+                    Text {
+                        height: 20px;
+                        text: target.effective_path;
+                        color: UiTheme.text-secondary;
+                        font-size: 12px;
+                        overflow: elide;
+                    }
+
+                    InlineStatus {
+                        height: 22px;
+                        label: target.password_fallback
+                            ? root.translate("deployment.password_fallback_ready", root.language_index)
+                            : root.translate("deployment.password_fallback_unknown", root.language_index);
+                        tone: target.password_fallback ? "good" : "warn";
+                    }
+                }
+
+                VerticalLayout {
+                    width: 300px;
+                    spacing: 8px;
+
+                    HorizontalLayout {
+                        height: 40px;
+                        spacing: 16px;
+                        InlineStatus {
+                            horizontal-stretch: 1;
+                            label: target.state == "supported"
+                                ? root.translate("deployment.state_supported", root.language_index)
+                                : target.state == "managed"
+                                    ? root.translate("deployment.state_managed", root.language_index)
+                                    : target.state == "external"
+                                        ? root.translate("deployment.state_external", root.language_index)
+                                        : target.state == "conflict"
+                                            ? root.translate("deployment.state_conflict", root.language_index)
+                                            : root.translate("deployment.state_unsupported", root.language_index);
+                            tone: target.managed ? "accent"
+                                : target.state == "conflict" ? "bad"
+                                : target.configurable || target.state == "external" ? "neutral"
+                                : "warn";
+                        }
+
+                        if root.helper_available && (target.managed || target.configurable): CenteredActionButton {
+                            width: 128px;
+                            label: root.pending_target == target.id
+                                ? target.managed
+                                    ? root.translate("deployment.confirm_rollback", root.language_index)
+                                    : root.translate("deployment.apply", root.language_index)
+                                : target.managed
+                                    ? root.translate("deployment.review_rollback", root.language_index)
+                                    : root.translate("deployment.review", root.language_index);
+                            primary: root.pending_target == target.id && !target.managed;
+                            danger: target.managed;
+                            enabled: root.helper_available && !root.busy
+                                && (target.managed || target.configurable);
+                            activated => {
+                                if (root.pending_target != target.id) {
+                                    root.pending_target = target.id;
+                                    root.pending_action = target.managed ? "rollback" : "configure";
+                                } else {
+                                    root.pending_target = "";
+                                    root.pending_action = "";
+                                    if (target.managed) {
+                                        root.rollback_requested(target.id);
+                                    } else {
+                                        root.configure_requested(target.id, wallet_selected);
+                                    }
+                                }
+                            }
+                        }
+                        if !root.helper_available && (target.managed || target.configurable): Text {
+                            width: 128px;
+                            text: root.translate("deployment.helper_required", root.language_index);
+                            color: UiTheme.warning-text;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        if !target.managed && !target.configurable: Text {
+                            width: 128px;
+                            text: target.state == "external"
+                                ? root.translate("deployment.external_read_only", root.language_index)
+                                : root.translate("deployment.not_available", root.language_index);
+                            color: UiTheme.text-tertiary;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if target.wallet_available: Switch {
+                        height: 28px;
+                        text: root.translate("deployment.wallet", root.language_index);
+                        checked <=> wallet_selected;
+                        enabled: target.wallet_available && !target.managed && !root.busy;
+                    }
+                    if !target.wallet_available: Text {
+                        height: 28px;
+                        text: target.wallet_enabled
+                            ? root.translate("status.configured", root.language_index)
+                            : root.translate("deployment.wallet_unavailable", root.language_index);
+                        color: UiTheme.text-tertiary;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+
+        Text {
+            height: 18px;
+            text: root.pending_target != ""
+                ? root.pending_action == "rollback"
+                    ? root.translate("deployment.review_rollback_detail", root.language_index)
+                    : root.translate("deployment.review_detail", root.language_index)
+                : root.operation_status;
+            color: UiTheme.text-secondary;
+            font-size: 11px;
+            overflow: elide;
+        }
+    }
+}

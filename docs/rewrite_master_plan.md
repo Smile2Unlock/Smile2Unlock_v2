@@ -4,11 +4,11 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-07-20)
+## Current Status (2026-07-26)
 
-Phase 0, 1, 2 — **全部完成**。Phase 3 — **实现完成、部署验证待完成**（Rust control protocol、root `su_authd`、Unix control socket、PAM client、systemd unit 均已实现并通过构建/自动测试；尚未修改本机 PAM 栈并重启验证真实开机登录）。Phase 4, 5 — 未开始。
+Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 加密密码存储和 LocalSystem 认证服务已实现，Rust Credential Provider 重写尚未开始**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
 
-已构建 14 个 xmake target，全部通过 `xmake build` + `xmake test`（Rust 33 个单元测试 + 7 个 C++ 集成/smoke test 均通过，共 8 个 Xmake test case）。
+当前 Linux 配置包含 19 个 Xmake target；`xmake build` 和 12 个 Xmake test case 已通过，其中 Rust core 包含 42 个单元测试。Linux GUI 已支持 DMS / Matugen Monet 配色、外部语言包、system-owned 加密档案、桌面 PAM 目标管理，以及在 helper 缺失时通过 `pkexec` 直接安装源码树内完整 Release 构建的系统组件。
 
 重写后的第一阶段目标：
 
@@ -63,8 +63,9 @@ Linux PAM
   -> C++ recognizer adapter
 
 Windows Credential Provider
-  -> control socket
-  -> su_app Windows runtime
+  -> named pipe
+  -> LocalSystem auth service
+  -> Rust su_core + recognizer adapter
 ```
 
 架构图：
@@ -96,9 +97,12 @@ flowchart TB
     end
 
     subgraph Windows["Windows"]
-        CP["SampleV2CredentialProvider<br/>C++ COM adapter"]
-        CPSock["127.0.0.1:43100"]
-        CP --> CPSock --> Controller
+        CP["Credential Provider<br/>current C++ / planned Rust COM adapter"]
+        CPPipe["authenticated named pipe"]
+        WinService["LocalSystem auth service"]
+        CP --> CPPipe --> WinService
+        WinService --> Core
+        WinService --> Rec
     end
 ```
 
@@ -112,7 +116,7 @@ C++ 是 integration language，负责：
 - Slint C++ 宿主和 UI 回调桥接。
 - SeetaFace、libyuv、摄像头 API 的集成。
 - PAM thin module。
-- Windows Credential Provider / COM / Win32 适配。
+- 迁移完成前的 Windows C++ Credential Provider / COM / Win32 兼容实现。
 - 与 Rust、Zig、汇编之间的 C ABI 或 cxxbridge 边界。
 
 C++ 标准：
@@ -659,18 +663,21 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
-### Phase 4: Windows compatibility ❌ 未开始
+### Phase 4: Windows compatibility ⚠️ 基础设施完成，Rust Provider 待实现
 
-- ❌ Credential Provider thin adapter
-- ❌ control socket Windows 路径
-- ❌ 保持 core 与平台隔离
-- ❌ Windows password encrypted store、TPM CNG provider、machine DPAPI fallback 和 stale-password 更新流程
+- ✅ Windows password XChaCha20-Poly1305 envelope 和 stale-password 状态
+- ✅ CNG TPM wrapping、machine DPAPI fallback、SYSTEM-only ACL 和 LocalSystem 服务
+- ✅ 认证命名管道和现有 C++ Credential Provider 的 LOGON / UNLOCK 序列化
+- ✅ MinGW 交叉构建和 Windows Rust core 静态库
+- ❌ `docs/windows_credential_provider_rust_plan.md` 中的纯 Rust COM Provider
+- ❌ Windows system-service owned encrypted face profiles
+- ❌ MSVC 原生构建、物理 TPM / 无 TPM 机器和真实 LogonUI 验收
 
-### Phase 5: Optimization and optional split ❌ 未开始
+### Phase 5: Optimization and optional split ✅ 第一版决策完成
 
-- ❌ 评估 SIMD
-- ❌ 评估 Zig helper 是否扩大使用范围
-- ❌ 评估是否需要把 recognizer 再拆回独立进程
+- ✅ SIMD 不进入第一版；`with_simd` 保留为关闭默认值，不宣称存在优化实现
+- ✅ Zig helper 当前只有占位 ABI；`with_zig` 默认关闭，不扩大使用范围
+- ✅ recognizer 保持进程内 adapter；只有出现明确的崩溃或权限隔离需求时再拆分
 
 ## Open Decisions
 
