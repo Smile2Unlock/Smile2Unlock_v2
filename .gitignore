@@ -1,4 +1,10 @@
 *.bin
+compile_commands.json
+.codex
+Cargo.lock
+target/
+zig-cache/
+.zig-cache/
 
 # vscode
 .history/
@@ -18,3 +24,5 @@ CMakeLists.txt
 # 安装器文件
 installer-files
 Output
+
+.*

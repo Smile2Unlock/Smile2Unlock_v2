@@ -1,246 +1,326 @@
 add_rules("mode.debug", "mode.release")
-add_rules("plugin.compile_commands.autoupdate", {outputdir = ".vscode"})
 
-add_repositories("myrepo local-repo")
-add_requires("seetaface6open")
-add_requires("cxxopts")
-add_requires("boost", {configs = {asio = true}})
+add_repositories("local-repo local-repo")
+
+add_requires("slint v1.17.0", { system = false, optional = true })
+add_requires("cimg")
 add_requires("libyuv")
-add_requires("glfw", "imgui", {configs = {glfw = true, opengl3 = true}})
-add_requires("sqlite3")
-add_requires("mbedtls")
 
 set_encodings("utf-8")
 set_languages("c++26")
-set_plat("mingw")
-set_toolchains("clang")
-set_runtimes("c++_static")
+set_toolchains("gcc")
 
-local function apply_common_windows_settings(winver)
-    if is_plat("windows", "mingw") then
-        add_defines("_WIN32_WINNT=" .. winver, "NOMINMAX", "_CRT_SECURE_NO_WARNINGS", "WIN32_LEAN_AND_MEAN")
-        add_links("Advapi32", "mfplat", "mf", "mfreadwrite", "mfuuid", "ole32", "uuid")
-    end
-end
-
-local function apply_common_module_binary_target()
-    set_kind("binary")
-    set_policy("build.c++.modules", true)
-end
-
-local app_version_tag = "v0.0.0"
-local releases_api_url = "https://api.github.com/repos/Smile2Unlock/Smile2Unlock_v2/releases/latest"
-local releases_page_url = "https://github.com/Smile2Unlock/Smile2Unlock_v2/releases"
-
-local function find_llvm_runtime_dll_paths(dll_names)
-    if not is_plat("windows", "mingw") then
-        return {}
-    end
-
-    local search_dirs = {}
-    local seen = {}
-    local resolved = {}
-
-    local function add_search_dir(dir)
-        if dir and os.isdir(dir) and not seen[dir] then
-            table.insert(search_dirs, dir)
-            seen[dir] = true
-        end
-    end
-
-    local mingw = get_config("mingw")
-    if mingw then
-        add_search_dir(path.join(mingw, "bin"))
-    end
-
-    local env_path = os.getenv("PATH")
-    if env_path then
-        for dir in env_path:gmatch("([^;]+)") do
-            add_search_dir(dir)
-        end
-    end
-
-    for _, dll_name in ipairs(dll_names) do
-        for _, dir in ipairs(search_dirs) do
-            local dll_path = path.join(dir, dll_name)
-            if os.isfile(dll_path) then
-                resolved[dll_name] = dll_path
-                break
-            end
-        end
-    end
-
-    return resolved
-end
-
-local function copy_llvm_runtime_dlls(batchcmds, target, dll_names)
-    local resolved = find_llvm_runtime_dll_paths(dll_names)
-    for _, dll_name in ipairs(dll_names) do
-        local dll_path = resolved[dll_name]
-        if dll_path then
-            batchcmds:cp(dll_path, target:targetdir())
-        else
-            print("警告: 找不到 LLVM 运行时 DLL: " .. dll_name)
-        end
-    end
-end
-
-target("FaceRecognizer")
-    apply_common_module_binary_target()
-    add_files("FaceRecognizer/src/modules/*.cppm")
-    add_files("common/modules/*.cppm")
-    add_files("FaceRecognizer/src/*.cpp")
-    add_headerfiles("FaceRecognizer/src/**.h")
-    add_headerfiles("FaceRecognizer/src/**.hpp")
-    add_includedirs("FaceRecognizer/src", {public = false})
-    add_includedirs("common", {public = false})
-    apply_common_windows_settings("0x0A00")
-
-    add_packages("seetaface6open")
-    add_packages("cxxopts")
-    add_packages("boost")
-    add_packages("libyuv")
-    add_packages("mbedtls")
-
-    after_buildcmd(function (target, batchcmds)
-        if is_plat("windows", "mingw") then
-            -- 兼容不同工具链下的 DLL 命名：有些包产物带 lib 前缀，
-            -- tennis 还可能带 CPU 后缀变体。
-            local seetaface_dll_patterns = {
-                {"SeetaAuthorize.dll", "libSeetaAuthorize.dll"},
-                {"SeetaFaceAntiSpoofingX600.dll", "libSeetaFaceAntiSpoofingX600.dll"},
-                {"SeetaFaceDetector600.dll", "libSeetaFaceDetector600.dll"},
-                {"SeetaFaceLandmarker600.dll", "libSeetaFaceLandmarker600.dll"},
-                {"SeetaFaceRecognizer610.dll", "libSeetaFaceRecognizer610.dll"},
-                {"tennis.dll", "libtennis.dll", "libtennis_*.dll"}
-            }
-
-            local seetaface_pkg = target:pkg("seetaface6open")
-            local source_root = seetaface_pkg and seetaface_pkg:installdir() or nil
-            local target_dir = target:targetdir()
-
-            if source_root then
-                for _, candidates in ipairs(seetaface_dll_patterns) do
-                    local copied = false
-                    for _, pattern in ipairs(candidates) do
-                        local matches = os.files(path.join(source_root, "**", pattern))
-                        if #matches > 0 then
-                            for _, match in ipairs(matches) do
-                                batchcmds:cp(match, target_dir)
-                            end
-                            copied = true
-                            break
-                        end
-                    end
-                    if not copied then
-                        print("警告: 找不到DLL文件: " .. candidates[1])
-                    end
-                end
-            else
-                print("警告: seetaface6open 包未安装，跳过 DLL 复制")
-            end
-        end
-        batchcmds:cp("$(projectdir)/FaceRecognizer/resources", target:targetdir())
-    end)
-
-
-
-target("SampleV2CredentialProvider")
-    set_kind("shared")
-    set_filename("SampleV2CredentialProvider.dll")
-    set_prefixname("")
-    -- add_sysincludedirs("D:/Tools/llvm-mingw-ucrt-x86_64/include/c++/v1")
-    add_shflags("-static-libgcc", "-static-libstdc++", {force = true})
-    add_files("CredentialProvider/*.cpp")
-    add_headerfiles("CredentialProvider/**.h")
-    add_includedirs("common", {public = false})
-    add_defines("UNICODE", "_UNICODE", "SAMPLEV2CREDENTIALPROVIDER_EXPORTS")
-    apply_common_windows_settings("0x0602")
-    add_syslinks("user32", "ole32", "shlwapi", "credui", "secur32", "uuid", "advapi32", "crypt32")
-    add_links("Credui", "Shlwapi", "Secur32")
-    add_files("CredentialProvider/samplev2credentialprovider.def")
-    
-    -- 资源文件处理
-    add_files("CredentialProvider/resources.rc")
-
-    add_packages("boost")
-
-    after_buildcmd(function (target, batchcmds)
-        local implibfile = target:artifactfile("implib")
-        if implibfile then
-            batchcmds:rm(implibfile)
-        end
-    end)
-
-target("Smile2Unlock")
-    apply_common_module_binary_target()
-    add_files(
-        "Smile2Unlock/*.cpp",
-        "Smile2Unlock/modules/*.cppm",
-        "common/modules/*.cppm",
-        "Smile2Unlock/resources.rc"
-    )
-    add_includedirs("common", {public = true})
-    add_includedirs("Smile2Unlock", {public = true})
-    apply_common_windows_settings("0x0602")
-    add_packages("glfw", "imgui", "boost", "sqlite3", "mbedtls")
-    add_syslinks("opengl32", "user32", "gdi32", "shell32", "advapi32", "crypt32", "version", "secur32", "winhttp")
-    add_defines(
-        "SMILE2UNLOCK_VERSION=\"" .. app_version_tag .. "\"",
-        "SMILE2UNLOCK_RELEASES_API=\"" .. releases_api_url .. "\"",
-        "SMILE2UNLOCK_RELEASES_PAGE=\"" .. releases_page_url .. "\""
-    )
-
-    on_run(function()
-        local app_version = "0.0.0"
-        if os.isfile("version.txt") then
-            local version_text = io.readfile("version.txt")
-            if version_text then
-                app_version = version_text:match("%S+") or app_version
-            end
-        end
-        local app_version_tag = app_version
-        if app_version_tag:sub(1, 1) ~= "v" and app_version_tag:sub(1, 1) ~= "V" then
-            app_version_tag = "v" .. app_version_tag
-        end
-
-    end)
-
-    after_buildcmd(function (target, batchcmds)
-        copy_llvm_runtime_dlls(batchcmds, target, {
-            "libunwind.dll",
-            "libc++.dll",
-            "libomp.dll"
-        })
-    end)
-    after_build(function (target)
-        local output_resources = path.join(target:targetdir(), "resources")
-        os.mkdir(output_resources)
-        os.rm(path.join(output_resources, "img"))
-        os.rm(path.join(output_resources, "resources"))
-        os.cp(path.join(os.projectdir(), "common", "resources", "*"), output_resources)
-    end)
-
-target("Smile2UnlockRuntimeFiles")
-    set_kind("phony")
+option("with_slint")
     set_default(true)
-    add_deps("Smile2Unlock")
-    on_build(function (target)
-        local app_target = target:dep("Smile2Unlock")
-        if app_target then
-            local dll_names = {
-                "libunwind.dll",
-                "libc++.dll",
-                "libomp.dll"
-            }
-            local resolved = find_llvm_runtime_dll_paths(dll_names)
-            for _, dll_name in ipairs(dll_names) do
-                local dll_path = resolved[dll_name]
-                if dll_path then
-                    os.cp(dll_path, app_target:targetdir())
-                else
-                    print("警告: 找不到 LLVM 运行时 DLL: " .. dll_name)
-                end
+    set_showmenu(true)
+    set_description("Enable the Slint UI")
+option_end()
+
+option("with_zig")
+    -- Default off: the Zig helper currently exports only a placeholder symbol
+    -- with no callers. It becomes meaningful in Phase 3 (control socket runtime
+    -- helpers). Flip to true once there is real C ABI surface to consume.
+    set_default(false)
+    set_showmenu(true)
+    set_description("Build the optional Zig platform helper target")
+option_end()
+
+option("with_simd")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Enable optional assembly/SIMD implementations")
+option_end()
+
+option("with_seetaface")
+    -- Default on: SeetaFace is the real recognizer backend. A build without it
+    -- is a mock-only shell useful only for headless CI; the desktop app is
+    -- expected to ship with real face detection.
+    set_default(true)
+    set_showmenu(true)
+    set_description("Enable the SeetaFace recognizer backend")
+option_end()
+
+if has_config("with_seetaface") then
+    add_requires("seetaface6open", { system = false })
+end
+
+local function seetaface_libdir(root)
+    local lib64 = path.join(root, "lib64")
+    if os.isdir(lib64) then
+        return lib64
+    end
+    local lib = path.join(root, "lib")
+    if os.isdir(lib) then
+        return lib
+    end
+end
+
+local function seetaface_runtime_dirs(root)
+    local dirs = { }
+    for _, dir in ipairs({ path.join(root, "lib64"), path.join(root, "lib") }) do
+        if os.isdir(dir) then
+            table.insert(dirs, dir)
+        end
+    end
+    return dirs
+end
+
+local function seetaface_test_data_dir()
+    return path.join(os.projectdir(), "build", "test-data", "seetaface")
+end
+
+local function add_seetaface_backend()
+    add_packages("seetaface6open", { public = true })
+    if is_plat("linux") then
+        add_cxxflags("-fopenmp", { force = true, public = true })
+        add_ldflags("-fopenmp", { force = true, public = true })
+        add_ldflags("-Wl,--disable-new-dtags", { force = true, public = true })
+    end
+    on_load( function (target)
+        local seetaface = target:pkg("seetaface6open")
+        if seetaface then
+            local root = seetaface:installdir()
+            target:add("sysincludedirs", path.join(root, "include"), { public = true })
+            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
+                target:add("rpathdirs", dir, { public = true })
             end
         end
     end)
+end
+
+local function seetaface_root_from_target(target)
+    local seetaface = target:pkg("seetaface6open")
+    if seetaface then
+        return seetaface:installdir()
+    end
+    return ""
+end
+
+local function model_stage_dir()
+    return path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
+end
+
+local function apply_cpp_target(kind)
+    set_kind(kind)
+    add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
+    add_includedirs("src", { public = true })
+    if is_plat("linux") then
+        add_syslinks("pthread", "dl")
+    elseif is_plat("windows", "mingw") then
+        add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN", "_CRT_SECURE_NO_WARNINGS")
+        add_syslinks("ws2_32", "advapi32")
+    end
+end
+
+-- C++ Module interface units: registered per target so non-C++ targets
+-- (e.g. su_platform_zig) are not scanned by the module scanner.
+-- su_recognizer owns the recognizer + core types modules; su_app and test
+-- targets depend on su_recognizer and inherit its module BMIs.
+
+target("su_core")
+    set_kind("phony")
+    on_build( function ()
+        local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
+        local manifest = path.join(os.projectdir(), "src", "core-rs", "Cargo.toml")
+        local cargo_mode = is_mode("release") and "release" or "debug"
+        local cargo_args = {
+            "build",
+            "--manifest-path", manifest,
+            "--target-dir", path.join(os.projectdir(), "build", "cargo")
+        }
+        if is_mode("release") then
+            table.insert(cargo_args, "--release")
+        end
+        os.mkdir(outdir)
+        os.execv("cargo", cargo_args)
+        os.cp(path.join(os.projectdir(), "build", "cargo", cargo_mode, "libsu_core.a"), path.join(outdir, "libsu_core.a"))
+    end)
+
+target("su_platform_zig")
+    set_kind("static")
+    set_toolchains("zig")
+    set_default(has_config("with_zig"))
+    add_files("src/platform-zig/src/lib.zig")
+    before_build( function ()
+        local cache_dir = path.join(os.projectdir(), "build", ".zig-cache")
+        os.mkdir(cache_dir)
+        os.setenv("ZIG_GLOBAL_CACHE_DIR", cache_dir)
+    end)
+
+target("su_recognizer")
+    apply_cpp_target("static")
+    add_files("src/recognizer/*.cpp")
+    add_files("src/recognizer/image/*.cpp")
+    add_files("src/recognizer/camera/*.cpp")
+    add_files("src/modules/su.recognizer.*.cppm")
+    add_files("src/modules/su.core.*.cppm")
+    add_packages("cimg")
+    add_packages("libyuv")
+    if is_plat("linux") then
+        add_syslinks("jpeg")  -- libyuv MJPEG decode links libjpeg
+    end
+    if has_config("with_seetaface") then
+        add_defines("SU_HAS_SEETAFACE=1", { public = true })
+        add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
+        add_seetaface_backend()
+        before_build( function ()
+            local srcdir = path.join(os.projectdir(), "FaceRecognizer", "resources", "models")
+            local dstdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
+            os.mkdir(dstdir)
+            for _, file in ipairs(os.files(path.join(srcdir, "*.csta"))) do
+                os.cp(file, dstdir)
+            end
+        end)
+    else
+        add_defines("SU_HAS_SEETAFACE=0", { public = true })
+    end
+
+target("su_app")
+    apply_cpp_target("binary")
+    add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
+    add_includedirs("src/core-rs/include", {public = true})
+    add_deps("su_core", "su_recognizer")
+    if has_config("with_zig") then
+        add_deps("su_platform_zig")
+        add_defines("SU_HAS_ZIG_PLATFORM=1")
+    else
+        add_defines("SU_HAS_ZIG_PLATFORM=0")
+    end
+    add_files("src/modules/su.recognizer.*.cppm")
+    add_files("src/modules/su.core.*.cppm")
+    add_files("src/modules/su.app.controller.cppm")
+    if has_config("with_slint") then
+        add_defines("SU_HAS_SLINT=1")
+        add_packages("slint")
+        add_files("src/app/slint_main.cpp")
+        add_files("src/app/preview_controller.cpp")
+        add_files("src/modules/su.app.preview.cppm")
+        add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
+        add_includedirs(path.join("build", "generated", "slint"))
+        on_load( function (target)
+            local slint = target:pkg("slint")
+            if slint then
+                target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
+                if is_plat("linux") then
+                    target:add("rpathdirs", path.join(slint:installdir(), "lib"))
+                end
+            end
+        end)
+        before_build( function (target)
+            local slint = assert(target:pkg("slint"), "slint package is required when with_slint=y")
+            local compiler = path.join(slint:installdir(), "bin", "slint-compiler")
+            local outputdir = path.join(os.projectdir(), "build", "generated", "slint")
+            os.mkdir(outputdir)
+            os.execv(compiler, {
+                "-f", "cpp",
+                "--cpp-namespace", "su::app::ui",
+                "-o", path.join(outputdir, "app_window.h"),
+                "--cpp-file", path.join(outputdir, "app_window.cpp"),
+                path.join(os.projectdir(), "src", "app", "ui", "app.slint")
+            })
+        end)
+    else
+        add_defines("SU_HAS_SLINT=0")
+        add_files("src/app/console_main.cpp")
+    end
+    add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+    add_links("su_core")
+
+target("pam_smile2unlock")
+    apply_cpp_target("shared")
+    set_filename("pam_smile2unlock.so")
+    set_prefixname("")
+    add_files("src/platform/linux/pam/*.cpp")
+    add_headerfiles("src/platform/linux/pam/*.h")
+    if is_plat("linux") then
+        add_syslinks("pam")
+    end
+
+target("su_face_auth_smoke_test")
+    apply_cpp_target("binary")
+    add_files("tests/face_auth/*.cpp")
+    add_deps("su_core", "su_recognizer")
+    add_files("src/app/core_bridge.cpp")
+    add_files("src/modules/su.core.*.cppm")
+    add_files("src/modules/su.recognizer.*.cppm")
+    add_includedirs("src/core-rs/include")
+    add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+    add_links("su_core")
+    add_tests("default")
+
+-- A real (binary) target whose test runs the Rust core unit suite via Cargo.
+-- Using a binary target instead of a phony one because xmake's on_test only
+-- reliably reports pass/fail for targets with a build artifact. The binary is
+-- a trivial main that is never run; cargo test is what on_test executes.
+target("su_core_rust_tests")
+    apply_cpp_target("binary")
+    add_files("tests/rust/main.cpp")
+    on_test(function (target)
+        local ok = os.execv("cargo", {
+            "test",
+            "--manifest-path",
+            path.join(os.projectdir(), "src", "core-rs", "Cargo.toml"),
+        }, { try = true })
+        if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
+            os.raise("cargo test failed: " .. tostring(ok))
+        end
+        return true
+    end)
+    add_tests("default")
+
+if has_config("with_seetaface") then
+    target("su_seetaface_pipeline_smoke_test")
+        apply_cpp_target("binary")
+        add_files("tests/seetaface/*.cpp")
+        add_deps("su_core", "su_recognizer")
+        add_packages("seetaface6open")
+        add_files("src/app/core_bridge.cpp")
+        add_files("src/modules/su.core.*.cppm")
+        add_files("src/modules/su.recognizer.*.cppm")
+        add_includedirs("src/core-rs/include")
+        add_defines("SU_SEETAFACE_TEST_DATA_DIR=\"" .. path.unix(seetaface_test_data_dir()) .. "\"")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        on_load( function (target)
+            local root = seetaface_root_from_target(target)
+            target:add("sysincludedirs", path.join(root, "include"))
+            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
+                target:add("rpathdirs", dir)
+            end
+        end)
+        before_build( function (target)
+            local root = seetaface_root_from_target(target)
+            local recognizer_samples = path.join(root, "src", "FaceRecognizer6", "example")
+            local fas_samples = path.join(root, "src", "FaceAntiSpoofingX6", "example")
+            local dstdir = seetaface_test_data_dir()
+            os.mkdir(dstdir)
+            os.execv("magick", {
+                path.join(recognizer_samples, "1.png"),
+                "-colorspace", "RGB",
+                "-alpha", "off",
+                path.join(dstdir, "official_face_1.ppm")
+            })
+            os.execv("magick", {
+                path.join(fas_samples, "hu.ge.jpg"),
+                "-colorspace", "RGB",
+                path.join(dstdir, "official_face_2.ppm")
+            })
+            -- Stage the original PNG/JPG too, so the CImg image-loader path
+            -- (RecognizerService::extract_from_image) can be exercised against
+            -- real encoded files, not only pre-converted PPM fixtures.
+            os.cp(path.join(recognizer_samples, "1.png"), path.join(dstdir, "official_face_1.png"))
+            os.cp(path.join(fas_samples, "hu.ge.jpg"), path.join(dstdir, "official_face_2.jpg"))
+        end)
+        add_tests("default")
+end
+
+-- Auto-generate compile_commands.json for clangd LSP after each full build.
+-- Only triggers once (on the su_app target, which is the last C++ target).
+-- The --lsp=clangd flag produces clangd-compatible output with module info.
+local cdb_generated = false
+after_build(function (target)
+    if not cdb_generated and target:name() == "su_app" then
+        cdb_generated = true
+        os.exec("xmake project -k compile_commands --lsp=clangd 2>/dev/null || true")
+    end
+end)
