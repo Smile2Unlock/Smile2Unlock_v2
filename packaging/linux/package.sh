@@ -200,14 +200,13 @@ package_root="${work_dir}/${package_name}-${version}"
 rm -rf "$package_root"
 mkdir -p "$(dirname "$package_root")"
 cp -a "${root_dir}" "$package_root"
-# Ship the release manifest (version/stream/date + per-file SHA256) inside the
-# package so an updater can verify / compute an incremental diff.
+# Ship version, platform and per-file SHA256 metadata inside the package so it
+# can be verified independently of repository state.
 inject_release_info "${package_root}/usr/share/smile2unlock" "linux"
 
 build_tarball() {
     local output="${output_dir}/${package_name}-${version}-${architecture}.tar.gz"
     tar -C "${work_dir}" --owner=0 --group=0 -czf "$output" "${package_name}-${version}"
-    manifest_add "Smile2Unlock ${version} (Linux, tar.gz)" "$output"
     echo "created ${output}"
 }
 
@@ -239,8 +238,6 @@ EOF
         printf 'PKGDEST=%q\n' "$output_dir"
     } > "$makepkg_config"
     (cd "$work_dir" && makepkg --force --nodeps --config "$makepkg_config" -p PKGBUILD)
-    local pkgfile="${output_dir}/${package_name}-${version}-1-${architecture}.pkg.tar.zst"
-    manifest_add "Smile2Unlock ${version} (Linux, pacman)" "$pkgfile"
 }
 
 build_fpm() {
@@ -282,8 +279,6 @@ build_fpm() {
         -C "$root_dir" \
         -p "${output_dir}/${package_name}-${version}.${target}" \
         usr
-    local fpm_output="${output_dir}/${package_name}-${version}.${target}"
-    [[ -f "${fpm_output}" ]] && manifest_add "Smile2Unlock ${version} (Linux, ${target})" "$fpm_output"
 }
 
 case "$format" in

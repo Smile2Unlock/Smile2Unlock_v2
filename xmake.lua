@@ -16,9 +16,9 @@ if not _su_version or _su_version == "" then
 end
 set_version(_su_version, {build = "", arch = os.arch()})
 set_description("Smile2Unlock - local face authentication (Windows sign-in + Linux PAM)")
--- (License/homepage/author are carried by packaging/version/releases.json and
---  the per-package release-info.json; xmake's project API has no setters for
---  them in this version.)
+-- Package metadata and per-file hashes are embedded in each package's
+-- release-info.json; xmake's project API has no setters for the remaining
+-- project metadata in this version.
 
 
 add_requires("slint v1.17.0", { system = false, optional = true })

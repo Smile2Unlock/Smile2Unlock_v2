@@ -29,7 +29,7 @@ build_dir="${BUILD_DIR:-${project_dir}/build/mingw/x86_64/release}"
 output_dir="${OUTPUT_DIR:-${project_dir}/build/packages}"
 package_name="smile2unlock"
 version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
-# Version / release manifest helpers (release-info + releases.json).
+# Version and per-package release metadata helpers.
 # shellcheck source=../version/versions.sh
 source "${project_dir}/packaging/version/versions.sh"
 version="$(version_read)"
@@ -203,5 +203,4 @@ mkdir -p "${output_dir}"
 zip_file="${output_dir}/${package_name}-${version}-windows-${arch}.zip"
 rm -f "${zip_file}"
 (cd "${work_root}" && zip -qr "${zip_file}" "${package_name}-${version}")
-manifest_add "Smile2Unlock ${version} (Windows, zip)" "${zip_file}"
 echo "created ${zip_file}"
