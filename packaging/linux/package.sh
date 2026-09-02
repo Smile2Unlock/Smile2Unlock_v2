@@ -7,7 +7,10 @@ output_dir="${OUTPUT_DIR:-${project_dir}/build/packages}"
 format="${PACKAGE_FORMAT:-tar.gz}"
 pam_module_dir="${PAM_MODULE_DIR:-/usr/lib/security}"
 package_name="smile2unlock"
-version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
+# Version / release manifest helpers.
+# shellcheck source=../version/versions.sh
+source "${project_dir}/packaging/version/versions.sh"
+version="$(version_read)"
 architecture="$(uname -m)"
 work_dir="${project_dir}/build/packages/.work/${package_name}-${version}"
 root_dir="${work_dir}/root"
@@ -197,6 +200,9 @@ package_root="${work_dir}/${package_name}-${version}"
 rm -rf "$package_root"
 mkdir -p "$(dirname "$package_root")"
 cp -a "${root_dir}" "$package_root"
+# Ship version, platform and per-file SHA256 metadata inside the package so it
+# can be verified independently of repository state.
+inject_release_info "${package_root}/usr/share/smile2unlock" "linux"
 
 build_tarball() {
     local output="${output_dir}/${package_name}-${version}-${architecture}.tar.gz"

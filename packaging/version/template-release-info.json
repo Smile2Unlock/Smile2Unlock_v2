@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "version": "2.2.0",
+  "stream": "2.2",
+  "date": "2026-08-18",
+  "build": {
+    "platform": "windows",
+    "arch": "x86_64"
+  },
+  "files": [
+    {
+      "path": "bin/su_app.exe",
+      "sha256": ""
+    }
+  ]
+}
