@@ -215,11 +215,15 @@ without review.
 
 ### Phase 0: Freeze fixtures and behavior
 
-- [ ] Capture upstream PAM files and supported distribution variants as test
-  fixtures without installing their desktop packages locally.
+- [x] Add isolated representative fixtures for Arch Plasma, KScreenLocker,
+  Fedora GDM, Debian/Ubuntu GDM and SDDM without modifying host PAM files.
+- [ ] Capture versioned upstream and openSUSE variants rather than relying only
+  on the current inline representative fixtures.
 - [x] Define the service-capability and transformation data models.
 - [ ] Build isolated Linux-PAM tests for face success, password fallback,
   unavailable daemon, jump semantics and downstream wallet module execution.
+  The module/socket result mapping is covered; full parent/substack and wallet
+  execution semantics remain open.
 
 ### Phase 1: Read-only detection
 
@@ -257,17 +261,20 @@ without review.
 
 - [ ] Detect systemd version, `pam_systemd_loadkey`, inherited keyring support
   and an available boot key without exposing its contents.
-- [ ] Implement the face-only token branch and keep password-token behavior
-  unchanged.
+- [x] Implement the generated face-only `pam_systemd_loadkey` substack while
+  preserving the original password/keyring modules in the parent service. The
+  privileged helper still refuses to enable it until eligibility is proven.
 - [ ] Test matching, mismatched and absent LUKS tokens for KWallet and GNOME
   Keyring.
-- [ ] Expose the limitation clearly for TPM-only and multi-user systems.
+- [x] Document the TPM-only, mismatched-password, old-systemd and multi-user
+  limitations; these cases retain normal login and allow the wallet to prompt.
 
 ### Phase 6: SDDM and packaging
 
 - [x] Add SDDM interactive-login compatibility without touching autologin.
-- [ ] Package parser fixtures, PAM substacks, rollback metadata and optional
-  SELinux policy in native packages.
+- [ ] Package the remaining versioned parser fixtures and optional SELinux
+  policy. Managed PAM substacks and rollback journal metadata are already
+  produced by the deployment engine.
 - [x] Keep package installation side-effect free; desktop authentication is
   enabled only through an explicit post-install action.
 

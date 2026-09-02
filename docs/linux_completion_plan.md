@@ -8,12 +8,12 @@
 
 本计划是 `docs/rewrite_master_plan.md` 中 Linux Phase 3 的后续落地计划。Windows compatibility、可选 SIMD / Zig 扩展和 DMS Monet 配色分别保留在原计划及 `docs/dms_monet_theme_plan.md` 中，不阻塞 Linux 第一版跑通。
 
-## Current Status (2026-07-26)
+## Current Status (reviewed 2026-09-03)
 
-Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS 锁屏和摄像头恢复矩阵按当前决定暂缓；Phase 4 打包基础设施及 DEB / RPM 实包验证已完成，源码树内的完整 Release 构建现在还可从 GUI 通过 `pkexec` 安装缺失的系统组件，但真实密码弹窗和安装后状态切换仍待现场验收；Phase 5 多用户隔离和临时账户系统验收已完成，新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、限流、运行时恢复和 systemd sandbox 已完成；Phase 7 的 UI 重写、国际化、DMS / Monet Phase 1-5、发布级诊断、首次使用流程和键盘可用性均已完成。
+Phase 1 已完成；Phase 2 和 Phase 3 的实现已完成，真实注销 / 冷启动、DMS/Plasma/GDM/SDDM 锁屏与摄像头恢复矩阵仍待现场验收；Phase 4 打包基础设施及 DEB / RPM 实包验证已完成，源码树内的完整 Release 构建还可从 GUI 通过 `pkexec` 安装缺失的系统组件，但真实密码弹窗、安装后状态切换和升级/卸载生命周期仍待现场验收；Phase 5 多用户隔离和临时账户系统验收已完成，第二账户新鲜人脸录入仍待人工验证；Phase 6 的 system-owned 加密存储、fd 安全读取、认证限流、运行时恢复和 systemd sandbox 已完成，但同 UID 管理操作仍需独立 PAM capability；Phase 7 的 UI 重写、国际化、DMS / Monet Phase 1-5、发布级诊断、首次使用流程和键盘可用性已完成，主题损坏文件热替换存在一项自动测试回归。
 
-- `xmake build` 已通过。
-- 当前配置包含 19 个 Xmake target；12 个 Xmake test case 和 42 个 Rust unit test 已通过。
+- 2026-09-03 重新执行的 Linux Release `xmake build` 已通过。
+- 当前 Xmake 测试为 12/13 通过；`su_theme_test/default` 因损坏调色板热替换回退行为失败。Rust core 的 42 个 unit test 全部通过。
 - 临时 PAM 验收入口已覆盖真实 accepted、rejected 和 unavailable 结果，未修改 `/etc/pam.d`。
 - accepted 请求已贯通 PAM module、root socket、已安装 daemon、目标用户档案、V4L2、SeetaFace、活体检测和特征比对。
 - Release 与已安装的 daemon / PAM module 哈希一致。
@@ -27,9 +27,9 @@ Phase 2 必须通过真实 display manager 注销和重启完成，不能由进�
 
 ## Verified Baseline
 
-截至 2026-07-19，仓库和当前开发机已确认：
+仓库和开发机曾确认以下基线；其中时间敏感项必须在正式发布前重跑：
 
-- Release 配置启用了 Slint、SeetaFace、Zig 和 SIMD 选项。
+- Release 配置启用了 Slint 和 SeetaFace；Zig 与 SIMD 按第一版决策默认关闭。
 - `su_app`、`su_authd`、`pam_smile2unlock.so` 和 SeetaFace 模型能够生成。
 - Linux GUI 可以访问 V4L2 摄像头，完成人脸预览、录入、删除、认证测试和设置保存。
 - `su_authd.service` 已安装、启用并能够创建 `/run/smile2unlock/control.sock`。
@@ -311,4 +311,4 @@ Linux 端采用“每个用户在自己的桌面会话中管理自己的档案�
 
 ## Immediate Next Task
 
-先现场验证诊断页的 GUI 提权部署闭环：点击安装、完成 Polkit 密码认证、确认 helper 立即可用并继续执行初始化和桌面目标配置。随后优先补齐结构化 PAM fixture / 提交前隔离验证与自动回滚，以及安装升级和卸载生命周期。P2 注销 / 重启、第二账户新鲜人脸录入和休眠 / 热插拔等手工测试仍按当前决定暂缓；这些 Linux 发布缺口处理后再进入 Windows Rust Credential Provider Phase 0。
+先修复 `su_theme_test/default`，恢复自动测试全绿；随后为 Linux 档案管理操作增加 PAM 验证后的短时 capability。部署侧优先现场验证 GUI → Polkit → helper → storage/service/PAM 的完整闭环，并补齐提交前 PAM 验证、失败自动回滚、升级/降级/卸载生命周期和 SELinux enforcing 验收。注销/重启、第二账户新鲜人脸录入和休眠/热插拔仍属于必须完成的发布现场矩阵。跨平台总体优先级见 `current_status.md`。

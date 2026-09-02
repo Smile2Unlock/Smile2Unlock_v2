@@ -40,11 +40,14 @@ Smile2Unlock 是一套**本地人脸认证系统**:人脸特征全部在本机�
 
 | 组件 | 形态 | 职责 |
 | --- | --- | --- |
-| `su_app.exe` | Slint GUI | 人脸档案管理(录入/删除)、UDP 识别服务器、部署面板 |
-| `su_credential_provider.dll` | Rust CP | Winlogon 登录界面集成,通过 UDP 向 `su_app` 发起认证 |
+| `su_app.exe` | Slint GUI | 人脸档案管理、预览、设置与部署面板；通过认证服务管理受保护档案 |
+| `su_credential_provider.dll` | Rust CP | Winlogon 登录界面集成；向 LocalSystem 服务请求一次已认证登录 |
 | `su_deploy_helper.exe` | UAC 提权助手 | Credential Provider 注册/注销、认证服务安装,由 GUI 面板触发 |
+| `Smile2UnlockAuthService.exe` | LocalSystem 服务 | 持有加密人脸档案与账户凭据，并协调目标会话中的识别 |
+| `su_recognition_agent.exe` | 会话工作进程 | 在目标登录会话打开摄像头，执行一次服务授权的识别 |
+| `su_password_tool.exe` | 用户工具 | 保存或清除当前 Windows 账户的一份登录凭据 |
 
-登录流程:锁定屏幕 → CP 磁贴 → UDP 认证请求(127.0.0.1:51236)→ `su_app` 本地识别 → 状态回包(127.0.0.1:51234)→ 放行或拒绝。全程不出本机。
+登录流程:锁定屏幕 → CP 磁贴 → 受 ACL 保护的命名管道 → LocalSystem 认证服务 → 目标会话识别 agent → 一次性登录凭据 → Windows LSA。GUI 不在锁屏认证边界内，全程不出本机。
 
 ### Linux
 
@@ -82,6 +85,8 @@ Windows:  C:\su-deploy\
             ├── fas_first.csta
             └── fas_second.csta
 
+Windows 安全组件安装后:  C:\Program Files\Smile2Unlock\bin\
+
 Linux(打包后):  /usr/bin/su_app
                /usr/libexec/smile2unlock/{su_authd,su_deploy_helper}
                /usr/lib/security/pam_smile2unlock.so
@@ -89,17 +94,19 @@ Linux(打包后):  /usr/bin/su_app
 ```
 
 - 模型目录按 `SU_SEETAFACE_MODEL_DIR` 环境变量、编译期宏、「从当前目录向上查找 `assets/models/seeta`」的顺序解析;i18n 用同样的向上查找定位 `assets/i18n`(这正是 `bin\` + `assets\` 平级布局能工作的原因);Linux 系统安装后回退到 `/usr/share/smile2unlock/models`
-- Windows 复制文件后,在 GUI 的 **Deployment(部署)** 面板点击 Install(UAC 提权),即可完成 CP 注册与服务安装
+- Windows 解压后运行 `bin\su_app.exe`,再在 GUI 的 **Deployment(部署)** 面板执行安装。提权 helper 会先把安全组件复制到 `C:\Program Files\Smile2Unlock\bin`,然后注册 CP 和服务；注册表不指向解压目录
 
 ## 架构
 
 ```mermaid
 flowchart LR
     subgraph Windows
-        CP[su_credential_provider.dll] -- UDP 51236/51234 --> APP[su_app.exe]
-        APP --> REC[src/recognizer<br/>SeetaFace 6]
-        APP --> CORE[(Rust core<br/>加密档案文件)]
-        APP -- UAC --> HELPER[su_deploy_helper.exe]
+        CP[su_credential_provider.dll] -- 命名管道 --> SERVICE[认证服务]
+        GUIW[su_app.exe] -- 命名管道 --> SERVICE
+        SERVICE --> AGENT[识别 agent]
+        AGENT --> REC[src/recognizer<br/>SeetaFace 6]
+        SERVICE --> CORE[(Rust core<br/>加密档案与凭据)]
+        GUIW -- UAC --> HELPER[su_deploy_helper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
@@ -113,8 +120,8 @@ flowchart LR
 ### 运行时角色
 
 - **识别流水线**(`src/recognizer`):摄像头采集(V4L2 / Windows Media Foundation)、SeetaFace 检测 / 关键点 / 特征提取 / 活体检测,全部本地执行
-- **Rust core**(`src/core-rs`):人脸档案的明文与加密存储(Windows 无主密钥提供者时用明文,Linux 密钥由 systemd 托管)
-- **GUI**(`src/app`):Slint 界面 + 平台控制器;Windows 内置 UDP 识别服务器,Linux 通过控制 socket 与 `su_authd` 交互
+- **Rust core**(`src/core-rs`):版本化 XChaCha20-Poly1305 档案与凭据封套；Windows 主密钥由 CNG TPM 保护，无 TPM 时回退 machine DPAPI，Linux 密钥由 systemd 托管
+- **GUI**(`src/app`):Slint 界面 + 平台控制器；Windows 通过命名管道请求认证服务管理档案，Linux 通过 control socket 与 `su_authd` 交互
 
 ### 本地存储(两个平台一致)
 
@@ -140,7 +147,7 @@ flowchart LR
 |   |-- core-rs/              # Rust 档案存储与加密
 |   |-- recognizer/           # SeetaFace 后端、摄像头、图像流水线
 |   |-- platform/
-|   |   |-- windows/          # Rust CP、UDP 服务器、部署助手、认证服务
+|   |   |-- windows/          # Rust CP、认证服务、识别 agent、部署助手
 |   |   `-- linux/            # authd、PAM、部署助手
 |   `-- zig/                  # Zig 组件
 |-- assets/                   # 唯一资源目录:icons / i18n / models/seeta
@@ -168,7 +175,7 @@ cargo build --release --target x86_64-pc-windows-gnu \
     --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
 ```
 
-产物:`build/mingw/x86_64/release/su_app.exe`、`su_deploy_helper.exe` 及同目录 `assets/`。
+主要产物位于 `build/mingw/x86_64/release/`:包括 `su_app.exe`、`su_deploy_helper.exe`、`su_credential_provider.dll`、`su_auth_service.exe`、`su_recognition_agent.exe` 和 `su_password_tool.exe`。
 
 ### Linux
 
@@ -178,19 +185,21 @@ xmake require --build -f -y seetaface6open
 xmake build
 ```
 
-打包(`tar.gz` / `pacman` / `deb` / `rpm`):
+从现有 Release 产物打包并验证两个平台:
 
 ```bash
-packaging/linux/package.sh --format all
+packaging/package.sh --platform all
 ```
 
-### Windows 打包(单命令)
+需要重新配置、构建、打包并验证时:
 
 ```bash
-packaging/windows/package.sh
+packaging/package.sh --platform all --build
 ```
 
-产出 `build/windows-package/smile2unlock-<版本>/`(bin\ + assets\ 平级布局:su_app / su_deploy_helper / CP DLL / 服务 / 图标及从 NEEDED 表递归收集的全部运行库,外加 i18n + 模型),并写入 `build/packages/smile2unlock-<版本>-windows-x86_64.zip`。加 `--no-zip` 只暂存目录。无需 Inno Setup 安装器——解压即用。
+Linux 原生格式可用 `--linux-format pacman`、`deb`、`rpm` 或 `all`。安装包会内嵌包含版本、平台、架构和文件校验值的 `release-info.json`，且不会修改仓库中的受跟踪文件。详细布局和验证约定见 [`packaging/README.md`](packaging/README.md)。
+
+当前实现状态和发布前待办见 [`docs/current_status.md`](docs/current_status.md)。
 
 ## 贡献者
 

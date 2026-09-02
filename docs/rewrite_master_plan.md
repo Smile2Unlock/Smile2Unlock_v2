@@ -4,13 +4,13 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-08-17)
+## Current Status (2026-09-03)
 
-Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、打包和自动验收已实现；结构化 PAM 验证、生命周期和跨发行版现场矩阵仍未完成，其中部分人工测试按当前决定暂缓**。Phase 4 — **Windows 基础设施、纯 Rust Credential Provider、UDP 识别服务端、GUI profile 操作 (FFI) 与认证服务全部接通；剩余项仅为需要真实摄像头 / 物理 TPM / LogonUI 的现场验收**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分 recognizer 进程**。
+Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、PAM 目标转换、打包和自动验收已实现；Linux 管理操作授权、生命周期和跨发行版现场矩阵仍未完成**。Phase 4 — **Windows 已切换到纯 Rust Credential Provider + LocalSystem 认证服务 + 目标会话识别 agent；GUI UDP 识别服务端和 GUI 直读 profile store 的旧路径已删除**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分通用 recognizer 服务**。
 
-当前 Windows 构建包含 `su_app` (Slint GUI + UDP 识别服务端)、`su_deploy_helper` (UAC 提权部署)、`su_auth_service` (LocalSystem 命名管道服务)、`su_credential_provider.dll` (Rust CP, 46 单元测试)；仓库资源统一在 `assets/`（icons / i18n / models/seeta），Windows 部署采用可执行文件与 `assets/` 平级的单一目录布局（默认 `C:\su-deploy\`）。
+当前 Windows 构建包含 `su_app`、`su_deploy_helper`、`su_auth_service`、`su_recognition_agent`、`su_password_tool` 和 `su_credential_provider.dll`。CP 与 GUI 都只通过受保护的命名管道访问 LocalSystem 服务；服务统一持有 per-SID 加密 profile/password store，并在目标会话启动一次性识别 agent。Windows ZIP 使用 `bin/` + `assets/` 平级布局，部署后安全组件位于 `C:\Program Files\Smile2Unlock\bin`。
 
-当前 Linux 配置包含 19 个 Xmake target；`xmake build` 和 12 个 Xmake test case 已通过，其中 Rust core 包含 42 个单元测试。Linux GUI 已支持 DMS / Matugen Monet 配色、外部语言包、system-owned 加密档案、桌面 PAM 目标管理，以及在 helper 缺失时通过 `pkexec` 直接安装源码树内完整 Release 构建的系统组件。
+2026-09-03 复核：Linux Release 主构建成功；13 个 Xmake test case 中 12 个通过，`su_theme_test/default` 因损坏调色板热替换错误切回内置主题而失败；Rust core 42/42 通过；Windows Rust CP 的 MinGW/Wine 测试 41 通过、1 个真实 Windows 专用用例忽略。当前发布阻塞项和现场矩阵统一记录在 `docs/current_status.md`。
 
 重写后的第一阶段目标：
 
@@ -579,37 +579,29 @@ fixed-size and oversized. Fix:
   minimum-size or aspect-ratio constraints, and stays freely resizable
   (the layout switches to a compact mode below 1020px width by design).
 
-## Face Recognition Trigger Flow (Windows, implemented 2026-08-14)
+## Face Recognition Trigger Flow (Windows, superseded 2026-08-18)
 
-Implemented in `src/platform/windows/credential_provider_rs/src/recognition.rs`
-(v28 deployed; 46 unit tests green incl. full UDP round-trips).
+The earlier loopback-UDP design was removed by the authentication hardening
+rewrite. `src/platform/windows/udp_recognition_server.*`, the Rust
+`recognition.rs` worker, and `mock_recognizer` no longer exist. The current
+flow is:
 
-- Transport: C++-parity UDP. Request on 127.0.0.1:51236
-  (`UdpAuthRequestPacket`, magic "AUTH", v1, 88 B); status on 127.0.0.1:51234
-  (`UdpStatusPacket`, magic 0x8581DAF3, v2, 49244 B). The provider is a pure
-  client: it never runs a camera or recognizer inside LogonUI.
-- Security: loopback-only, status accepted only when the session_id matches
-  the most recent request and the timestamp is within 30 s (anti-injection /
-  anti-replay, verified live: mismatched session packets are rejected).
-  Forgery resistance at the same trust level as the C++ baseline; signing is
-  a tracked hardening item. Face success only gates the stored-secret fetch
-  through the SYSTEM pipe; the pipe never trusts UDP.
-- Manual mode (RecognitionMode=0, default): password-box Enter calls
-  GetSerialization, which arms the worker and waits for the terminal status.
-  Success submits the stored secret; failure rejects the submit with
-  CPSI_ERROR + status text.
-- Auto mode (RecognitionMode=1): worker waits AutoDelaySec after the lock
-  screen (sleep/hibernate/lid suspension pauses the countdown via
-  GetTickCount64; resume triggers immediately), retries every RetryDelaySec
-  until success, then sets face_ready and fires CredentialsChanged through
-  the Global Interface Table (cross-thread marshalled). LogonUI re-enumerates
-  with auto-logon; GetSerialization skips the manual gate via auto_grant.
-- Registry: `HKLM\SOFTWARE\Smile2Unlock\Recognition` (RecognitionMode,
-  AutoDelaySec, RetryDelaySec, TimeoutSec). Missing key degrades to defaults.
-- VM test harness: `mock_recognizer` bin stands in for su_app.exe (no camera
-  needed); deployed as SYSTEM scheduled task SU_Mock. Live acceptance passed
-  end-to-end in auto mode (lock -> auto trigger -> SUCCESS -> logon).
-  Manual mode awaits interactive Enter on the VM console.
+```text
+Rust Credential Provider
+  -> authenticated named pipe
+  -> LocalSystem auth service
+  -> su_recognition_agent.exe in the requested Windows session
+  -> liveness + embedding over inherited anonymous pipes
+  -> service-owned encrypted profile comparison
+  -> one-time password response
+  -> KERB_INTERACTIVE_UNLOCK_LOGON / Windows LSA
+```
+
+The service binds requests to the caller SID, process, logon session and
+request id. The Provider never opens the camera, profile store or master key,
+and the desktop GUI is not required at the lock screen. The remaining work is
+real-camera/LogonUI/TPM acceptance, per-SID service rate limiting and hardening
+the elevated package-to-Program-Files copy chain.
 
 ## Recognizer Plan
 
@@ -674,9 +666,9 @@ Camera
 
 - 第一阶段采用 Rust 管理的版本化 XChaCha20-Poly1305 加密文件，不引入普通 SQLite。
 - profile 存储必须是 system-owned（Linux `/var/lib/smile2unlock/users/<uid>/`；Windows `C:/ProgramData/smile2unlock/users/<uid>/`）。
-- profile 访问路径按平台（2026-08-16 决策，取代早期"GUI 一律走认证服务 IPC"的通用要求）：
+- profile 访问路径按平台：
   - **Linux：GUI 只通过认证服务 IPC（control socket → root `su_authd`）进行录入、列出、删除和认证**。已实现：`su.auth.daemon.cppm` 处理 `EnrollProfile/ListProfiles/DeleteProfile/VerifyProfile`，`su.auth.storage.cppm` 以 root 权限 + mmap 页对齐 + mlock + `MADV_DONTDUMP` + `mprotect(PROT_NONE)` 空闲封存 + O_NOFOLLOW + 严格权限校验读写；主密钥读取限定在 `with_bytes`/`with_context` 的临时 `PROT_READ` 提升内（memsafe Unix 语义的 C++ 同款实现）；GUI 侧 `AppController` 一律 `send_control_request(...)`。
-  - **Windows：由 su_app（交互会话内的 GUI 宿主）直接经 Rust core FFI 读写 ProgramData 加密 store，不走认证服务 IPC**。理由：Windows 登录消费方（Credential Provider）不读 profile——识别结果通过回环 UDP（51236/51234）传给 LogonUI；profile 的唯一读写方就是桌面会话里的 su_app，Windows 认证服务只负责登录密钥管道（logon secret）。若未来需要在 SYSTEM/LogonUI 上下文直接比对，再迁移到认证服务 IPC。
+  - **Windows：GUI 通过认证服务命名管道执行录入、列出、删除、验证和凭据管理**。LocalSystem 服务持有 master key 和 ProgramData 下的 per-SID 加密 store，并在锁屏认证时完成 profile 比对；GUI 不再直接打开受保护档案。
 - Linux 使用 systemd encrypted credential；TPM2 机器使用 `host+tpm2`，无 TPM2 时明确回退 `host` key，并建议配合全盘加密。
 - Windows 登录密码使用与 profile 分离的 encrypted envelope；TPM 由 CNG Platform Crypto Provider 保护 master key，无 TPM 时回退 machine DPAPI。
 - 完整格式、密钥、迁移和 Windows stale password 规则见 `docs/credential_storage_encryption_plan.md`。
@@ -718,10 +710,10 @@ Slint 是唯一计划内 GUI。
 
 ### Windows
 
-- Windows Credential Provider 保留 C++ 实现。
-- CP 只做登录入口和 control socket。
+- Windows Credential Provider 使用纯 Rust `cdylib` 实现。
+- CP 只做 COM/登录入口、状态展示、命名管道客户端和 LSA 序列化。
 - 不让 Win32/COM 类型泄漏到 core。
-- 旧的命名管道、UDP、共享内存不作为新架构主路径。
+- LocalSystem 认证服务持有加密档案与登录凭据，并在目标会话启动最小识别 agent；不依赖 GUI、UDP 或共享内存。
 - Windows 人脸登录所需账户密码必须独立加密保存，不能进入 profile store、普通 SQLite、日志或用户级 Credential Manager。
 - 密码错误后通过 Credential Provider `ReportResult` 标记为 stale，停止自动提交并要求用户重新确认密码。
 - TPM 使用 CNG hardware key，无 TPM 使用 machine DPAPI fallback；两者都不能声称抵御已控制 LocalSystem 的攻击者。
@@ -803,20 +795,21 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
-### Phase 4: Windows compatibility ✅ 基础设施、Rust CP、UDP 服务端与 profile 操作全部接通；现场验收待真实硬件
+### Phase 4: Windows compatibility ⚠️ 主链路完成；安全加固与现场验收待完成
 
 - ✅ Windows password XChaCha20-Poly1305 envelope 和 stale-password 状态
 - ✅ CNG TPM wrapping、machine DPAPI fallback、SYSTEM-only ACL 和 LocalSystem 服务
-- ✅ 认证命名管道和现有 C++ Credential Provider 的 LOGON / UNLOCK 序列化
+- ✅ 认证命名管道和纯 Rust Credential Provider 的 LOGON / UNLOCK 序列化
 - ✅ MinGW 交叉构建和 Windows Rust core 静态库
-- ✅ 纯 Rust COM Provider（`credential_provider_rs`，v28）：CP 客户端、UDP 识别触发（manual/auto）、46 单元测试、自动模式 VM 端到端验收（mock 服务端）
+- ✅ 纯 Rust COM Provider（`credential_provider_rs`）：命名管道客户端、SID/session/request 绑定、一次性凭据与安全序列化；2026-09-03 MinGW/Wine 复核为 41 passed + 1 ignored
 - ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
-- ✅ su_app UDP 识别服务端（`udp_recognition_server`，监听 127.0.0.1:51236/51234，协议与 CP 对齐；VM 上协议链路实测：magic/version/session 回显正确，回调执行识别并回状态；mock_recognizer 已停用）
-- ✅ Windows GUI profile 操作（注册/列表/删除/认证经 Rust core FFI 直连 ProgramData store；VM 上受限于无摄像头，识别路径返回 camera unavailable）
-- ✅ Windows 部署布局平级化（可执行文件与 `assets/` 同目录，无嵌套 `bin\`）；CP 注册与认证服务 ImagePath 已按新布局在 VM 上重新注册并用仓库构建的服务二进制运行
+- ✅ LocalSystem 服务在目标会话启动 `su_recognition_agent.exe`，通过继承匿名管道接收活体分数与 embedding，再以 service-owned profile store 比对
+- ✅ Windows GUI profile 操作通过命名管道请求服务执行；录入/删除使用密码验证后的短时单次管理 capability
+- ✅ Windows ZIP 使用 `bin/` + `assets/` 平级布局；安全组件部署到 `C:\Program Files\Smile2Unlock\bin` 后注册 CP 与服务
 - ✅ `logon_secret_protocol.h` 恢复至 `src/platform/windows/auth_service/`（随 `common/` 删除而丢失），`su_auth_service` 加入 xmake 主构建（此前仅由已删除的 tests/windows 构建）
-- ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 锁屏 CP 触发）
-- ❌ 物理 TPM / 无 TPM 机器和真实 LogonUI 验收
+- ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 服务 agent + 锁屏 CP）
+- ❌ 物理 TPM / 无 TPM、BitLocker、Microsoft 账户和完整 LogonUI 回退矩阵
+- ❌ 提权部署源的签名/句柄安全校验，以及认证管道按 SID 限流
 
 ### Phase 5: Optimization and optional split ✅ 第一版决策完成
 
@@ -831,7 +824,7 @@ Slint 是唯一计划内 GUI。
 | Slint 版本 pin | ✅ 已决定 | v1.17.0 |
 | Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
 | 凭据存储 | ✅ 已决定 | system-owned XChaCha20-Poly1305 envelope；SQLite 暂不引入，详见加密存储计划 |
-| Windows profile 访问 | ✅ 已决定 (2026-08-16) | su_app 本地 FFI 直读 ProgramData 加密 store（不走认证服务 IPC）；Linux 保持 control socket IPC。理由见"凭据存储"小节 |
+| Windows profile 访问 | ✅ 已决定 (2026-08-18) | GUI 与 CP 均不直接打开 profile；统一通过 LocalSystem 认证服务，服务持有 per-SID ProgramData 加密 store |
 | Linux 摄像头 | ✅ 已决定 | V4L2（第一阶段），暂不预留 PipeWire |
 | Zig target 启用 | ✅ 已决定 | 默认不启用（`with_zig` defaults to false），仅 placeholder |
 | 汇编优化 | ✅ 已决定 | 不入第一版（`with_simd` defaults to false） |
