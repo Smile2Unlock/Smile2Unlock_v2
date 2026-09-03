@@ -1,6 +1,6 @@
 # 剩余安全与可靠性问题
 
-本文记录认证和部署加固后仍需跟踪的问题，与实现计划分开，作为后续评审和发布检查清单使用。
+本文记录认证和部署加固后仍需跟踪的问题，与实现计划分开，作为后续评审和发布检查清单使用。最近复核：2026-09-03；完整状态入口见 `current_status.md`。
 
 ## 高优先级：同账户管理授权
 
@@ -48,4 +48,13 @@ Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 
 ## 工程覆盖
 
-原有的 Rust-only CI 已按要求删除。重新建设 CI 时，需要覆盖 Windows/Linux C++ 构建、打包、服务注册和部署 smoke test。CP crate 的 vendored `memsafe` 仍有格式差异，届时应修正或明确排除。
+原有的 Rust-only CI 已删除，当前仓库没有持续集成工作流。重新建设 CI 时，需要覆盖 Windows/Linux C++ 构建、Rust core、MinGW/Wine Credential Provider、打包校验、服务注册和部署 smoke test。CP crate 的 vendored `memsafe` 仍有格式差异，届时应修正或明确排除。
+
+2026-09-03 本机复核：Linux Release 构建成功；13 个 Xmake test case 中 12 个通过，`su_theme_test/default` 失败；Rust core 42/42 通过；Windows CP 的 MinGW/Wine 测试 41 passed + 1 ignored。Linux 配置下的 `su_credential_provider_rust_tests/default` 会条件跳过，CI 不得把该空跑结果当成 Windows CP 覆盖。
+
+## 发布完整性
+
+- 主题 monitor 收到损坏的 DMS palette 原子替换时会把当前主题切到 built-in；应保留最后一个有效主题并只报告诊断。目前该行为由 `su_theme_test/default` 稳定复现。
+- 正式发布前必须由同一提交重新构建并验证 Windows ZIP，确认包内 `release-info.json` 的文件集合和 SHA-256 与实际载荷一致；不得复用工作区中的旧 ZIP。
+- `cimg` 依赖当前未固定版本；干净构建会按仓库最新解析结果安装。发布构建应固定并记录版本/校验值，避免依赖解析漂移。
+- `src/app/core_bridge.cpp` 的 FFI 返回值路径在 GCC 下产生 `-Wmaybe-uninitialized`。Rust 端当前所有返回分支都会初始化结构体，但发布前仍应通过显式初始化、ABI 断言或最小复现消除警告，避免真实 ABI 缺陷被误判为噪声。

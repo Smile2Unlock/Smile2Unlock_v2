@@ -2,16 +2,17 @@
 
 ## 目标
 
-把当前 `CredentialProvider/` 下的 C++ Sample 重写为位于 `src/` 内的纯 Rust Windows Credential Provider。Rust DLL 只负责 Windows Credential Provider / COM 适配、登录凭据序列化和认证服务客户端，不把 GUI、摄像头、SeetaFace、Tauri、OpenCV 或大型异步运行时装进 LogonUI 进程。
+把旧 `CredentialProvider/` 下的 C++ Sample 重写为位于 `src/` 内的纯 Rust Windows Credential Provider。Rust DLL 只负责 Windows Credential Provider / COM 适配、登录凭据序列化和认证服务客户端，不把 GUI、摄像头、SeetaFace、Tauri、OpenCV 或大型异步运行时装进 LogonUI 进程。
 
-本计划与 `docs/rewrite_master_plan.md` 和 `docs/credential_storage_encryption_plan.md` 配套使用。实现完成后，需要把主计划中的“C++ Credential Provider 适配层”更新为 Rust 适配层；在此之前不修改旧 Provider 的行为。
+本计划与 `docs/rewrite_master_plan.md`、`docs/current_status.md` 和 `docs/credential_storage_encryption_plan.md` 配套使用。重写已经完成；本文继续保留实现过程、兼容基线和尚未完成的真实 Windows 验收。
 
 ## 当前状态
 
-- Phase 0（冻结接口与安全样例）已完成，见下方基线记录。
-- 现有 C++ Provider 和 Windows LocalSystem 认证服务仍是当前可构建路径，未被替换。
-- Rust 加密 envelope、Windows password store、TPM CNG provider、machine DPAPI fallback 和 LocalSystem 服务已经按 `docs/credential_storage_encryption_plan.md` 实现；Windows face profile 的 service-owned 存储仍待完成。
-- 本计划阶段只写文档，不替换当前 DLL、不修改注册表、不删除旧目录。
+- Phase 0-3 已完成，纯 Rust `su_credential_provider.dll` 已替代旧 C++ Provider 并进入 Xmake/Windows 打包主线。
+- LocalSystem 服务统一持有 Windows password store 和 per-SID face profile store；主密钥使用 TPM CNG，无法使用 TPM 时回退 machine DPAPI。
+- Credential Provider 通过命名管道请求一次认证。服务在请求指定的 Windows 会话启动 `su_recognition_agent.exe`，取得活体与 embedding 后在服务端比对档案；GUI UDP 识别路径已删除。
+- GUI 通过同一服务的受保护 profile API 完成录入、列出、删除和验证，不再直接打开 ProgramData 档案。
+- 2026-09-03 MinGW/Wine 自动测试为 41 passed + 1 ignored；剩余重点是真实摄像头、LogonUI、TPM/DPAPI、账户与安装生命周期验收，以及部署输入和服务限流加固。
 
 ## 非目标
 
@@ -23,7 +24,7 @@
 
 ## 目录与构建边界
 
-新实现暂定目录：
+当前实现目录：
 
 ```text
 src/platform/windows/credential_provider_rs/
@@ -116,7 +117,7 @@ src/platform/windows/credential_provider_rs/
 
 采用记录（2026-08-14）：`WindowsSecret<N>` 内部改为持有 `memsafe::Secret<N>`（VirtualAlloc + VirtualLock + PAGE_NOACCESS 常态，v27 起），`seal()/unseal()`/手写 `VirtualProtect` 逻辑移除（memsafe 的 read/write 提权模型替代）；`new()` 改为 fallible（`SecretError::Init`，内存保护失败不 panic）；`Drop` 经 `write()` 清零后由 memsafe 释放页面。真实 VM 回归：v26（READONLY）/v27（NOACCESS）锁屏提交一次登录成功。
 
-⚠️ 已知安全缺口（暂缓，用户确认保持现状）：Rust `GetSerialization` 目前**无条件**经管道取存储密码，无"人脸识别成功"门控——点击 tile 提交即登录（不要求输入）。对齐 C++ 的设计是服务端"已授权"状态机（识别成功后才允许 `prepare`），与完整人脸流程（SetSelected 触发识别 → 服务端验证 → `CredentialsChanged` 自动提交）一起实现。
+历史缺口（已修复，2026-08-18）：早期 Rust `GetSerialization` 曾无条件经管道取密码。当前 `kPrepare` 由 LocalSystem 服务先在目标会话启动识别 agent，只有活体和 service-owned profile 比对成功后才返回一次性密码；Provider 不再信任 GUI/UDP 状态。
 
 若上述补丁不能在目标 Windows 版本上稳定通过，Provider 不得把 `memsafe` 当作安全保证；应退回经过审查的固定容量 `zeroize` 缓冲，并保留同样的生命周期和 FFI 约束。
 
@@ -182,11 +183,11 @@ src/platform/windows/credential_provider_rs/
 - [x] 使用 Windows 分配器 / `CoTaskMemAlloc` 的正确所有权规则，所有失败分支释放已分配缓冲。*`kerb_interactive_unlock_logon_pack` 用 `CoTaskMemAlloc` 分配序列化缓冲；`GetSerialization` 后续任一步失败（`retrieve_negotiate_auth_package` 等）都会先 `CoTaskMemFree` 已分配缓冲再返回错误。*
 - [x] 序列化完成后立即清零临时结构、密码 guard 和 IPC 响应。*`pipe_client.rs` 的 `transact` 无论成败都 `secure_clear`（`write_volatile` 逐字，防 DSE）request/response 的 `password`；`PreparedPipePassword` drop 即清零；`credential.rs` 失败路径对密码副本同样清零。*
 - [x] 实现 `ReportResult` 的错误分类、stale 标记、密码过期处理和一次性重试禁止。*`credential.rs` 增加 `stale`/`serialized` 状态：`ReportResult` 收到非 `STATUS_SUCCESS` 即置 `stale`；`GetSerialization` 在 `stale || serialized` 时拒绝再次提交，保证同一管道一次性 token 最多自动提交一次。*
-- [ ] 覆盖本地账户、Microsoft 账户、错误 SID、密码已修改和离线服务不可用。（留 Phase 4 真实 Windows VM 验收；wine 下 `protect_password_roundtrip` 因缺 `advapi32.CredIsProtectedW` 标记 `#[ignore]`。）
+- [ ] 在当前 service-launched agent 架构上覆盖本地账户、Microsoft 账户、错误 SID、密码已修改和离线服务不可用。（Wine 下 `protect_password_roundtrip` 因缺 `advapi32.CredIsProtectedW` 标记 `#[ignore]`。）
 
 ### Phase 4：真实 LogonUI 集成
 
-- [x] 在隔离 Windows 虚拟机中注册测试 CLSID，验证锁屏、解锁、冷启动和注销 / 重启。*2026-08-14 真实 VM（Win10 19044，Administrator/本地账户）验收通过：锁屏 tile 显示（含内嵌图片）→ 点击提交 → 管道取一次性密码 → KERB 序列化 → LSA 验证 → 登录成功。*
+- [ ] 在隔离 Windows 虚拟机中用当前 service-launched agent 架构重新验证锁屏、解锁、冷启动和注销 / 重启。*2026-08-14 的真实 VM 结果证明了 COM/KERB/LSA 基线，但早于 2026-08-18 的 UDP 删除与服务端识别重构，不能替代当前架构验收。*
 - [x] 端到端修复记录（真实 LogonUI 验证中发现并修复）：
   - *CPGSR 返回值错误（登录不提交的根因）：`GetSerialization` 成功时把 `*pcpgsr` 写成 `1`（= `CPGSR_NO_CREDENTIAL_FINISHED`，"没有凭据"），LogonUI 收到后不提交、密码框闪烁。正确值 `CPGSR_RETURN_CREDENTIAL_FINISHED = 2`。此前 `LsaLogonUser` 直测成功但 LogonUI 不登录即此因。*
   - *CredProtectW 加密长度：`cchCredentials` 必须含 NUL（C++ 传 `wcslen+1`）；windows-crate 封装按切片 `len()` 取值，需自行在输入尾部补 NUL，否则 LSA 解密失败（表现为密码错误）。*
@@ -194,22 +195,22 @@ src/platform/windows/credential_provider_rs/
   - *request_id 冲突：per-process 计数器从 1 开始会撞服务端进程级重放缓存，导致"要多提交几次才成功"；改为 PID+时间戳种子 + 递增，一次提交即成功。*
   - *服务端（`auth_service`）在 VM 部署中的问题：`load_or_create_storage_key` 的 TPM→DPAPI 回退条件漏了 `kTpmFailed`（无 TPM 机器永远建不了密钥）；`apply_system_only_file_acl` 的句柄版 `SetSecurityInfo` 在该 VM 上返回 ACCESS_DENIED（icacls/Set-Acl 正常），改路径版 `SetNamedSecurityInfoW` 修复。服务以 LocalSystem 注册（`Smile2UnlockAuthService`），密码经 `su_password_tool store` 录入。*
   - *CredPack vs 手工 KERB 打包：CredPack（`CRED_PACK_PROTECTED_CREDENTIALS`）输出被 LSA 拒绝（`cb=454`），回归 C++ 一致的手工 `KerbInteractiveUnlockLogonInit/Pack`（`cb=212`）后由 `LsaLogonUser` 直测确认有效；`make_lsa_string` 的 `MaximumLength` 与 C++ 一致取 `Length`。*
-- [ ] 验证 Provider 不阻塞 LogonUI：相机 / 识别由认证服务处理，Provider 回调有明确超时。
+- [ ] 验证 Provider 不阻塞 LogonUI：相机 / 识别由认证服务与会话 agent 处理，Provider 回调有明确超时。
 - [ ] 验证系统密码 tile、辅助功能、取消、切换用户和错误提示仍可用。
 - [ ] 验证 TPM2、无 TPM2、服务重启、密钥不可用和 BitLocker 环境下的回退行为。
 
 ### Phase 5：安装、升级与切换
 
-- [ ] 增加 Rust DLL、认证服务和符号 / 版本信息的 Windows 打包步骤。
-- [ ] 新旧 CLSID 使用独立测试安装；升级时先验证新 Provider，再切换注册项。
-- [ ] 安装失败或新 Provider 崩溃时保持旧 Provider / 系统密码登录入口，禁止把系统锁死。
+- [x] 将 Rust DLL、认证服务、识别 agent、密码工具和运行库加入统一 Windows ZIP，并用当前 verifier 检查 PE 架构、依赖和内容清单。
+- [x] 部署到 `C:\Program Files\Smile2Unlock\bin` 后再切换 CP/服务注册，避免注册表指向可删除的解压目录。
+- [ ] 为安装输入增加签名 manifest/Authenticode 与基于句柄的防 reparse-point 复制；安装失败时必须保留系统密码登录入口。
 - [ ] 完成服务 ACL、Provider DLL ACL、注册表卸载、重启后残留和回滚测试。
 
 ### Phase 6：删除旧实现
 
-- [ ] 新 Provider 通过全部验收后，才把 `packaging/windows/setup.iss` 和 Windows xmake target 切换到 Rust DLL。
-- [ ] 更新 `docs/rewrite_master_plan.md`，删除 C++ CP 作为主线的描述。
-- [ ] 删除旧 `CredentialProvider/`、旧注册文件和仅供旧 Provider 使用的 IPC 代码；删除动作单独提交。
+- [x] Windows Xmake target 与统一打包主线使用 Rust DLL；仓库不再包含旧 `packaging/windows/setup.iss`。
+- [x] 更新 `docs/rewrite_master_plan.md`，以 Rust CP + LocalSystem 服务为主线。
+- [x] 删除旧 `CredentialProvider/`、旧注册文件、GUI UDP server 和 Rust UDP recognition worker。
 - [ ] 保留迁移说明和回滚版本，确认干净安装、升级、卸载均可恢复系统密码登录。
 
 ## 测试矩阵

@@ -107,9 +107,10 @@ Linux (packaged):  /usr/bin/su_app
 flowchart LR
     subgraph Windows
         CP[su_credential_provider.dll] -- named pipe --> SERVICE[Auth service]
+        GUIW[su_app.exe] -- named pipe --> SERVICE
         SERVICE --> AGENT[Recognition agent]
         AGENT --> REC[src/recognizer<br/>SeetaFace 6]
-        GUIW[su_app.exe] --> CORE[(Rust core<br/>encrypted profile files)]
+        SERVICE --> CORE[(Rust core<br/>encrypted profiles and credentials)]
         GUIW -- UAC --> HELPER[su_deploy_helper.exe]
     end
     subgraph Linux
@@ -124,8 +125,8 @@ flowchart LR
 ### Runtime roles
 
 - **Recognition pipeline** (`src/recognizer`): camera capture (V4L2 / Windows Media Foundation), SeetaFace detection / landmarks / feature extraction / anti-spoofing — all local
-- **Rust core** (`src/core-rs`): plaintext and encrypted face-profile stores (Windows has no master-key provider and uses plaintext; Linux keys are managed by systemd)
-- **GUI** (`src/app`): Slint UI + per-platform controller; Windows embeds the UDP recognition server, Linux talks to `su_authd` over the control socket
+- **Rust core** (`src/core-rs`): versioned XChaCha20-Poly1305 profile and credential envelopes; Windows protects its master key with CNG TPM or machine-DPAPI fallback, while Linux keys are managed by systemd
+- **GUI** (`src/app`): Slint UI + per-platform controller; Windows requests profile operations from the LocalSystem service over the named pipe, while Linux talks to `su_authd` over the control socket
 
 ### Local storage (identical on both platforms)
 
@@ -151,7 +152,7 @@ Secrets are wiped with `zeroize` on both platforms. The Linux `su_authd` master 
 |   |-- core-rs/              # Rust profile store + encryption
 |   |-- recognizer/           # SeetaFace backend, camera, image pipeline
 |   |-- platform/
-|   |   |-- windows/          # Rust CP, UDP server, deploy helper, auth service
+|   |   |-- windows/          # Rust CP, auth service, recognition agent, deploy helper
 |   |   `-- linux/            # authd, PAM, deploy helper
 |   `-- zig/                  # Zig components
 |-- assets/                   # single resource dir: icons / i18n / models/seeta
@@ -179,7 +180,9 @@ cargo build --release --target x86_64-pc-windows-gnu \
     --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
 ```
 
-Output: `build/mingw/x86_64/release/su_app.exe`, `su_deploy_helper.exe`, and `assets/` next to them.
+The main outputs under `build/mingw/x86_64/release/` are `su_app.exe`,
+`su_deploy_helper.exe`, `su_credential_provider.dll`, `su_auth_service.exe`,
+`su_recognition_agent.exe`, and `su_password_tool.exe`.
 
 ### Linux
 
@@ -206,6 +209,9 @@ Linux native formats remain available with `--linux-format pacman`, `deb`,
 `release-info.json` without modifying tracked repository files. See
 [`packaging/README.md`](packaging/README.md) for the layout and verification
 contract.
+
+See [`docs/current_status.md`](docs/current_status.md) for the verified implementation
+status and the remaining release work.
 
 ## Contributors
 

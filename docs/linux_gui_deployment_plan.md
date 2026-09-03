@@ -2,15 +2,17 @@
 
 ## Status
 
-Implementation in progress, updated 2026-07-26. The restricted helper,
+Implementation in progress, reviewed 2026-09-03. The restricted helper,
 Polkit/D-Bus activation, deployment client, GUI target controls, package
 staging and direct `pkexec` bootstrap from a complete source-tree Release build are
 implemented. The GUI now offers an install action when the helper is absent,
 reloads systemd and D-Bus, and verifies that the helper responds before
-enabling privileged integration actions. Real interactive Polkit acceptance,
-VM coverage, automatic wallet-token eligibility, SELinux policy and lifecycle
-failure testing remain open. This plan depends on the desktop PAM design in
-`linux_desktop_pam_integration_plan.md`.
+enabling privileged integration actions. The deployment engine has field-aware
+PAM parsing plus isolated Arch Plasma, KScreenLocker, Fedora GDM,
+Debian/Ubuntu GDM and SDDM transformation/rollback fixtures. Real interactive
+Polkit acceptance, full upstream fixture sets, pre-commit PAM validation,
+automatic wallet-token eligibility, SELinux policy and lifecycle failure
+testing remain open. The current verified snapshot is in `current_status.md`.
 
 ## Product Boundary
 
@@ -278,7 +280,10 @@ but must never delete an externally modified PAM file.
 
 ### Phase 3: PAM plan/apply/rollback
 
-- [ ] Implement the structured parser and distribution fixtures.
+- [x] Implement field-aware parsing and isolated fixtures for Arch Plasma,
+  KScreenLocker, Fedora GDM, Debian/Ubuntu GDM and SDDM.
+- [ ] Add versioned upstream/openSUSE fixtures and expand coverage for comments,
+  control expressions and distribution layout changes.
 - [x] Return dry-run plans with file identities and expiration.
 - [x] Apply atomic transformations and record the deployment journal.
 - [ ] Validate new stacks before commit and automatically roll back failures.

@@ -186,7 +186,7 @@ Linux `su_authd` 和未来 Windows LocalSystem auth service 成为唯一 storage
 - 本地账户和 Microsoft 账户能以系统解析的规范身份完成登录 / 解锁；未验收的域账户和 `CPUS_CREDUI` 不读取或提交已保存密码。
 - GUI 和 PAM / Credential Provider 不直接访问 master key 文件。
 
-## Implementation Status (2026-07-26)
+## Implementation Status (reviewed 2026-09-03)
 
 Completed in source and automated tests:
 
@@ -201,15 +201,18 @@ Completed in source and automated tests:
 - Windows CNG TPM wrapping with machine-DPAPI fallback only when the platform
   provider is unavailable, SYSTEM-only ACL enforcement and a LocalSystem SCM
   service.
-- Windows current-user store/clear pipe operations, LocalSystem-only one-time
-  prepare/stale operations and Credential Provider LOGON/UNLOCK serialization.
+- Windows current-user store/clear pipe operations, service-owned encrypted
+  per-SID face profiles, password-verified management capabilities,
+  LocalSystem-only one-time prepare/stale operations and pure Rust Credential
+  Provider LOGON/UNLOCK serialization.
 - Removal of the legacy SQLite/AES-CBC and UDP password-return path. Existing
   SQLite password fields are retired without decryption and require the user to
   enter the current Windows password again.
-- MinGW builds for `Smile2UnlockAuthService.exe` and the current C++ Credential
-  Provider DLL, including a Windows Rust static library. Linux `xmake build`,
-  all 12 Xmake tests and the release tarball staging pass. The planned pure
-  Rust Credential Provider remains a separate, not-yet-started rewrite.
+- MinGW builds for `Smile2UnlockAuthService.exe`, `su_recognition_agent.exe`,
+  the pure Rust `su_credential_provider.dll` and the Windows Rust core. On
+  2026-09-03 the Linux Release build passed, Rust core was 42/42, and the Rust
+  Provider MinGW/Wine suite was 41 passed + 1 ignored. The Xmake suite is not
+  currently all green: `su_theme_test/default` is the single failure out of 13.
 
 Still requires platform acceptance before release:
 
@@ -218,8 +221,8 @@ Still requires platform acceptance before release:
 - Exercise local and Microsoft accounts through cold boot, lock/unlock, offline
   login, wrong/stale password and password-change flows. Domain/Entra accounts
   remain disabled.
-- Add Windows system-service ownership of encrypted face profiles; the current
-  completed profile daemon/storage integration is Linux-only.
+- Re-run the current service-owned profile and session-agent path on real
+  Windows with a camera; the earlier VM result predates this architecture.
 - Implement an administrator-driven key rotation/re-encryption command and the
   documented clear-and-re-enroll recovery workflow for a lost TPM/machine key.
 - Validate the PowerShell staging script and `setup.iss` with native Windows
