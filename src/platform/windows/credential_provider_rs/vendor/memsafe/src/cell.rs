@@ -170,6 +170,7 @@ impl<T> Cell<T> {
         mem_noaccess(self.ptr, std::mem::size_of::<T>())
     }
 
+    #[allow(dead_code)]
     pub fn no_access(&mut self) -> Result<(), MemoryError> {
         mem_noaccess(self.ptr, std::mem::size_of::<T>())
     }

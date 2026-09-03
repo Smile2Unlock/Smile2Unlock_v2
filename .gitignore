@@ -26,3 +26,6 @@ installer-files
 Output
 
 .*
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml

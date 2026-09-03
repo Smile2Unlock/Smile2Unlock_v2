@@ -47,6 +47,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Gdi",
     "Win32_System_Pipes",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -58,10 +59,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Threading",
 ] }
 windows-sys = { version = "0.61", features = [
+    "Win32_Security_Cryptography",
     "Win32_System_Memory",
     "Win32_System_Threading",
 ] }
-
-[[bin]]
-name = "mock_recognizer"
-path = "src/bin/mock_recognizer.rs"

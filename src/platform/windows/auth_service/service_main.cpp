@@ -16,7 +16,9 @@ constexpr wchar_t kServiceName[] = L"Smile2UnlockAuthService";
 // Diagnostic log (SYSTEM-writable). Diagnostic only; never touches the
 // security surface.
 void log_line(const std::string& message) {
-    std::ofstream log(L"C:\\su-deploy\\authsvc.log", std::ios::app);
+    std::filesystem::create_directories(L"C:\\ProgramData\\Smile2Unlock\\Logs");
+    std::ofstream log(
+        L"C:\\ProgramData\\Smile2Unlock\\Logs\\auth-service.log", std::ios::app);
     log << message << "\n";
 }
 

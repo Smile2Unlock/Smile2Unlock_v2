@@ -10,21 +10,19 @@ use core::cell::{Cell, RefCell};
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::CoTaskMemAlloc;
+use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::UI::Shell::{
-    CPSI_ERROR,
-    CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS,
-    CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION,
+    CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS, CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION,
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE, CREDENTIAL_PROVIDER_FIELD_STATE,
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE, CREDENTIAL_PROVIDER_STATUS_ICON,
-    ICredentialProviderCredential, ICredentialProviderCredential2,
-    ICredentialProviderCredential2_Impl, ICredentialProviderCredential_Impl,
+    ICredentialProviderCredential, ICredentialProviderCredential_Impl,
+    ICredentialProviderCredential2, ICredentialProviderCredential2_Impl,
     ICredentialProviderCredentialEvents, ICredentialProviderCredentialWithFieldOptions,
     ICredentialProviderCredentialWithFieldOptions_Impl,
 };
-use windows_core::{implement, Error, Ref, BOOL, PCWSTR, PWSTR};
+use windows_core::{BOOL, Error, PCWSTR, PWSTR, Ref, implement};
 
 use crate::fields::{self, FieldId};
-use crate::recognition::{Recognition, RS_SUCCESS};
 
 #[implement(
     ICredentialProviderCredential,
@@ -36,32 +34,31 @@ pub struct Credential {
     advised: Cell<bool>,
     /// usage scenario captured at creation (CPUS_LOGON/CPUS_UNLOCK_WORKSTATION).
     scenario: Cell<i32>,
-    /// Set when ReportResult reports a failed login; forbids re-submission.
+    /// Set after a successful ReportResult; prevents accidental re-submission
+    /// while LogonUI tears down the credential.
     stale: Cell<bool>,
     /// Set once GetSerialization returned a credential; forbids re-submission.
     serialized: Cell<bool>,
     /// SID of the user this tile is associated with (V2 CP requirement).
     user_sid: RefCell<Option<String>>,
-    /// Face-recognition client shared with the provider. None when the
-    /// credential is created outside a provider that owns one (never in
-    /// practice); the gate then degrades to the password-only flow.
-    recognition: Option<std::sync::Arc<Recognition>>,
+    /// Password entered into the tile. A non-empty value uses the normal
+    /// Windows password path and is never sent to the face-auth pipe.
+    password: RefCell<Vec<u16>>,
 }
 
 impl Credential {
-    pub fn new(
-        scenario: i32,
-        user_sid: Option<String>,
-        recognition: Option<std::sync::Arc<Recognition>>,
-    ) -> Self {
-        crate::log::cp_log(&format!("Credential::new scenario={} sid={:?}", scenario, user_sid));
+    pub fn new(scenario: i32, user_sid: Option<String>) -> Self {
+        crate::log::cp_log(&format!(
+            "Credential::new scenario={} sid={:?}",
+            scenario, user_sid
+        ));
         Self {
             advised: Cell::new(false),
             scenario: Cell::new(scenario),
             stale: Cell::new(false),
             serialized: Cell::new(false),
             user_sid: RefCell::new(user_sid),
-            recognition,
+            password: RefCell::new(Vec::new()),
         }
     }
 
@@ -89,6 +86,14 @@ impl Credential {
             core::ptr::copy_nonoverlapping(wide.as_ptr(), mem as *mut u16, wide.len());
         }
         Ok(PWSTR(mem as *mut u16))
+    }
+}
+
+impl Drop for Credential {
+    fn drop(&mut self) {
+        let mut password = self.password.borrow_mut();
+        crate::pipe_client::secure_clear(&mut password);
+        password.clear();
     }
 }
 
@@ -139,7 +144,9 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         }
         if !pcpfis.is_null() {
             // SAFETY: caller-provided output slot.
-            unsafe { *pcpfis = CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE(pair.interactive as i32) };
+            unsafe {
+                *pcpfis = CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE(pair.interactive as i32)
+            };
         }
         Ok(())
     }
@@ -180,7 +187,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         }
         let abs_h = height.unsigned_abs();
         // 24-bpp scan lines are padded to 4-byte boundaries in the file.
-        let row_stride = ((width as u32 * 3 + 3) / 4) * 4;
+        let row_stride = (width as u32 * 3).div_ceil(4) * 4;
         let pixels_needed = row_stride * abs_h;
         if off_bits + pixels_needed as usize > BMP.len() {
             crate::log::cp_log("  GetBitmapValue: BMP truncated");
@@ -188,7 +195,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         }
 
         use windows::Win32::Graphics::Gdi::{
-            CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS,
         };
         let header = BITMAPINFOHEADER {
             biSize: core::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -207,16 +214,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let mut bits: *mut core::ffi::c_void = core::ptr::null_mut();
         // SAFETY: bmi is a valid initialized BITMAPINFO; LogonUI owns and
         // destroys the returned HBITMAP with DeleteObject.
-        let hbmp = match unsafe {
-            CreateDIBSection(
-                None,
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut bits,
-                None,
-                0,
-            )
-        } {
+        let hbmp = match unsafe { CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) }
+        {
             Ok(h) => h,
             Err(e) => {
                 crate::log::cp_log(&format!(
@@ -251,8 +250,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     fn GetCheckboxValue(
         &self,
         dwfieldid: u32,
-        pbchecked: *mut BOOL,
-        ppszlabel: *mut PWSTR,
+        _pbchecked: *mut BOOL,
+        _ppszlabel: *mut PWSTR,
     ) -> windows_core::Result<()> {
         crate::log::cp_log(&format!("Credential::GetCheckboxValue({})", dwfieldid));
         // The checkbox field was removed from the v1 tile; keep the method
@@ -276,8 +275,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     fn GetComboBoxValueCount(
         &self,
         dwfieldid: u32,
-        pcitems: *mut u32,
-        pdwselecteditem: *mut u32,
+        _pcitems: *mut u32,
+        _pdwselecteditem: *mut u32,
     ) -> windows_core::Result<()> {
         crate::log::cp_log(&format!("Credential::GetComboBoxValueCount({})", dwfieldid));
         // The combobox field was removed from the v1 tile.
@@ -286,16 +285,38 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     }
 
     fn GetComboBoxValueAt(&self, dwfieldid: u32, dwitem: u32) -> windows_core::Result<PWSTR> {
-        crate::log::cp_log(&format!("Credential::GetComboBoxValueAt({}, {})", dwfieldid, dwitem));
+        crate::log::cp_log(&format!(
+            "Credential::GetComboBoxValueAt({}, {})",
+            dwfieldid, dwitem
+        ));
         // The combobox field was removed from the v1 tile.
         let _ = Credential::field_id(dwfieldid)?;
         Err(Error::from_hresult(crate::E_INVALIDARG))
     }
 
-    fn SetStringValue(&self, dwfieldid: u32, _psz: &PCWSTR) -> windows_core::Result<()> {
+    fn SetStringValue(&self, dwfieldid: u32, psz: &PCWSTR) -> windows_core::Result<()> {
         crate::log::cp_log(&format!("Credential::SetStringValue({})", dwfieldid));
-        // Accept-and-ignore for any valid field; LogonUI may probe hidden fields.
-        let _ = Credential::field_id(dwfieldid)?;
+        let field = Credential::field_id(dwfieldid)?;
+        if field == FieldId::PasswordText {
+            if psz.0.is_null() {
+                let mut password = self.password.borrow_mut();
+                crate::pipe_client::secure_clear(&mut password);
+                password.clear();
+                return Ok(());
+            }
+            let mut length = 0usize;
+            while length < 512 && unsafe { *psz.0.add(length) } != 0 {
+                length += 1;
+            }
+            if length == 512 {
+                return Err(Error::from_hresult(crate::E_INVALIDARG));
+            }
+            let value = unsafe { core::slice::from_raw_parts(psz.0, length) };
+            let mut password = self.password.borrow_mut();
+            crate::pipe_client::secure_clear(&mut password);
+            password.clear();
+            password.extend_from_slice(value);
+        }
         Ok(())
     }
 
@@ -309,7 +330,10 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         dwfieldid: u32,
         _dwselecteditem: u32,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::SetComboBoxSelectedValue({})", dwfieldid));
+        crate::log::cp_log(&format!(
+            "Credential::SetComboBoxSelectedValue({})",
+            dwfieldid
+        ));
         Ok(())
     }
 
@@ -342,8 +366,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             return Err(Error::from_hresult(crate::E_POINTER));
         }
 
-        // One submission per pipe token: a failed login (ReportResult) or a
-        // previous serialization must not produce a second credential.
+        // Only one serialization may be outstanding. ReportResult resets the
+        // state after a failed Windows logon so the user can retry.
         if self.stale.get() || self.serialized.get() {
             crate::log::cp_log(&format!(
                 "GetSerialization: rejected stale={} serialized={}",
@@ -352,60 +376,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             ));
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
-        // Face-recognition gate (RecognitionMode):
-        // - Manual (0, default): this GetSerialization call IS the
-        //   password-box Enter trigger. Recognition runs now; success lets
-        //   the stored secret through, failure rejects the submit (LogonUI
-        //   shows the error status; the tile stays for a retry).
-        // - Auto (1): when LogonUI auto-submits after a face success,
-        //   GetCredentialCount consumed face_ready and armed auto_grant, so
-        //   this gate is skipped. Otherwise (user pressed Enter before a
-        //   success) it falls through to the same manual trigger.
-        if let Some(rec) = self.recognition.as_ref() {
-            if rec.available() {
-                let granted = rec.consume_auto_grant();
-                if !granted && !rec.is_ready() {
-                    let outcome = rec.trigger_and_wait();
-                    crate::log::cp_log(&format!(
-                        "GetSerialization: face gate outcome={}",
-                        outcome
-                    ));
-                    if outcome != RS_SUCCESS {
-                        // Reject the submit with an error status; LogonUI
-                        // keeps the tile and shows the text.
-                        if !ppszoptionalstatustext.is_null() {
-                            let msg: Vec<u16> = "Face recognition failed. Please try again."
-                                .encode_utf16()
-                                .chain(core::iter::once(0))
-                                .collect();
-                            // SAFETY: CoTaskMemAlloc returns a writable block
-                            // of msg.len() u16s; LogonUI frees it with
-                            // CoTaskMemFree.
-                            let mem = unsafe { CoTaskMemAlloc(msg.len() * 2) } as *mut u16;
-                            if !mem.is_null() {
-                                unsafe {
-                                    core::ptr::copy_nonoverlapping(
-                                        msg.as_ptr(), mem, msg.len(),
-                                    );
-                                    *ppszoptionalstatustext = PWSTR(mem);
-                                }
-                            }
-                        }
-                        if !pcpsioptionalstatusicon.is_null() {
-                            unsafe { *pcpsioptionalstatusicon = CPSI_ERROR };
-                        }
-                        if !pcpgsr.is_null() {
-                            // CPGSR_NO_CREDENTIAL_FINISHED: user is done,
-                            // no credential to submit.
-                            unsafe {
-                                *pcpgsr = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(1)
-                            };
-                        }
-                        return Ok(());
-                    }
-                }
-            }
-        }
+        let has_manual_password = !self.password.borrow().is_empty();
 
         let scenario = self.scenario.get();
 
@@ -430,37 +401,40 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             .unwrap_or(0);
         let pid = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() } as u64;
         let base = (millis << 24) ^ (pid << 8) ^ (millis & 0xff);
-        let request_id = if base == 0 { 1 } else { base }
-            + NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
-        let mut password = match crate::pipe_client::PipeClient.prepare(&sid, request_id, 0) {
-            Ok(pw) => {
-                crate::log::cp_log("GetSerialization: pipe prepare OK");
-                pw
-            }
-            Err(err) => {
-                crate::log::cp_log(&format!(
-                    "GetSerialization: pipe prepare FAILED {:08x}",
-                    err.code().0
-                ));
-                return Err(err);
-            }
-        };
-        // CredProtect directly over the protected-memory view; no plain
-        // Vec<u16> copy of the one-time password is produced (memsafe gate).
-        let mut protected = match password.with_password(|units| {
-            crate::serialization::protect_password(units)
-        }) {
-            Ok(Ok(p)) => p,
-            Ok(Err(err)) => {
-                crate::log::cp_log(&format!(
-                    "GetSerialization: protect_password FAILED {:08x}",
-                    err.code().0
-                ));
-                return Err(err);
-            }
-            Err(_) => {
-                crate::log::cp_log("GetSerialization: secret view FAILED");
-                return Err(Error::from_hresult(crate::E_NOTIMPL));
+        let request_id =
+            if base == 0 { 1 } else { base } + NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let mut protected = if has_manual_password {
+            let mut entered = self.password.borrow_mut();
+            let result = crate::serialization::protect_password(&entered);
+            crate::pipe_client::secure_clear(&mut entered);
+            entered.clear();
+            result?
+        } else {
+            let mut session_id = 0u32;
+            let _ = unsafe {
+                ProcessIdToSessionId(
+                    windows::Win32::System::Threading::GetCurrentProcessId(),
+                    &mut session_id,
+                )
+            };
+            let mut password =
+                match crate::pipe_client::PipeClient.prepare(&sid, request_id, session_id) {
+                    Ok(pw) => {
+                        crate::log::cp_log("GetSerialization: broker authenticate-and-prepare OK");
+                        pw
+                    }
+                    Err(err) => {
+                        crate::log::cp_log(&format!(
+                            "GetSerialization: broker authenticate-and-prepare FAILED {:08x}",
+                            err.code().0
+                        ));
+                        return Err(err);
+                    }
+                };
+            match password.with_password(crate::serialization::protect_password) {
+                Ok(Ok(p)) => p,
+                Ok(Err(err)) => return Err(err),
+                Err(_) => return Err(Error::from_hresult(crate::E_NOTIMPL)),
             }
         };
         // Domain/username must come from the tile's bound user (resolved via
@@ -471,23 +445,20 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             Some(sid) => sid.clone(),
             None => return Err(Error::from_hresult(crate::E_NOTIMPL)),
         };
-        let (domain, username) =
-            match crate::serialization::qualified_username_from_sid(&sid_text) {
-                Ok(d) => d,
-                Err(err) => {
-                    crate::log::cp_log("GetSerialization: username resolve failed");
-                    return Err(err);
-                }
-            };
+        let (domain, username) = match crate::serialization::qualified_username_from_sid(&sid_text)
+        {
+            Ok(d) => d,
+            Err(err) => {
+                crate::log::cp_log("GetSerialization: username resolve failed");
+                return Err(err);
+            }
+        };
         // Manual KERB packing, mirroring the C++ baseline exactly
         // (KerbInteractiveUnlockLogonInit + Pack). The C++ build was
         // verified to log on with this layout; CredPackAuthenticationBuffer
         // output differs and was not accepted by LSA in testing.
         let kiul = match crate::serialization::kerb_interactive_unlock_logon_init(
-            &domain,
-            &username,
-            &protected,
-            scenario,
+            &domain, &username, &protected, scenario,
         ) {
             Ok(k) => k,
             Err(err) => {
@@ -519,7 +490,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let serialization = unsafe { &mut *pcpcs };
         serialization.clsidCredentialProvider = crate::CLSID_SU_PROVIDER;
         serialization.ulAuthenticationPackage = auth_package;
-        serialization.rgbSerialization = blob as *mut u8;
+        serialization.rgbSerialization = blob;
         serialization.cbSerialization = blob_len as u32;
         if !pcpgsr.is_null() {
             unsafe { *pcpgsr = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(2) }; // CPGSR_RETURN_CREDENTIAL_FINISHED
@@ -542,13 +513,15 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         _ppszoptionalstatustext: *mut PWSTR,
         _pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::ReportResult status={:#x}", ntsstatus.0));
-        // STATUS_SUCCESS (0) means the login went through; anything else
-        // marks the one-shot credential stale so the same pipe token can
-        // never be re-submitted.
-        if ntsstatus.0 != 0 {
-            self.stale.set(true);
-        }
+        crate::log::cp_log(&format!(
+            "Credential::ReportResult status={:#x}",
+            ntsstatus.0
+        ));
+        // Each brokered retry gets a fresh request id and a fresh face check.
+        // A failed Windows logon must therefore return the tile to its input
+        // state instead of permanently disabling it.
+        self.serialized.set(false);
+        self.stale.set(ntsstatus.0 == 0);
         Ok(())
     }
 }
@@ -595,5 +568,3 @@ impl ICredentialProviderCredentialWithFieldOptions_Impl for Credential_Impl {
         Ok(CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS(options))
     }
 }
-
-

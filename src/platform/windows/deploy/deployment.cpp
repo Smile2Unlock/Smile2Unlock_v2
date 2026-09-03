@@ -2,14 +2,20 @@
 
 #include "deployment.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <winsvc.h>
+#include <shlobj.h>
 
+#include <array>
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace su::windeploy {
 
@@ -20,7 +26,172 @@ constexpr wchar_t kClsidKeyPath[] =
     L"SOFTWARE\\Classes\\CLSID\\{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
 constexpr wchar_t kCredentialProvidersKeyPath[] =
     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\CredentialProviders";
+constexpr wchar_t kCredentialProviderKeyPath[] =
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\CredentialProviders\\"
+    L"{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
 constexpr wchar_t kServiceName[] = L"Smile2UnlockAuthService";
+
+struct InstalledComponents {
+    std::filesystem::path credential_provider;
+    std::filesystem::path auth_service;
+    std::filesystem::path recognition_agent;
+};
+
+std::expected<std::filesystem::path, std::string> program_files_root() {
+    PWSTR raw = nullptr;
+    if (FAILED(::SHGetKnownFolderPath(FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, nullptr, &raw))) {
+        return std::unexpected("failed to resolve Program Files");
+    }
+    const auto path = std::filesystem::path{raw};
+    ::CoTaskMemFree(raw);
+    return path;
+}
+
+std::expected<void, std::string> copy_required_file(
+    const std::filesystem::path& source,
+    const std::filesystem::path& destination) {
+    auto error = std::error_code{};
+    if (!std::filesystem::is_regular_file(source, error)
+        || std::filesystem::is_symlink(source, error)) {
+        return std::unexpected("required deployment file is missing: " + source.string());
+    }
+    if (std::filesystem::is_regular_file(destination, error)
+        && std::filesystem::equivalent(source, destination, error)) {
+        return {};
+    }
+    error.clear();
+    std::filesystem::copy_file(
+        source, destination, std::filesystem::copy_options::overwrite_existing, error);
+    if (error) {
+        return std::unexpected("failed to install " + source.filename().string()
+            + ": " + error.message());
+    }
+    return {};
+}
+
+std::expected<InstalledComponents, std::string> stage_security_components(
+    const std::filesystem::path& source_bin) {
+    const auto program_files = program_files_root();
+    if (!program_files) {
+        return std::unexpected(program_files.error());
+    }
+    const auto install_root = *program_files / "Smile2Unlock";
+    const auto install_bin = install_root / "bin";
+    const auto install_models = install_root / "assets" / "models" / "seeta";
+    const auto install_i18n = install_root / "assets" / "i18n";
+    auto error = std::error_code{};
+    std::filesystem::create_directories(install_bin, error);
+    if (error) {
+        return std::unexpected("failed to create the protected install directory: "
+            + error.message());
+    }
+    std::filesystem::create_directories(install_models, error);
+    if (error) {
+        return std::unexpected("failed to create the protected model directory: "
+            + error.message());
+    }
+    std::filesystem::create_directories(install_i18n, error);
+    if (error) {
+        return std::unexpected("failed to create the translation directory: "
+            + error.message());
+    }
+
+    const auto source_service = std::filesystem::is_regular_file(
+            source_bin / "Smile2UnlockAuthService.exe", error)
+        ? source_bin / "Smile2UnlockAuthService.exe"
+        : source_bin / "su_auth_service.exe";
+    const auto installed = InstalledComponents{
+        .credential_provider = install_bin / "su_credential_provider.dll",
+        .auth_service = install_bin / "Smile2UnlockAuthService.exe",
+        .recognition_agent = install_bin / "su_recognition_agent.exe",
+    };
+    for (const auto& pair : {
+             std::pair{source_service, installed.auth_service},
+             std::pair{source_bin / "su_recognition_agent.exe", installed.recognition_agent},
+             std::pair{source_bin / "su_app.exe", install_bin / "su_app.exe"},
+             std::pair{source_bin / "su_deploy_helper.exe", install_bin / "su_deploy_helper.exe"},
+             std::pair{source_bin / "su_password_tool.exe", install_bin / "su_password_tool.exe"},
+             std::pair{source_bin / "su_credential_provider.dll", install_bin / "su_credential_provider.dll"},
+             std::pair{source_bin / "Smile2Unlock.ico", install_bin / "Smile2Unlock.ico"},
+         }) {
+        if (const auto copied = copy_required_file(pair.first, pair.second); !copied) {
+            return std::unexpected(copied.error());
+        }
+    }
+
+    // The agent is dynamically linked to SeetaFace and the MinGW runtime.
+    // Copy only the known runtime set; unrelated DLLs beside the package are
+    // never promoted into the trusted install directory.
+    constexpr auto runtime_names = std::array{
+        L"libgcc_s_seh-1.dll", L"libstdc++-6.dll", L"libwinpthread-1.dll",
+        L"libgomp-1.dll", L"libSeetaFaceAntiSpoofingX600.dll",
+        L"libSeetaFaceDetector600.dll", L"libSeetaFaceLandmarker600.dll",
+        L"libSeetaFaceRecognizer610.dll", L"libSeetaAuthorize.dll", L"libtennis.dll",
+    };
+    for (const auto* name : runtime_names) {
+        const auto source = source_bin / name;
+        if (const auto copied = copy_required_file(source, install_bin / name); !copied) {
+            return std::unexpected(copied.error());
+        }
+    }
+
+    const auto source_assets = std::filesystem::is_directory(source_bin / "assets", error)
+        ? source_bin / "assets" / "models" / "seeta"
+        : source_bin.parent_path() / "assets" / "models" / "seeta";
+    constexpr auto model_names = std::array{
+        L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
+        L"fas_first.csta", L"fas_second.csta",
+    };
+    for (const auto* name : model_names) {
+        if (const auto copied = copy_required_file(
+                source_assets / name, install_models / name); !copied) {
+            return std::unexpected(copied.error());
+        }
+    }
+    for (const auto* name : {L"en.json", L"zh-CN.json"}) {
+        if (const auto copied = copy_required_file(
+                source_assets.parent_path().parent_path() / "i18n" / name,
+                install_i18n / name); !copied) {
+            return std::unexpected(copied.error());
+        }
+    }
+    return installed;
+}
+
+std::expected<std::filesystem::path, std::string> stage_credential_provider(
+    const std::filesystem::path& source_dll) {
+    const auto program_files = program_files_root();
+    if (!program_files) {
+        return std::unexpected(program_files.error());
+    }
+    const auto install_bin = *program_files / "Smile2Unlock" / "bin";
+    auto error = std::error_code{};
+    std::filesystem::create_directories(install_bin, error);
+    if (error) {
+        return std::unexpected("failed to create the protected install directory: "
+            + error.message());
+    }
+    // Keep a stable provider path in the registry. LogonUI loads the DLL for
+    // the lifetime of a logon session, so an in-use update is rejected with a
+    // clear error instead of silently switching the registry to an opaque
+    // content-addressed filename. The user can sign out or reboot, then retry.
+    const auto destination = install_bin / "su_credential_provider.dll";
+    if (const auto copied = copy_required_file(source_dll, destination); !copied) {
+        return std::unexpected(copied.error()
+            + "; sign out or reboot Windows before updating the credential provider");
+    }
+    return destination;
+}
+
+std::filesystem::path current_binary_directory() {
+    auto path = std::wstring(32768, L'\0');
+    const auto length = ::GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) {
+        return {};
+    }
+    path.resize(length);
+    return std::filesystem::path{path}.parent_path();
+}
 
 std::wstring utf8_to_wide(std::string_view text) {
     if (text.empty()) {
@@ -70,6 +241,29 @@ bool file_exists(const std::wstring& path) {
         && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+std::string json_escape(std::string_view text) {
+    auto escaped = std::string{};
+    escaped.reserve(text.size());
+    for (const auto ch : text) {
+        switch (ch) {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\b': escaped += "\\b"; break;
+        case '\f': escaped += "\\f"; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default:
+            if (static_cast<unsigned char>(ch) < 0x20) {
+                escaped += std::format("\\u{:04x}", static_cast<unsigned char>(ch));
+            } else {
+                escaped += ch;
+            }
+        }
+    }
+    return escaped;
+}
+
 }  // namespace
 
 bool process_elevated() {
@@ -86,38 +280,19 @@ bool process_elevated() {
 }
 
 bool credential_provider_enrolled() {
-    // Any numeric value under CredentialProviders equal to the CLSID.
     HKEY key = nullptr;
-    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, kCredentialProvidersKeyPath, 0,
+    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath, 0,
             KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) {
         return false;
     }
-    auto enrolled = false;
-    for (DWORD index = 0;; ++index) {
-        wchar_t name[64] = {};
-        DWORD name_size = 64;
-        BYTE value[256] = {};
-        DWORD value_size = sizeof(value);
-        const auto status = ::RegEnumValueW(
-            key, index, name, &name_size, nullptr, nullptr, value, &value_size);
-        if (status == ERROR_NO_MORE_ITEMS) {
-            break;
-        }
-        if (status != ERROR_SUCCESS) {
-            continue;
-        }
-        std::wstring text(reinterpret_cast<wchar_t*>(value),
-            value_size / sizeof(wchar_t));
-        while (!text.empty() && text.back() == L'\0') {
-            text.pop_back();
-        }
-        if (text == kClsid) {
-            enrolled = true;
-            break;
-        }
-    }
+    DWORD disabled = 0;
+    DWORD type = 0;
+    DWORD size = sizeof(disabled);
+    const auto status = ::RegQueryValueExW(
+        key, L"Disabled", nullptr, &type, reinterpret_cast<BYTE*>(&disabled), &size);
     ::RegCloseKey(key);
-    return enrolled;
+    return status == ERROR_FILE_NOT_FOUND
+        || (status == ERROR_SUCCESS && type == REG_DWORD && disabled == 0);
 }
 
 bool credential_provider_registered() {
@@ -209,27 +384,49 @@ std::expected<DeploymentSnapshot, std::string> inspect_deployment() {
 
     const auto service_binary = auth_service_binary_path();
     const auto service_running = auth_service_running();
+    auto service_path_managed = false;
+    if (const auto program_files = program_files_root(); program_files && !service_binary.empty()) {
+        auto configured_path = std::filesystem::path{utf8_to_wide(service_binary)};
+        auto configured_text = configured_path.wstring();
+        if (configured_text.size() >= 2 && configured_text.front() == L'"'
+            && configured_text.back() == L'"') {
+            configured_path = configured_text.substr(1, configured_text.size() - 2);
+        }
+        const auto expected_path = *program_files / "Smile2Unlock" / "bin"
+            / "Smile2UnlockAuthService.exe";
+        auto error = std::error_code{};
+        service_path_managed = std::filesystem::equivalent(
+            configured_path, expected_path, error) && !error;
+    }
+    const auto service_ready = service_running && service_path_managed;
     snapshot.targets.push_back(ComponentStatus{
         .id = std::string(kAuthServiceId),
         .service = "Smile2Unlock Auth Service",
         .effective_path = service_binary,
         .role = "login-and-lock",
         .state = auth_service_installed()
-            ? (service_running ? "managed" : "supported")
+            ? (!service_path_managed ? "conflict"
+                : (service_ready ? "managed" : "supported"))
             : "absent",
         .detail = !auth_service_installed()
             ? "auth service is not installed"
-            : (service_running ? "service is running"
-                               : "service is installed but not running"),
-        .configured = service_running,
+            : (!service_path_managed ? "service uses a legacy or unmanaged binary path"
+                : (service_running ? "service is running"
+                                   : "service is installed but not running")),
+        .configured = service_ready,
         .configurable = true,
-        .managed = service_running,
+        .managed = service_ready,
     });
     return snapshot;
 }
 
 std::expected<void, std::string> register_credential_provider(const std::string& dll_path) {
-    const auto wide_dll = utf8_to_wide(dll_path);
+    const auto source_dll = std::filesystem::path{utf8_to_wide(dll_path)};
+    const auto installed_dll = stage_credential_provider(source_dll);
+    if (!installed_dll) {
+        return std::unexpected(installed_dll.error());
+    }
+    const auto wide_dll = installed_dll->wstring();
     if (wide_dll.empty() || !file_exists(wide_dll)) {
         return std::unexpected("credential provider DLL not found: " + dll_path);
     }
@@ -239,9 +436,12 @@ std::expected<void, std::string> register_credential_provider(const std::string&
             KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &clsid_key, nullptr) != ERROR_SUCCESS) {
         return std::unexpected("failed to open the CLSID registry key");
     }
-    ::RegSetValueExW(clsid_key, L"", 0, REG_SZ,
+    const auto clsid_name_status = ::RegSetValueExW(clsid_key, L"", 0, REG_SZ,
         reinterpret_cast<const BYTE*>(L"Smile2Unlock"), sizeof(L"Smile2Unlock"));
     ::RegCloseKey(clsid_key);
+    if (clsid_name_status != ERROR_SUCCESS) {
+        return std::unexpected("failed to write the CLSID display name");
+    }
 
     const auto inproc_path = std::wstring(kClsidKeyPath) + L"\\InprocServer32";
     HKEY inproc_key = nullptr;
@@ -250,40 +450,41 @@ std::expected<void, std::string> register_credential_provider(const std::string&
         return std::unexpected("failed to open the InprocServer32 registry key");
     }
     const auto dll_bytes = (wide_dll.size() + 1) * sizeof(wchar_t);
-    ::RegSetValueExW(inproc_key, L"", 0, REG_SZ,
+    const auto dll_status = ::RegSetValueExW(inproc_key, L"", 0, REG_SZ,
         reinterpret_cast<const BYTE*>(wide_dll.c_str()), static_cast<DWORD>(dll_bytes));
     constexpr wchar_t kApartment[] = L"Apartment";
-    ::RegSetValueExW(inproc_key, L"ThreadingModel", 0, REG_SZ,
+    const auto threading_status = ::RegSetValueExW(inproc_key, L"ThreadingModel", 0, REG_SZ,
         reinterpret_cast<const BYTE*>(kApartment), sizeof(kApartment));
     ::RegCloseKey(inproc_key);
+    if (dll_status != ERROR_SUCCESS || threading_status != ERROR_SUCCESS) {
+        return std::unexpected("failed to write the InprocServer32 registration");
+    }
 
-    // Enroll in the logon UI under the next free index (1, 2, ...).
+    // LogonUI discovers credential providers by CLSID-named subkeys.
     HKEY cp_key = nullptr;
-    if (::RegCreateKeyExW(HKEY_LOCAL_MACHINE, kCredentialProvidersKeyPath, 0, nullptr, 0,
+    if (::RegCreateKeyExW(HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath, 0, nullptr, 0,
             KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &cp_key, nullptr) != ERROR_SUCCESS) {
         return std::unexpected("failed to open the CredentialProviders registry key");
     }
-    if (!credential_provider_enrolled()) {
-        DWORD index = 1;
-        wchar_t name[16] = {};
-        while (true) {
-            std::swprintf(name, 16, L"%lu", index);
-            DWORD type = 0;
-            const auto status = ::RegQueryValueExW(
-                cp_key, name, nullptr, &type, nullptr, nullptr);
-            if (status != ERROR_SUCCESS) {
-                break;
-            }
-            ++index;
-        }
-        ::RegSetValueExW(cp_key, name, 0, REG_SZ,
-            reinterpret_cast<const BYTE*>(kClsid), sizeof(kClsid));
-    }
+    constexpr wchar_t kProviderName[] = L"Smile2Unlock Credential Provider";
+    const auto enrollment_status = ::RegSetValueExW(cp_key, L"", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(kProviderName), sizeof(kProviderName));
+    const auto enabled_status = ::RegDeleteValueW(cp_key, L"Disabled");
     ::RegCloseKey(cp_key);
+    if (enrollment_status != ERROR_SUCCESS
+        || (enabled_status != ERROR_SUCCESS && enabled_status != ERROR_FILE_NOT_FOUND)) {
+        return std::unexpected("failed to enroll the credential provider");
+    }
     return {};
 }
 
 std::expected<void, std::string> unregister_credential_provider() {
+    const auto removed = ::RegDeleteTreeW(HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath);
+    if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) {
+        return std::unexpected("failed to remove the CredentialProviders registration");
+    }
+    // Remove values written by early development builds, which incorrectly
+    // stored the CLSID directly below the parent key.
     HKEY cp_key = nullptr;
     if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, kCredentialProvidersKeyPath, 0,
             KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &cp_key) == ERROR_SUCCESS) {
@@ -312,32 +513,131 @@ std::expected<void, std::string> unregister_credential_provider() {
         }
         ::RegCloseKey(cp_key);
     }
-    // Keep the CLSID registration so the DLL can still be probed; the
-    // logon-UI enrollment is what is removed.
+    // Keep the CLSID/InprocServer32 registration for diagnostics.
     return {};
 }
 
 std::expected<void, std::string> ensure_auth_service() {
-    if (auth_service_running()) {
-        return {};
-    }
-    // SC_MANAGER_START_SERVICE (0x40) is missing from mingw's winsvc.h.
-    constexpr auto kManagerStartService = 0x40u;
     const auto manager = ::OpenSCManagerW(
-        nullptr, nullptr, SC_MANAGER_CONNECT | kManagerStartService);
+        nullptr, nullptr, SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
     if (manager == nullptr) {
         return std::unexpected("failed to open the service control manager");
     }
-    const auto service = ::OpenServiceW(manager, kServiceName, SERVICE_START);
-    if (service == nullptr) {
+    auto service = ::OpenServiceW(
+        manager,
+        kServiceName,
+        SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG);
+    if (service != nullptr) {
+        SERVICE_STATUS current{};
+        if (::QueryServiceStatus(service, &current)
+            && current.dwCurrentState != SERVICE_STOPPED) {
+            (void)::ControlService(service, SERVICE_CONTROL_STOP, &current);
+            for (int attempt = 0; attempt < 50; ++attempt) {
+                ::Sleep(100);
+                if (::QueryServiceStatus(service, &current)
+                    && current.dwCurrentState == SERVICE_STOPPED) {
+                    break;
+                }
+            }
+            if (current.dwCurrentState != SERVICE_STOPPED) {
+                ::CloseServiceHandle(service);
+                ::CloseServiceHandle(manager);
+                return std::unexpected("timed out while stopping the auth service for update");
+            }
+        }
+    }
+    const auto installed = stage_security_components(current_binary_directory());
+    if (!installed) {
+        if (service != nullptr) {
+            (void)::StartServiceW(service, 0, nullptr);
+            ::CloseServiceHandle(service);
+        }
         ::CloseServiceHandle(manager);
-        return std::unexpected("auth service is not installed");
+        return std::unexpected(installed.error());
+    }
+    if (service == nullptr) {
+        if (::GetLastError() != ERROR_SERVICE_DOES_NOT_EXIST) {
+            ::CloseServiceHandle(manager);
+            return std::unexpected("failed to open the auth service");
+        }
+        const auto service_binary = installed->auth_service.wstring();
+        if (service_binary.empty() || !file_exists(service_binary)) {
+            ::CloseServiceHandle(manager);
+            return std::unexpected("auth service binary is not deployed next to the helper");
+        }
+        const auto quoted_binary = L"\"" + service_binary + L"\"";
+        service = ::CreateServiceW(
+            manager,
+            kServiceName,
+            L"Smile2Unlock Authentication Service",
+            SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG,
+            SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_AUTO_START,
+            SERVICE_ERROR_NORMAL,
+            quoted_binary.c_str(),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr);
+        if (service == nullptr) {
+            ::CloseServiceHandle(manager);
+            return std::unexpected("failed to register the auth service");
+        }
+    }
+    const auto quoted_binary = L"\"" + installed->auth_service.wstring() + L"\"";
+    if (!::ChangeServiceConfigW(
+            service,
+            SERVICE_NO_CHANGE,
+            SERVICE_AUTO_START,
+            SERVICE_NO_CHANGE,
+            quoted_binary.c_str(),
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr)) {
+        ::CloseServiceHandle(service);
+        ::CloseServiceHandle(manager);
+        return std::unexpected("failed to move the auth service to Program Files");
     }
     const auto started = ::StartServiceW(service, 0, nullptr);
+    const auto start_error = started ? ERROR_SUCCESS : ::GetLastError();
+    auto final_state = SERVICE_STOPPED;
+    auto final_error = start_error;
+    if (started || start_error == ERROR_SERVICE_ALREADY_RUNNING) {
+        SERVICE_STATUS_PROCESS status{};
+        DWORD status_size = 0;
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            if (!::QueryServiceStatusEx(
+                    service, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status),
+                    sizeof(status), &status_size)) {
+                final_error = ::GetLastError();
+                break;
+            }
+            final_state = status.dwCurrentState;
+            if (final_state == SERVICE_RUNNING) {
+                final_error = NO_ERROR;
+                break;
+            }
+            if (final_state == SERVICE_STOPPED) {
+                final_error = status.dwWin32ExitCode != NO_ERROR
+                    ? status.dwWin32ExitCode
+                    : ERROR_SERVICE_NOT_ACTIVE;
+                break;
+            }
+            ::Sleep(100);
+        }
+        if (final_state != SERVICE_RUNNING && final_error == NO_ERROR) {
+            final_error = ERROR_SERVICE_REQUEST_TIMEOUT;
+        }
+    }
     ::CloseServiceHandle(service);
     ::CloseServiceHandle(manager);
-    if (!started && ::GetLastError() != ERROR_SERVICE_ALREADY_RUNNING) {
-        return std::unexpected("failed to start the auth service");
+    if (final_state != SERVICE_RUNNING) {
+        return std::unexpected(std::format(
+            "failed to start the auth service (Win32 error {})", final_error));
     }
     return {};
 }
@@ -351,8 +651,8 @@ std::string snapshot_json(const DeploymentSnapshot& snapshot) {
         }
         json += std::format(
             R"({{"id":"{}","service":"{}","effective_path":"{}","role":"{}","state":"{}","detail":"{}","configured":{},"configurable":{},"managed":{},"wallet_available":false,"wallet_enabled":false}})",
-            target.id, target.service, target.effective_path, target.role, target.state,
-            target.detail,
+            json_escape(target.id), json_escape(target.service), json_escape(target.effective_path),
+            json_escape(target.role), json_escape(target.state), json_escape(target.detail),
             target.configured ? "true" : "false",
             target.configurable ? "true" : "false",
             target.managed ? "true" : "false");

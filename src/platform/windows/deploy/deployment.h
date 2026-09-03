@@ -43,7 +43,7 @@ inline constexpr std::string_view kAuthServiceId = "auth-service";
 [[nodiscard]] bool process_elevated();
 
 // Registry: is the credential provider enrolled in the logon UI?
-// (CredentialProviders key contains the CLSID.)
+// (CredentialProviders contains a CLSID-named subkey.)
 [[nodiscard]] bool credential_provider_enrolled();
 
 // Registry: is the CLSID registered and pointing at an existing DLL?

@@ -1,8 +1,10 @@
 module;
 
 #include <nlohmann/json.hpp>
+#include <windows.h>
+#include <shellapi.h>
+#include "../platform/windows/auth_service/profile_client.h"
 #include "../platform/windows/deploy/deployment.h"
-#include "../platform/windows/udp_recognition_server.h"
 
 module su.app.controller;
 import std;
@@ -10,25 +12,6 @@ import su.recognizer.service;
 import su.recognizer.image;
 import su.app.user;
 import su.core.types;
-
-// Plain-TU bridge (user_windows.cpp): registry write for the recognition
-// policy consumed by the credential provider at lock-screen time.
-extern "C" {
-int su_win_write_recognition_registry(
-    unsigned int mode,
-    unsigned int auto_delay_sec,
-    unsigned int retry_delay_sec,
-    unsigned int timeout_sec);
-}
-
-extern "C" int __stdcall ShellExecuteExW(void* exec_info);
-extern "C" int __stdcall GetModuleFileNameW(void* module, wchar_t* buffer, unsigned long size);
-extern "C" unsigned long __stdcall GetTempPathW(unsigned long length, wchar_t* buffer);
-extern "C" int __stdcall WaitForSingleObject(void* handle, unsigned long milliseconds);
-extern "C" int __stdcall CloseHandle(void* handle);
-extern "C" void* __stdcall CreateFileA(const char* name, unsigned long access, unsigned long share, void* security, unsigned long creation, unsigned long flags, void* template_file);
-extern "C" int __stdcall ReadFile(void* file, void* buffer, unsigned long to_read, unsigned long* read, void* overlapped);
-extern "C" int __stdcall WideCharToMultiByte(unsigned int code_page, unsigned long flags, const wchar_t* wide, int wide_length, char* narrow, int narrow_length, const char* default_char, int* used_default);
 
 namespace su::app {
 
@@ -114,44 +97,10 @@ std::expected<std::string, std::string> resolve_image_sample_source(
 }
 
 // The Linux implementation talks to the LocalSystem authentication service
-// (su_authd) over the su.control socket and inspects PAM deployments. On
-// Windows there is no control socket: profile storage is system-owned under
-// ProgramData (see docs/rewrite_master_plan.md "凭据存储" platform
-// decision) and su_app reads/writes it directly through the Rust core FFI,
-// because the Credential Provider never consumes profiles (recognition
-// results cross loopback UDP) and the Windows auth service only owns the
-// logon-secret pipe.
-
-const char* core_error_name(CoreError error) {
-    switch (error) {
-        case CoreError::kNullArgument: return "null argument";
-        case CoreError::kInvalidUtf8: return "invalid utf-8";
-        case CoreError::kUserDenied: return "user denied";
-        case CoreError::kIoError: return "io error";
-        case CoreError::kParseError: return "parse error";
-        case CoreError::kWriteError: return "write error";
-        case CoreError::kInvalidArgument: return "invalid argument";
-        case CoreError::kBufferTooSmall: return "buffer too small";
-        case CoreError::kCryptoError: return "crypto error";
-        case CoreError::kKeyUnavailable: return "key unavailable";
-        case CoreError::kMigrationRequired: return "migration required";
-        case CoreError::kUnknown: return "unknown error";
-    }
-    return "unknown error";
-}
-
-const char* recognizer_error_name(su::recognizer::RecognizerError error) {
-    switch (error) {
-        case su::recognizer::RecognizerError::kNoCamera: return "no camera";
-        case su::recognizer::RecognizerError::kCameraUnavailable: return "camera unavailable";
-        case su::recognizer::RecognizerError::kModelUnavailable: return "model unavailable";
-        case su::recognizer::RecognizerError::kInvalidArgument: return "invalid argument";
-        case su::recognizer::RecognizerError::kInvalidImage: return "invalid image";
-        case su::recognizer::RecognizerError::kImageLoadFailed: return "image load failed";
-        case su::recognizer::RecognizerError::kNoFace: return "no face";
-    }
-    return "unknown error";
-}
+// (su_authd) over the su.control socket and inspects PAM deployments. Windows
+// has no control socket: the LocalSystem auth service is the sole
+// profile authority. The GUI only sends authenticated profile requests over
+// its named pipe; it never opens the protected profile file directly.
 
 std::expected<std::vector<FaceProfileSummary>, std::string> profile_rows_from_json(
     std::string_view payload) {
@@ -206,6 +155,39 @@ std::expected<FaceAuthReport, std::string> auth_report_from_json(std::string_vie
 // load_system_status().
 std::string deploy_helper_path();
 
+bool save_recognition_settings(const CoreConfig& config) {
+    auto raw_key = HKEY{};
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            L"Software\\Smile2Unlock\\Recognition",
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            nullptr,
+            &raw_key,
+            nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    const auto key = std::unique_ptr<std::remove_pointer_t<HKEY>, decltype(&RegCloseKey)>{
+        raw_key, &RegCloseKey};
+    const auto camera_index = static_cast<DWORD>(std::max(config.selected_camera, 0));
+    const auto recognition_threshold = static_cast<DWORD>(
+        std::clamp(config.recognition_threshold, 0.5F, 1.0F) * 1000.0F);
+    const auto liveness_enabled = DWORD{config.liveness_detection ? 1U : 0U};
+    const auto liveness_threshold = static_cast<DWORD>(
+        std::clamp(config.liveness_threshold, 0.3F, 1.0F) * 1000.0F);
+    const auto set = [raw_key](const wchar_t* name, const DWORD& value) {
+        return RegSetValueExW(
+            raw_key, name, 0, REG_DWORD,
+            reinterpret_cast<const BYTE*>(&value), sizeof(value)) == ERROR_SUCCESS;
+    };
+    return set(L"CameraIndex", camera_index)
+        && set(L"RecognitionThresholdMilli", recognition_threshold)
+        && set(L"LivenessEnabled", liveness_enabled)
+        && set(L"LivenessThresholdMilli", liveness_threshold);
+}
+
 }  // namespace
 
 std::string AppController::config_path() const {
@@ -219,14 +201,11 @@ std::string AppController::config_path() const {
 }
 
 std::string AppController::profile_store_path() const {
-    const std::filesystem::path root = [] {
-        if (const auto* program_data = std::getenv("PROGRAMDATA")) {
-            return std::filesystem::path(program_data);
-        }
-        return std::filesystem::path{"C:/ProgramData"};
-    }();
-    return (root / "smile2unlock" / "users"
-        / std::to_string(current_uid()) / "profiles.s2u").string();
+    return "service://Smile2UnlockAuthService/current-user/profiles";
+}
+
+std::vector<su::recognizer::CameraInfo> AppController::enumerate_cameras() const {
+    return recognizer_.enumerate_cameras();
 }
 
 std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
@@ -236,12 +215,22 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         return std::unexpected(std::format("failed to load config from Rust core: {}", path));
     }
 
+    auto profiles_json = std::string{"[]"};
+    auto profiles = std::vector<FaceProfileSummary>{};
+    if (const auto loaded_json = su::windows::profile_client::list_profiles(); loaded_json) {
+        if (const auto rows = profile_rows_from_json(*loaded_json); rows) {
+            profiles_json = *loaded_json;
+            profiles = *rows;
+        }
+    }
     return AppSnapshot{
         .title = std::format("Smile2Unlock core v{}", core_version_major()),
         .cameras = recognizer_.enumerate_cameras(),
         .config = *loaded_config,
         .config_path = path,
         .profile_store_path = profile_store_path(),
+        .profiles = std::move(profiles),
+        .profiles_json = std::move(profiles_json),
         .slint_enabled = SU_HAS_SLINT != 0,
         .seetaface_available = recognizer_.seetaface_available(),
     };
@@ -281,17 +270,8 @@ std::expected<void, std::string> AppController::save_config_snapshot(const CoreC
     if (!saved) {
         return std::unexpected(std::format("failed to save config through Rust core: {}", path));
     }
-    // Mirror the recognition trigger policy to the HKLM registry key the
-    // credential provider reads. Best-effort: config.toml stays authoritative
-    // for the GUI; a non-admin session simply skips the mirror.
-    if (su_win_write_recognition_registry(
-            config.recognition_mode,
-            config.auto_delay_sec,
-            config.retry_delay_sec,
-            config.timeout_sec) != 0) {
-        // Not fatal: recognition settings still apply after the next lock if
-        // the registry write succeeds elsewhere; surface nothing here because
-        // a non-elevated run is a normal state.
+    if (!save_recognition_settings(config)) {
+        return std::unexpected("failed to save Windows lock-screen recognition settings");
     }
     return {};
 }
@@ -310,25 +290,10 @@ std::expected<FaceDemoSnapshot, std::string> AppController::run_face_demo(
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_sample(
     std::string_view label,
     std::string_view face_sample_source) {
-    const auto resolved = resolve_image_sample_source(recognizer_, face_sample_source);
-    if (!resolved) {
-        return std::unexpected(resolved.error());
-    }
-
-    const auto username = current_username("");
-    if (username.empty()) {
-        return std::unexpected("failed to resolve current account");
-    }
-    const auto enrolled = su::app::enroll_face_profile(
-        profile_store_path(), label, *resolved);
-    if (!enrolled) {
-        return std::unexpected(std::format("failed to enroll profile: {}", core_error_name(enrolled.error())));
-    }
-    const auto profiles = su::app::list_face_profiles_json(profile_store_path());
-    if (!profiles) {
-        return std::unexpected(std::format("failed to list profiles: {}", core_error_name(profiles.error())));
-    }
-    return *profiles;
+    (void)label;
+    (void)face_sample_source;
+    return std::unexpected(
+        "Windows profile enrollment requires a live camera capture and password verification");
 }
 
 std::expected<std::string, std::string> AppController::enroll_face_profile_from_current_frame(
@@ -352,7 +317,9 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
         return std::unexpected(result.error());
     }
 
-    return enroll_face_profile_from_sample(label, su::recognizer::embedding_sample_source(result->feature));
+    return su::windows::profile_client::enroll_profile(
+        label,
+        su::recognizer::embedding_sample_source(result->feature));
 }
 
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
@@ -372,21 +339,18 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
     if (username.empty()) {
         return std::unexpected("failed to resolve current account");
     }
-    const auto config = load_config(config_path());
-    if (!config) {
-        return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
+    const auto report_json = su::windows::profile_client::verify_profile(
+        *resolved, liveness_ok);
+    if (!report_json) {
+        return std::unexpected(report_json.error());
     }
-    const auto auth_report = su::app::authenticate_face_sample_report(
-        profile_store_path(),
-        *resolved,
-        config->recognition_threshold,
-        liveness_ok);
+    const auto auth_report = auth_report_from_json(*report_json);
     if (!auth_report) {
-        return std::unexpected(std::format("failed to authenticate face sample: {}", core_error_name(auth_report.error())));
+        return std::unexpected(auth_report.error());
     }
-    const auto profiles = su::app::list_face_profiles_json(profile_store_path());
+    const auto profiles = su::windows::profile_client::list_profiles();
     if (!profiles) {
-        return std::unexpected(std::format("failed to list profiles: {}", core_error_name(profiles.error())));
+        return std::unexpected(profiles.error());
     }
     const auto profile_rows = profile_rows_from_json(*profiles);
     if (!profile_rows) {
@@ -397,21 +361,10 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
         .score = auth_report->score,
         .profile_count = auth_report->profile_count,
     };
-    const auto report_json = std::format(
-        R"({{"accepted":{},"score":{},"threshold":{},"liveness_ok":{},"profile_count":{},"best_profile_id":"{}","best_profile_label":"{}","reason":"{}"}})",
-        auth_report->accepted ? "true" : "false",
-        auth_report->score,
-        auth_report->threshold,
-        auth_report->liveness_ok ? "true" : "false",
-        auth_report->profile_count,
-        auth_report->best_profile_id,
-        auth_report->best_profile_label,
-        auth_report->reason);
-
     return FaceDemoSnapshot{
         .profiles = *profile_rows,
         .profiles_json = *profiles,
-        .auth_report_json = report_json,
+        .auth_report_json = *report_json,
         .decision = decision,
         .report = *auth_report,
     };
@@ -447,9 +400,9 @@ void AppController::cancel_camera_operation() {
 }
 
 std::expected<std::string, std::string> AppController::list_face_profiles() {
-    const auto profiles = su::app::list_face_profiles_json(profile_store_path());
+    const auto profiles = su::windows::profile_client::list_profiles();
     if (!profiles) {
-        return std::unexpected(std::format("failed to list profiles: {}", core_error_name(profiles.error())));
+        return std::unexpected(profiles.error());
     }
     return *profiles;
 }
@@ -462,17 +415,23 @@ std::expected<std::vector<FaceProfileSummary>, std::string> AppController::list_
     return profile_rows_from_json(*profiles);
 }
 
-std::expected<bool, std::string> AppController::delete_face_profile_by_id(std::string_view profile_id) {
-    const auto deleted = su::app::delete_face_profile(profile_store_path(), profile_id);
+std::expected<bool, std::string> AppController::delete_face_profile_by_id(
+    std::string_view profile_id) {
+    const auto deleted = su::windows::profile_client::delete_profile(profile_id);
     if (!deleted) {
-        return std::unexpected(std::format("failed to delete profile: {}", core_error_name(deleted.error())));
+        return std::unexpected(deleted.error());
     }
     return *deleted;
 }
 
+std::expected<void, std::string> AppController::configure_windows_account_credential(
+    std::string_view windows_password) {
+    return su::windows::profile_client::store_account_credential(windows_password);
+}
+
 SystemStatus AppController::load_system_status() {
     auto status = SystemStatus{};
-    status.service_reason = "local profile store (ProgramData)";
+    status.service_reason = "per-user profile store and LocalSystem auth service";
     status.storage_protection = StorageProtection::kHostKey;
     // su_deploy_helper.exe sits next to su_app.exe in the flat deployment
     // layout; report availability so the deployment panel does not ask the
@@ -480,8 +439,15 @@ SystemStatus AppController::load_system_status() {
     status.deployment_helper_available = !deploy_helper_path().empty();
     const auto snapshot = su::windeploy::inspect_deployment();
     if (snapshot) {
-        status.service_available = true;
+        auto credential_provider_ready = false;
+        auto auth_service_ready = false;
         for (const auto& target : snapshot->targets) {
+            if (target.id == su::windeploy::kCredentialProviderId) {
+                credential_provider_ready = target.configured
+                    && su::windeploy::credential_provider_registered();
+            } else if (target.id == su::windeploy::kAuthServiceId) {
+                auth_service_ready = target.configured;
+            }
             status.deployment_targets.push_back(DeploymentTargetStatus{
                 .id = target.id,
                 .service = target.service,
@@ -496,6 +462,13 @@ SystemStatus AppController::load_system_status() {
                 .wallet_available = target.wallet_available,
                 .wallet_enabled = target.wallet_enabled,
             });
+        }
+        status.service_available = credential_provider_ready && auth_service_ready;
+        if (auth_service_ready) {
+            if (const auto configured =
+                    su::windows::profile_client::account_credential_configured(); configured) {
+                status.account_credential_configured = *configured;
+            }
         }
     }
     return status;
@@ -524,51 +497,40 @@ std::string deploy_helper_path() {
     return narrow;
 }
 
+std::wstring utf8_to_wide(std::string_view value) {
+    if (value.empty()) {
+        return {};
+    }
+    const auto required = ::MultiByteToWideChar(
+        65001 /* CP_UTF8 */, 8 /* MB_ERR_INVALID_CHARS */, value.data(),
+        static_cast<int>(value.size()), nullptr, 0);
+    if (required <= 0) {
+        return {};
+    }
+    auto wide = std::wstring(static_cast<std::size_t>(required), L'\0');
+    if (::MultiByteToWideChar(
+            65001 /* CP_UTF8 */, 8 /* MB_ERR_INVALID_CHARS */, value.data(),
+            static_cast<int>(value.size()), wide.data(), required) != required) {
+        return {};
+    }
+    return wide;
+}
+
 // Runs su_deploy_helper elevated via UAC (ShellExecuteEx runas) and waits
 // for its result file. Returns the helper's JSON result.
 std::expected<std::string, std::string> run_elevated_deploy(std::string_view arguments) {
-    struct ShellExecuteInfoW {
-        unsigned long cb_size;
-        unsigned long f_mask;
-        void* hwnd;
-        const wchar_t* verb;
-        const wchar_t* file;
-        const wchar_t* parameters;
-        const wchar_t* directory;
-        int n_show;
-        void* h_inst_app;
-        void* lp_id_list;
-        const wchar_t* lp_class;
-        void* hkey_class;
-        unsigned long dw_hot_key;
-        void* h_icon;
-        void* h_process;
-    };
-
     const auto helper = deploy_helper_path();
     if (helper.empty()) {
         return std::unexpected("failed to locate su_deploy_helper.exe");
     }
-    const auto wide_helper = std::wstring(helper.begin(), helper.end());
+    const auto wide_helper = utf8_to_wide(helper);
+    if (wide_helper.empty()) {
+        return std::unexpected("failed to convert the deployment helper path");
+    }
     const auto wide_args = std::wstring(arguments.begin(), arguments.end());
 
-    ShellExecuteInfoW info{};
-    info.cb_size = sizeof(info);
-    info.f_mask = 0x40;  // SEE_MASK_NOCLOSEPROCESS
-    info.verb = L"runas";
-    info.file = wide_helper.c_str();
-    info.parameters = wide_args.c_str();
-    info.n_show = 0;  // SW_HIDE
-
-    if (::ShellExecuteExW(&info) == 0) {
-        return std::unexpected("UAC launch of su_deploy_helper was denied or failed");
-    }
-    if (info.h_process != nullptr) {
-        (void)::WaitForSingleObject(info.h_process, 60000);
-        (void)::CloseHandle(info.h_process);
-    }
-
-    // Read %TEMP%\su_deploy_result.json written by the helper.
+    // Remove the previous helper result before launching so a timeout or
+    // crash can never be mistaken for this operation's response.
     wchar_t temp[512] = {};
     if (::GetTempPathW(512, temp) == 0) {
         return std::unexpected("failed to resolve the temporary directory");
@@ -581,16 +543,40 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
     }
     narrow_temp.resize(std::strlen(narrow_temp.c_str()));
     const auto result_path = narrow_temp + "su_deploy_result.json";
+    (void)::DeleteFileA(result_path.c_str());
 
-    void* file = ::CreateFileA(
+    auto info = SHELLEXECUTEINFOW{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"runas";
+    info.lpFile = wide_helper.c_str();
+    info.lpParameters = wide_args.c_str();
+    info.nShow = SW_HIDE;
+
+    if (::ShellExecuteExW(&info) == 0) {
+        return std::unexpected("UAC launch of su_deploy_helper was denied or failed");
+    }
+    if (info.hProcess == nullptr) {
+        return std::unexpected("UAC helper did not return a process handle");
+    }
+    const auto wait_result = ::WaitForSingleObject(info.hProcess, 60000);
+    (void)::CloseHandle(info.hProcess);
+    if (wait_result == WAIT_TIMEOUT) {
+        return std::unexpected("su_deploy_helper timed out");
+    }
+    if (wait_result != WAIT_OBJECT_0) {
+        return std::unexpected("failed while waiting for su_deploy_helper");
+    }
+
+    const auto file = ::CreateFileA(
         result_path.c_str(),
-        0x80000000 /* GENERIC_READ */,
-        1 /* FILE_SHARE_READ */,
+        GENERIC_READ,
+        FILE_SHARE_READ,
         nullptr,
-        3 /* OPEN_EXISTING */,
+        OPEN_EXISTING,
         0,
         nullptr);
-    if (file == nullptr || file == reinterpret_cast<void*>(-1)) {
+    if (file == INVALID_HANDLE_VALUE) {
         return std::unexpected("su_deploy_helper produced no result file");
     }
     char buffer[8192] = {};
@@ -605,8 +591,13 @@ std::expected<void, std::string> deploy_action(std::string_view arguments) {
         // Already elevated (e.g. launched by the scheduled task): perform
         // the operation directly without a second UAC prompt.
         if (arguments.find("--register-cp") != std::string_view::npos) {
+            const auto helper = deploy_helper_path();
+            const auto separator = helper.find_last_of("\\/");
+            if (separator == std::string::npos) {
+                return std::unexpected("failed to resolve the credential provider path");
+            }
             const auto registered = su::windeploy::register_credential_provider(
-                "C:\\su-deploy\\bin\\su_credential_provider.dll");
+                helper.substr(0, separator + 1) + "su_credential_provider.dll");
             if (!registered) {
                 return registered;
             }
@@ -662,6 +653,13 @@ std::expected<std::string, std::string> AppController::configure_desktop_target(
     std::string_view target,
     bool wallet_token) {
     (void)wallet_token;
+    if (target == su::windeploy::kAuthServiceId) {
+        const auto configured = deploy_action("--ensure-service");
+        if (!configured) {
+            return std::unexpected(configured.error());
+        }
+        return "auth service installed and started";
+    }
     if (target != su::windeploy::kCredentialProviderId) {
         return std::unexpected(std::format("unsupported deployment target: {}", target));
     }
@@ -682,71 +680,6 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
         return std::unexpected(rolled_back.error());
     }
     return "credential provider unregistered";
-}
-
-// Runs on the UDP recognition server thread: opens the camera, captures a
-// live face, authenticates against the local ProgramData profile store and
-// reports the outcome to the credential provider.
-int AppController::udp_recognize_callback(
-    std::uint32_t session_id,
-    const char* username_hint,
-    char* out_username,
-    void* userdata) {
-    (void)session_id;
-    (void)username_hint;
-    auto* self = static_cast<AppController*>(userdata);
-    self->camera_cancel_requested_.store(false, std::memory_order_release);
-
-    const auto config = self->load_config_snapshot();
-    if (!config) {
-        std::println(stderr, "[recognition] udp: failed to load config: {}", config.error());
-        return SU_RS_RECOGNITION_ERROR;
-    }
-    if (!self->recognizer_.seetaface_available()) {
-        std::println(stderr, "[recognition] udp: seetaface backend unavailable");
-        return SU_RS_RECOGNITION_ERROR;
-    }
-    if (const auto opened = self->recognizer_.open_camera(config->selected_camera);
-        !opened) {
-        std::println(stderr, "[recognition] udp: failed to open camera: {}", recognizer_error_name(opened.error()));
-        return SU_RS_RECOGNITION_ERROR;
-    }
-    struct [[nodiscard]] CameraGuard {
-        su::recognizer::RecognizerService& svc;
-        ~CameraGuard() { svc.close_camera(); }
-    };
-    const CameraGuard _close_guard{self->recognizer_};
-
-    const auto result = capture_live_features(
-        self->recognizer_, *config, self->camera_cancel_requested_);
-    if (!result) {
-        // No face seen or liveness rejected within the deadline: report as
-        // failed so the provider retries per its policy.
-        std::println(stderr, "[recognition] udp: capture failed: {}", result.error());
-        return SU_RS_FAILED;
-    }
-    const auto report = su::app::authenticate_face_sample_report(
-        self->profile_store_path(),
-        su::recognizer::embedding_sample_source(result->feature),
-        config->recognition_threshold,
-        true);
-    if (!report) {
-        std::println(stderr, "[recognition] udp: authenticate failed: {}", core_error_name(report.error()));
-        return SU_RS_RECOGNITION_ERROR;
-    }
-    const auto username = su::app::current_username("");
-    std::snprintf(out_username, SU_UDP_STATUS_USERNAME_CAP, "%s", username.c_str());
-    std::println(stderr, "[recognition] udp: session=0x{:X} user='{}' accepted={} score={:.2f}",
-        session_id, username, report->accepted, report->score);
-    return report->accepted ? SU_RS_SUCCESS : SU_RS_FAILED;
-}
-
-void AppController::start_udp_recognition_server() {
-    (void)su_udp_start_recognition_server(&AppController::udp_recognize_callback, this);
-}
-
-void AppController::stop_udp_recognition_server() {
-    su_udp_stop_recognition_server();
 }
 
 }  // namespace su::app

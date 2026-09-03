@@ -157,8 +157,7 @@ fn parse_header(envelope: &[u8]) -> Result<ParsedHeader, EnvelopeError> {
     let ciphertext_len_u64 = u64::from_be_bytes(envelope[92..100].try_into().unwrap());
     let ciphertext_len =
         usize::try_from(ciphertext_len_u64).map_err(|_| EnvelopeError::PayloadTooLarge)?;
-    if ciphertext_len < TAG_LEN
-        || ciphertext_len > MAX_CIPHERTEXT_LEN
+    if !(TAG_LEN..=MAX_CIPHERTEXT_LEN).contains(&ciphertext_len)
         || envelope.len() != HEADER_LEN + ciphertext_len
     {
         return Err(EnvelopeError::InvalidHeader);

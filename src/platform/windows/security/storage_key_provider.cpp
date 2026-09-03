@@ -23,7 +23,7 @@ constexpr std::uint32_t kKeyVersion = 1;
 constexpr std::size_t kHeaderSize = 16;
 constexpr std::size_t kMaximumWrappedSize = 16 * 1024;
 constexpr wchar_t kTpmKeyName[] = L"Smile2Unlock.StorageWrappingKey.v1";
-constexpr wchar_t kSystemOnlySddl[] = L"D:P(A;;FA;;;SY)";
+constexpr wchar_t kSystemOnlySddl[] = L"D:P(A;OICI;FA;;;SY)";
 
 template <typename Handle, auto Close>
 class ScopedHandle {

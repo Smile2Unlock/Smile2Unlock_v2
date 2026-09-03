@@ -7,9 +7,7 @@
 //! is forbidden (no unsafe Send/Sync bypass), so the Provider keeps only the
 //! advise context.
 
-use windows::Win32::UI::Shell::{
-    ICredentialProviderEvents, ICredentialProviderEvents_Impl,
-};
+use windows::Win32::UI::Shell::{ICredentialProviderEvents, ICredentialProviderEvents_Impl};
 use windows_core::implement;
 
 #[implement(ICredentialProviderEvents)]

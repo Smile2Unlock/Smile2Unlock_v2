@@ -40,11 +40,16 @@ Both platforms share the same core: a recognition pipeline written with C++26 mo
 
 | Component | Form | Responsibility |
 | --- | --- | --- |
-| `su_app.exe` | Slint GUI | Face-profile management (enroll/delete), UDP recognition server, deployment panel |
-| `su_credential_provider.dll` | Rust CP | Winlogon sign-in integration; asks `su_app` to authenticate over UDP |
+| `su_app.exe` | Slint GUI | Face-profile management, preview, settings, and deployment panel |
+| `su_credential_provider.dll` | Rust CP | Winlogon sign-in integration; requests one authenticated attempt from the LocalSystem service |
 | `su_deploy_helper.exe` | UAC-elevated helper | Credential Provider register/unregister, auth-service install; triggered from the GUI panel |
+| `Smile2UnlockAuthService.exe` | LocalSystem service | Owns encrypted account credentials and brokers recognition in the target session |
+| `su_recognition_agent.exe` | Session worker | Opens the camera and performs one service-authorized recognition attempt |
+| `su_password_tool.exe` | User utility | Stores or clears the one-password-per-Windows-account credential |
 
-Sign-in flow: lock screen → CP tile → UDP auth request (127.0.0.1:51236) → local recognition in `su_app` → status reply (127.0.0.1:51234) → grant or deny. Everything stays on the machine.
+Sign-in flow: lock screen -> CP tile -> authenticated named pipe -> LocalSystem
+service -> recognition agent in the target session -> one-time logon secret ->
+Windows LSA. The GUI is not part of the lock-screen authentication boundary.
 
 ### Linux
 
@@ -62,7 +67,7 @@ Sign-in flow: login screen → PAM hook → control socket → local recognition
 Windows uses a **bin/ + assets/ sibling layout**: the executables (and their runtime DLLs) live in `bin\`, and `assets\` sits next to it. Linux follows the FHS layout of a system install.
 
 ```text
-Windows:  C:\su-deploy\
+Windows package:  Smile2Unlock\
 ├── bin\                     # executables + runtime DLLs
 │   ├── su_app.exe
 │   ├── su_deploy_helper.exe
@@ -82,6 +87,8 @@ Windows:  C:\su-deploy\
             ├── fas_first.csta
             └── fas_second.csta
 
+Windows installed security components:  C:\Program Files\Smile2Unlock\bin\
+
 Linux (packaged):  /usr/bin/su_app
                    /usr/libexec/smile2unlock/{su_authd,su_deploy_helper}
                    /usr/lib/security/pam_smile2unlock.so
@@ -89,17 +96,21 @@ Linux (packaged):  /usr/bin/su_app
 ```
 
 - The model directory is resolved via `SU_SEETAFACE_MODEL_DIR` (env), a compile-time macro, or by walking up from the current directory looking for `assets/models/seeta`; i18n uses the same walk-up for `assets/i18n` (this is what makes the `bin\` + `assets\` sibling layout work); a system install on Linux falls back to `/usr/share/smile2unlock/models`
-- On Windows, after copying the files, open the **Deployment** panel in the GUI and click Install (UAC) to register the Credential Provider and install the service
+- On Windows, extract the zip anywhere, run `bin\su_app.exe`, then use the
+  Deployment panel. The elevated helper copies security components to
+  `C:\Program Files\Smile2Unlock\bin` before registering the CP and service;
+  registry values never point at the extraction directory.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     subgraph Windows
-        CP[su_credential_provider.dll] -- UDP 51236/51234 --> APP[su_app.exe]
-        APP --> REC[src/recognizer<br/>SeetaFace 6]
-        APP --> CORE[(Rust core<br/>encrypted profile files)]
-        APP -- UAC --> HELPER[su_deploy_helper.exe]
+        CP[su_credential_provider.dll] -- named pipe --> SERVICE[Auth service]
+        SERVICE --> AGENT[Recognition agent]
+        AGENT --> REC[src/recognizer<br/>SeetaFace 6]
+        GUIW[su_app.exe] --> CORE[(Rust core<br/>encrypted profile files)]
+        GUIW -- UAC --> HELPER[su_deploy_helper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
@@ -178,23 +189,23 @@ xmake require --build -f -y seetaface6open
 xmake build
 ```
 
-Package (`tar.gz` / `pacman` / `deb` / `rpm`):
+Package both supported platforms from existing release builds:
 
 ```bash
-packaging/linux/package.sh --format all
+packaging/package.sh --platform all
 ```
 
-### Windows package (one command)
+Configure, rebuild, package, and verify both platforms:
 
 ```bash
-packaging/windows/package.sh
+packaging/package.sh --platform all --build
 ```
 
-Stages `build/windows-package/smile2unlock-<version>/` (bin\ + assets\ sibling
-layout with su_app/su_deploy_helper/CP DLL/service/icon and all runtime DLLs
-collected from the NEEDED tables, plus i18n + models) and writes
-`build/packages/smile2unlock-<version>-windows-x86_64.zip`. Use `--no-zip` to
-only stage the directory. No Inno Setup or installer required — unzip and run.
+Linux native formats remain available with `--linux-format pacman`, `deb`,
+`rpm`, or `all`. Packages embed version and checksum metadata in
+`release-info.json` without modifying tracked repository files. See
+[`packaging/README.md`](packaging/README.md) for the layout and verification
+contract.
 
 ## Contributors
 

@@ -8,11 +8,12 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use windows_core::{implement, Error, GUID, HRESULT, IUnknown, Interface, Ref, BOOL};
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl};
 use windows::Win32::UI::Shell::ICredentialProvider;
+use windows_core::{BOOL, Error, GUID, HRESULT, IUnknown, Interface, Ref, implement};
 
-use crate::provider::Provider;/// Process-wide lock count driven by IClassFactory::LockServer; consumed by
+use crate::provider::Provider;
+/// Process-wide lock count driven by IClassFactory::LockServer; consumed by
 /// DllCanUnloadNow in lib.rs.
 pub static LOCK_COUNT: AtomicI32 = AtomicI32::new(0);
 

@@ -37,7 +37,10 @@ impl fmt::Display for SecretError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SecretError::Init => write!(f, "secret memory protection failed"),
-            SecretError::Capacity { capacity_bytes, needed_bytes } => write!(
+            SecretError::Capacity {
+                capacity_bytes,
+                needed_bytes,
+            } => write!(
                 f,
                 "secret capacity exceeded: need {} bytes, have {}",
                 needed_bytes, capacity_bytes
@@ -76,9 +79,15 @@ impl<const N: usize> WindowsSecret<N> {
             .encode_utf16()
             .count()
             .checked_mul(2)
-            .ok_or(SecretError::Capacity { capacity_bytes: N, needed_bytes: usize::MAX })?;
+            .ok_or(SecretError::Capacity {
+                capacity_bytes: N,
+                needed_bytes: usize::MAX,
+            })?;
         if needed > N {
-            return Err(SecretError::Capacity { capacity_bytes: N, needed_bytes: needed });
+            return Err(SecretError::Capacity {
+                capacity_bytes: N,
+                needed_bytes: needed,
+            });
         }
         {
             let mut view = self.secret.write().map_err(|_| SecretError::Init)?;
@@ -125,7 +134,10 @@ impl<const N: usize> WindowsSecret<N> {
             needed_bytes: usize::MAX,
         })?;
         if bytes > N {
-            return Err(SecretError::Capacity { capacity_bytes: N, needed_bytes: bytes });
+            return Err(SecretError::Capacity {
+                capacity_bytes: N,
+                needed_bytes: bytes,
+            });
         }
         self.len = bytes;
         Ok(())

@@ -33,6 +33,7 @@ constexpr auto kLivenessAuthenticationTimeout = std::chrono::seconds{12};
 constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
 constexpr auto kAuthenticationRateLimit = std::chrono::seconds{1};
+constexpr auto kMaxConcurrentConnections = std::ptrdiff_t{16};
 
 struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
@@ -236,9 +237,20 @@ public:
         : master_key_(std::move(master_key)) {}
 
     bool available() const {
-        return master_key_.has_value()
-            && recognizer_.seetaface_available()
-            && !recognizer_.enumerate_cameras().empty();
+        return availability_reason() == "service available";
+    }
+
+    std::string availability_reason() const {
+        if (!master_key_) {
+            return "encrypted storage key unavailable";
+        }
+        if (!recognizer_.seetaface_available()) {
+            return "face recognition models unavailable";
+        }
+        if (recognizer_.enumerate_cameras().empty()) {
+            return "no V4L2 camera detected";
+        }
+        return "service available";
     }
 
     std::string_view storage_status() const {
@@ -488,7 +500,7 @@ public:
         if (!migrated) {
             return {su::control::ControlResult::kUnavailable, "profile migration failed"};
         }
-        {
+        if (*migrated) {
             const auto fsuid = FsUidGuard{paths->uid};
             if (!fsuid.valid()) {
                 return {su::control::ControlResult::kUnavailable, "failed to restore user filesystem context"};
@@ -499,7 +511,9 @@ public:
             }
         }
         auto listed = list_profiles(username);
-        listed.reason = *migrated ? "legacy profiles migrated" : "legacy profile removed";
+        listed.reason = *migrated
+            ? "legacy profiles migrated"
+            : "encrypted profile store already exists; legacy profile retained";
         return listed;
     }
 
@@ -571,11 +585,13 @@ public:
         case su::app::ControlMessageType::kAuthenticate:
             response = authenticate(request->request_id, request->username);
             break;
-        case su::app::ControlMessageType::kStatus:
-            response = available()
-                ? AttemptResult{su::control::ControlResult::kAccepted, "service available"}
-                : AttemptResult{su::control::ControlResult::kUnavailable, "service unavailable"};
+        case su::app::ControlMessageType::kStatus: {
+            const auto reason = availability_reason();
+            response = reason == "service available"
+                ? AttemptResult{su::control::ControlResult::kAccepted, reason}
+                : AttemptResult{su::control::ControlResult::kUnavailable, reason};
             break;
+        }
         case su::app::ControlMessageType::kCancel:
             response = cancel(request->target_request_id)
                 ? AttemptResult{su::control::ControlResult::kCancelled, "cancel requested"}
@@ -692,14 +708,26 @@ int run_daemon(std::string_view socket_path) {
         socket_path,
         service.available(),
         service.storage_status());
+    auto connection_slots = std::counting_semaphore<kMaxConcurrentConnections>{
+        kMaxConcurrentConnections};
     while (true) {
         auto connection = listener->accept_one();
         if (!connection) {
             continue;
         }
+        if (!connection_slots.try_acquire()) {
+            std::println(stderr, "su_authd event=connection_rejected reason=capacity");
+            continue;
+        }
         // Authentication is intentionally detached from accept so status and
-        // cancellation requests remain responsive during camera capture.
-        std::thread([&service, client = std::move(*connection)]() mutable {
+        // cancellation requests remain responsive during camera capture. The
+        // semaphore bounds detached worker lifetime and memory consumption.
+        std::thread([&service, &connection_slots, client = std::move(*connection)]() mutable {
+            struct SlotRelease {
+                std::counting_semaphore<kMaxConcurrentConnections>& slots;
+                ~SlotRelease() { slots.release(); }
+            };
+            const auto release_slot = SlotRelease{connection_slots};
             service.handle(std::move(client));
         }).detach();
     }

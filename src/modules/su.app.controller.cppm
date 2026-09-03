@@ -51,6 +51,7 @@ struct DeploymentTargetStatus {
 
 struct SystemStatus {
     bool service_available = false;
+    bool account_credential_configured = false;
     std::string service_reason;
     StorageProtection storage_protection = StorageProtection::kUnavailable;
     bool pam_status_known = false;
@@ -66,6 +67,7 @@ struct SystemStatus {
 class AppController {
 public:
     std::expected<AppSnapshot, std::string> load_initial_snapshot();
+    std::vector<su::recognizer::CameraInfo> enumerate_cameras() const;
     std::expected<bool, std::string> evaluate_demo_auth(std::string_view username);
     std::expected<CoreConfig, std::string> load_config_snapshot();
     std::expected<void, std::string> save_config_snapshot(const CoreConfig& config);
@@ -87,6 +89,8 @@ public:
     std::expected<std::string, std::string> list_face_profiles();
     std::expected<std::vector<FaceProfileSummary>, std::string> list_face_profile_rows();
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
+    std::expected<void, std::string> configure_windows_account_credential(
+        std::string_view windows_password);
     SystemStatus load_system_status();
     std::expected<std::string, std::string> install_deployment_helper();
     std::expected<std::string, std::string> initialize_system_deployment();
@@ -96,10 +100,6 @@ public:
     std::expected<std::string, std::string> rollback_desktop_target(
         std::string_view target);
     void cancel_camera_operation();
-    // Windows only: UDP face-recognition server for the credential provider
-    // (loopback 51236/51234). No-ops on Linux.
-    void start_udp_recognition_server();
-    void stop_udp_recognition_server();
 
     su::recognizer::RecognizerService& recognizer() { return recognizer_; }
 
@@ -108,12 +108,6 @@ private:
     std::string profile_store_path() const;
     su::recognizer::RecognizerService recognizer_{};
     std::atomic<bool> camera_cancel_requested_{false};
-    // Runs on the UDP recognition server thread (Windows only).
-    static int udp_recognize_callback(
-        std::uint32_t session_id,
-        const char* username_hint,
-        char* out_username,
-        void* userdata);
 };
 
 } // namespace su::app

@@ -49,10 +49,6 @@ impl RequestReplayCache {
         }
     }
 
-    fn contains(&self, request: &(String, u64, u32)) -> bool {
-        self.used.contains(request)
-    }
-
     fn insert(&mut self, request: (String, u64, u32)) {
         if !self.used.insert(request.clone()) {
             return;
@@ -63,6 +59,14 @@ impl RequestReplayCache {
                 self.used.remove(&expired);
             }
         }
+    }
+
+    fn reserve(&mut self, request: (String, u64, u32)) -> bool {
+        if self.used.contains(&request) {
+            return false;
+        }
+        self.insert(request);
+        true
     }
 }
 
@@ -103,7 +107,7 @@ fn password_to_bytes(password: &[u16]) -> Result<Zeroizing<Vec<u8>>, SuStatus> {
 }
 
 fn bytes_to_password(bytes: &[u8]) -> Result<Zeroizing<Vec<u16>>, SuStatus> {
-    if bytes.is_empty() || bytes.len() % 2 != 0 || bytes.len() / 2 > MAX_PASSWORD_UNITS {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) || bytes.len() / 2 > MAX_PASSWORD_UNITS {
         return Err(SuStatus::ParseError);
     }
     let password = bytes
@@ -227,9 +231,11 @@ pub(crate) fn prepare_logon_secret(
         request_id,
         logon_session_id,
     );
+    // Reserve the request id before touching the secret. The check and insert
+    // must be one operation if the pipe server starts serving concurrently.
     {
-        let replay_cache = USED_REQUESTS.lock().map_err(|_| SuStatus::IoError)?;
-        if replay_cache.contains(&request) {
+        let mut replay_cache = USED_REQUESTS.lock().map_err(|_| SuStatus::IoError)?;
+        if !replay_cache.reserve(request) {
             return Err(SuStatus::UserDenied);
         }
     }
@@ -240,10 +246,6 @@ pub(crate) fn prepare_logon_secret(
     }
     let password = bytes_to_password(&secret.password_utf16le)?;
     secret.password_utf16le.zeroize();
-    USED_REQUESTS
-        .lock()
-        .map_err(|_| SuStatus::IoError)?
-        .insert(request);
     Ok(password)
 }
 

@@ -12,7 +12,7 @@
 namespace su::windows::security {
 namespace {
 
-constexpr wchar_t kSystemOnlySddl[] = L"D:P(A;;FA;;;SY)";
+constexpr wchar_t kSystemOnlySddl[] = L"D:P(A;OICI;FA;;;SY)";
 
 LogonSecretError map_status(SuStatus status) {
     switch (status) {
@@ -269,6 +269,21 @@ std::expected<bool, LogonSecretError> LogonSecretStore::clear(std::string_view s
     return status == SuStatus_Ok
         ? std::expected<bool, LogonSecretError>{cleared}
         : std::unexpected(map_status(status));
+}
+
+std::expected<bool, LogonSecretError> LogonSecretStore::configured(
+    std::string_view sid) const {
+    const auto path = secret_path(sid);
+    if (!path) {
+        return std::unexpected(path.error());
+    }
+    auto error = std::error_code{};
+    const auto present = std::filesystem::is_regular_file(*path, error)
+        && !std::filesystem::is_symlink(*path, error);
+    if (error) {
+        return std::unexpected(LogonSecretError::kUnavailable);
+    }
+    return present;
 }
 
 std::string_view logon_secret_error_message(LogonSecretError error) {

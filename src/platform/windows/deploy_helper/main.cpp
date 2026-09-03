@@ -54,17 +54,64 @@ int write_result(std::string_view content) {
 }
 
 int fail(std::string_view detail) {
-    const auto json = std::format(R"({{"ok":false,"error":"{}"}})", detail);
+    auto escaped = std::string{};
+    escaped.reserve(detail.size());
+    for (const auto ch : detail) {
+        switch (ch) {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        case '\b': escaped += "\\b"; break;
+        case '\f': escaped += "\\f"; break;
+        default:
+            if (static_cast<unsigned char>(ch) < 0x20) {
+                escaped += std::format("\\u{:04x}", static_cast<unsigned char>(ch));
+            } else {
+                escaped += ch;
+            }
+            break;
+        }
+    }
+    const auto json = std::format(R"({{"ok":false,"error":"{}"}})", escaped);
     (void)write_result(json);
     std::cerr << "su_deploy_helper: " << detail << "\n";
     return 1;
 }
 
+std::string sibling_path(const wchar_t* name) {
+    auto path = std::wstring(32768, L'\0');
+    const auto length = ::GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) {
+        return {};
+    }
+    path.resize(length);
+    const auto separator = path.find_last_of(L"\\/");
+    if (separator == std::wstring::npos) {
+        return {};
+    }
+    path.resize(separator + 1);
+    path += name;
+    const auto bytes = ::WideCharToMultiByte(
+        CP_UTF8, 0, path.data(), static_cast<int>(path.size()), nullptr, 0, nullptr, nullptr);
+    auto result = std::string(static_cast<std::size_t>(bytes), '\0');
+    if (bytes > 0) {
+        (void)::WideCharToMultiByte(
+            CP_UTF8, 0, path.data(), static_cast<int>(path.size()), result.data(), bytes,
+            nullptr, nullptr);
+    }
+    return result;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string dll_path = "C:\\su-deploy\\bin\\su_credential_provider.dll";
-    std::string_view operation;
+    std::string dll_path = sibling_path(L"su_credential_provider.dll");
+    auto register_cp = false;
+    auto unregister_cp = false;
+    auto ensure_service = false;
+    auto inspect = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
         if (argument == "--dll" && i + 1 < argc) {
@@ -72,12 +119,23 @@ int main(int argc, char** argv) {
         } else if (argument == "--version") {
             std::cout << "su_deploy_helper 1\n";
             return 0;
+        } else if (argument == "--register-cp") {
+            register_cp = true;
+        } else if (argument == "--unregister-cp") {
+            unregister_cp = true;
+        } else if (argument == "--ensure-service") {
+            ensure_service = true;
+        } else if (argument == "--inspect") {
+            inspect = true;
         } else {
-            operation = argument;
+            return fail(std::format("unknown argument: {}", argument));
         }
     }
 
-    if (operation == "--inspect") {
+    if (inspect) {
+        if (register_cp || unregister_cp || ensure_service) {
+            return fail("--inspect cannot be combined with deployment operations");
+        }
         const auto snapshot = su::windeploy::inspect_deployment();
         if (!snapshot) {
             return fail(snapshot.error());
@@ -87,29 +145,32 @@ int main(int argc, char** argv) {
         std::cout << payload << "\n";
         return write_result(payload);
     }
-    if (operation == "--register-cp") {
+    if (register_cp && unregister_cp) {
+        return fail("--register-cp and --unregister-cp cannot be combined");
+    }
+    if (register_cp) {
         const auto registered = su::windeploy::register_credential_provider(dll_path);
         if (!registered) {
             return fail(registered.error());
         }
         std::cout << "credential provider registered\n";
-        return write_result(R"({"ok":true,"action":"register-cp"})");
     }
-    if (operation == "--unregister-cp") {
+    if (unregister_cp) {
         const auto unregistered = su::windeploy::unregister_credential_provider();
         if (!unregistered) {
             return fail(unregistered.error());
         }
         std::cout << "credential provider unregistered\n";
-        return write_result(R"({"ok":true,"action":"unregister-cp"})");
     }
-    if (operation == "--ensure-service") {
+    if (ensure_service) {
         const auto ensured = su::windeploy::ensure_auth_service();
         if (!ensured) {
             return fail(ensured.error());
         }
         std::cout << "auth service ensured\n";
-        return write_result(R"({"ok":true,"action":"ensure-service"})");
+    }
+    if (register_cp || unregister_cp || ensure_service) {
+        return write_result(R"({"ok":true,"action":"deploy"})");
     }
 
     std::cerr << "usage: su_deploy_helper [--dll <path>] "

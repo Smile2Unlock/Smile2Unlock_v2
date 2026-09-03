@@ -21,6 +21,7 @@ export component AppWindow inherits Window {
     in property <int> camera_count: 0;
     in property <bool> seetaface_available: false;
     in property <bool> service_available: false;
+    in property <bool> account_credential_configured: false;
     in property <int> storage_protection_index: 0;
     in property <bool> pam_status_known: false;
     in property <bool> pam_configured: false;
@@ -52,6 +53,7 @@ export component AppWindow inherits Window {
     in-out property <int> window_controls_index: 0;
     in property <bool> window_frame_visible: true;
     in-out property <string> enroll_label_text: "";
+    in-out property <string> account_password_text: "";
     in-out property <string> activity_title: "";
     in-out property <string> activity_detail: "";
     in-out property <string> activity_tone: "neutral";
@@ -70,6 +72,7 @@ export component AppWindow inherits Window {
     in-out property <int> timeout_sec: 30;
 
     callback enroll_current_frame_requested(string);
+    callback configure_account_credential_requested(string);
     callback current_frame_auth_requested();
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
@@ -107,8 +110,8 @@ export component AppWindow inherits Window {
     // non-resizable and oversized on small screens). The initial size is
     // chosen by su_app at startup to fit the desktop; preferred-* only
     // guides the layout.
-    preferred-width: 1560px;
-    preferred-height: 880px;
+    preferred-width: 1200px;
+    preferred-height: 780px;
     background: UiTheme.canvas;
 
     private property <bool> compact-layout: root.width < 1020px;
@@ -504,6 +507,69 @@ export component AppWindow inherits Window {
                         detail: root.translate_value("enrollment.manage_for", root.language_index, root.username);
                     }
 
+                    if root.platform_windows: Rectangle {
+                        height: 124px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+
+                        HorizontalLayout {
+                            padding: 18px;
+                            spacing: 18px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 7px;
+                                Text {
+                                    text: root.translate("account.credential_title", root.language_index);
+                                    color: UiTheme.text-primary;
+                                    font-size: 15px;
+                                    font-weight: 700;
+                                }
+                                Text {
+                                    text: root.translate("account.credential_detail", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.account_credential_configured
+                                        ? root.translate("account.credential_configured", root.language_index)
+                                        : root.translate("account.credential_missing", root.language_index);
+                                    color: root.account_credential_configured
+                                        ? UiTheme.success-text : UiTheme.warning-text;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                }
+                            }
+                            VerticalLayout {
+                                width: 300px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.translate("account.windows_password", root.language_index);
+                                    color: UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                }
+                                LineEdit {
+                                    text <=> root.account_password_text;
+                                    input-type: password;
+                                    enabled: !root.busy;
+                                }
+                                ActionButton {
+                                    label: root.account_credential_configured
+                                        ? root.translate("account.update_credential", root.language_index)
+                                        : root.translate("account.set_credential", root.language_index);
+                                    primary: !root.account_credential_configured;
+                                    enabled: !root.busy && root.account_password_text != "" && root.service_available;
+                                    activated => {
+                                        root.configure_account_credential_requested(root.account_password_text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     HorizontalLayout {
                         height: 352px;
                         spacing: 18px;
@@ -591,7 +657,8 @@ export component AppWindow inherits Window {
                                         ? root.translate("status.capturing", root.language_index)
                                         : root.translate("action.capture_sample", root.language_index);
                                     primary: true;
-                                    enabled: !root.busy && root.auth-ready;
+                                    enabled: !root.busy && root.auth-ready
+                                        && (!root.platform_windows || root.account_credential_configured);
                                     activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
