@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "2.2.0",
-  "stream": "2.2",
-  "date": "2026-08-18",
+  "version": "2.3.0",
+  "stream": "2.3",
+  "date": "2026-09-05",
   "build": {
     "platform": "windows",
     "arch": "x86_64"

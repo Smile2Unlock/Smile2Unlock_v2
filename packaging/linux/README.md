@@ -135,9 +135,9 @@ if a binary still references the build user's Xmake cache.
 Verify generated native packages on the matching distribution family:
 
 ```bash
-packaging/linux/verify-package.sh build/packages/smile2unlock-2.2.0-linux-x86_64.deb
-packaging/linux/verify-package.sh build/packages/smile2unlock-2.2.0-linux-x86_64.rpm
-packaging/linux/verify-package.sh build/packages/smile2unlock-2.2.0-linux-x86_64.tar.gz
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.3.0-linux-x86_64.deb
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.3.0-linux-x86_64.rpm
+packaging/linux/verify-package.sh build/packages/smile2unlock-2.3.0-linux-x86_64.tar.gz
 ```
 
 DEB verification requires `dpkg-deb` and `patchelf`. RPM verification requires

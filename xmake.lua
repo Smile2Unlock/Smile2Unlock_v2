@@ -8,7 +8,7 @@ add_repositories("local-repo local-repo")
 -- project files do not expose file I/O at top level.
 local _su_version = os.getenv("SU_VERSION")
 if not _su_version or _su_version == "" then
-    _su_version = "2.2.0"
+    _su_version = "2.3.0"
 end
 set_version(_su_version, {build = "", arch = os.arch()})
 set_description("Smile2Unlock - local face authentication (Windows sign-in + Linux PAM)")
