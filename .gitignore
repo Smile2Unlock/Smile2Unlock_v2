@@ -27,6 +27,14 @@ CMakeLists.txt
 installer-files
 Output
 
+# Release signing material must live in the GitHub release-signing environment,
+# never in the repository or build artifacts.
+release-signing/
+*.key
+*.pem
+*.p12
+*.pfx
+
 .*
 !.github/
 !.github/workflows/

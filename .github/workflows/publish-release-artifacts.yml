@@ -55,6 +55,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           lfs: true
+          submodules: recursive
           fetch-depth: 1
 
       - name: Set up Xmake
@@ -83,7 +84,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-release-${{ needs.validate-release.outputs.version }}
-          path: dist/*.tar.gz
+          path: dist/smile2unlock-${{ needs.validate-release.outputs.version }}-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -104,6 +105,7 @@ jobs:
         with:
           ref: ${{ env.RELEASE_TAG }}
           lfs: true
+          submodules: recursive
           fetch-depth: 1
 
       - name: Set up Xmake
@@ -161,7 +163,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-release-${{ needs.validate-release.outputs.version }}
-          path: dist/*.zip
+          path: dist/smile2unlock-${{ needs.validate-release.outputs.version }}-windows-x86_64.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -188,6 +190,14 @@ jobs:
           windows_archive="dist/smile2unlock-${VERSION}-windows-x86_64.zip"
           [[ -f "$linux_archive" ]] || { echo "missing $linux_archive" >&2; exit 1; }
           [[ -f "$windows_archive" ]] || { echo "missing $windows_archive" >&2; exit 1; }
+          if tar -tzf "$linux_archive" | grep -Ei '(^|/)(release-signing(/|$)|[^/]+\.(key|pem|p12|pfx)$)' >/dev/null; then
+            echo "Linux archive contains signing material" >&2
+            exit 1
+          fi
+          if unzip -Z1 "$windows_archive" | grep -Ei '(^|/)(release-signing(/|$)|[^/]+\.(key|pem|p12|pfx)$)' >/dev/null; then
+            echo "Windows archive contains signing material" >&2
+            exit 1
+          fi
           (
             cd dist
             sha256sum "$(basename "$linux_archive")" "$(basename "$windows_archive")" > SHA256SUMS

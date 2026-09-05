@@ -38,12 +38,11 @@ Credential Provider
 
 剩余阻塞项按顺序执行：
 
-1. 将 SeetaFace6Open 主仓库及递归子模块固定到已验收的 commit；当前本地包配方直接克隆上游 HEAD，干净构建不可复现。
-2. 在托管构建验证工作流上确认 Linux、Windows 交叉测试和临时证书签名包三个 job 全绿，并为 `main` 配置必需检查；当前分支保护尚未启用。
-3. 使用正式受信任且带时间戳的 Windows code-signing 证书，从同一提交生成并验证 Windows ZIP；不得复用旧产物。
-4. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包，并补做目标发行版原生包管理器的安装、升级、回滚与卸载验证。
-5. 按 `release_acceptance_checklist.md` 完成 Windows 与 Linux 真实系统矩阵，保留日志和版本证据。
-6. 仅在上述证据齐全后创建 `v2.3.0` tag 和 GitHub Release；发布后由独立工作流上传正式构建产物和校验和。
+1. 在托管构建验证工作流上确认 Linux、Windows 交叉测试和临时证书签名包三个 job 全绿，并为 `main` 配置必需检查；当前分支保护尚未启用。
+2. 使用正式受信任且带时间戳的 Windows code-signing 证书，从同一提交生成并验证 Windows ZIP；不得复用旧产物。
+3. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包，并补做目标发行版原生包管理器的安装、升级、回滚与卸载验证。
+4. 按 `release_acceptance_checklist.md` 完成 Windows 与 Linux 真实系统矩阵，保留日志和版本证据。
+5. 仅在上述证据齐全后创建 `v2.3.0` tag 和 GitHub Release；发布后由独立工作流上传正式构建产物和校验和。
 
 ## 必须的现场验收
 

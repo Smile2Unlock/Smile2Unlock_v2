@@ -5,7 +5,7 @@
 ## 1. 固定候选提交
 
 - [x] 版本文件已从 `2.2.0` 更新到尚未使用的 `2.3.0`；尚未创建 `v2.3.0` tag 或 Release。
-- [ ] 将 SeetaFace6Open 主仓库及递归子模块固定到已验收的 commit，确保干净构建不会随上游 HEAD 漂移。
+- [x] SeetaFace6Open 已固定到验收构建使用的 `a32e2faa0694c0f841ace4df9ead0407b78363c6`，递归子模块由该提交的 gitlinks 固定。
 - [ ] 工作区无非预期修改，记录 commit SHA、版本号和依赖锁定文件。
 - [ ] 推送候选分支，禁止复用其他提交生成的 `build/` 或旧安装包。
 
@@ -17,7 +17,8 @@
 
 ## 3. 正式候选包
 
-- [ ] 配置 GitHub `release-signing` environment：`WINDOWS_SIGN_CERTIFICATE_BASE64`、`WINDOWS_SIGN_KEY_BASE64` secrets 和 `WINDOWS_TIMESTAMP_URL` variable；限制为受信任的 release tag。
+- [x] GitHub `release-signing` environment 已创建，仅允许 `v*` tag，并配置 `WINDOWS_TIMESTAMP_URL` variable。
+- [ ] 将正式证书链和私钥分别写入 `WINDOWS_SIGN_CERTIFICATE_BASE64`、`WINDOWS_SIGN_KEY_BASE64` environment secrets；私钥不得进入仓库、Actions artifact 或 GitHub Release asset。
 - [ ] 用受信任的 Windows code-signing 证书和可信时间戳从候选提交生成 ZIP，并在干净 Windows 中验证签名链。
 - [ ] 在含 `patchelf` 的干净 Linux 环境生成并验证 Arch、DEB、RPM 或计划发布的实际格式。
 - [ ] 记录包 SHA-256、构建日志、签名身份和构建环境。
