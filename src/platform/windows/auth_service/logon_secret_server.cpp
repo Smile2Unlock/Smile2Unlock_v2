@@ -2,6 +2,7 @@
 
 #include "logon_secret_protocol.h"
 #include "recognition_agent_protocol.h"
+#include "sid_rate_limiter.h"
 
 #include <aclapi.h>
 #include <bcrypt.h>
@@ -860,13 +861,14 @@ std::string embedding_source(std::span<const float> feature) {
 }
 
 Status process_request(
-    HANDLE pipe,
     HANDLE stop_event,
     const Request& request,
     Response& response,
     security::LogonSecretStore& store,
     security::FaceProfileStore& profile_store,
-    ManagementAuthorizer& management_authorizer) {
+    ManagementAuthorizer& management_authorizer,
+    std::span<const std::uint8_t> caller_sid,
+    DWORD caller_process_id) {
     if (request.magic != smile2unlock::logon_secret_ipc::kMagic
         || request.version != smile2unlock::logon_secret_ipc::kVersion
         || request.request_id == 0) {
@@ -876,15 +878,7 @@ Status process_request(
     if (!requested_sid) {
         return Status::kInvalidRequest;
     }
-    const auto caller_sid = client_sid(pipe);
-    if (!caller_sid) {
-        return Status::kAccessDenied;
-    }
-    const auto caller_is_system = is_local_system(*caller_sid);
-    const auto caller_process_id = client_process_id(pipe);
-    if (!caller_process_id) {
-        return Status::kAccessDenied;
-    }
+    const auto caller_is_system = is_local_system(caller_sid);
     if ((request.operation == Operation::kPrepare
             || request.operation == Operation::kAuthenticateAndPrepare
             || request.operation == Operation::kMarkStale)
@@ -898,7 +892,7 @@ Status process_request(
         || request.operation == Operation::kDeleteProfile
         || request.operation == Operation::kVerifyProfile
         || request.operation == Operation::kCredentialStatus) {
-        const auto caller_sid_text = sid_string(*caller_sid);
+        const auto caller_sid_text = sid_string(caller_sid);
         if (!caller_sid_text || !std::ranges::equal(*caller_sid_text, *requested_sid)) {
             return Status::kAccessDenied;
         }
@@ -920,7 +914,7 @@ Status process_request(
     }
     case Operation::kStore: {
         const auto password = fixed_wide(request.password);
-        const auto account = resolve_account(*caller_sid);
+        const auto account = resolve_account(caller_sid);
         if (!password || !account) {
             return account ? Status::kInvalidRequest : account.error();
         }
@@ -939,7 +933,7 @@ Status process_request(
             return map_error(stored.error());
         }
         if (!management_authorizer.issue(
-                *requested_sid, *caller_process_id,
+                *requested_sid, caller_process_id,
                 response.password, std::size(response.password))) {
             return Status::kUnavailable;
         }
@@ -948,7 +942,7 @@ Status process_request(
     }
     case Operation::kClear: {
         const auto password = fixed_wide(request.password);
-        const auto account = resolve_account(*caller_sid);
+        const auto account = resolve_account(caller_sid);
         if (!password || !account) {
             return account ? Status::kInvalidRequest : account.error();
         }
@@ -991,7 +985,7 @@ Status process_request(
             return Status::kInvalidRequest;
         }
         if (!management_authorizer.consume(
-                *requested_sid, *caller_process_id, *management_token)) {
+                *requested_sid, caller_process_id, *management_token)) {
             return Status::kAccessDenied;
         }
         const auto label_utf8 = wide_to_utf8(*label);
@@ -1011,7 +1005,7 @@ Status process_request(
             return profiles ? Status::kCorrupt : map_profile_error(profiles.error());
         }
         if (!management_authorizer.issue(
-                *requested_sid, *caller_process_id,
+                *requested_sid, caller_process_id,
                 response.password, std::size(response.password))) {
             return Status::kUnavailable;
         }
@@ -1031,7 +1025,7 @@ Status process_request(
             return Status::kInvalidRequest;
         }
         if (!management_authorizer.consume(
-                *requested_sid, *caller_process_id, *management_token)) {
+                *requested_sid, caller_process_id, *management_token)) {
             return Status::kAccessDenied;
         }
         const auto removed = profile_store.remove(*sid_utf8, *profile_id);
@@ -1042,7 +1036,7 @@ Status process_request(
             return Status::kProfileNotFound;
         }
         if (!management_authorizer.issue(
-                *requested_sid, *caller_process_id,
+                *requested_sid, caller_process_id,
                 response.password, std::size(response.password))) {
             return Status::kUnavailable;
         }
@@ -1090,7 +1084,8 @@ LogonSecretServer::LogonSecretServer(security::StorageKey storage_key)
     : storage_key_(std::move(storage_key)),
       secret_store_(storage_key_),
       profile_store_(storage_key_),
-      management_authorizer_(std::make_unique<ManagementAuthorizer>()) {}
+      management_authorizer_(std::make_unique<ManagementAuthorizer>()),
+      rate_limiter_(std::make_unique<SidRateLimiter>()) {}
 
 LogonSecretServer::~LogonSecretServer() = default;
 
@@ -1133,6 +1128,19 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
         }
         server_log("serve: client connected");
 
+        const auto caller_sid = client_sid(raw_pipe);
+        const auto caller_process_id = client_process_id(raw_pipe);
+        auto caller_sid_text = std::expected<std::wstring, DWORD>{
+            std::unexpected(ERROR_ACCESS_DENIED)};
+        if (caller_sid) {
+            caller_sid_text = sid_string(*caller_sid);
+        }
+        if (!caller_sid || !caller_process_id || !caller_sid_text
+            || !rate_limiter_->allow_connection(*caller_sid_text)) {
+            (void)DisconnectNamedPipe(raw_pipe);
+            continue;
+        }
+
         auto request = Request{};
         auto bytes_read = DWORD{0};
         auto response = Response{};
@@ -1144,13 +1152,14 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             }
             continue;
         }
-        if (bytes_read == sizeof(request)) {
+        if (bytes_read == sizeof(request)
+            && rate_limiter_->allow_request(*caller_sid_text)) {
             server_log("serve: request received");
             response.request_id = request.request_id;
             response.logon_session_id = request.logon_session_id;
             response.status = process_request(
-                raw_pipe, stop_event, request, response, secret_store_, profile_store_,
-                *management_authorizer_);
+                stop_event, request, response, secret_store_, profile_store_,
+                *management_authorizer_, *caller_sid, *caller_process_id);
             server_log(("serve: response status=" + std::to_string(static_cast<int>(response.status))).c_str());
         } else {
             response.status = Status::kInvalidRequest;

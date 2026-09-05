@@ -2,6 +2,8 @@
 compile_commands.json
 .codex
 Cargo.lock
+!src/core-rs/Cargo.lock
+!src/platform/windows/credential_provider_rs/Cargo.lock
 target/
 zig-cache/
 .zig-cache/

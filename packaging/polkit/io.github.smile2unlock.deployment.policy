@@ -41,4 +41,16 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+
+  <action id="io.github.smile2unlock.deployment.manage-profiles">
+    <description>Authorize changes to your Smile2Unlock face profiles</description>
+    <description xml:lang="zh_CN">授权修改您的 Smile2Unlock 人脸档案</description>
+    <message>Authentication is required to change your face authentication profiles</message>
+    <message xml:lang="zh_CN">修改您的人脸认证档案需要验证当前账户</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

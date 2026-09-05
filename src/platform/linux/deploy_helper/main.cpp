@@ -1,11 +1,13 @@
 #include "platform/linux/deploy/deployment.h"
 
 #include <systemd/sd-bus.h>
+#include <nlohmann/json.hpp>
 
 #include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <csignal>
 #include <cstring>
 #include <cstdint>
@@ -23,6 +25,8 @@
 #include <unordered_map>
 #include <vector>
 
+import su.control.socket;
+
 namespace {
 
 constexpr std::string_view kBusName = "io.github.smile2unlock.Deployment1";
@@ -34,6 +38,8 @@ constexpr std::string_view kConfigureAction =
     "io.github.smile2unlock.deployment.configure-pam";
 constexpr std::string_view kRollbackAction =
     "io.github.smile2unlock.deployment.rollback-pam";
+constexpr std::string_view kManageProfilesAction =
+    "io.github.smile2unlock.deployment.manage-profiles";
 
 struct ServiceState {
     struct PendingPlan {
@@ -302,6 +308,17 @@ int rollback_integration(sd_bus_message* message, void*, sd_bus_error*) {
     return ::sd_bus_reply_method_return(message, "s", payload.c_str());
 }
 
+int rollback_all_integrations(sd_bus_message* message, void*, sd_bus_error*) {
+    if (const auto authorized = check_authorization(message, kRollbackAction); !authorized) {
+        return reply_error(message, authorized.error());
+    }
+    const auto rolled_back = su::deploy::rollback_all_pam_integrations("/");
+    if (!rolled_back) {
+        return reply_error(message, rolled_back.error());
+    }
+    return ::sd_bus_reply_method_return(message, "s", "all managed PAM integrations removed");
+}
+
 int initialize_runtime(sd_bus_message* message, void*, sd_bus_error*) {
     if (const auto authorized = check_authorization(message, kInitializeAction); !authorized) {
         return reply_error(message, authorized.error());
@@ -325,6 +342,90 @@ int initialize_runtime(sd_bus_message* message, void*, sd_bus_error*) {
         return reply_error(message, enabled.error());
     }
     return ::sd_bus_reply_method_return(message, "s", "runtime initialized");
+}
+
+std::expected<std::pair<std::uint32_t, std::uint32_t>, std::string> sender_identity(
+    sd_bus_message* message) {
+    sd_bus_creds* credentials = nullptr;
+    const auto result = ::sd_bus_query_sender_creds(
+        message, SD_BUS_CREDS_EUID | SD_BUS_CREDS_PID, &credentials);
+    if (result < 0 || credentials == nullptr) {
+        ::sd_bus_creds_unref(credentials);
+        return std::unexpected("cannot resolve profile management caller");
+    }
+    auto uid = uid_t{};
+    auto pid = pid_t{};
+    const auto uid_result = ::sd_bus_creds_get_euid(credentials, &uid);
+    const auto pid_result = ::sd_bus_creds_get_pid(credentials, &pid);
+    ::sd_bus_creds_unref(credentials);
+    if (uid_result < 0 || pid_result < 0 || uid == 0 || pid <= 0
+        || !std::in_range<std::uint32_t>(uid)
+        || !std::in_range<std::uint32_t>(pid)) {
+        return std::unexpected("profile management caller identity is invalid");
+    }
+    return std::pair{
+        static_cast<std::uint32_t>(uid),
+        static_cast<std::uint32_t>(pid),
+    };
+}
+
+int authorize_profile_management(sd_bus_message* message, void*, sd_bus_error*) {
+    const char* operation = nullptr;
+    if (::sd_bus_message_read(message, "s", &operation) < 0 || operation == nullptr
+        || (std::string_view(operation) != "enroll_profile"
+            && std::string_view(operation) != "delete_profile"
+            && std::string_view(operation) != "migrate_profiles")) {
+        return reply_error(message, "invalid profile management operation");
+    }
+    const auto identity = sender_identity(message);
+    if (!identity) {
+        return reply_error(message, identity.error());
+    }
+    if (const auto authorized = check_authorization(message, kManageProfilesAction); !authorized) {
+        return reply_error(message, authorized.error());
+    }
+
+    static auto sequence = std::atomic<std::uint64_t>{1};
+    const auto request_id = sequence.fetch_add(1, std::memory_order_relaxed);
+    auto connection = su::control::Connection::connect_to(su::control::kDefaultSocketPath);
+    if (!connection) {
+        return reply_error(message, "authentication service is unavailable");
+    }
+    const auto request = su::control::make_issue_management_capability_request(
+        request_id, identity->first, identity->second, operation);
+    if (!connection->send_frame(request)) {
+        return reply_error(message, "failed to request a management capability");
+    }
+    auto frame = connection->receive_frame();
+    if (!frame) {
+        return reply_error(message, "authentication service did not return a capability");
+    }
+    auto response = su::control::parse_response(*frame);
+    std::ranges::fill(*frame, '\0');
+    frame->clear();
+    if (!response || response->request_id != request_id
+        || response->result != su::control::ControlResult::kAccepted) {
+        return reply_error(
+            message,
+            response ? response->reason : "authentication service rejected the capability");
+    }
+    auto payload = nlohmann::json::parse(response->payload_json, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object()
+        || !payload.contains("token") || !payload["token"].is_string()) {
+        return reply_error(message, "authentication service returned an invalid capability");
+    }
+    auto token = payload["token"].get<std::string>();
+    if (token.size() != 64 || !std::ranges::all_of(token, [](unsigned char byte) {
+            return std::isxdigit(byte) != 0;
+        })) {
+        return reply_error(message, "authentication service returned an invalid capability");
+    }
+    const auto result = ::sd_bus_reply_method_return(message, "s", token.c_str());
+    std::ranges::fill(token, '\0');
+    payload["token"] = "";
+    std::ranges::fill(response->payload_json, '\0');
+    response->payload_json.clear();
+    return result;
 }
 
 int configure_dms(sd_bus_message* message, void*, sd_bus_error*) {
@@ -356,7 +457,11 @@ constexpr auto kVtable = std::to_array<sd_bus_vtable>({
                   SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("RollbackDesktopIntegration", "s", "s", rollback_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("RollbackAllDesktopIntegrations", "", "s", rollback_all_integrations,
+                  SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("InitializeRuntime", "", "s", initialize_runtime,
+                  SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("AuthorizeProfileManagement", "s", "s", authorize_profile_management,
                   SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("ConfigureDms", "b", "s", configure_dms,
                   SD_BUS_VTABLE_UNPRIVILEGED),
@@ -366,6 +471,12 @@ constexpr auto kVtable = std::to_array<sd_bus_vtable>({
 int run_service() {
     if (::geteuid() != 0) {
         std::cerr << "su_deploy_helper must be activated as root\n";
+        return 1;
+    }
+    if (const auto recovered = su::deploy::recover_interrupted_pam_transactions("/");
+        !recovered) {
+        std::cerr << "failed to recover interrupted PAM deployment: "
+                  << recovered.error() << '\n';
         return 1;
     }
     sd_bus* bus = nullptr;
@@ -406,8 +517,33 @@ int main(int argc, char** argv) {
         std::cout << "su_deploy_helper 1\n";
         return 0;
     }
+    if (argc == 2 && std::string_view(argv[1]) == "--rollback-all") {
+        if (::geteuid() != 0) {
+            std::cerr << "--rollback-all must run as root\n";
+            return 1;
+        }
+        const auto rolled_back = su::deploy::rollback_all_pam_integrations("/");
+        if (!rolled_back) {
+            std::cerr << rolled_back.error() << '\n';
+            return 1;
+        }
+        return 0;
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "--check-package-version") {
+        if (::geteuid() != 0) {
+            std::cerr << "--check-package-version must run as root\n";
+            return 1;
+        }
+        const auto checked = su::deploy::check_package_upgrade("/", argv[2]);
+        if (!checked) {
+            std::cerr << checked.error() << '\n';
+            return 1;
+        }
+        return 0;
+    }
     if (argc != 1) {
-        std::cerr << "usage: su_deploy_helper [--version]\n";
+        std::cerr << "usage: su_deploy_helper [--version | --rollback-all | "
+                     "--check-package-version VERSION]\n";
         return 64;
     }
     return run_service();

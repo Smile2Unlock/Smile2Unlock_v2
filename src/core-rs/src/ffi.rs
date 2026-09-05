@@ -195,6 +195,15 @@ pub extern "C" fn su_core_default_config() -> SuCoreConfig {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn su_core_default_config_into(out_config: *mut SuCoreConfig) -> SuStatus {
+    if out_config.is_null() {
+        return SuStatus::NullArgument;
+    }
+    unsafe { out_config.write(config::default_config_ffi()) };
+    SuStatus::Ok
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn su_core_load_config(
     path: *const c_char,
     out_config: *mut SuCoreConfig,
@@ -455,6 +464,30 @@ pub extern "C" fn su_core_encrypted_authenticate_face_sample_report(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn su_core_encrypted_authenticate_face_sample_report_into(
+    context: *const SuEncryptedStoreContext,
+    store_path: *const c_char,
+    face_sample_source: *const c_char,
+    threshold: f32,
+    liveness_ok: bool,
+    out_report: *mut SuFaceAuthReport,
+) -> SuStatus {
+    if out_report.is_null() {
+        return SuStatus::NullArgument;
+    }
+    let report = su_core_encrypted_authenticate_face_sample_report(
+        context,
+        store_path,
+        face_sample_source,
+        threshold,
+        liveness_ok,
+    );
+    let status = report.status;
+    unsafe { out_report.write(report) };
+    status
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn su_core_migrate_plaintext_face_profiles(
     context: *const SuEncryptedStoreContext,
     legacy_path: *const c_char,
@@ -663,6 +696,28 @@ pub extern "C" fn su_core_authenticate_face_sample_with_liveness(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn su_core_authenticate_face_sample_with_liveness_into(
+    store_path: *const c_char,
+    face_sample_source: *const c_char,
+    threshold: f32,
+    liveness_ok: bool,
+    out_decision: *mut SuFaceAuthDecision,
+) -> SuStatus {
+    if out_decision.is_null() {
+        return SuStatus::NullArgument;
+    }
+    let decision = su_core_authenticate_face_sample_with_liveness(
+        store_path,
+        face_sample_source,
+        threshold,
+        liveness_ok,
+    );
+    let status = decision.status;
+    unsafe { out_decision.write(decision) };
+    status
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn su_core_authenticate_face_sample_report_json(
     store_path: *const c_char,
     face_sample_source: *const c_char,
@@ -772,4 +827,26 @@ pub extern "C" fn su_core_authenticate_face_sample_report_with_liveness(
         threshold,
         liveness_ok,
     )
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_authenticate_face_sample_report_with_liveness_into(
+    store_path: *const c_char,
+    face_sample_source: *const c_char,
+    threshold: f32,
+    liveness_ok: bool,
+    out_report: *mut SuFaceAuthReport,
+) -> SuStatus {
+    if out_report.is_null() {
+        return SuStatus::NullArgument;
+    }
+    let report = su_core_authenticate_face_sample_report_with_liveness(
+        store_path,
+        face_sample_source,
+        threshold,
+        liveness_ok,
+    );
+    let status = report.status;
+    unsafe { out_report.write(report) };
+    status
 }

@@ -360,6 +360,12 @@ void test_source_priority_and_fallback(const std::filesystem::path& root) {
     require(loaded.snapshot.source == ThemeSource::dms_cache, "DMS cache should have priority");
     require(loaded.snapshot.theme.mode == ThemeMode::dark, "DMS IPC mode should beat session mode");
 
+    write_file(paths.dms_palette, "{broken");
+    const auto rejected = su::app::load_desktop_theme(paths, dms_runner);
+    require(
+        std::ranges::contains(rejected.rejected_sources, ThemeSource::dms_cache),
+        "an invalid DMS cache should be reported as a rejected source");
+
     std::filesystem::remove(paths.dms_palette);
     const auto wallpaper = root / "wallpaper.png";
     write_file(wallpaper, "fixture");

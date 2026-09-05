@@ -61,16 +61,21 @@ typedef enum SuControlMessageType {
     SuControlMessageType_DeleteProfile = 7,
     SuControlMessageType_MigrateProfiles = 8,
     SuControlMessageType_VerifyProfile = 9,
+    SuControlMessageType_IssueManagementCapability = 10,
 } SuControlMessageType;
 
 typedef struct SuControlRequest {
     SuControlMessageType msg_type;
     uint64_t request_id;
     uint64_t target_request_id;
+    uint32_t target_uid;
+    uint32_t target_pid;
     uint8_t username[SuControlUsernameCap];
     uint8_t profile_id[SuControlProfileIdCap];
     uint8_t label[SuControlProfileLabelCap];
     uint8_t face_sample_source[SuControlSampleSourceCap];
+    uint8_t management_operation[32];
+    uint8_t management_token[65];
     bool liveness_ok;
 } SuControlRequest;
 
@@ -129,6 +134,7 @@ SuAuthDecision su_core_evaluate_auth(
     bool liveness_ok);
 SuStatus su_core_default_threshold(float* out_threshold);
 SuCoreConfig su_core_default_config(void);
+SuStatus su_core_default_config_into(SuCoreConfig* out_config);
 SuStatus su_core_load_config(const char* path, SuCoreConfig* out_config);
 SuStatus su_core_save_config(const char* path, const SuCoreConfig* config);
 SuStatus su_core_enroll_face_profile(
@@ -158,6 +164,12 @@ SuFaceAuthDecision su_core_authenticate_face_sample_with_liveness(
     const char* face_sample_source,
     float threshold,
     bool liveness_ok);
+SuStatus su_core_authenticate_face_sample_with_liveness_into(
+    const char* store_path,
+    const char* face_sample_source,
+    float threshold,
+    bool liveness_ok,
+    SuFaceAuthDecision* out_decision);
 SuStatus su_core_authenticate_face_sample_report_json(
     const char* store_path,
     const char* face_sample_source,
@@ -182,6 +194,12 @@ SuFaceAuthReport su_core_authenticate_face_sample_report_with_liveness(
     const char* face_sample_source,
     float threshold,
     bool liveness_ok);
+SuStatus su_core_authenticate_face_sample_report_with_liveness_into(
+    const char* store_path,
+    const char* face_sample_source,
+    float threshold,
+    bool liveness_ok,
+    SuFaceAuthReport* out_report);
 SuStatus su_core_encrypted_enroll_face_profile(
     const SuEncryptedStoreContext* context,
     const char* store_path,
@@ -210,6 +228,13 @@ SuFaceAuthReport su_core_encrypted_authenticate_face_sample_report(
     const char* face_sample_source,
     float threshold,
     bool liveness_ok);
+SuStatus su_core_encrypted_authenticate_face_sample_report_into(
+    const SuEncryptedStoreContext* context,
+    const char* store_path,
+    const char* face_sample_source,
+    float threshold,
+    bool liveness_ok,
+    SuFaceAuthReport* out_report);
 SuStatus su_core_migrate_plaintext_face_profiles(
     const SuEncryptedStoreContext* context,
     const char* legacy_path,
@@ -241,4 +266,9 @@ SuStatus su_core_clear_windows_logon_secret(
 
 #ifdef __cplusplus
 }
+
+static_assert(sizeof(SuStatus) == 4);
+static_assert(sizeof(SuCoreConfig) == 40);
+static_assert(sizeof(SuFaceAuthDecision) == 16);
+static_assert(sizeof(SuFaceAuthReport) == 344);
 #endif

@@ -85,6 +85,13 @@ struct PamPlan {
 [[nodiscard]] std::expected<void, std::string> rollback_pam_integration(
     const std::filesystem::path& root,
     TargetKind target);
+[[nodiscard]] std::expected<void, std::string> rollback_all_pam_integrations(
+    const std::filesystem::path& root = "/");
+[[nodiscard]] std::expected<void, std::string> recover_interrupted_pam_transactions(
+    const std::filesystem::path& root = "/");
+[[nodiscard]] std::expected<void, std::string> check_package_upgrade(
+    const std::filesystem::path& root,
+    std::string_view candidate_version);
 
 [[nodiscard]] std::string snapshot_json(const DeploymentSnapshot& snapshot);
 [[nodiscard]] std::string plan_json(const PamPlan& plan);

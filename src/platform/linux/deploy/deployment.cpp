@@ -28,6 +28,12 @@ using nlohmann::json;
 
 constexpr std::string_view kManagedMarker = "# Managed by Smile2Unlock deployment helper.";
 constexpr std::string_view kPamModule = "pam_smile2unlock.so";
+constexpr auto kJournalVersion = 2;
+constexpr auto kTransformationVersion = 2;
+#ifndef SU_VERSION_STR
+#define SU_VERSION_STR "0.0.0"
+#endif
+constexpr std::string_view kPackageVersion = SU_VERSION_STR;
 
 struct TargetDefinition {
     TargetKind kind;
@@ -175,12 +181,6 @@ bool contains_module(std::span<const ParsedLine> lines, std::string_view module)
     });
 }
 
-bool contains_text(std::span<const ParsedLine> lines, std::string_view text) {
-    return std::ranges::any_of(lines, [text](const auto& line) {
-        return line.raw.find(text) != std::string::npos;
-    });
-}
-
 bool references_substack(std::span<const ParsedLine> lines, std::string_view service) {
     return std::ranges::any_of(lines, [service](const auto& line) {
         return line.fields.size() >= 3
@@ -237,6 +237,49 @@ std::filesystem::path journal_path(const std::filesystem::path& root) {
 
 std::filesystem::path backup_directory(const std::filesystem::path& root) {
     return rooted(root, "/var/lib/smile2unlock/pam-backups");
+}
+
+std::optional<std::array<unsigned, 3>> parse_version(std::string_view text) {
+    auto result = std::array<unsigned, 3>{};
+    for (auto index = std::size_t{0}; index < result.size(); ++index) {
+        const auto separator = text.find('.');
+        const auto component = text.substr(0, separator);
+        const auto parsed = std::from_chars(
+            component.data(), component.data() + component.size(), result[index]);
+        if (component.empty() || parsed.ec != std::errc{}
+            || parsed.ptr != component.data() + component.size()) {
+            return std::nullopt;
+        }
+        if (index + 1 == result.size()) {
+            if (separator != std::string_view::npos) {
+                return std::nullopt;
+            }
+        } else {
+            if (separator == std::string_view::npos) {
+                return std::nullopt;
+            }
+            text.remove_prefix(separator + 1);
+        }
+    }
+    return result;
+}
+
+std::expected<void, std::string> reject_downgrade(const json& journal) {
+    if (!journal.contains("targets") || journal["targets"].empty()) {
+        return {};
+    }
+    const auto recorded_text = journal.value("package_version", "0.0.0");
+    const auto recorded = parse_version(recorded_text);
+    const auto current = parse_version(kPackageVersion);
+    if (!recorded || !current) {
+        return std::unexpected("deployment journal contains an invalid package version");
+    }
+    if (*recorded > *current) {
+        return std::unexpected(std::format(
+            "refusing package downgrade from {} to {} while PAM integration is managed",
+            recorded_text, kPackageVersion));
+    }
+    return {};
 }
 
 std::string join_lines(std::span<const ParsedLine> lines) {
@@ -334,7 +377,12 @@ std::expected<json, std::string> load_journal(const std::filesystem::path& root)
     const auto path = journal_path(root);
     auto error = std::error_code{};
     if (!std::filesystem::exists(path, error)) {
-        return json{{"version", 1}, {"targets", json::object()}};
+        return json{
+            {"version", kJournalVersion},
+            {"package_version", kPackageVersion},
+            {"transformation_version", kTransformationVersion},
+            {"targets", json::object()},
+        };
     }
     const auto content = read_regular_file(path);
     if (!content) {
@@ -342,9 +390,27 @@ std::expected<json, std::string> load_journal(const std::filesystem::path& root)
     }
     auto parsed = json::parse(*content, nullptr, false);
     if (parsed.is_discarded() || !parsed.is_object()
-        || parsed.value("version", 0) != 1 || !parsed.contains("targets")
+        || (parsed.value("version", 0) != 1
+            && parsed.value("version", 0) != kJournalVersion)
+        || !parsed.contains("targets")
         || !parsed["targets"].is_object()) {
         return std::unexpected("invalid deployment journal");
+    }
+    if (parsed.value("version", 0) == 1) {
+        parsed["version"] = kJournalVersion;
+        parsed["package_version"] = "0.0.0";
+        parsed["transformation_version"] = 1;
+        for (auto& [_, record] : parsed["targets"].items()) {
+            if (record.is_object()) {
+                record["state"] = "active";
+                const auto parent = read_regular_file(record.value("parent_backup", ""));
+                const auto child = read_regular_file(record.value("child_backup", ""));
+                record["source_fingerprint"] = parent ? fingerprint(*parent) : "";
+                record["child_source_fingerprint"] = child ? fingerprint(*child) : "";
+                record["package_version"] = "0.0.0";
+                record["transformation_version"] = 1;
+            }
+        }
     }
     return parsed;
 }
@@ -510,6 +576,29 @@ std::expected<PamPlan, std::string> plan_pam_integration(
         if (!child || child->find(kManagedMarker) == std::string::npos) {
             return std::unexpected("managed PAM substack is missing or modified");
         }
+        const auto child_lines = parse_lines(*child);
+        const auto password_anchor = auth_anchor(child_lines);
+        if (!password_anchor) {
+            return std::unexpected("managed PAM substack has no password fallback");
+        }
+        const auto journal = load_journal(root);
+        if (!journal) {
+            return std::unexpected(journal.error());
+        }
+        if (const auto compatible = reject_downgrade(*journal); !compatible) {
+            return std::unexpected(compatible.error());
+        }
+        const auto id = std::string(target_id(target));
+        if (!(*journal)["targets"].contains(id)
+            || (*journal)["targets"][id].value("state", "active") != "active") {
+            return std::unexpected("managed PAM files do not have an active journal record");
+        }
+        const auto desired_child = child_content(password_anchor->service, wallet_token);
+        const auto& record = (*journal)["targets"][id];
+        const auto current_transformation = record.value("transformation_version", 0)
+            == kTransformationVersion;
+        const auto current_package = record.value("package_version", "")
+            == kPackageVersion;
         return PamPlan{
             .target = target,
             .service = std::string(service),
@@ -519,14 +608,15 @@ std::expected<PamPlan, std::string> plan_pam_integration(
             .child_path = child_path,
             .source_content = *source,
             .destination_content = *source,
-            .child_content = *child,
+            .child_content = desired_child,
             .source_fingerprint = fingerprint(*source),
             .child_source_content = *child,
             .child_source_fingerprint = fingerprint(*child),
             .destination_existed = *source_path == destination_path,
             .child_existed = true,
-            .wallet_token_requested = contains_text(parse_lines(*child), "pam_systemd_loadkey.so"),
-            .already_managed = true,
+            .wallet_token_requested = wallet_token,
+            .already_managed = *child == desired_child
+                && current_transformation && current_package,
         };
     }
     if (contains_module(lines, kPamModule)) {
@@ -603,9 +693,62 @@ std::expected<void, std::string> apply_pam_plan(
     if (!journal) {
         return std::unexpected(journal.error());
     }
+    if (const auto compatible = reject_downgrade(*journal); !compatible) {
+        return std::unexpected(compatible.error());
+    }
     const auto id = std::string(target_id(plan.target));
     if ((*journal)["targets"].contains(id)) {
-        return std::unexpected("deployment journal already contains this target");
+        auto& record = (*journal)["targets"][id];
+        if (record.value("state", "active") != "active"
+            || fingerprint(*current_source) != record.value("result_fingerprint", "")) {
+            return std::unexpected("managed PAM target is not in a safe upgrade state");
+        }
+        const auto upgrade_backup = backup_directory(root) / (id + ".upgrade-child");
+        if (const auto saved = atomic_write(upgrade_backup, plan.child_source_content, 0600);
+            !saved) {
+            return saved;
+        }
+        const auto old_record = record;
+        record["state"] = "upgrading";
+        record["upgrade_child_backup"] = upgrade_backup.string();
+        record["pending_child_result_fingerprint"] = fingerprint(plan.child_content);
+        if (const auto saved = save_journal(root, *journal); !saved) {
+            return saved;
+        }
+        const auto restore_upgrade = [&]() -> std::expected<void, std::string> {
+            const auto restored = atomic_write(plan.child_path, plan.child_source_content, 0644);
+            (*journal)["targets"][id] = old_record;
+            const auto journal_saved = save_journal(root, *journal);
+            (void)remove_regular_file(upgrade_backup);
+            if (!restored) return restored;
+            return journal_saved;
+        };
+        if (const auto written = atomic_write(plan.child_path, plan.child_content, 0644);
+            !written) {
+            (void)restore_upgrade();
+            return written;
+        }
+        const auto installed_child = read_regular_file(plan.child_path);
+        const auto status = inspect_target(root, definition(plan.target));
+        if (!installed_child || *installed_child != plan.child_content
+            || status.state != TargetState::kManaged || !status.password_fallback) {
+            (void)restore_upgrade();
+            return std::unexpected("upgraded PAM stack failed post-write validation");
+        }
+        record = old_record;
+        record["state"] = "active";
+        record["child_result_fingerprint"] = fingerprint(plan.child_content);
+        record["wallet_token"] = plan.wallet_token_requested;
+        record["package_version"] = kPackageVersion;
+        record["transformation_version"] = kTransformationVersion;
+        (*journal)["package_version"] = kPackageVersion;
+        (*journal)["transformation_version"] = kTransformationVersion;
+        if (const auto saved = save_journal(root, *journal); !saved) {
+            (void)restore_upgrade();
+            return saved;
+        }
+        (void)remove_regular_file(upgrade_backup);
+        return {};
     }
 
     const auto backup_dir = backup_directory(root);
@@ -622,20 +765,8 @@ std::expected<void, std::string> apply_pam_plan(
         }
     }
 
-    if (const auto written = atomic_write(plan.child_path, plan.child_content, 0644); !written) {
-        return written;
-    }
-    if (const auto written = atomic_write(
-            plan.destination_path, plan.destination_content, 0644); !written) {
-        if (plan.child_existed) {
-            (void)atomic_write(plan.child_path, plan.child_source_content, 0644);
-        } else {
-            (void)remove_regular_file(plan.child_path);
-        }
-        return written;
-    }
-
     (*journal)["targets"][id] = {
+        {"state", "applying"},
         {"service", plan.service},
         {"destination", plan.destination_path.string()},
         {"child", plan.child_path.string()},
@@ -643,21 +774,61 @@ std::expected<void, std::string> apply_pam_plan(
         {"child_existed", plan.child_existed},
         {"parent_backup", parent_backup.string()},
         {"child_backup", child_backup.string()},
+        {"source_fingerprint", fingerprint(plan.source_content)},
+        {"child_source_fingerprint", fingerprint(plan.child_source_content)},
         {"result_fingerprint", fingerprint(plan.destination_content)},
         {"child_result_fingerprint", fingerprint(plan.child_content)},
         {"wallet_token", plan.wallet_token_requested},
+        {"package_version", kPackageVersion},
+        {"transformation_version", kTransformationVersion},
     };
+    (*journal)["package_version"] = kPackageVersion;
+    (*journal)["transformation_version"] = kTransformationVersion;
     if (const auto saved = save_journal(root, *journal); !saved) {
-        if (plan.destination_existed) {
-            (void)atomic_write(plan.destination_path, plan.source_content, 0644);
-        } else {
-            (void)remove_regular_file(plan.destination_path);
+        return saved;
+    }
+
+    const auto restore_fresh = [&]() -> std::expected<void, std::string> {
+        auto first_error = std::optional<std::string>{};
+        const auto parent = plan.destination_existed
+            ? atomic_write(plan.destination_path, plan.source_content, 0644)
+            : remove_regular_file(plan.destination_path);
+        if (!parent) first_error = parent.error();
+        const auto child = plan.child_existed
+            ? atomic_write(plan.child_path, plan.child_source_content, 0644)
+            : remove_regular_file(plan.child_path);
+        if (!child && !first_error) first_error = child.error();
+        if (!first_error) {
+            (*journal)["targets"].erase(id);
+            if (const auto saved = save_journal(root, *journal); !saved) {
+                first_error = saved.error();
+            }
         }
-        if (plan.child_existed) {
-            (void)atomic_write(plan.child_path, plan.child_source_content, 0644);
-        } else {
-            (void)remove_regular_file(plan.child_path);
-        }
+        return first_error ? std::expected<void, std::string>{std::unexpected(*first_error)}
+                           : std::expected<void, std::string>{};
+    };
+
+    if (const auto written = atomic_write(plan.child_path, plan.child_content, 0644); !written) {
+        (void)restore_fresh();
+        return written;
+    }
+    if (const auto written = atomic_write(
+            plan.destination_path, plan.destination_content, 0644); !written) {
+        (void)restore_fresh();
+        return written;
+    }
+    const auto installed_parent = read_regular_file(plan.destination_path);
+    const auto installed_child = read_regular_file(plan.child_path);
+    const auto status = inspect_target(root, definition(plan.target));
+    if (!installed_parent || *installed_parent != plan.destination_content
+        || !installed_child || *installed_child != plan.child_content
+        || status.state != TargetState::kManaged || !status.password_fallback) {
+        (void)restore_fresh();
+        return std::unexpected("installed PAM stack failed post-write validation");
+    }
+    (*journal)["targets"][id]["state"] = "active";
+    if (const auto saved = save_journal(root, *journal); !saved) {
+        (void)restore_fresh();
         return saved;
     }
     return {};
@@ -674,22 +845,53 @@ std::expected<void, std::string> rollback_pam_integration(
     if (!(*journal)["targets"].contains(id)) {
         return std::unexpected("target is not managed by Smile2Unlock");
     }
-    const auto record = (*journal)["targets"][id];
+    auto record = (*journal)["targets"][id];
+    if (!record.is_object()) {
+        return std::unexpected("deployment journal contains an invalid target record");
+    }
     const auto destination = std::filesystem::path(record.value("destination", ""));
     const auto child = std::filesystem::path(record.value("child", ""));
-    if (destination.empty() || child.empty()) {
-        return std::unexpected("deployment journal contains invalid paths");
+    const auto expected_destination = pam_path(root, "/etc/pam.d", target_service(target));
+    const auto expected_child = pam_path(root, "/etc/pam.d", child_service_name(target));
+    const auto parent_backup = backup_directory(root) / (id + ".parent");
+    const auto child_backup = backup_directory(root) / (id + ".child");
+    if (destination != expected_destination || child != expected_child
+        || std::filesystem::path(record.value("parent_backup", "")) != parent_backup
+        || std::filesystem::path(record.value("child_backup", "")) != child_backup) {
+        return std::unexpected("deployment journal contains paths outside the managed target");
     }
-    const auto parent_content = read_regular_file(destination);
-    const auto child_content_now = read_regular_file(child);
-    if (!parent_content || fingerprint(*parent_content) != record.value("result_fingerprint", "")
-        || !child_content_now
-        || fingerprint(*child_content_now) != record.value("child_result_fingerprint", "")) {
+    const auto state = record.value("state", "active");
+    if (state != "active" && state != "applying" && state != "rolling_back") {
+        return std::unexpected("managed PAM target has an unfinished upgrade");
+    }
+    const auto path_matches = [](const std::filesystem::path& path, std::string_view expected) {
+        const auto content = read_regular_file(path);
+        return content && fingerprint(*content) == expected;
+    };
+    const auto path_absent = [](const std::filesystem::path& path) {
+        auto error = std::error_code{};
+        return !std::filesystem::exists(path, error) && !error;
+    };
+    const auto parent_result = path_matches(destination, record.value("result_fingerprint", ""));
+    const auto child_result = path_matches(child, record.value("child_result_fingerprint", ""));
+    const auto parent_original = record.value("destination_existed", false)
+        ? path_matches(destination, record.value("source_fingerprint", ""))
+        : path_absent(destination);
+    const auto child_original = record.value("child_existed", false)
+        ? path_matches(child, record.value("child_source_fingerprint", ""))
+        : path_absent(child);
+    if ((state == "active" && (!parent_result || !child_result))
+        || (state != "active"
+            && (!(parent_result || parent_original) || !(child_result || child_original)))) {
         return std::unexpected("managed PAM files changed after installation");
+    }
+    (*journal)["targets"][id]["state"] = "rolling_back";
+    if (const auto saved = save_journal(root, *journal); !saved) {
+        return saved;
     }
 
     if (record.value("destination_existed", false)) {
-        const auto backup = read_regular_file(record.value("parent_backup", ""));
+        const auto backup = read_regular_file(parent_backup);
         if (!backup) {
             return std::unexpected("parent PAM backup is unavailable");
         }
@@ -700,7 +902,7 @@ std::expected<void, std::string> rollback_pam_integration(
         return removed;
     }
     if (record.value("child_existed", false)) {
-        const auto backup = read_regular_file(record.value("child_backup", ""));
+        const auto backup = read_regular_file(child_backup);
         if (!backup) {
             return std::unexpected("child PAM backup is unavailable");
         }
@@ -711,7 +913,119 @@ std::expected<void, std::string> rollback_pam_integration(
         return removed;
     }
     (*journal)["targets"].erase(id);
-    return save_journal(root, *journal);
+    if (const auto saved = save_journal(root, *journal); !saved) {
+        return saved;
+    }
+    (void)remove_regular_file(parent_backup);
+    (void)remove_regular_file(child_backup);
+    return {};
+}
+
+std::expected<void, std::string> recover_interrupted_pam_transactions(
+    const std::filesystem::path& root) {
+    auto journal = load_journal(root);
+    if (!journal) {
+        return std::unexpected(journal.error());
+    }
+    auto interrupted = std::vector<TargetKind>{};
+    for (const auto& [id, record] : (*journal)["targets"].items()) {
+        if (!record.is_object() || record.value("state", "active") == "active") {
+            continue;
+        }
+        const auto target = target_from_id(id);
+        if (!target) {
+            return std::unexpected("deployment journal contains an unknown target");
+        }
+        if (record.value("state", "") == "upgrading") {
+            const auto child = pam_path(root, "/etc/pam.d", child_service_name(*target));
+            const auto backup = backup_directory(root) / (id + ".upgrade-child");
+            const auto backup_content = read_regular_file(backup);
+            if (!backup_content) {
+                return std::unexpected("interrupted PAM upgrade backup is unavailable");
+            }
+            if (fingerprint(*backup_content)
+                != record.value("child_result_fingerprint", "")) {
+                return std::unexpected("interrupted PAM upgrade backup failed integrity validation");
+            }
+            const auto current = read_regular_file(child);
+            const auto current_hash = current ? fingerprint(*current) : std::string{};
+            if (current_hash != record.value("child_result_fingerprint", "")
+                && current_hash != record.value("pending_child_result_fingerprint", "")) {
+                return std::unexpected("PAM substack changed during an interrupted upgrade");
+            }
+            if (const auto restored = atomic_write(child, *backup_content, 0644); !restored) {
+                return restored;
+            }
+            auto& mutable_record = (*journal)["targets"][id];
+            mutable_record["state"] = "active";
+            mutable_record.erase("upgrade_child_backup");
+            mutable_record.erase("pending_child_result_fingerprint");
+            if (const auto saved = save_journal(root, *journal); !saved) {
+                return saved;
+            }
+            (void)remove_regular_file(backup);
+            continue;
+        }
+        interrupted.push_back(*target);
+    }
+    for (const auto target : interrupted) {
+        if (const auto rolled_back = rollback_pam_integration(root, target); !rolled_back) {
+            return rolled_back;
+        }
+    }
+    return {};
+}
+
+std::expected<void, std::string> rollback_all_pam_integrations(
+    const std::filesystem::path& root) {
+    if (const auto recovered = recover_interrupted_pam_transactions(root); !recovered) {
+        return recovered;
+    }
+    auto journal = load_journal(root);
+    if (!journal) {
+        return std::unexpected(journal.error());
+    }
+    auto targets = std::vector<TargetKind>{};
+    for (const auto& [id, _] : (*journal)["targets"].items()) {
+        const auto target = target_from_id(id);
+        if (!target) {
+            return std::unexpected("deployment journal contains an unknown target");
+        }
+        targets.push_back(*target);
+    }
+    for (const auto target : targets) {
+        if (const auto rolled_back = rollback_pam_integration(root, target); !rolled_back) {
+            return rolled_back;
+        }
+    }
+    return {};
+}
+
+std::expected<void, std::string> check_package_upgrade(
+    const std::filesystem::path& root,
+    std::string_view candidate_version) {
+    const auto candidate = parse_version(candidate_version);
+    if (!candidate) {
+        return std::unexpected("candidate package version is invalid");
+    }
+    const auto journal = load_journal(root);
+    if (!journal) {
+        return std::unexpected(journal.error());
+    }
+    if ((*journal)["targets"].empty()) {
+        return {};
+    }
+    const auto recorded_text = journal->value("package_version", "0.0.0");
+    const auto recorded = parse_version(recorded_text);
+    if (!recorded) {
+        return std::unexpected("deployment journal package version is invalid");
+    }
+    if (*candidate < *recorded) {
+        return std::unexpected(std::format(
+            "refusing package downgrade from managed version {} to {}",
+            recorded_text, candidate_version));
+    }
+    return {};
 }
 
 std::string snapshot_json(const DeploymentSnapshot& snapshot) {

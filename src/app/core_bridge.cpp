@@ -186,17 +186,26 @@ std::expected<ControlRequest, CoreError> parse_control_request(std::string_view 
     case SuControlMessageType_VerifyProfile:
         type = ControlMessageType::kVerifyProfile;
         break;
+    case SuControlMessageType_IssueManagementCapability:
+        type = ControlMessageType::kIssueManagementCapability;
+        break;
     }
 
     return ControlRequest{
         .type = type,
         .request_id = request.request_id,
         .target_request_id = request.target_request_id,
+        .target_uid = request.target_uid,
+        .target_pid = request.target_pid,
         .username = fixed_string(request.username, SuControlUsernameCap),
         .profile_id = fixed_string(request.profile_id, SuControlProfileIdCap),
         .label = fixed_string(request.label, SuControlProfileLabelCap),
         .face_sample_source = fixed_string(
             request.face_sample_source, SuControlSampleSourceCap),
+        .management_operation = fixed_string(
+            request.management_operation, std::size(request.management_operation)),
+        .management_token = fixed_string(
+            request.management_token, std::size(request.management_token)),
         .liveness_ok = request.liveness_ok,
     };
 }
@@ -211,7 +220,11 @@ std::expected<float, CoreError> default_threshold() {
 }
 
 CoreConfig default_config() {
-    return map_config(su_core_default_config());
+    auto config = SuCoreConfig{};
+    if (su_core_default_config_into(&config) != SuStatus_Ok) {
+        return {};
+    }
+    return map_config(config);
 }
 
 std::expected<CoreConfig, CoreError> load_config(const std::string& path) {
@@ -328,20 +341,37 @@ std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold) {
-    return authenticate_face_sample(store_path, face_sample_source, threshold, true);
+    auto result = authenticate_face_sample(store_path, face_sample_source, threshold, true);
+    if (!result) {
+        const auto error = result.error();
+        return std::unexpected<CoreError>{error};
+    }
+    return FaceAuthDecision{
+        .accepted = result->accepted,
+        .score = result->score,
+        .profile_count = result->profile_count,
+    };
 }
 
+#if defined(__GNUC__)
+[[gnu::noinline]]
+#endif
 std::expected<FaceAuthDecision, CoreError> authenticate_face_sample(
     const std::string& store_path,
     std::string_view face_sample_source,
     float threshold,
     bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    const auto decision = su_core_authenticate_face_sample_with_liveness(
+    auto decision = SuFaceAuthDecision{};
+    const auto call_status = su_core_authenticate_face_sample_with_liveness_into(
         store_path.c_str(),
         owned_face_sample_source.c_str(),
         threshold,
-        liveness_ok);
+        liveness_ok,
+        &decision);
+    if (call_status != SuStatus_Ok) {
+        return std::unexpected(map_status(call_status));
+    }
     if (decision.status != SuStatus_Ok) {
         return std::unexpected(map_status(decision.status));
     }
@@ -393,11 +423,16 @@ std::expected<FaceAuthReport, CoreError> authenticate_face_sample_report(
     float threshold,
     bool liveness_ok) {
     const auto owned_face_sample_source = std::string(face_sample_source);
-    const auto report = su_core_authenticate_face_sample_report_with_liveness(
+    auto report = SuFaceAuthReport{};
+    const auto call_status = su_core_authenticate_face_sample_report_with_liveness_into(
         store_path.c_str(),
         owned_face_sample_source.c_str(),
         threshold,
-        liveness_ok);
+        liveness_ok,
+        &report);
+    if (call_status != SuStatus_Ok) {
+        return std::unexpected(map_status(call_status));
+    }
     if (report.status != SuStatus_Ok) {
         return std::unexpected(map_status(report.status));
     }
@@ -502,12 +537,17 @@ std::expected<FaceAuthReport, CoreError> authenticate_encrypted_face_sample_repo
     bool liveness_ok) {
     const auto ffi_context = map_encrypted_context(context);
     const auto owned_source = std::string(face_sample_source);
-    const auto report = su_core_encrypted_authenticate_face_sample_report(
+    auto report = SuFaceAuthReport{};
+    const auto call_status = su_core_encrypted_authenticate_face_sample_report_into(
         &ffi_context,
         store_path.c_str(),
         owned_source.c_str(),
         threshold,
-        liveness_ok);
+        liveness_ok,
+        &report);
+    if (call_status != SuStatus_Ok) {
+        return std::unexpected(map_status(call_status));
+    }
     if (report.status != SuStatus_Ok) {
         return std::unexpected(map_status(report.status));
     }

@@ -235,11 +235,13 @@ std::expected<SuFaceAuthReport, FaceProfileStoreError> FaceProfileStore::authent
     }
     const auto source_string = std::string{embedding_source};
     const auto ffi_context = context(sid_string.c_str());
-    const auto report = su_core_encrypted_authenticate_face_sample_report(
-        &ffi_context, encoded->c_str(), source_string.c_str(), threshold, liveness_ok);
-    return report.status == SuStatus_Ok
+    auto report = SuFaceAuthReport{};
+    const auto status = su_core_encrypted_authenticate_face_sample_report_into(
+        &ffi_context, encoded->c_str(), source_string.c_str(), threshold, liveness_ok,
+        &report);
+    return status == SuStatus_Ok && report.status == SuStatus_Ok
         ? std::expected<SuFaceAuthReport, FaceProfileStoreError>{report}
-        : std::unexpected(map_status(report.status));
+        : std::unexpected(map_status(status != SuStatus_Ok ? status : report.status));
 }
 
 } // namespace su::windows::security

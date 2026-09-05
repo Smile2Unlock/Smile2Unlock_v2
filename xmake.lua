@@ -18,7 +18,7 @@ set_description("Smile2Unlock - local face authentication (Windows sign-in + Lin
 
 
 add_requires("nlohmann_json v3.12.0", { system = false })
-add_requires("cimg")
+add_requires("cimg v4.0.4")
 -- Static libyuv avoids a runtime dependency on the distro's libyuv.so,
 -- which is not present on many distributions (Arch/Debian/Fedora shipping
 -- different sonames or none at all). Built with JPEG (MJPEG decode) from the
@@ -151,6 +151,7 @@ target("su_core")
         local cargo_mode = is_mode("release") and "release" or "debug"
         local cargo_args = {
             "build",
+            "--locked",
             "--manifest-path", manifest,
             "--target-dir", path.join(os.projectdir(), "build", "cargo")
         }
@@ -268,7 +269,7 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })
@@ -329,11 +330,14 @@ if is_plat("linux") then
         add_files("src/platform/linux/deploy/*.cpp")
         add_headerfiles("src/platform/linux/deploy/*.h")
         add_packages("nlohmann_json", { public = true })
+        add_defines("SU_VERSION_STR=\"" .. _su_version .. "\"")
 
     target("su_deploy_helper")
         apply_cpp_target("binary")
         add_files("src/platform/linux/deploy_helper/*.cpp")
+        add_files("src/modules/su.control.socket.cppm")
         add_deps("su_deploy")
+        add_packages("nlohmann_json")
         add_syslinks("systemd")
         add_tests("version", {runargs = {"--version"}})
 
@@ -347,7 +351,8 @@ elseif is_plat("windows", "mingw") then
         add_files("src/platform/windows/deploy_helper/helper.rc")
         add_files("src/platform/windows/deploy/deployment.cpp")
         add_includedirs("src/platform/windows/deploy")
-        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid")
+        add_packages("nlohmann_json")
+        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32")
         add_tests("version", {runargs = {"--version"}})
 end
 
@@ -517,6 +522,15 @@ target("su_theme_test")
         add_tests("default")
     end
 
+target("su_windows_sid_rate_limiter_test")
+    apply_cpp_target("binary")
+    add_files("tests/windows/sid_rate_limiter.cpp")
+    add_includedirs("src/platform/windows/auth_service")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
 -- reliably reports pass/fail for targets with a build artifact. The binary is
@@ -527,6 +541,7 @@ target("su_core_rust_tests")
     on_test(function (target)
         local ok = os.execv("cargo", {
             "test",
+            "--locked",
             "--manifest-path",
             path.join(os.projectdir(), "src", "core-rs", "Cargo.toml"),
         }, { try = true })
@@ -552,6 +567,7 @@ target("su_credential_provider")
         local cargo_mode = is_mode("release") and "release" or "debug"
         local cargo_args = {
             "build",
+            "--locked",
             "--manifest-path", manifest,
             "--target", "x86_64-pc-windows-gnu",
             "--target-dir", path.join(os.projectdir(), "build", "cargo", "credential_provider_rs")
@@ -580,6 +596,7 @@ target("su_credential_provider_rust_tests")
         end
         local args = {
             "test",
+            "--locked",
             "--manifest-path",
             path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml"),
             "--target",

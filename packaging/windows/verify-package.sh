@@ -44,6 +44,7 @@ required=(
     assets/models/seeta/fas_first.csta
     assets/models/seeta/fas_second.csta
     release-info.json
+    release-info.p7s
 )
 for path in "${required[@]}"; do
     package_require_file "${root}/${path}"
@@ -64,6 +65,25 @@ for binary in "${root}/bin/"*.exe "${root}/bin/su_credential_provider.dll"; do
     done < <(x86_64-w64-mingw32-objdump -p "$binary" 2>/dev/null \
         | sed -n 's/^[[:space:]]*DLL Name: \(.*\)/\1/p')
 done
+
+package_require_command openssl
+openssl cms -verify -binary -inform DER -in "${root}/release-info.p7s" \
+    -content "${root}/release-info.json" -noverify -out /dev/null 2>/dev/null \
+    || package_die "release-info detached signature is invalid"
+if command -v osslsigncode >/dev/null 2>&1; then
+    authenticode_verify_args=()
+    if [[ -n "${WINDOWS_VERIFY_CA_FILE:-}" ]]; then
+        package_require_file "$WINDOWS_VERIFY_CA_FILE"
+        authenticode_verify_args=(-CAfile "$WINDOWS_VERIFY_CA_FILE")
+    fi
+    while IFS= read -r -d '' binary; do
+        osslsigncode verify "${authenticode_verify_args[@]}" -in "$binary" >/dev/null 2>&1 \
+            || package_die "invalid Authenticode signature: $(basename "$binary")"
+    done < <(find "${root}/bin" -maxdepth 1 -type f \
+        \( -iname '*.exe' -o -iname '*.dll' \) -print0)
+else
+    package_die "osslsigncode is required to verify Windows release signatures"
+fi
 
 package_verify_release_info "$root" "${root}/release-info.json"
 echo "verified ${archive}"

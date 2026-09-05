@@ -1,6 +1,6 @@
 # Smile2Unlock 当前状态与剩余工作
 
-更新日期：2026-09-03。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
+更新日期：2026-09-05。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
 
 ## 已实现主线
 
@@ -22,22 +22,27 @@ Credential Provider
 
 `su_app.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
 
-## 2026-09-03 验证快照
+## 2026-09-05 验证快照
 
 - Linux x86_64 Release 主构建成功。
-- Xmake 共执行 13 个 test case：12 通过，1 失败。失败项为 `su_theme_test/default`，损坏的 DMS 调色板原子替换会错误切换到内置主题，而不是保留当前主题。
+- Xmake 共执行 14 个 test case，全部通过；损坏的 DMS/Matugen 调色板现在保留最后一个有效主题并报告被拒绝的来源。
 - Rust core：42 个单元测试全部通过。
 - Windows Rust Credential Provider（MinGW + Wine）：41 通过，1 忽略。忽略项依赖 Wine 未实现的 `CredIsProtectedW`，必须在真实 Windows 上验收。
-- 现有 Windows 2.2.0 ZIP 通过当前包校验器。Linux 包校验在本机因缺少 `patchelf` 未执行完成，不视为包本身失败。
+- Windows 全量 Release（GUI、部署 helper、认证服务、识别 agent、密码工具和 Rust Credential Provider）通过 MinGW 交叉构建；按 SID 限流测试在 Wine 下通过。
+- 同一工作区新构建产物的 Windows 未签名开发 staging 通过依赖、清单与文件哈希验证，但它不能部署，也不视为发布包。正式 ZIP 需要受信任的发布证书。
+- Linux 包校验在本机因缺少 `patchelf` 未执行完成；CI 工作流已安装该依赖并覆盖 Linux tar 包构建与验证。
 
 ## 发布前阻塞项
 
-1. 修复主题热更新回归，恢复 Xmake 测试全绿。
-2. 为 Linux 录入、删除和迁移档案增加独立的 PAM 管理授权与短时 capability，不再只依赖同 UID 身份。
-3. 加固 Windows 提权部署输入：验证签名 manifest/Authenticode，使用基于句柄且拒绝 reparse point 的复制流程，或切换到可审计的 MSI/WiX 安装器。
-4. 恢复 CI，覆盖 Linux/Windows C++ 构建、Rust 测试、MinGW/Wine CP 测试、包校验和部署 smoke test。
-5. 发布前从同一提交重新构建并验证 Windows ZIP，确认包内 `release-info.json` 覆盖全部载荷文件；不得复用 `build/packages/` 中的旧产物。
-6. 为 Windows 认证管道增加按 SID 的连接/请求速率限制；现有 15 秒读取截止不能完全防止同步服务被占用。
+代码侧发布阻塞项已完成：主题回归、Linux 管理授权 capability、Windows 签名输入与句柄复制、按 SID 管道限流、Linux 安装生命周期、crate 锁文件与 CImg 版本固定、FFI 警告和 CI 工作流均已落实。
+
+剩余阻塞项是构建环境或真实系统验收，按顺序执行：
+
+1. 在托管 CI 上运行新增工作流并确认 Linux、Windows 交叉测试和临时证书签名包三个 job 全绿。
+2. 使用正式受信任的 Windows code-signing 证书，从同一提交生成并验证 Windows ZIP；不得复用旧产物。
+3. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包（CI 已配置该路径）。
+4. 按 `release_acceptance_checklist.md` 完成 Windows 与 Linux 真实系统矩阵，保留日志和版本证据。
+5. 仅在上述证据齐全后创建发布 tag 和正式产物。
 
 ## 必须的现场验收
 

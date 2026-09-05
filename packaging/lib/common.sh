@@ -80,7 +80,8 @@ for entry in metadata.get("files", []):
         raise SystemExit(f"release-info checksum mismatch: {entry['path']}")
 actual = set()
 for candidate in root.rglob("*"):
-    if not candidate.is_file() or candidate.resolve() == metadata_path:
+    if (not candidate.is_file() or candidate.resolve() == metadata_path
+            or candidate.name == "release-info.p7s"):
         continue
     relative = candidate.relative_to(root).as_posix()
     # Package managers add top-level dot metadata when their archives are

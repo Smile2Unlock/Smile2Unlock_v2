@@ -14,6 +14,9 @@ output_dir="${OUTPUT_DIR:-${project_dir}/build/packages}"
 architecture="x86_64"
 stage_only=false
 verify=true
+unsigned_development=false
+sign_certificate="${WINDOWS_SIGN_CERTIFICATE:-}"
+sign_key="${WINDOWS_SIGN_KEY:-}"
 
 usage() {
     cat <<'USAGE'
@@ -25,6 +28,10 @@ Options:
   --stage-only          Create the staging tree without a zip
   --no-zip              Alias for --stage-only
   --no-verify           Do not verify the completed zip
+  --sign-certificate F  PEM signing certificate (or WINDOWS_SIGN_CERTIFICATE)
+  --sign-key F          PEM private key (or WINDOWS_SIGN_KEY)
+  --unsigned-development
+                        Build a non-deployable package for local inspection
   --help                Show this help
 USAGE
 }
@@ -35,6 +42,9 @@ while (($# > 0)); do
         --output-dir) [[ $# -ge 2 ]] || package_die "missing --output-dir value"; output_dir="$(package_absolute_path "$2")"; shift 2 ;;
         --stage-only|--no-zip) stage_only=true; shift ;;
         --no-verify) verify=false; shift ;;
+        --sign-certificate) [[ $# -ge 2 ]] || package_die "missing --sign-certificate value"; sign_certificate="$(package_absolute_path "$2")"; shift 2 ;;
+        --sign-key) [[ $# -ge 2 ]] || package_die "missing --sign-key value"; sign_key="$(package_absolute_path "$2")"; shift 2 ;;
+        --unsigned-development) unsigned_development=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) package_die "unknown argument: $1" ;;
     esac
@@ -42,6 +52,10 @@ done
 
 build_dir="$(package_absolute_path "$build_dir")"
 output_dir="$(package_absolute_path "$output_dir")"
+
+if [[ "$unsigned_development" == true && "$stage_only" == false ]]; then
+    package_die "--unsigned-development is allowed only with --stage-only"
+fi
 
 package_require_command x86_64-w64-mingw32-objdump
 package_require_command python3
@@ -125,7 +139,28 @@ for binary in "${package_root}/bin/"*.exe "${package_root}/bin/su_credential_pro
     stage_dependencies "$binary"
 done
 
+if [[ "$unsigned_development" == false ]]; then
+    package_require_file "$sign_certificate"
+    package_require_file "$sign_key"
+    package_require_command osslsigncode
+    package_require_command openssl
+    while IFS= read -r -d '' binary; do
+        signed="${binary}.signed"
+        osslsigncode sign -certs "$sign_certificate" -key "$sign_key" \
+            -h sha256 -n "Smile2Unlock" -in "$binary" -out "$signed" >/dev/null
+        mv -- "$signed" "$binary"
+    done < <(find "${package_root}/bin" -maxdepth 1 -type f \
+        \( -iname '*.exe' -o -iname '*.dll' \) -print0)
+else
+    : > "${package_root}/UNSIGNED-DEVELOPMENT-PACKAGE"
+fi
+
 PACKAGE_ARCH="$architecture" inject_release_info "$package_root" windows
+if [[ "$unsigned_development" == false ]]; then
+    openssl cms -sign -binary -in "${package_root}/release-info.json" \
+        -signer "$sign_certificate" -inkey "$sign_key" -outform DER \
+        -out "${package_root}/release-info.p7s" -nosmimecap
+fi
 echo "staged ${package_root} ($(package_file_count "$package_root") files)"
 
 if [[ "$stage_only" == true ]]; then

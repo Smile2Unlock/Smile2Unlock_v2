@@ -339,8 +339,17 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
     if (username.empty()) {
         return std::unexpected("failed to resolve current account");
     }
-    const auto response = send_control_request(su::control::make_enroll_profile_request(
-        next_request_id(), username, label, *resolved));
+    auto management_token = su::deploy::DeploymentClient{}
+        .authorize_profile_management("enroll_profile");
+    if (!management_token) {
+        return std::unexpected(management_token.error());
+    }
+    auto request = su::control::make_enroll_profile_request(
+        next_request_id(), username, label, *resolved, *management_token);
+    std::ranges::fill(*management_token, '\0');
+    management_token->clear();
+    const auto response = send_control_request(request);
+    std::ranges::fill(request, '\0');
     if (!response) {
         return std::unexpected(response.error());
     }
@@ -479,8 +488,17 @@ std::expected<bool, std::string> AppController::delete_face_profile_by_id(
     if (username.empty()) {
         return std::unexpected("failed to resolve current account");
     }
-    const auto response = send_control_request(su::control::make_delete_profile_request(
-        next_request_id(), username, profile_id));
+    auto management_token = su::deploy::DeploymentClient{}
+        .authorize_profile_management("delete_profile");
+    if (!management_token) {
+        return std::unexpected(management_token.error());
+    }
+    auto request = su::control::make_delete_profile_request(
+        next_request_id(), username, profile_id, *management_token);
+    std::ranges::fill(*management_token, '\0');
+    management_token->clear();
+    const auto response = send_control_request(request);
+    std::ranges::fill(request, '\0');
     if (!response) {
         return std::unexpected(response.error());
     }

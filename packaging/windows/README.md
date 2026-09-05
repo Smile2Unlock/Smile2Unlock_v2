@@ -6,6 +6,13 @@ Build and verify the Windows zip from existing MinGW release artifacts:
 packaging/windows/package.sh
 ```
 
+Release packages are fail-closed: provide a trusted PEM code-signing
+certificate and private key with `--sign-certificate` / `--sign-key` (or the
+matching `WINDOWS_SIGN_CERTIFICATE` / `WINDOWS_SIGN_KEY` variables). Every PE
+payload receives an Authenticode signature and `release-info.json` receives a
+detached CMS signature. `--unsigned-development` exists only for inspecting a
+staged tree; Windows deployment intentionally rejects that output.
+
 The archive contains a stable `Smile2Unlock/` directory with sibling `bin/`
 and `assets/` directories. `bin/su_credential_provider.dll` is the only CP DLL
 name accepted by the verifier; suffixed copies are rejected.

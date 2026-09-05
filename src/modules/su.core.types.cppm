@@ -54,16 +54,21 @@ enum class ControlMessageType {
     kDeleteProfile,
     kMigrateProfiles,
     kVerifyProfile,
+    kIssueManagementCapability,
 };
 
 struct ControlRequest {
     ControlMessageType type = ControlMessageType::kStatus;
     std::uint64_t request_id = 0;
     std::uint64_t target_request_id = 0;
+    std::uint32_t target_uid = 0;
+    std::uint32_t target_pid = 0;
     std::string username;
     std::string profile_id;
     std::string label;
     std::string face_sample_source;
+    std::string management_operation;
+    std::string management_token;
     bool liveness_ok = false;
 };
 

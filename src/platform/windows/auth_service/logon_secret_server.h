@@ -11,6 +11,7 @@
 namespace su::windows::auth_service {
 
 class ManagementAuthorizer;
+class SidRateLimiter;
 
 class LogonSecretServer {
 public:
@@ -26,6 +27,7 @@ private:
     security::LogonSecretStore secret_store_;
     security::FaceProfileStore profile_store_;
     std::unique_ptr<ManagementAuthorizer> management_authorizer_;
+    std::unique_ptr<SidRateLimiter> rate_limiter_;
 };
 
 } // namespace su::windows::auth_service

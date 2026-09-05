@@ -71,6 +71,13 @@ initialize storage and configure a detected login or lock-screen target. The
 GUI requests administrator authorization through the restricted deployment
 helper and shows password fallback before applying a PAM change.
 
+Native package upgrades refuse to install a version older than the one that
+last managed PAM. Final package removal first transactionally rolls back every
+managed PAM target and stops the daemon; if an administrator changed a managed
+file, removal fails closed so the package cannot leave a dangling PAM module
+reference. Headless recovery uses
+`sudo /usr/libexec/smile2unlock/su_deploy_helper --rollback-all`.
+
 When running `su_app` directly from a complete Release build, the same section
 can bootstrap missing system components through `pkexec`. The GUI accepts only
 the installer and artifacts found beside that build, requests administrator

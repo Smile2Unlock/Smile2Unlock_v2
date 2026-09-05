@@ -8,14 +8,27 @@
 #include <windows.h>
 #include <winsvc.h>
 #include <shlobj.h>
+#include <softpub.h>
+#include <wincrypt.h>
+#include <wintrust.h>
 
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <unordered_map>
+#include <vector>
 
 namespace su::windeploy {
 
@@ -37,6 +50,250 @@ struct InstalledComponents {
     std::filesystem::path recognition_agent;
 };
 
+class UniqueHandle {
+public:
+    explicit UniqueHandle(HANDLE handle = INVALID_HANDLE_VALUE) : handle_(handle) {}
+    ~UniqueHandle() {
+        if (handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr) {
+            ::CloseHandle(handle_);
+        }
+    }
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+    UniqueHandle(UniqueHandle&& other) noexcept : handle_(other.handle_) {
+        other.handle_ = INVALID_HANDLE_VALUE;
+    }
+    UniqueHandle& operator=(UniqueHandle&& other) noexcept {
+        if (this != &other) {
+            if (handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr) {
+                ::CloseHandle(handle_);
+            }
+            handle_ = other.handle_;
+            other.handle_ = INVALID_HANDLE_VALUE;
+        }
+        return *this;
+    }
+    [[nodiscard]] HANDLE get() const { return handle_; }
+    [[nodiscard]] explicit operator bool() const {
+        return handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr;
+    }
+private:
+    HANDLE handle_;
+};
+
+struct PackageManifest {
+    std::filesystem::path root;
+    std::unordered_map<std::string, std::string> hashes;
+};
+
+std::string wide_to_utf8(std::wstring_view text);
+
+std::string win32_error(std::string_view action, DWORD error = ::GetLastError()) {
+    return std::format("{} (Win32 error {})", action, error);
+}
+
+std::expected<UniqueHandle, std::string> open_plain_file(
+    const std::filesystem::path& path) {
+    auto handle = UniqueHandle{::CreateFileW(
+        path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr)};
+    if (!handle) {
+        return std::unexpected(win32_error("failed to open " + path.filename().string()));
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!::GetFileInformationByHandleEx(
+            handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes))) {
+        return std::unexpected(win32_error("failed to inspect " + path.filename().string()));
+    }
+    if ((attributes.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        return std::unexpected("deployment input must be a regular non-reparse file: "
+            + path.string());
+    }
+    return handle;
+}
+
+std::expected<void, std::string> ensure_plain_directory(const std::filesystem::path& path) {
+    auto handle = UniqueHandle{::CreateFileW(
+        path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+    if (!handle) {
+        return std::unexpected(win32_error("failed to open protected install directory"));
+    }
+    FILE_ATTRIBUTE_TAG_INFO attributes{};
+    if (!::GetFileInformationByHandleEx(
+            handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes))) {
+        return std::unexpected(win32_error("failed to inspect protected install directory"));
+    }
+    if ((attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0
+        || (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return std::unexpected("protected install path is not a plain directory: " + path.string());
+    }
+    return {};
+}
+
+std::expected<std::string, std::string> read_all(HANDLE file, std::size_t limit) {
+    LARGE_INTEGER zero{};
+    if (!::SetFilePointerEx(file, zero, nullptr, FILE_BEGIN)) {
+        return std::unexpected(win32_error("failed to rewind deployment input"));
+    }
+    auto content = std::string{};
+    auto buffer = std::array<char, 16 * 1024>{};
+    for (;;) {
+        DWORD read = 0;
+        if (!::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) {
+            return std::unexpected(win32_error("failed to read deployment input"));
+        }
+        if (read == 0) {
+            break;
+        }
+        if (content.size() + read > limit) {
+            return std::unexpected("deployment input exceeds its size limit");
+        }
+        content.append(buffer.data(), read);
+    }
+    return content;
+}
+
+std::expected<void, std::string> verify_authenticode(
+    HANDLE file, const std::filesystem::path& display_path) {
+    WINTRUST_FILE_INFO file_info{};
+    file_info.cbStruct = sizeof(file_info);
+    file_info.pcwszFilePath = display_path.c_str();
+    file_info.hFile = file;
+
+    WINTRUST_DATA trust{};
+    trust.cbStruct = sizeof(trust);
+    trust.dwUIChoice = WTD_UI_NONE;
+    trust.fdwRevocationChecks = WTD_REVOKE_NONE;
+    trust.dwUnionChoice = WTD_CHOICE_FILE;
+    trust.pFile = &file_info;
+    trust.dwStateAction = WTD_STATEACTION_VERIFY;
+    trust.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
+    GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+    const auto status = ::WinVerifyTrust(nullptr, &policy, &trust);
+    trust.dwStateAction = WTD_STATEACTION_CLOSE;
+    (void)::WinVerifyTrust(nullptr, &policy, &trust);
+    if (status != ERROR_SUCCESS) {
+        return std::unexpected(std::format(
+            "Authenticode verification failed for {} (status 0x{:08x})",
+            display_path.filename().string(), static_cast<std::uint32_t>(status)));
+    }
+    return {};
+}
+
+std::expected<void, std::string> verify_detached_manifest_signature(
+    HANDLE manifest, HANDLE signature) {
+    const auto content = read_all(manifest, 4 * 1024 * 1024);
+    if (!content) {
+        return std::unexpected(content.error());
+    }
+    const auto signature_bytes = read_all(signature, 1024 * 1024);
+    if (!signature_bytes) {
+        return std::unexpected(signature_bytes.error());
+    }
+    CRYPT_VERIFY_MESSAGE_PARA parameters{};
+    parameters.cbSize = sizeof(parameters);
+    parameters.dwMsgAndCertEncodingType = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
+    parameters.hCryptProv = 0;
+    parameters.pfnGetSignerCertificate = nullptr;
+    parameters.pvGetArg = nullptr;
+    const BYTE* content_parts[] = {
+        reinterpret_cast<const BYTE*>(content->data()),
+    };
+    DWORD content_sizes[] = {static_cast<DWORD>(content->size())};
+    PCCERT_CONTEXT signer = nullptr;
+    if (!::CryptVerifyDetachedMessageSignature(
+            &parameters, 0,
+            reinterpret_cast<const BYTE*>(signature_bytes->data()),
+            static_cast<DWORD>(signature_bytes->size()), 1, content_parts, content_sizes,
+            &signer)) {
+        return std::unexpected(win32_error("release-info signature verification failed"));
+    }
+    const auto release_signer = std::unique_ptr<const CERT_CONTEXT, decltype(&::CertFreeCertificateContext)>{
+        signer, &::CertFreeCertificateContext};
+    CERT_CHAIN_PARA chain_parameters{};
+    chain_parameters.cbSize = sizeof(chain_parameters);
+    CERT_ENHKEY_USAGE usage{};
+    LPSTR usages[] = {const_cast<LPSTR>(szOID_PKIX_KP_CODE_SIGNING)};
+    usage.cUsageIdentifier = 1;
+    usage.rgpszUsageIdentifier = usages;
+    chain_parameters.RequestedUsage.dwType = USAGE_MATCH_TYPE_AND;
+    chain_parameters.RequestedUsage.Usage = usage;
+    PCCERT_CHAIN_CONTEXT chain = nullptr;
+    if (!::CertGetCertificateChain(
+            nullptr, signer, nullptr, signer->hCertStore, &chain_parameters,
+            CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY, nullptr, &chain)) {
+        return std::unexpected(win32_error("failed to build release signer trust chain"));
+    }
+    const auto release_chain = std::unique_ptr<const CERT_CHAIN_CONTEXT, decltype(&::CertFreeCertificateChain)>{
+        chain, &::CertFreeCertificateChain};
+    CERT_CHAIN_POLICY_PARA policy_parameters{};
+    policy_parameters.cbSize = sizeof(policy_parameters);
+    CERT_CHAIN_POLICY_STATUS policy_status{};
+    policy_status.cbSize = sizeof(policy_status);
+    if (!::CertVerifyCertificateChainPolicy(
+            CERT_CHAIN_POLICY_AUTHENTICODE, chain, &policy_parameters, &policy_status)
+        || policy_status.dwError != ERROR_SUCCESS) {
+        return std::unexpected(std::format(
+            "release signer is not trusted for code signing (status 0x{:08x})",
+            static_cast<std::uint32_t>(policy_status.dwError)));
+    }
+    return {};
+}
+
+std::expected<PackageManifest, std::string> load_package_manifest(
+    const std::filesystem::path& source_bin) {
+    if (source_bin.filename() != L"bin") {
+        return std::unexpected("deployment source must use the signed package bin directory");
+    }
+    const auto root = source_bin.parent_path();
+    auto manifest = open_plain_file(root / "release-info.json");
+    if (!manifest) {
+        return std::unexpected(manifest.error());
+    }
+    auto signature = open_plain_file(root / "release-info.p7s");
+    if (!signature) {
+        return std::unexpected(signature.error());
+    }
+    if (const auto verified = verify_detached_manifest_signature(
+            manifest->get(), signature->get()); !verified) {
+        return std::unexpected(verified.error());
+    }
+    const auto text = read_all(manifest->get(), 4 * 1024 * 1024);
+    if (!text) {
+        return std::unexpected(text.error());
+    }
+    const auto parsed = nlohmann::json::parse(*text, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()
+        || parsed.value("schema", 0) != 1
+        || !parsed.contains("build") || !parsed["build"].is_object()
+        || parsed["build"].value("platform", "") != "windows"
+        || !parsed.contains("files") || !parsed["files"].is_array()) {
+        return std::unexpected("release-info.json has an invalid Windows package schema");
+    }
+    auto result = PackageManifest{.root = root, .hashes = {}};
+    for (const auto& entry : parsed["files"]) {
+        if (!entry.is_object() || !entry.contains("path") || !entry["path"].is_string()
+            || !entry.contains("sha256") || !entry["sha256"].is_string()) {
+            return std::unexpected("release-info.json contains an invalid file entry");
+        }
+        const auto relative = entry["path"].get<std::string>();
+        const auto digest = entry["sha256"].get<std::string>();
+        const auto relative_path = std::filesystem::path{relative};
+        if (relative.empty() || relative_path.is_absolute()
+            || std::ranges::any_of(relative_path, [](const auto& component) {
+                return component == std::filesystem::path{".."};
+            })
+            || digest.size() != 64
+            || !std::ranges::all_of(digest, [](unsigned char ch) { return std::isxdigit(ch); })
+            || !result.hashes.emplace(relative, digest).second) {
+            return std::unexpected("release-info.json contains an unsafe or duplicate path");
+        }
+    }
+    return result;
+}
+
 std::expected<std::filesystem::path, std::string> program_files_root() {
     PWSTR raw = nullptr;
     if (FAILED(::SHGetKnownFolderPath(FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, nullptr, &raw))) {
@@ -47,30 +304,138 @@ std::expected<std::filesystem::path, std::string> program_files_root() {
     return path;
 }
 
+std::string hex_digest(const BYTE* bytes, std::size_t size) {
+    constexpr char digits[] = "0123456789abcdef";
+    auto result = std::string(size * 2, '0');
+    for (std::size_t index = 0; index < size; ++index) {
+        result[index * 2] = digits[bytes[index] >> 4];
+        result[index * 2 + 1] = digits[bytes[index] & 0x0f];
+    }
+    return result;
+}
+
 std::expected<void, std::string> copy_required_file(
-    const std::filesystem::path& source,
-    const std::filesystem::path& destination) {
-    auto error = std::error_code{};
-    if (!std::filesystem::is_regular_file(source, error)
-        || std::filesystem::is_symlink(source, error)) {
-        return std::unexpected("required deployment file is missing: " + source.string());
+    const PackageManifest& package,
+    std::string_view relative,
+    const std::filesystem::path& destination,
+    bool executable) {
+    const auto expected = package.hashes.find(std::string(relative));
+    if (expected == package.hashes.end()) {
+        return std::unexpected("required deployment file is absent from signed release-info: "
+            + std::string(relative));
     }
-    if (std::filesystem::is_regular_file(destination, error)
-        && std::filesystem::equivalent(source, destination, error)) {
-        return {};
+    const auto source_path = package.root / std::filesystem::path{relative};
+    auto source = open_plain_file(source_path);
+    if (!source) {
+        return std::unexpected(source.error());
     }
-    error.clear();
-    std::filesystem::copy_file(
-        source, destination, std::filesystem::copy_options::overwrite_existing, error);
-    if (error) {
-        return std::unexpected("failed to install " + source.filename().string()
-            + ": " + error.message());
+    if (executable) {
+        if (const auto verified = verify_authenticode(source->get(), source_path); !verified) {
+            return std::unexpected(verified.error());
+        }
+    }
+    LARGE_INTEGER zero{};
+    if (!::SetFilePointerEx(source->get(), zero, nullptr, FILE_BEGIN)) {
+        return std::unexpected(win32_error("failed to rewind signed deployment file"));
+    }
+    const auto destination_attributes = ::GetFileAttributesW(destination.c_str());
+    if (destination_attributes != INVALID_FILE_ATTRIBUTES
+        && (destination_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        return std::unexpected("refusing to replace a reparse-point destination: "
+            + destination.string());
+    }
+    auto temp = destination;
+    temp += std::format(L".install-{:08x}-{:08x}",
+        ::GetCurrentProcessId(), ::GetTickCount());
+    auto output = UniqueHandle{::CreateFileW(
+        temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+        FILE_ATTRIBUTE_TEMPORARY, nullptr)};
+    if (!output) {
+        return std::unexpected(win32_error("failed to create protected temporary file"));
+    }
+
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    if (!::CryptAcquireContextW(
+            &provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+        || !::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+        if (provider != 0) {
+            ::CryptReleaseContext(provider, 0);
+        }
+        output = UniqueHandle{};
+        (void)::DeleteFileW(temp.c_str());
+        return std::unexpected(win32_error("failed to initialize SHA-256"));
+    }
+    const auto cleanup_crypto = [&] {
+        if (hash != 0) {
+            ::CryptDestroyHash(hash);
+        }
+        if (provider != 0) {
+            ::CryptReleaseContext(provider, 0);
+        }
+    };
+    auto buffer = std::array<BYTE, 64 * 1024>{};
+    for (;;) {
+        DWORD read = 0;
+        if (!::ReadFile(source->get(), buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) {
+            cleanup_crypto();
+            output = UniqueHandle{};
+            (void)::DeleteFileW(temp.c_str());
+            return std::unexpected(win32_error("failed to read signed deployment file"));
+        }
+        if (read == 0) {
+            break;
+        }
+        DWORD written = 0;
+        if (!::CryptHashData(hash, buffer.data(), read, 0)
+            || !::WriteFile(output.get(), buffer.data(), read, &written, nullptr)
+            || written != read) {
+            cleanup_crypto();
+            output = UniqueHandle{};
+            (void)::DeleteFileW(temp.c_str());
+            return std::unexpected(win32_error("failed while copying signed deployment file"));
+        }
+    }
+    auto digest = std::array<BYTE, 32>{};
+    DWORD digest_size = static_cast<DWORD>(digest.size());
+    if (!::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digest_size, 0)) {
+        cleanup_crypto();
+        output = UniqueHandle{};
+        (void)::DeleteFileW(temp.c_str());
+        return std::unexpected(win32_error("failed to finish deployment SHA-256"));
+    }
+    cleanup_crypto();
+    auto expected_digest = expected->second;
+    std::ranges::transform(expected_digest, expected_digest.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (hex_digest(digest.data(), digest_size) != expected_digest) {
+        output = UniqueHandle{};
+        (void)::DeleteFileW(temp.c_str());
+        return std::unexpected("signed release-info hash mismatch for " + std::string(relative));
+    }
+    if (!::FlushFileBuffers(output.get())) {
+        output = UniqueHandle{};
+        (void)::DeleteFileW(temp.c_str());
+        return std::unexpected(win32_error("failed to flush protected temporary file"));
+    }
+    output = UniqueHandle{};
+    if (!::MoveFileExW(temp.c_str(), destination.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const auto error = win32_error("failed to atomically install "
+            + destination.filename().string());
+        (void)::DeleteFileW(temp.c_str());
+        return std::unexpected(error);
     }
     return {};
 }
 
 std::expected<InstalledComponents, std::string> stage_security_components(
     const std::filesystem::path& source_bin) {
+    const auto package = load_package_manifest(source_bin);
+    if (!package) {
+        return std::unexpected(package.error());
+    }
     const auto program_files = program_files_root();
     if (!program_files) {
         return std::unexpected(program_files.error());
@@ -96,25 +461,29 @@ std::expected<InstalledComponents, std::string> stage_security_components(
             + error.message());
     }
 
-    const auto source_service = std::filesystem::is_regular_file(
-            source_bin / "Smile2UnlockAuthService.exe", error)
-        ? source_bin / "Smile2UnlockAuthService.exe"
-        : source_bin / "su_auth_service.exe";
+    for (const auto& directory : {install_root, install_bin, install_root / "assets",
+             install_root / "assets" / "models", install_models, install_i18n}) {
+        if (const auto checked = ensure_plain_directory(directory); !checked) {
+            return std::unexpected(checked.error());
+        }
+    }
+
     const auto installed = InstalledComponents{
         .credential_provider = install_bin / "su_credential_provider.dll",
         .auth_service = install_bin / "Smile2UnlockAuthService.exe",
         .recognition_agent = install_bin / "su_recognition_agent.exe",
     };
-    for (const auto& pair : {
-             std::pair{source_service, installed.auth_service},
-             std::pair{source_bin / "su_recognition_agent.exe", installed.recognition_agent},
-             std::pair{source_bin / "su_app.exe", install_bin / "su_app.exe"},
-             std::pair{source_bin / "su_deploy_helper.exe", install_bin / "su_deploy_helper.exe"},
-             std::pair{source_bin / "su_password_tool.exe", install_bin / "su_password_tool.exe"},
-             std::pair{source_bin / "su_credential_provider.dll", install_bin / "su_credential_provider.dll"},
-             std::pair{source_bin / "Smile2Unlock.ico", install_bin / "Smile2Unlock.ico"},
+    for (const auto& item : {
+             std::tuple{"bin/Smile2UnlockAuthService.exe", installed.auth_service, true},
+             std::tuple{"bin/su_recognition_agent.exe", installed.recognition_agent, true},
+             std::tuple{"bin/su_app.exe", install_bin / "su_app.exe", true},
+             std::tuple{"bin/su_deploy_helper.exe", install_bin / "su_deploy_helper.exe", true},
+             std::tuple{"bin/su_password_tool.exe", install_bin / "su_password_tool.exe", true},
+             std::tuple{"bin/su_credential_provider.dll", install_bin / "su_credential_provider.dll", true},
+             std::tuple{"bin/Smile2Unlock.ico", install_bin / "Smile2Unlock.ico", false},
          }) {
-        if (const auto copied = copy_required_file(pair.first, pair.second); !copied) {
+        if (const auto copied = copy_required_file(
+                *package, std::get<0>(item), std::get<1>(item), std::get<2>(item)); !copied) {
             return std::unexpected(copied.error());
         }
     }
@@ -129,29 +498,28 @@ std::expected<InstalledComponents, std::string> stage_security_components(
         L"libSeetaFaceRecognizer610.dll", L"libSeetaAuthorize.dll", L"libtennis.dll",
     };
     for (const auto* name : runtime_names) {
-        const auto source = source_bin / name;
-        if (const auto copied = copy_required_file(source, install_bin / name); !copied) {
+        const auto relative = "bin/" + wide_to_utf8(name);
+        if (const auto copied = copy_required_file(
+                *package, relative, install_bin / name, true); !copied) {
             return std::unexpected(copied.error());
         }
     }
 
-    const auto source_assets = std::filesystem::is_directory(source_bin / "assets", error)
-        ? source_bin / "assets" / "models" / "seeta"
-        : source_bin.parent_path() / "assets" / "models" / "seeta";
     constexpr auto model_names = std::array{
         L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
         L"fas_first.csta", L"fas_second.csta",
     };
     for (const auto* name : model_names) {
+        const auto relative = "assets/models/seeta/" + wide_to_utf8(name);
         if (const auto copied = copy_required_file(
-                source_assets / name, install_models / name); !copied) {
+                *package, relative, install_models / name, false); !copied) {
             return std::unexpected(copied.error());
         }
     }
     for (const auto* name : {L"en.json", L"zh-CN.json"}) {
+        const auto relative = "assets/i18n/" + wide_to_utf8(name);
         if (const auto copied = copy_required_file(
-                source_assets.parent_path().parent_path() / "i18n" / name,
-                install_i18n / name); !copied) {
+                *package, relative, install_i18n / name, false); !copied) {
             return std::unexpected(copied.error());
         }
     }
@@ -159,12 +527,17 @@ std::expected<InstalledComponents, std::string> stage_security_components(
 }
 
 std::expected<std::filesystem::path, std::string> stage_credential_provider(
-    const std::filesystem::path& source_dll) {
+    const std::filesystem::path& source_bin) {
+    const auto package = load_package_manifest(source_bin);
+    if (!package) {
+        return std::unexpected(package.error());
+    }
     const auto program_files = program_files_root();
     if (!program_files) {
         return std::unexpected(program_files.error());
     }
-    const auto install_bin = *program_files / "Smile2Unlock" / "bin";
+    const auto install_root = *program_files / "Smile2Unlock";
+    const auto install_bin = install_root / "bin";
     auto error = std::error_code{};
     std::filesystem::create_directories(install_bin, error);
     if (error) {
@@ -176,11 +549,71 @@ std::expected<std::filesystem::path, std::string> stage_credential_provider(
     // clear error instead of silently switching the registry to an opaque
     // content-addressed filename. The user can sign out or reboot, then retry.
     const auto destination = install_bin / "su_credential_provider.dll";
-    if (const auto copied = copy_required_file(source_dll, destination); !copied) {
+    for (const auto& directory : {install_root, install_bin}) {
+        if (const auto checked = ensure_plain_directory(directory); !checked) {
+            return std::unexpected(checked.error());
+        }
+    }
+    if (const auto copied = copy_required_file(
+            *package, "bin/su_credential_provider.dll", destination, true); !copied) {
         return std::unexpected(copied.error()
             + "; sign out or reboot Windows before updating the credential provider");
     }
     return destination;
+}
+
+std::expected<void, std::string> verify_manifest_file(
+    const PackageManifest& package, std::string_view relative, bool executable) {
+    const auto expected = package.hashes.find(std::string(relative));
+    if (expected == package.hashes.end()) {
+        return std::unexpected("required deployment file is absent from signed release-info: "
+            + std::string(relative));
+    }
+    const auto path = package.root / std::filesystem::path{relative};
+    auto file = open_plain_file(path);
+    if (!file) {
+        return std::unexpected(file.error());
+    }
+    if (executable) {
+        if (const auto verified = verify_authenticode(file->get(), path); !verified) {
+            return std::unexpected(verified.error());
+        }
+    }
+    const auto bytes = read_all(file->get(), 512 * 1024 * 1024);
+    if (!bytes) {
+        return std::unexpected(bytes.error());
+    }
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    if (!::CryptAcquireContextW(
+            &provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+        || !::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)
+        || !::CryptHashData(hash, reinterpret_cast<const BYTE*>(bytes->data()),
+            static_cast<DWORD>(bytes->size()), 0)) {
+        if (hash != 0) {
+            ::CryptDestroyHash(hash);
+        }
+        if (provider != 0) {
+            ::CryptReleaseContext(provider, 0);
+        }
+        return std::unexpected(win32_error("failed to hash signed deployment input"));
+    }
+    auto digest = std::array<BYTE, 32>{};
+    DWORD digest_size = static_cast<DWORD>(digest.size());
+    const auto finished = ::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digest_size, 0);
+    ::CryptDestroyHash(hash);
+    ::CryptReleaseContext(provider, 0);
+    if (!finished) {
+        return std::unexpected(win32_error("failed to finish deployment input hash"));
+    }
+    auto expected_digest = expected->second;
+    std::ranges::transform(expected_digest, expected_digest.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (hex_digest(digest.data(), digest_size) != expected_digest) {
+        return std::unexpected("signed release-info hash mismatch for " + std::string(relative));
+    }
+    return {};
 }
 
 std::filesystem::path current_binary_directory() {
@@ -277,6 +710,16 @@ bool process_elevated() {
         token, TokenElevation, &elevation, sizeof(elevation), &size);
     ::CloseHandle(token);
     return queried && elevation.TokenIsElevated != 0;
+}
+
+std::expected<void, std::string> validate_deployment_package() {
+    const auto package = load_package_manifest(current_binary_directory());
+    if (!package) {
+        return std::unexpected(package.error());
+    }
+    // This check happens in the unelevated GUI before ShellExecuteEx(runas),
+    // preventing a replaced helper from becoming the UAC elevation target.
+    return verify_manifest_file(*package, "bin/su_deploy_helper.exe", true);
 }
 
 bool credential_provider_enrolled() {
@@ -420,15 +863,14 @@ std::expected<DeploymentSnapshot, std::string> inspect_deployment() {
     return snapshot;
 }
 
-std::expected<void, std::string> register_credential_provider(const std::string& dll_path) {
-    const auto source_dll = std::filesystem::path{utf8_to_wide(dll_path)};
-    const auto installed_dll = stage_credential_provider(source_dll);
+std::expected<void, std::string> register_credential_provider() {
+    const auto installed_dll = stage_credential_provider(current_binary_directory());
     if (!installed_dll) {
         return std::unexpected(installed_dll.error());
     }
     const auto wide_dll = installed_dll->wstring();
     if (wide_dll.empty() || !file_exists(wide_dll)) {
-        return std::unexpected("credential provider DLL not found: " + dll_path);
+        return std::unexpected("credential provider DLL was not installed");
     }
 
     HKEY clsid_key = nullptr;

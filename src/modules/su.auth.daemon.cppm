@@ -59,6 +59,8 @@ std::string_view message_type_name(su::app::ControlMessageType type) {
     case su::app::ControlMessageType::kDeleteProfile: return "delete_profile";
     case su::app::ControlMessageType::kMigrateProfiles: return "migrate_profiles";
     case su::app::ControlMessageType::kVerifyProfile: return "verify_profile";
+    case su::app::ControlMessageType::kIssueManagementCapability:
+        return "issue_management_capability";
     }
     std::unreachable();
 }
@@ -86,6 +88,9 @@ std::optional<std::string_view> peer_authorization_error(
     if (peer_uid == 0) {
         return std::nullopt;
     }
+    if (request.type == su::app::ControlMessageType::kIssueManagementCapability) {
+        return "only the privileged deployment helper may issue management capabilities";
+    }
     if (request.type == su::app::ControlMessageType::kStatus
         || request.type == su::app::ControlMessageType::kStorageStatus) {
         return std::nullopt;
@@ -98,6 +103,26 @@ std::optional<std::string_view> peer_authorization_error(
         return "peer identity does not match requested user";
     }
     return std::nullopt;
+}
+
+std::optional<std::uint32_t> process_session(
+    std::uint32_t pid,
+    std::optional<std::uint32_t> expected_uid = std::nullopt) {
+    if (pid == 0 || !std::in_range<pid_t>(pid)) {
+        return std::nullopt;
+    }
+    if (expected_uid) {
+        struct stat status {};
+        const auto proc_path = std::filesystem::path{"/proc"} / std::to_string(pid);
+        if (::stat(proc_path.c_str(), &status) != 0
+            || status.st_uid != static_cast<uid_t>(*expected_uid)) {
+            return std::nullopt;
+        }
+    }
+    const auto session = ::getsid(static_cast<pid_t>(pid));
+    return session > 0
+        ? std::optional{static_cast<std::uint32_t>(session)}
+        : std::nullopt;
 }
 
 bool open_camera_with_retry(
@@ -517,6 +542,47 @@ public:
         return listed;
     }
 
+    AttemptResult issue_management_capability(
+        std::uint32_t target_uid,
+        std::uint32_t target_pid,
+        std::string_view operation_name) {
+        const auto operation = management_operation_from_name(operation_name);
+        const auto session = process_session(target_pid, target_uid);
+        if (!operation || !session) {
+            return {su::control::ControlResult::kRejected, "management capability target is invalid"};
+        }
+        auto token = management_capabilities_.issue(
+            target_uid, target_pid, *session, *operation);
+        if (!token) {
+            return {su::control::ControlResult::kUnavailable, token.error()};
+        }
+        auto payload = nlohmann::json{{"token", *token}}.dump();
+        std::ranges::fill(*token, '\0');
+        token->clear();
+        return {
+            su::control::ControlResult::kAccepted,
+            "management capability issued",
+            std::move(payload),
+        };
+    }
+
+    bool consume_management_capability(
+        su::app::ControlRequest& request,
+        const su::control::PeerCredentials& peer) {
+        const auto operation = management_operation_for_message(request.type);
+        const auto session = process_session(peer.pid, peer.uid);
+        const auto allowed = operation && session
+            && management_capabilities_.consume(
+                request.management_token,
+                peer.uid,
+                peer.pid,
+                *session,
+                *operation);
+        std::ranges::fill(request.management_token, '\0');
+        request.management_token.clear();
+        return allowed;
+    }
+
     bool cancel(std::uint64_t target_request_id) {
         if (active_request_.load(std::memory_order_acquire) != target_request_id) {
             return false;
@@ -526,27 +592,28 @@ public:
     }
 
     void handle(su::control::Connection connection) {
-        const auto peer_uid = connection.peer_uid();
-        if (!peer_uid) {
+        const auto peer = connection.peer_credentials();
+        if (!peer) {
             std::println(stderr, "su_authd event=peer_rejected");
             return;
         }
-        const auto payload = connection.receive_frame();
+        auto payload = connection.receive_frame();
         if (!payload) {
             std::println(stderr, "su_authd event=request_receive_failed");
             return;
         }
-        const auto request = su::app::parse_control_request(*payload);
+        auto request = su::app::parse_control_request(*payload);
+        std::ranges::fill(*payload, '\0');
         if (!request) {
             std::println(stderr, "su_authd event=request_invalid");
             return;
         }
 
-        if (const auto reason = peer_authorization_error(*peer_uid, *request)) {
+        if (const auto reason = peer_authorization_error(peer->uid, *request)) {
             std::println(
                 stderr,
                 R"(su_authd event=peer_rejected peer_uid={} request_id={} type={} reason="{}")",
-                *peer_uid,
+                peer->uid,
                 request->request_id,
                 message_type_name(request->type),
                 *reason);
@@ -554,6 +621,21 @@ public:
                 request->request_id,
                 su::control::ControlResult::kRejected,
                 *reason));
+            if (!sent) {
+                std::println(
+                    stderr,
+                    "su_authd event=response_send_failed request_id={}",
+                    request->request_id);
+            }
+            return;
+        }
+
+        if (management_operation_for_message(request->type)
+            && !consume_management_capability(*request, *peer)) {
+            const auto sent = connection.send_frame(su::control::make_response(
+                request->request_id,
+                su::control::ControlResult::kRejected,
+                "profile management authorization is missing, expired, or invalid"));
             if (!sent) {
                 std::println(
                     stderr,
@@ -625,6 +707,10 @@ public:
             response = verify_profile(
                 request->username, request->face_sample_source, request->liveness_ok);
             break;
+        case su::app::ControlMessageType::kIssueManagementCapability:
+            response = issue_management_capability(
+                request->target_uid, request->target_pid, request->management_operation);
+            break;
         }
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -638,11 +724,15 @@ public:
             log_value(response.reason),
             elapsed.count());
 
-        const auto sent = connection.send_frame(su::control::make_response(
+        auto response_frame = su::control::make_response(
             request->request_id,
             response.result,
             response.reason,
-            response.payload_json));
+            response.payload_json);
+        const auto sent = connection.send_frame(response_frame);
+        std::ranges::fill(response_frame, '\0');
+        std::ranges::fill(response.payload_json, '\0');
+        response.payload_json.clear();
         if (!sent) {
             std::println(
                 stderr,
@@ -665,6 +755,7 @@ private:
     std::mutex auth_mutex_;
     std::atomic<std::uint64_t> active_request_{0};
     std::atomic<bool> cancel_requested_{false};
+    ManagementCapabilityStore management_capabilities_;
     std::unordered_map<std::uint32_t, std::chrono::steady_clock::time_point>
         last_auth_started_;
 };
