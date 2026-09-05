@@ -17,6 +17,7 @@ verify=true
 unsigned_development=false
 sign_certificate="${WINDOWS_SIGN_CERTIFICATE:-}"
 sign_key="${WINDOWS_SIGN_KEY:-}"
+timestamp_url="${WINDOWS_TIMESTAMP_URL:-}"
 
 usage() {
     cat <<'USAGE'
@@ -30,6 +31,7 @@ Options:
   --no-verify           Do not verify the completed zip
   --sign-certificate F  PEM signing certificate (or WINDOWS_SIGN_CERTIFICATE)
   --sign-key F          PEM private key (or WINDOWS_SIGN_KEY)
+  --timestamp-url URL   RFC 3161 timestamp service (or WINDOWS_TIMESTAMP_URL)
   --unsigned-development
                         Build a non-deployable package for local inspection
   --help                Show this help
@@ -44,6 +46,7 @@ while (($# > 0)); do
         --no-verify) verify=false; shift ;;
         --sign-certificate) [[ $# -ge 2 ]] || package_die "missing --sign-certificate value"; sign_certificate="$(package_absolute_path "$2")"; shift 2 ;;
         --sign-key) [[ $# -ge 2 ]] || package_die "missing --sign-key value"; sign_key="$(package_absolute_path "$2")"; shift 2 ;;
+        --timestamp-url) [[ $# -ge 2 ]] || package_die "missing --timestamp-url value"; timestamp_url="$2"; shift 2 ;;
         --unsigned-development) unsigned_development=true; shift ;;
         --help|-h) usage; exit 0 ;;
         *) package_die "unknown argument: $1" ;;
@@ -144,10 +147,13 @@ if [[ "$unsigned_development" == false ]]; then
     package_require_file "$sign_key"
     package_require_command osslsigncode
     package_require_command openssl
+    sign_args=(-certs "$sign_certificate" -key "$sign_key" -h sha256 -n "Smile2Unlock")
+    if [[ -n "$timestamp_url" ]]; then
+        sign_args+=(-ts "$timestamp_url")
+    fi
     while IFS= read -r -d '' binary; do
         signed="${binary}.signed"
-        osslsigncode sign -certs "$sign_certificate" -key "$sign_key" \
-            -h sha256 -n "Smile2Unlock" -in "$binary" -out "$signed" >/dev/null
+        osslsigncode sign "${sign_args[@]}" -in "$binary" -out "$signed" >/dev/null
         mv -- "$signed" "$binary"
     done < <(find "${package_root}/bin" -maxdepth 1 -type f \
         \( -iname '*.exe' -o -iname '*.dll' \) -print0)

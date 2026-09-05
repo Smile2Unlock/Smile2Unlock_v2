@@ -57,6 +57,7 @@ Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 - 主题 monitor 已在损坏 DMS/Matugen 输入时保留最后一个有效主题，并报告被拒绝的来源；回归测试通过。
 - 正式发布前仍必须由同一提交重新构建并验证 Windows ZIP，确认正式证书信任链、Authenticode、CMS 和清单 SHA-256；不得复用工作区中的旧 ZIP。
 - `cimg` 已固定为 `v4.0.4`。
+- SeetaFace6Open 本地包配方仍以 `git clone --recursive` 获取上游 HEAD；正式候选前必须固定主仓库和子模块 commit，并在干净缓存中验证。
 - 两个 Rust crate 的 `Cargo.lock` 已纳入版本控制，Xmake 和 CI 均使用 `--locked`；候选构建仍需记录 stable channel 实际解析到的 rustc 版本。
 - Rust FFI 已增加显式 out-parameter API，C++ 调用方先初始化结构体并有 ABI 尺寸断言；GCC `-Wmaybe-uninitialized` 已消除。
 - Linux PAM 升级/回滚已使用写前日志、备份指纹、降级拒绝、启动恢复和幂等批量回滚；真实发行版包管理器与断电场景仍需 VM 验收。

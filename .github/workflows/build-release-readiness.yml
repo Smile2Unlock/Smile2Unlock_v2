@@ -1,8 +1,9 @@
-name: CI
+name: Cross-platform Build and Release Readiness
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -10,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: build-release-readiness-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -106,7 +107,11 @@ jobs:
           xvfb-run -a xmake test su_credential_provider_rust_tests/default -v
 
   windows-package:
-    name: Windows signed package
+    name: Windows release package verification
+    # Full Slint + SeetaFace cross-builds are expensive. Run them after a
+    # change reaches main, for version tags, or when preparing a candidate
+    # manually; PRs still receive the focused Windows compile/Wine suite.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     container: archlinux:base-devel
     steps:

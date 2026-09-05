@@ -1,0 +1,197 @@
+name: Publish GitHub Release Artifacts
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release-artifacts-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  validate-release:
+    name: Validate release tag and version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 1
+
+      - name: Match tag to version.txt
+        id: version
+        shell: bash
+        run: |
+          version="$(tr -d '[:space:]' < version.txt)"
+          [[ "$RELEASE_TAG" == "v${version}" ]] || {
+            echo "release tag ${RELEASE_TAG} does not match version ${version}" >&2
+            exit 1
+          }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  linux-package:
+    name: Build Linux release archive
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install system dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
+          pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
+          freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
+
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          lfs: true
+          fetch-depth: 1
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Cache Xmake packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.xmake/packages
+          key: release-linux-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Build Linux release
+        run: |
+          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake build -v
+
+      - name: Build and verify Linux archive
+        run: packaging/linux/package.sh --format tar.gz --output-dir "$GITHUB_WORKSPACE/dist"
+
+      - name: Preserve Linux archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-release-${{ needs.validate-release.outputs.version }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-package:
+    name: Build and sign Windows release archive
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    environment: release-signing
+    steps:
+      - name: Install system dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
+          mingw-w64-gcc pkgconf imagemagick python zip unzip openssl osslsigncode
+
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          lfs: true
+          fetch-depth: 1
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Cache Xmake packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.xmake/packages
+          key: release-windows-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Install Rust toolchain
+        run: >-
+          rustup toolchain install stable --profile minimal
+          --target x86_64-pc-windows-gnu
+
+      - name: Build Windows release
+        run: |
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake build -v
+
+      - name: Sign, package, and verify Windows archive
+        shell: bash
+        env:
+          SIGN_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGN_CERTIFICATE_BASE64 }}
+          SIGN_KEY_BASE64: ${{ secrets.WINDOWS_SIGN_KEY_BASE64 }}
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          [[ -n "$SIGN_CERTIFICATE_BASE64" ]] || {
+            echo "release-signing is missing WINDOWS_SIGN_CERTIFICATE_BASE64" >&2
+            exit 1
+          }
+          [[ -n "$SIGN_KEY_BASE64" ]] || {
+            echo "release-signing is missing WINDOWS_SIGN_KEY_BASE64" >&2
+            exit 1
+          }
+          [[ -n "$WINDOWS_TIMESTAMP_URL" ]] || {
+            echo "release-signing is missing WINDOWS_TIMESTAMP_URL" >&2
+            exit 1
+          }
+          umask 077
+          certificate="${RUNNER_TEMP}/windows-signing-chain.pem"
+          private_key="${RUNNER_TEMP}/windows-signing.key"
+          trap 'rm -f -- "$certificate" "$private_key"' EXIT
+          printf '%s' "$SIGN_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          printf '%s' "$SIGN_KEY_BASE64" | base64 --decode > "$private_key"
+          WINDOWS_SIGN_CERTIFICATE="$certificate" \
+          WINDOWS_SIGN_KEY="$private_key" \
+          WINDOWS_VERIFY_CA_FILE="$certificate" \
+            packaging/windows/package.sh --output-dir "$GITHUB_WORKSPACE/dist"
+
+      - name: Preserve Windows archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-${{ needs.validate-release.outputs.version }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-assets:
+    name: Upload verified archives to GitHub Release
+    needs: [validate-release, linux-package, windows-package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums and upload release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate-release.outputs.version }}
+        run: |
+          linux_archive="dist/smile2unlock-${VERSION}-linux-x86_64.tar.gz"
+          windows_archive="dist/smile2unlock-${VERSION}-windows-x86_64.zip"
+          [[ -f "$linux_archive" ]] || { echo "missing $linux_archive" >&2; exit 1; }
+          [[ -f "$windows_archive" ]] || { echo "missing $windows_archive" >&2; exit 1; }
+          (
+            cd dist
+            sha256sum "$(basename "$linux_archive")" "$(basename "$windows_archive")" > SHA256SUMS
+          )
+          gh release upload "$RELEASE_TAG" \
+            "$linux_archive" "$windows_archive" dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY"
