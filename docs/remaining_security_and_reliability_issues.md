@@ -50,7 +50,7 @@ Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 
 仓库已恢复 GitHub Actions 工作流，覆盖 Linux C++ 全构建与 Xmake 测试、Rust core、Linux tar 包、Windows 特权组件交叉构建、MinGW/Wine Credential Provider 和按 SID 限流测试，以及使用临时 CI code-signing 身份生成并验证 Windows 签名 ZIP。临时证书只验证流水线闭环，不能替代正式发布证书。
 
-2026-09-05 本机复核：Linux Release 构建成功；14 个 Xmake test case 全部通过；Rust core 42/42 通过；Windows 全量 Release 通过 MinGW 交叉构建；Windows CP 的 MinGW/Wine 测试 41 passed + 1 ignored，限流测试在 Wine 下通过。CI 配置和脚本已完成本地语法校验，但托管 runner 尚需实际运行一次。
+2026-09-06 复核：工作流三个 job 已用 act + Docker 在本地干净环境全部跑绿（`scripts/local-ci.sh`），并修复了六个只在干净环境暴露的构建/配置问题；托管 runner 仍需实际运行一次确认。
 
 ## 发布完整性
 
@@ -58,6 +58,6 @@ Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 - 正式发布前仍必须由同一提交重新构建并验证 Windows ZIP，确认正式证书信任链、Authenticode、CMS 和清单 SHA-256；不得复用工作区中的旧 ZIP。
 - `cimg` 已固定为 `v4.0.4`。
 - SeetaFace6Open 本地包配方已固定到验收构建使用的 `a32e2faa0694c0f841ace4df9ead0407b78363c6`；该提交的 gitlinks 固定递归子模块版本，仍需在托管 runner 的干净缓存中验证一次。
-- 两个 Rust crate 的 `Cargo.lock` 已纳入版本控制，Xmake 和 CI 均使用 `--locked`；候选构建仍需记录 stable channel 实际解析到的 rustc 版本。
+- 两个 Rust crate 的 `Cargo.lock` 已纳入版本控制，Xmake 和 CI 均使用 `--locked`；stable channel 实际解析 rustc 1.98.1 (48a229cea 2026-09-01)，已记录于 2026-09-06 本地验证。
 - Rust FFI 已增加显式 out-parameter API，C++ 调用方先初始化结构体并有 ABI 尺寸断言；GCC `-Wmaybe-uninitialized` 已消除。
 - Linux PAM 升级/回滚已使用写前日志、备份指纹、降级拒绝、启动恢复和幂等批量回滚；真实发行版包管理器与断电场景仍需 VM 验收。

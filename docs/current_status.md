@@ -22,25 +22,23 @@ Credential Provider
 
 `su_app.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
 
-## 2026-09-05 验证快照
+## 2026-09-06 验证快照
 
-- Linux x86_64 Release 主构建成功。
-- Xmake 共执行 14 个 test case，全部通过；损坏的 DMS/Matugen 调色板现在保留最后一个有效主题并报告被拒绝的来源。
-- Rust core：42 个单元测试全部通过。
-- Windows Rust Credential Provider（MinGW + Wine）：41 通过，1 忽略。忽略项依赖 Wine 未实现的 `CredIsProtectedW`，必须在真实 Windows 上验收。
-- Windows 全量 Release（GUI、部署 helper、认证服务、识别 agent、密码工具和 Rust Credential Provider）通过 MinGW 交叉构建；按 SID 限流测试在 Wine 下通过。
-- 同一工作区新构建产物的 Windows 未签名开发 staging 通过依赖、清单与文件哈希验证，但它不能部署，也不视为发布包。正式 ZIP 需要受信任的发布证书。
-- Linux 包校验在本机因缺少 `patchelf` 未执行完成；CI 工作流已安装该依赖并覆盖 Linux tar 包构建与验证。
+- 三个 readiness job 已用 `act` + Docker 在本地干净环境全部跑绿（见 `scripts/local-ci.sh`）：Linux 全构建 + 14 个 Xmake test + tar.gz 打包校验；Windows 全量 Release + 临时证书签名 ZIP 验证；Windows 特权组件 MinGW 构建 + 三组 Wine 测试。本地运行修正了六个此前必然失败的问题（rustup 组件参数、容器 root 需要 `XMAKE_ROOT=y`、zig 工具链误声明、Slint 代码生成时机、缺 `libinput`、`osslsigncode` 与新版 mingw GCC 不在 Ubuntu 源内），修复均已合入工作流。
+- Rust core 42 个单元测试通过；stable channel 实际解析 rustc 1.98.1 (48a229cea 2026-09-01)。
+- Linux 四种包格式（tar.gz、pacman、deb、rpm）在干净 arch 容器内构建并通过 `verify-package.sh` 完整校验。
+- 原生包容器生命周期验证：Arch `pacman -U` 安装、版本检查、重装（pre_upgrade 路径）与卸载全部通过；deb/rpm 在 Debian trixie / Fedora 42 上可安装但运行时二进制要求 GLIBC_2.38 与 GLIBCXX_3.4.36（GCC 16 运行时），Debian bookworm 上 preinst 即失败。结论：当前 Arch 构建的 deb/rpm 仅适用于同代工具链发行版；正式支持 Debian/Fedora 需要按发行版构建。
+- 托管 GitHub runner 的同工作流运行与 `main` 分支保护仍待完成（合并 PR 后确认）。
 
 ## 发布前阻塞项
 
-主要安全与生命周期修复已完成：主题回归、Linux 管理授权 capability、Windows 签名输入与句柄复制、按 SID 管道限流、Linux 安装生命周期、crate 锁文件与 CImg 版本固定、FFI 警告和构建验证工作流均已落实。依赖与发布流程仍有下列阻塞项。
+主要安全与生命周期修复已完成：主题回归、Linux 管理授权 capability、Windows 签名输入与句柄复制、按 SID 管道限流、Linux 安装生命周期、crate 锁文件与 CImg 版本固定、FFI 警告和构建验证工作流均已落实。
 
 剩余阻塞项按顺序执行：
 
-1. 在托管构建验证工作流上确认 Linux、Windows 交叉测试和临时证书签名包三个 job 全绿，并为 `main` 配置必需检查；当前分支保护尚未启用。
+1. 托管 runner 上确认 Linux、Windows 交叉测试和临时证书签名包三个 job 全绿，并为 `main` 配置必需检查；本地 act 已全绿，等价步骤在托管环境重放一次。
 2. 使用正式受信任且带时间戳的 Windows code-signing 证书，从同一提交生成并验证 Windows ZIP；不得复用旧产物。
-3. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包，并补做目标发行版原生包管理器的安装、升级、回滚与卸载验证。
+3. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包（tar.gz 已在本地 CI 覆盖）；目标发行版原生包的安装、升级、回滚与卸载需在真实发行版上验收——容器验证已给出工具链兼容矩阵，deb/rpm 正式包需按发行版重建。
 4. 按 `release_acceptance_checklist.md` 完成 Windows 与 Linux 真实系统矩阵，保留日志和版本证据。
 5. 仅在上述证据齐全后创建 `v2.3.0` tag 和 GitHub Release；发布后由独立工作流上传正式构建产物和校验和。
 
