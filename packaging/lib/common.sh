@@ -79,6 +79,9 @@ for entry in metadata.get("files", []):
     if digest.hexdigest() != entry.get("sha256"):
         raise SystemExit(f"release-info checksum mismatch: {entry['path']}")
 actual = set()
+# fpm's deb backend always injects a boilerplate doc changelog that never
+# exists in the staged tree and carries no project content.
+packager_boilerplate = {"usr/share/doc/smile2unlock/changelog.gz"}
 for candidate in root.rglob("*"):
     if (not candidate.is_file() or candidate.resolve() == metadata_path
             or candidate.name == "release-info.p7s"):
@@ -86,7 +89,7 @@ for candidate in root.rglob("*"):
     relative = candidate.relative_to(root).as_posix()
     # Package managers add top-level dot metadata when their archives are
     # extracted. release-info covers the installed filesystem tree.
-    if not relative.startswith("."):
+    if not relative.startswith(".") and relative not in packager_boilerplate:
         actual.add(relative)
 if seen != actual:
     missing = sorted(actual - seen)
