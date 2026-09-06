@@ -39,3 +39,7 @@ release-signing/
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml
+# The credential provider crate needs its committed cargo config: it carries
+# the wine test runner required to execute mingw test binaries on Linux.
+!src/platform/windows/credential_provider_rs/.cargo/
+!src/platform/windows/credential_provider_rs/.cargo/config.toml
