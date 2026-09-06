@@ -79,7 +79,7 @@ jobs:
     steps:
       - name: Install cross-test dependencies
         run: >-
-          pacman -Syu --noconfirm --needed git curl rustup mingw-w64-gcc
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup mingw-w64-gcc
           wine xorg-server-xvfb nodejs
 
       - name: Check out source
