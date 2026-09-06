@@ -636,15 +636,18 @@ target("su_credential_provider_rust_tests")
         if not is_plat("mingw") then
             return true
         end
+        local manifest = path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml")
         local args = {
             "test",
             "--locked",
-            "--manifest-path",
-            path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml"),
-            "--target",
-            "x86_64-pc-windows-gnu",
+            "--manifest-path", manifest,
+            "--target", "x86_64-pc-windows-gnu",
         }
-        local ok = os.execv("cargo", args, { try = true })
+        -- cargo only discovers .cargo/config.toml from the working directory
+        -- upward, so run from the crate to pick up its wine test runner;
+        -- without it cargo execs the PE directly and hosts without a wine
+        -- binfmt_misc bridge fail with ENOEXEC.
+        local ok = os.execv("cargo", args, { try = true, curdir = path.directory(manifest) })
         if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
             os.raise("credential provider cargo test failed: " .. tostring(ok))
         end
