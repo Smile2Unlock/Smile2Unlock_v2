@@ -172,16 +172,20 @@ target("su_core")
         os.cp(cargo_out, path.join(outdir, "libsu_core.a"))
     end)
 
-target("su_platform_zig")
-    set_kind("static")
-    set_toolchains("zig")
-    set_default(has_config("with_zig"))
-    add_files("src/platform-zig/src/lib.zig")
-    before_build( function ()
-        local cache_dir = path.join(os.projectdir(), "build", ".zig-cache")
-        os.mkdir(cache_dir)
-        os.setenv("ZIG_GLOBAL_CACHE_DIR", cache_dir)
-    end)
+-- Define the Zig helper only when explicitly enabled: an unconditional
+-- toolchain declaration forces a zig install even for default builds.
+if has_config("with_zig") then
+    target("su_platform_zig")
+        set_kind("static")
+        set_toolchains("zig")
+        set_default(true)
+        add_files("src/platform-zig/src/lib.zig")
+        before_build( function ()
+            local cache_dir = path.join(os.projectdir(), "build", ".zig-cache")
+            os.mkdir(cache_dir)
+            os.setenv("ZIG_GLOBAL_CACHE_DIR", cache_dir)
+        end)
+end
 
 target("su_recognizer")
     apply_cpp_target("static")
@@ -288,6 +292,21 @@ target("su_recognizer")
                 target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
                 if is_plat("linux") then
                     target:add("rpathdirs", path.join(slint:installdir(), "lib"))
+                end
+                -- The C++26 module prescan parses every source before any
+                -- before_build hook runs; generate the Slint sources at load
+                -- time too so clean checkouts do not fail the prescan.
+                local compiler = path.join(slint:installdir(), "bin", "slint-compiler")
+                local outputdir = path.join(os.projectdir(), "build", "generated", "slint")
+                if os.isfile(compiler) and not os.isfile(path.join(outputdir, "app_window.cpp")) then
+                    os.mkdir(outputdir)
+                    os.execv(compiler, {
+                        "-f", "cpp",
+                        "--cpp-namespace", "su::app::ui",
+                        "-o", path.join(outputdir, "app_window.h"),
+                        "--cpp-file", path.join(outputdir, "app_window.cpp"),
+                        path.join(os.projectdir(), "src", "app", "ui", "app.slint")
+                    })
                 end
             end
         end)
