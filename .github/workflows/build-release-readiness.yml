@@ -14,6 +14,11 @@ concurrency:
   group: build-release-readiness-${{ github.ref }}
   cancel-in-progress: true
 
+# Container jobs (and local act runs) execute as root; xmake requires
+# explicit opt-in there.
+env:
+  XMAKE_ROOT: y
+
 jobs:
   linux:
     name: Linux build, tests, package
@@ -25,6 +30,7 @@ jobs:
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
           pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
           freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
+          nodejs libinput
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,7 +53,7 @@ jobs:
       - name: Install Rust toolchain
         run: >-
           rustup toolchain install stable --profile minimal
-          --component rustfmt clippy --target x86_64-pc-windows-gnu
+          --component rustfmt --component clippy --target x86_64-pc-windows-gnu
 
       - name: Check Rust formatting and tests
         run: |
@@ -66,18 +72,22 @@ jobs:
   windows-cross:
     name: Windows service, helper, Rust CP
     runs-on: ubuntu-24.04
+    # Ubuntu's mingw-w64 GCC is too old for the C++23 features used here
+    # (std::expected, std::format); use the same Arch container as the
+    # windows-package job.
+    container: archlinux:base-devel
     steps:
+      - name: Install cross-test dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed git curl rustup mingw-w64-gcc
+          wine xorg-server-xvfb nodejs
+
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: true
           submodules: recursive
           fetch-depth: 1
-
-      - name: Install cross-test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 wine64 xvfb
 
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
@@ -93,7 +103,7 @@ jobs:
       - name: Install Rust toolchain
         run: >-
           rustup toolchain install stable --profile minimal
-          --component rustfmt clippy --target x86_64-pc-windows-gnu
+          --component rustfmt --component clippy --target x86_64-pc-windows-gnu
 
       - name: Build Windows privileged components
         run: |
@@ -120,7 +130,17 @@ jobs:
       - name: Install system dependencies
         run: >-
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
-          mingw-w64-gcc pkgconf imagemagick python zip unzip openssl osslsigncode
+          mingw-w64-gcc pkgconf imagemagick python zip unzip openssl
+          nodejs
+
+      # osslsigncode is not in the official repositories; build the pinned
+      # upstream release instead of relying on the AUR.
+      - name: Install osslsigncode from source
+        run: |
+          curl -fsSL https://github.com/mtrojnar/osslsigncode/archive/refs/tags/2.14.tar.gz | tar -xz -C /tmp
+          cmake -S /tmp/osslsigncode-2.14 -B /tmp/osslsigncode-2.14/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/osslsigncode-2.14/build --parallel
+          cmake --install /tmp/osslsigncode-2.14/build
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
