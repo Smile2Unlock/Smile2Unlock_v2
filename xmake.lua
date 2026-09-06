@@ -126,6 +126,27 @@ local function model_stage_dir()
     return path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
 end
 
+-- xmake's default test runner execs the built artifact directly. For mingw
+-- PEs that only works on hosts with a wine binfmt_misc bridge (Arch desktops
+-- have one; hosted CI containers do not), so route through wine explicitly
+-- and keep the native exec everywhere else.
+local function wine_on_test(target, opt)
+    local runargs = table.wrap(((opt and opt.runargs) or target:get("runargs")) or {})
+    local ok
+    if is_plat("mingw") and is_host("linux") then
+        local argv = { path.absolute(target:targetfile()) }
+        for _, arg in ipairs(runargs) do
+            table.insert(argv, arg)
+        end
+        ok = os.execv("wine", argv, { try = true })
+    else
+        ok = os.execv(path.absolute(target:targetfile()), runargs, { try = true })
+    end
+    if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
+        os.raise("test run failed: " .. tostring(ok))
+    end
+    return true
+end
 local function apply_cpp_target(kind)
     set_kind(kind)
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
@@ -373,6 +394,7 @@ elseif is_plat("windows", "mingw") then
         add_packages("nlohmann_json")
         add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32")
         add_tests("version", {runargs = {"--version"}})
+        on_test(wine_on_test)
 end
 
 if is_plat("linux") then
@@ -549,6 +571,7 @@ target("su_windows_sid_rate_limiter_test")
         add_ldflags("-static", {force = true})
     end
     add_tests("default")
+    on_test(wine_on_test)
 
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
