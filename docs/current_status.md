@@ -28,6 +28,7 @@ Credential Provider
 - 加固了工作流对慢/代理 registry 的容忍度：顶层 `CARGO_NET_RETRY`、`CARGO_HTTP_TIMEOUT`、`CARGO_HTTP_LOW_SPEED_LIMIT`、`CARGO_HTTP_MULTIPLEXING=false`，并为三个 job 增加 `~/.cargo/registry`、`~/.cargo/git` 缓存。此前本地 windows-package 曾因 cargo 下载超时（`transfer too slow`）失败。
 - `scripts/local-ci.sh` 增加持久化 `s2u-cargo-registry` 与 `s2u-pacman-cache` 卷，使重试从中断处继续，避免每次重新下载完整 Slint 依赖图与系统包。
 - 修复 `publish-release-artifacts.yml` 中从未同步的 readiness 修复：缺少 `XMAKE_ROOT=y`（容器内 root 运行 xmake 会拒绝启动）、`nodejs`（容器 job 内的 JS actions）与 `libinput`（预编译 Slint 运行时链接依赖），并且 `osslsigncode` 不在官方仓库、改为从固定上游 2.14 源码构建。
+- 托管 GitHub runner 上以 `workflow_dispatch`（run 34233577169）重放同一工作流：Linux、Windows 交叉测试与临时证书签名 Windows ZIP 三个 job 全部通过；PR run 34233566758 的 Linux 与 Windows 交叉两个 job 亦通过。三个 job 的 `Cache Cargo registry` 步骤均生效。
 
 ## 2026-09-06 验证快照
 
@@ -43,7 +44,7 @@ Credential Provider
 
 剩余阻塞项按顺序执行：
 
-1. 托管 runner 上确认 Linux、Windows 交叉测试和临时证书签名包三个 job 全绿，并为 `main` 配置必需检查；本地 act 已全绿，等价步骤在托管环境重放一次。
+1. 为 `main` 配置必需检查。托管 runner 上三个 job 已全部通过（`workflow_dispatch` run 34233577169），本地 act 亦全绿；合并 PR 后启用分支保护即可。
 2. 使用正式受信任且带时间戳的 Windows code-signing 证书，从同一提交生成并验证 Windows ZIP；不得复用旧产物。
 3. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包（tar.gz 已在本地 CI 覆盖）；目标发行版原生包的安装、升级、回滚与卸载需在真实发行版上验收——容器验证已给出工具链兼容矩阵，deb/rpm 正式包需按发行版重建。
 4. 按 `release_acceptance_checklist.md` 完成 Windows 与 Linux 真实系统矩阵，保留日志和版本证据。
