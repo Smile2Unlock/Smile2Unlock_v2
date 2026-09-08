@@ -162,17 +162,11 @@ jobs:
           rustup toolchain install stable --profile minimal
           --target x86_64-pc-windows-gnu
 
-      - name: Build Windows release
-        run: |
-          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
-          xmake build -v
-
-      - name: Sign, package, and verify Windows archive
+      - name: Materialize release signing identity
         shell: bash
         env:
           SIGN_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGN_CERTIFICATE_BASE64 }}
           SIGN_KEY_BASE64: ${{ secrets.WINDOWS_SIGN_KEY_BASE64 }}
-          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
           [[ -n "$SIGN_CERTIFICATE_BASE64" ]] || {
             echo "release-signing is missing WINDOWS_SIGN_CERTIFICATE_BASE64" >&2
@@ -182,20 +176,40 @@ jobs:
             echo "release-signing is missing WINDOWS_SIGN_KEY_BASE64" >&2
             exit 1
           }
-          [[ -n "$WINDOWS_TIMESTAMP_URL" ]] || {
-            echo "release-signing is missing WINDOWS_TIMESTAMP_URL" >&2
-            exit 1
-          }
           umask 077
           certificate="${RUNNER_TEMP}/windows-signing-chain.pem"
           private_key="${RUNNER_TEMP}/windows-signing.key"
-          trap 'rm -f -- "$certificate" "$private_key"' EXIT
           printf '%s' "$SIGN_CERTIFICATE_BASE64" | base64 --decode > "$certificate"
           printf '%s' "$SIGN_KEY_BASE64" | base64 --decode > "$private_key"
-          WINDOWS_SIGN_CERTIFICATE="$certificate" \
-          WINDOWS_SIGN_KEY="$private_key" \
-          WINDOWS_VERIFY_CA_FILE="$certificate" \
-            packaging/windows/package.sh --output-dir "$GITHUB_WORKSPACE/dist"
+          # Fail before the expensive build if the key does not match the cert.
+          [[ "$(openssl x509 -in "$certificate" -noout -pubkey | openssl sha256)" == \
+             "$(openssl pkey -in "$private_key" -pubout | openssl sha256)" ]] || {
+            echo "release-signing key does not match the certificate" >&2
+            exit 1
+          }
+          pin="$(openssl x509 -in "$certificate" -noout -fingerprint -sha256 \
+            | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+          {
+            echo "SMILE2UNLOCK_PINNED_SIGNER_SHA256=${pin}"
+            echo "WINDOWS_SIGN_CERTIFICATE=${certificate}"
+            echo "WINDOWS_SIGN_KEY=${private_key}"
+            echo "WINDOWS_VERIFY_CA_FILE=${certificate}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Windows release
+        run: |
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake build -v
+
+      - name: Sign, package, and verify Windows archive
+        shell: bash
+        env:
+          # A self-signed/internal certificate cannot use a public timestamp
+          # authority, so WINDOWS_TIMESTAMP_URL is optional.
+          WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
+        run: |
+          trap 'rm -f -- "$WINDOWS_SIGN_CERTIFICATE" "$WINDOWS_SIGN_KEY"' EXIT
+          packaging/windows/package.sh --output-dir "$GITHUB_WORKSPACE/dist"
 
       - name: Preserve Windows archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

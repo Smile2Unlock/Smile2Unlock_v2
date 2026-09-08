@@ -29,6 +29,7 @@ Credential Provider
 - `scripts/local-ci.sh` 增加持久化 `s2u-cargo-registry` 与 `s2u-pacman-cache` 卷，使重试从中断处继续，避免每次重新下载完整 Slint 依赖图与系统包。
 - 修复 `publish-release-artifacts.yml` 中从未同步的 readiness 修复：缺少 `XMAKE_ROOT=y`（容器内 root 运行 xmake 会拒绝启动）、`nodejs`（容器 job 内的 JS actions）与 `libinput`（预编译 Slint 运行时链接依赖），并且 `osslsigncode` 不在官方仓库、改为从固定上游 2.14 源码构建。
 - 托管 GitHub runner 上以 `workflow_dispatch`（run 34233577169）重放同一工作流：Linux、Windows 交叉测试与临时证书签名 Windows ZIP 三个 job 全部通过；PR run 34233566758 的 Linux 与 Windows 交叉两个 job 亦通过。三个 job 的 `Cache Cargo registry` 步骤均生效。
+- 代码签名支持内嵌证书指纹：`SMILE2UNLOCK_PINNED_SIGNER_SHA256` 编译进 `su_deploy_helper` 与 GUI，内部自签名证书无需公共 CA 即可被程序校验；文件完整性仍由签名的 `release-info.json` 逐文件 SHA-256 保证。新增 `packaging/windows/generate-signing-cert.sh`，发布与 readiness 工作流在构建前导出指纹并签名（时间戳对自签名证书可选），`windows-package` job 增加 Wine 下 `su_deploy_helper --verify` 的正向/拒绝路径校验。
 
 ## 2026-09-06 验证快照
 

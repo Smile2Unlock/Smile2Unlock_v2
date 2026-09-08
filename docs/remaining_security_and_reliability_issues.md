@@ -14,7 +14,7 @@
 
 Windows 提权 helper 会从解压目录复制服务、识别 agent 和 CP 二进制到 `Program Files`，随后安装 LocalSystem 服务。如果解压目录可被普通用户修改或在复制时被替换，这条链路会变成高权限代码安装入口。
 
-状态：代码完成，发布证据待补。部署只接受带 detached CMS 签名的 `release-info.json`，验证每个 PE 的 Authenticode 与清单 SHA-256；源文件和目标目录拒绝 reparse point，文件通过保持句柄的临时写入、flush 和原子替换安装。正式发布仍需用受信任的发布证书生成 ZIP，并在真实 Windows 信任链下验证。
+状态：代码完成，发布证据待补。部署只接受带 detached CMS 签名的 `release-info.json`，验证每个 PE 的 Authenticode 与清单 SHA-256；源文件和目标目录拒绝 reparse point，文件通过保持句柄的临时写入、flush 和原子替换安装。两种信任模型：公共 CA 构建依赖 Windows 信任链；内部构建在编译期嵌入 `SMILE2UNLOCK_PINNED_SIGNER_SHA256`，只接受该证书的签名，逐文件 SHA-256 仍由签名的 `release-info.json` 保证。真实 Windows 上的安装与运行验收仍待完成。
 
 ## 中优先级：限制 Windows 认证管道
 

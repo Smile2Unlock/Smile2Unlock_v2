@@ -17,9 +17,9 @@
 
 ## 3. 正式候选包
 
-- [x] GitHub `release-signing` environment 已创建，仅允许 `v*` tag，并配置 `WINDOWS_TIMESTAMP_URL` variable。
-- [ ] 将正式证书链和私钥分别写入 `WINDOWS_SIGN_CERTIFICATE_BASE64`、`WINDOWS_SIGN_KEY_BASE64` environment secrets；私钥不得进入仓库、Actions artifact 或 GitHub Release asset。
-- [ ] 用受信任的 Windows code-signing 证书和可信时间戳从候选提交生成 ZIP，并在干净 Windows 中验证签名链。
+- [x] GitHub `release-signing` environment 已创建，仅允许 `v*` tag；`WINDOWS_TIMESTAMP_URL` 对内部自签名证书为可选。
+- [x] 内部自签名 code-signing 证书与私钥已写入 `WINDOWS_SIGN_CERTIFICATE_BASE64`、`WINDOWS_SIGN_KEY_BASE64` environment secrets；私钥不得进入仓库、Actions artifact 或 GitHub Release asset。
+- [ ] 用该证书从候选提交生成并签名 ZIP；构建内嵌其 SHA-256 指纹（`SMILE2UNLOCK_PINNED_SIGNER_SHA256`），deploy helper 在无公共 CA 时按指纹校验签名，`verify-package.sh` 通过 `WINDOWS_VERIFY_CA_FILE` 校验 Authenticode。真实 Windows 上的安装与运行验收仍待完成。
 - [x] 干净 Linux 容器（含 `patchelf`）已从候选源码构建并验证 tar.gz、pacman、deb、rpm 四种格式；pacman 安装生命周期（安装、版本检查、重装、卸载）在全新 Arch 容器通过。容器验证发现：Arch 构建的 deb/rpm 二进制要求 GLIBC_2.38 与 GLIBCXX_3.4.36，Debian bookworm 无法配置、trixie/Fedora 42 可安装但运行需 GCC 16 运行时——正式 Debian/Fedora 包需按发行版重建后再次验收。
 - [ ] 记录包 SHA-256、构建日志、签名身份和构建环境（以最终候选提交为准）。
 

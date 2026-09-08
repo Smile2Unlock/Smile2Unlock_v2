@@ -6,6 +6,7 @@
 //   --unregister-cp                remove the logon-UI enrollment
 //   --ensure-service               start the auth service
 //   --inspect                      print the deployment snapshot as JSON
+//   --verify                       validate the signed package beside this exe
 //   --version
 //
 // The GUI relaunches this executable with ShellExecuteEx(runas) so the UAC
@@ -87,6 +88,7 @@ int main(int argc, char** argv) {
     auto unregister_cp = false;
     auto ensure_service = false;
     auto inspect = false;
+    auto verify = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
         if (argument == "--version") {
@@ -100,6 +102,8 @@ int main(int argc, char** argv) {
             ensure_service = true;
         } else if (argument == "--inspect") {
             inspect = true;
+        } else if (argument == "--verify") {
+            verify = true;
         } else {
             return fail(std::format("unknown argument: {}", argument));
         }
@@ -117,6 +121,17 @@ int main(int argc, char** argv) {
             R"({{"ok":true,"snapshot":{}}})", su::windeploy::snapshot_json(*snapshot));
         std::cout << payload << "\n";
         return write_result(payload);
+    }
+    if (verify) {
+        if (register_cp || unregister_cp || ensure_service || inspect) {
+            return fail("--verify cannot be combined with deployment operations");
+        }
+        const auto validated = su::windeploy::validate_deployment_package();
+        if (!validated) {
+            return fail(validated.error());
+        }
+        std::cout << "deployment package verified\n";
+        return write_result(R"({"ok":true,"action":"verify"})");
     }
     if (register_cp && unregister_cp) {
         return fail("--register-cp and --unregister-cp cannot be combined");
@@ -147,6 +162,6 @@ int main(int argc, char** argv) {
     }
 
     std::cerr << "usage: su_deploy_helper "
-                 "(--register-cp | --unregister-cp | --ensure-service | --inspect | --version)\n";
+                 "(--register-cp | --unregister-cp | --ensure-service | --inspect | --verify | --version)\n";
     return 64;
 }
