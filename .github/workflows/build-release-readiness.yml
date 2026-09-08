@@ -163,7 +163,7 @@ jobs:
         run: >-
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
           mingw-w64-gcc pkgconf imagemagick python zip unzip openssl
-          nodejs
+          wine xorg-server-xvfb nodejs
 
       # osslsigncode is not in the official repositories; build the pinned
       # upstream release instead of relying on the AUR.
@@ -206,11 +206,6 @@ jobs:
           rustup toolchain install stable --profile minimal
           --target x86_64-pc-windows-gnu
 
-      - name: Build Windows release
-        run: |
-          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
-          xmake build -v
-
       - name: Generate ephemeral CI signing identity
         run: |
           openssl req -x509 -newkey rsa:3072 -nodes \
@@ -218,6 +213,14 @@ jobs:
             -out "${RUNNER_TEMP}/windows-ci-signing.pem" \
             -days 1 -subj "/CN=Smile2Unlock CI/" \
             -addext "extendedKeyUsage=codeSigning"
+          pin="$(openssl x509 -in "${RUNNER_TEMP}/windows-ci-signing.pem" -noout \
+            -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+          echo "SMILE2UNLOCK_PINNED_SIGNER_SHA256=${pin}" >> "$GITHUB_ENV"
+
+      - name: Build Windows release
+        run: |
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake build -v
 
       - name: Build and verify signed Windows zip
         env:
@@ -225,3 +228,16 @@ jobs:
           WINDOWS_SIGN_KEY: ${{ runner.temp }}/windows-ci-signing.key
           WINDOWS_VERIFY_CA_FILE: ${{ runner.temp }}/windows-ci-signing.pem
         run: packaging/windows/package.sh
+
+      - name: Verify the packaged helper accepts the pinned signer under Wine
+        run: |
+          # Exercises the same verification path the Windows deploy helper runs
+          # at install time: the manifest CMS signer must match the fingerprint
+          # compiled into the helper (public-CA chain checks are skipped).
+          export WINEPREFIX="${RUNNER_TEMP}/wineprefix-package"
+          mkdir -p "$WINEPREFIX"
+          WINEPATH="$(find /usr -type f \( -iname 'libstdc++-6.dll' -o -iname 'libgcc_s_seh-1.dll' -o -iname 'libwinpthread-1.dll' \) -printf '%h\n' 2>/dev/null | sort -u | paste -sd ';' -)"
+          export WINEPATH
+          rm -rf "${RUNNER_TEMP}/package-verify"
+          unzip -q build/packages/smile2unlock-*-windows-x86_64.zip -d "${RUNNER_TEMP}/package-verify"
+          xvfb-run -a wine "${RUNNER_TEMP}/package-verify/Smile2Unlock/bin/su_deploy_helper.exe" --verify

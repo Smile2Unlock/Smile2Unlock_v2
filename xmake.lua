@@ -147,6 +147,16 @@ local function wine_on_test(target, opt)
     end
     return true
 end
+-- Windows release trust: when SMILE2UNLOCK_PINNED_SIGNER_SHA256 is set (the
+-- lowercase hex SHA-256 fingerprint of the code-signing certificate), the
+-- deploy helper and GUI accept exactly that signer without a public CA. Left
+-- unset, both keep requiring the Windows trust store.
+local function apply_pinned_signer()
+    local pinned = os.getenv("SMILE2UNLOCK_PINNED_SIGNER_SHA256")
+    if pinned and pinned ~= "" then
+        add_defines('SMILE2UNLOCK_PINNED_SIGNER_SHA256="' .. pinned .. '"')
+    end
+end
 local function apply_cpp_target(kind)
     set_kind(kind)
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
@@ -304,6 +314,7 @@ target("su_recognizer")
             -- service status) used by the GUI deployment panel.
             add_files("src/platform/windows/deploy/deployment.cpp")
             add_includedirs("src/platform/windows/deploy")
+            apply_pinned_signer()
         end
         add_files(path.join("build", "generated", "slint", "app_window.cpp"), { always_added = true })
         add_includedirs(path.join("build", "generated", "slint"))
@@ -391,6 +402,7 @@ elseif is_plat("windows", "mingw") then
         add_files("src/platform/windows/deploy_helper/helper.rc")
         add_files("src/platform/windows/deploy/deployment.cpp")
         add_includedirs("src/platform/windows/deploy")
+        apply_pinned_signer()
         add_packages("nlohmann_json")
         add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32")
         add_tests("version", {runargs = {"--version"}})

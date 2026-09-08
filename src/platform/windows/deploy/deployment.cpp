@@ -155,6 +155,69 @@ std::expected<std::string, std::string> read_all(HANDLE file, std::size_t limit)
     return content;
 }
 
+// Internal-distribution trust anchor. Public-CA builds leave the macro unset
+// and rely on the Windows trust store; builds that pass
+// SMILE2UNLOCK_PINNED_SIGNER_SHA256 (the lowercase hex SHA-256 fingerprint of
+// the release signing certificate) accept exactly that signer without a
+// public CA. Integrity still comes from the signed release-info.json manifest,
+// which pins the SHA-256 of every installed file.
+#ifdef SMILE2UNLOCK_PINNED_SIGNER_SHA256
+constexpr std::string_view kPinnedSignerSha256 = SMILE2UNLOCK_PINNED_SIGNER_SHA256;
+#else
+constexpr std::string_view kPinnedSignerSha256{};
+#endif
+
+bool pinned_signer_configured() {
+    return !kPinnedSignerSha256.empty();
+}
+
+std::string hex_digest(const BYTE* bytes, std::size_t size) {
+    constexpr char digits[] = "0123456789abcdef";
+    auto result = std::string(size * 2, '0');
+    for (std::size_t index = 0; index < size; ++index) {
+        result[index * 2] = digits[bytes[index] >> 4];
+        result[index * 2 + 1] = digits[bytes[index] & 0x0f];
+    }
+    return result;
+}
+
+std::string certificate_sha256_hex(PCCERT_CONTEXT certificate) {
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    if (!::CryptAcquireContextW(
+            &provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+        || !::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)
+        || !::CryptHashData(hash, certificate->pbCertEncoded, certificate->cbCertEncoded, 0)) {
+        if (hash != 0) {
+            ::CryptDestroyHash(hash);
+        }
+        if (provider != 0) {
+            ::CryptReleaseContext(provider, 0);
+        }
+        return {};
+    }
+    auto digest = std::array<BYTE, 32>{};
+    DWORD digest_size = static_cast<DWORD>(digest.size());
+    const auto finished = ::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digest_size, 0);
+    ::CryptDestroyHash(hash);
+    ::CryptReleaseContext(provider, 0);
+    if (!finished) {
+        return {};
+    }
+    return hex_digest(digest.data(), digest_size);
+}
+
+bool certificate_matches_pin(PCCERT_CONTEXT certificate) {
+    if (!pinned_signer_configured()) {
+        return false;
+    }
+    auto actual = certificate_sha256_hex(certificate);
+    std::ranges::transform(actual, actual.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return actual == kPinnedSignerSha256;
+}
+
 std::expected<void, std::string> verify_authenticode(
     HANDLE file, const std::filesystem::path& display_path) {
     WINTRUST_FILE_INFO file_info{};
@@ -212,6 +275,16 @@ std::expected<void, std::string> verify_detached_manifest_signature(
     }
     const auto release_signer = std::unique_ptr<const CERT_CONTEXT, decltype(&::CertFreeCertificateContext)>{
         signer, &::CertFreeCertificateContext};
+    if (pinned_signer_configured()) {
+        // The manifest signature is cryptographically valid; accept it only
+        // when the signer is the certificate pinned into this build. Public-CA
+        // chain validation is intentionally skipped for internal releases.
+        if (!certificate_matches_pin(release_signer.get())) {
+            return std::unexpected(
+                "release signer certificate does not match the pinned fingerprint");
+        }
+        return {};
+    }
     CERT_CHAIN_PARA chain_parameters{};
     chain_parameters.cbSize = sizeof(chain_parameters);
     CERT_ENHKEY_USAGE usage{};
@@ -304,16 +377,6 @@ std::expected<std::filesystem::path, std::string> program_files_root() {
     return path;
 }
 
-std::string hex_digest(const BYTE* bytes, std::size_t size) {
-    constexpr char digits[] = "0123456789abcdef";
-    auto result = std::string(size * 2, '0');
-    for (std::size_t index = 0; index < size; ++index) {
-        result[index * 2] = digits[bytes[index] >> 4];
-        result[index * 2 + 1] = digits[bytes[index] & 0x0f];
-    }
-    return result;
-}
-
 std::expected<void, std::string> copy_required_file(
     const PackageManifest& package,
     std::string_view relative,
@@ -329,7 +392,7 @@ std::expected<void, std::string> copy_required_file(
     if (!source) {
         return std::unexpected(source.error());
     }
-    if (executable) {
+    if (executable && !pinned_signer_configured()) {
         if (const auto verified = verify_authenticode(source->get(), source_path); !verified) {
             return std::unexpected(verified.error());
         }
@@ -574,7 +637,7 @@ std::expected<void, std::string> verify_manifest_file(
     if (!file) {
         return std::unexpected(file.error());
     }
-    if (executable) {
+    if (executable && !pinned_signer_configured()) {
         if (const auto verified = verify_authenticode(file->get(), path); !verified) {
             return std::unexpected(verified.error());
         }
