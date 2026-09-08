@@ -284,8 +284,11 @@ but must never delete an externally modified PAM file.
 
 - [x] Implement field-aware parsing and isolated fixtures for Arch Plasma,
   KScreenLocker, Fedora GDM, Debian/Ubuntu GDM and SDDM.
-- [ ] Add versioned upstream/openSUSE fixtures and expand coverage for comments,
-  control expressions and distribution layout changes.
+- [x] Add openSUSE common-*/postlogin and upstream-variant fixtures, plus
+  coverage for comments, control expressions and tab-separated layouts
+  (`tests/deploy/deployment.cpp`).
+- [ ] Capture full upstream files as versioned fixture data instead of inline
+  representative snippets (the added cases stay inline with the existing suite).
 - [x] Return dry-run plans with file identities and expiration.
 - [x] Apply atomic transformations and record the deployment journal.
 - [x] Validate new stacks before commit and automatically roll back failures.

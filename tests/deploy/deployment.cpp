@@ -331,6 +331,110 @@ void rollback_all_is_idempotent(const std::filesystem::path& root) {
           "bulk rollback is idempotent for package uninstall");
 }
 
+void opensuse_common_stack_round_trip(const std::filesystem::path& root) {
+    // openSUSE composes the distribution common-* stacks with postlogin in
+    // both the login manager and the lock screen.
+    constexpr auto fixture =
+        "#%PAM-1.0\n"
+        "auth     include        common-auth\n"
+        "auth     include        postlogin\n"
+        "account  include        common-account\n"
+        "password include        common-password\n"
+        "session  include        common-session\n"
+        "session  include        postlogin\n";
+    write_fixture(root, "plasmalogin", fixture);
+
+    const auto plan = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kPlasmaLogin, false);
+    check(plan.has_value(), "openSUSE Plasma Login common-* plan is generated");
+    if (!plan) {
+        return;
+    }
+    check(plan->child_content.find("auth substack common-auth") != std::string::npos,
+          "openSUSE child stack keeps common-auth as password fallback");
+    check(plan->destination_content.find("auth       substack    smile2unlock-plasma-login-auth")
+              != std::string::npos,
+          "openSUSE common-auth anchor becomes the managed substack");
+    check(plan->destination_content.find("auth     include        postlogin")
+              != std::string::npos,
+          "openSUSE postlogin authentication policy stays in the parent service");
+    check(plan->destination_content.find("session  include        postlogin")
+              != std::string::npos,
+          "openSUSE postlogin session policy stays in the parent service");
+    check(su::deploy::apply_pam_plan(root, *plan).has_value(),
+          "openSUSE common-* plan applies in an isolated root");
+    check(su::deploy::rollback_pam_integration(
+              root, su::deploy::TargetKind::kPlasmaLogin).has_value(),
+          "openSUSE common-* plan rolls back");
+}
+
+void comments_and_control_expressions_are_preserved(const std::filesystem::path& root) {
+    constexpr auto fixture =
+        "#%PAM-1.0\n"
+        "# Distribution default; do not edit by hand.\n"
+        "auth\t[success=1 default=ignore]\tpam_succeed_if.so user != root quiet_success\n"
+        "auth\tinclude\tsystem-login\n"
+        "-auth\toptional\tpam_gnome_keyring.so\n"
+        "\n"
+        "account\tinclude\tsystem-login\n"
+        "session\tinclude\tsystem-login\n";
+    write_fixture(root, "kde", fixture);
+
+    const auto plan = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kKscreenlocker, false);
+    check(plan.has_value(), "tabs, comments and control expressions parse");
+    if (!plan) {
+        return;
+    }
+    check(plan->destination_content.find("# Distribution default; do not edit by hand.")
+              != std::string::npos,
+          "leading comment is preserved verbatim");
+    check(plan->destination_content.find(
+              "auth\t[success=1 default=ignore]\tpam_succeed_if.so user != root quiet_success")
+              != std::string::npos,
+          "bracketed control expression is preserved verbatim");
+    check(plan->destination_content.find("-auth\toptional\tpam_gnome_keyring.so")
+              != std::string::npos,
+          "dash-prefixed optional module is preserved verbatim");
+    check(plan->child_content.find("auth substack system-login") != std::string::npos,
+          "tab-separated password include is still detected as the anchor");
+}
+
+void upstream_variant_layouts_are_supported(const std::filesystem::path& root) {
+    // Newer Fedora/upstream layouts use `auth include password-auth` instead
+    // of `substack`, keep pam_selinux_permit before it, and prefix optional
+    // modules with `-`.
+    constexpr auto fixture =
+        "auth       required      pam_env.so\n"
+        "auth       [success=done ignore=ignore default=bad] pam_selinux_permit.so\n"
+        "auth       include       password-auth\n"
+        "-auth      optional      pam_gnome_keyring.so\n"
+        "account    include       password-auth\n"
+        "password   include       password-auth\n"
+        "session    include       password-auth\n"
+        "session    include       postlogin\n";
+    write_fixture(root, "gdm-password", fixture, "etc/pam.d");
+
+    const auto plan = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kGdm, false);
+    check(plan.has_value(), "upstream `include password-auth` layout is recognized");
+    if (!plan) {
+        return;
+    }
+    check(plan->child_content.find("auth substack password-auth") != std::string::npos,
+          "password-auth include becomes the managed password fallback");
+    check(plan->destination_content.find(
+              "auth       [success=done ignore=ignore default=bad] pam_selinux_permit.so")
+              != std::string::npos,
+          "SELinux permit keeps its position ahead of the managed substack");
+    check(plan->destination_content.find("-auth      optional      pam_gnome_keyring.so")
+              != std::string::npos,
+          "optional wallet module stays in the parent service");
+    check(plan->destination_content.find("session    include       postlogin")
+              != std::string::npos,
+          "postlogin session policy stays in the parent service");
+}
+
 } // namespace
 
 int main() {
@@ -350,6 +454,9 @@ int main() {
     interrupted_transaction_recovers(root / "recovery");
     interrupted_upgrade_rejects_corrupt_backup(root / "upgrade-corrupt-backup");
     rollback_all_is_idempotent(root / "uninstall");
+    opensuse_common_stack_round_trip(root / "opensuse");
+    comments_and_control_expressions_are_preserved(root / "comments");
+    upstream_variant_layouts_are_supported(root / "upstream-variants");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {
