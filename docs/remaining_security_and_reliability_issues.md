@@ -50,7 +50,7 @@ Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 
 仓库已恢复 GitHub Actions 工作流，覆盖 Linux C++ 全构建与 Xmake 测试、Rust core、Linux tar 包、Windows 特权组件交叉构建、MinGW/Wine Credential Provider 和按 SID 限流测试，以及使用临时 CI code-signing 身份生成并验证 Windows 签名 ZIP。临时证书只验证流水线闭环，不能替代正式发布证书。
 
-2026-09-06 复核：工作流三个 job 已用 act + Docker 在本地干净环境全部跑绿（`scripts/local-ci.sh`），并修复了六个只在干净环境暴露的构建/配置问题；托管 runner 仍需实际运行一次确认。
+2026-09-08 复核：三个 job 已在托管 GitHub runner 上以 `workflow_dispatch`（run 34233577169）全部跑绿，包含临时证书签名 Windows ZIP 的完整校验；本地 act 亦全绿。发布流水线本身仍缺正式证书与真实系统验收（见 `release_acceptance_checklist.md`）。
 
 ## 发布完整性
 

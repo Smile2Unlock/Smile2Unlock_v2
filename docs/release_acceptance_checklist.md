@@ -1,6 +1,6 @@
 # Release Acceptance Checklist
 
-更新日期：2026-09-06。以下项目必须按顺序执行；自动化通过不能替代真实登录栈验收。
+更新日期：2026-09-08。以下项目必须按顺序执行；自动化通过不能替代真实登录栈验收。
 
 ## 1. 固定候选提交
 
@@ -11,9 +11,9 @@
 
 ## 2. 自动化流水线
 
-- [ ] Linux job：全构建、全部 Xmake 测试、Rust 测试和 tar 包校验在托管 runner 通过（本地已绿，待托管重放）。
-- [ ] Windows cross job：helper/service/password/限流目标构建，Wine helper smoke、限流和 Rust CP 测试在托管 runner 通过（本地已绿，待托管重放）。
-- [ ] Windows package job：在 main、`v*` tag 或手动运行中，以临时自动化证书完成所有 PE Authenticode、manifest CMS、文件集合与 SHA-256 校验（本地已绿，待托管重放）。
+- [x] Linux job：全构建、全部 Xmake 测试、Rust 测试和 tar 包校验在托管 runner 通过（2026-09-08 `workflow_dispatch` run 34233577169；本地 act 亦绿）。
+- [x] Windows cross job：helper/service/password/限流目标构建，Wine helper smoke、限流和 Rust CP 测试在托管 runner 通过（同一 run 34233577169）。
+- [x] Windows package job：在 main、`v*` tag 或手动运行中，以临时自动化证书完成所有 PE Authenticode、manifest CMS、文件集合与 SHA-256 校验（同一 run 34233577169，PR 上按设计跳过）。
 
 ## 3. 正式候选包
 
