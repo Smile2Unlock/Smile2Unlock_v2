@@ -4,13 +4,13 @@
 
 本次重写目标是把 Smile2Unlock 从当前偏 Windows、IPC 分散、GUI 依赖不稳定的实现，重构为一套以 `Slint + C++26 + Rust + Zig + xmake + g++` 为基础的单宿主优先架构。
 
-## Current Status (2026-09-03)
+## Current Status (2026-09-05)
 
-Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、PAM 目标转换、打包和自动验收已实现；Linux 管理操作授权、生命周期和跨发行版现场矩阵仍未完成**。Phase 4 — **Windows 已切换到纯 Rust Credential Provider + LocalSystem 认证服务 + 目标会话识别 agent；GUI UDP 识别服务端和 GUI 直读 profile store 的旧路径已删除**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分通用 recognizer 服务**。
+Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、PAM 目标转换、管理 capability、事务化生命周期、打包和自动验收已实现；跨发行版现场矩阵仍未完成**。Phase 4 — **Windows 已切换到纯 Rust Credential Provider + LocalSystem 认证服务 + 目标会话识别 agent，并完成签名部署输入、句柄复制与按 SID 限流；真实 Windows 验收仍未完成**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分通用 recognizer 服务**。
 
 当前 Windows 构建包含 `su_app`、`su_deploy_helper`、`su_auth_service`、`su_recognition_agent`、`su_password_tool` 和 `su_credential_provider.dll`。CP 与 GUI 都只通过受保护的命名管道访问 LocalSystem 服务；服务统一持有 per-SID 加密 profile/password store，并在目标会话启动一次性识别 agent。Windows ZIP 使用 `bin/` + `assets/` 平级布局，部署后安全组件位于 `C:\Program Files\Smile2Unlock\bin`。
 
-2026-09-03 复核：Linux Release 主构建成功；13 个 Xmake test case 中 12 个通过，`su_theme_test/default` 因损坏调色板热替换错误切回内置主题而失败；Rust core 42/42 通过；Windows Rust CP 的 MinGW/Wine 测试 41 通过、1 个真实 Windows 专用用例忽略。当前发布阻塞项和现场矩阵统一记录在 `docs/current_status.md`。
+2026-09-05 复核：Linux Release 主构建成功，14 个 Xmake test case 全部通过；Rust core 42/42 通过；Windows 全量 Release 通过 MinGW 交叉构建；Windows Rust CP 的 MinGW/Wine 测试 41 通过、1 个真实 Windows 专用用例忽略，按 SID 限流测试通过。CI 已覆盖 Linux 包与临时证书 Windows 签名包，但托管 runner 和真实系统验收仍需执行。当前发布阻塞项和现场矩阵统一记录在 `docs/current_status.md`。
 
 重写后的第一阶段目标：
 
@@ -795,13 +795,13 @@ Slint 是唯一计划内 GUI。
 - ✅ Linux 认证加固 — fd-pinned profile 读取、每 uid 启动限流、模型失败恢复和 systemd sandbox 已通过真实 PAM / 摄像头验证
 - ⚠️ 真实 PAM 开机登录验证 — 安装与 PAM 配置文档已提供，尚未在本机修改 PAM 栈并重启验证
 
-### Phase 4: Windows compatibility ⚠️ 主链路完成；安全加固与现场验收待完成
+### Phase 4: Windows compatibility ⚠️ 主链路与代码加固完成；现场验收待完成
 
 - ✅ Windows password XChaCha20-Poly1305 envelope 和 stale-password 状态
 - ✅ CNG TPM wrapping、machine DPAPI fallback、SYSTEM-only ACL 和 LocalSystem 服务
 - ✅ 认证命名管道和纯 Rust Credential Provider 的 LOGON / UNLOCK 序列化
 - ✅ MinGW 交叉构建和 Windows Rust core 静态库
-- ✅ 纯 Rust COM Provider（`credential_provider_rs`）：命名管道客户端、SID/session/request 绑定、一次性凭据与安全序列化；2026-09-03 MinGW/Wine 复核为 41 passed + 1 ignored
+- ✅ 纯 Rust COM Provider（`credential_provider_rs`）：命名管道客户端、SID/session/request 绑定、一次性凭据与安全序列化；2026-09-05 MinGW/Wine 复核为 41 passed + 1 ignored
 - ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
 - ✅ LocalSystem 服务在目标会话启动 `su_recognition_agent.exe`，通过继承匿名管道接收活体分数与 embedding，再以 service-owned profile store 比对
 - ✅ Windows GUI profile 操作通过命名管道请求服务执行；录入/删除使用密码验证后的短时单次管理 capability
@@ -809,7 +809,7 @@ Slint 是唯一计划内 GUI。
 - ✅ `logon_secret_protocol.h` 恢复至 `src/platform/windows/auth_service/`（随 `common/` 删除而丢失），`su_auth_service` 加入 xmake 主构建（此前仅由已删除的 tests/windows 构建）
 - ❌ 有摄像头/真实人脸的 Windows 端到端识别验收（GUI 注册 + 服务 agent + 锁屏 CP）
 - ❌ 物理 TPM / 无 TPM、BitLocker、Microsoft 账户和完整 LogonUI 回退矩阵
-- ❌ 提权部署源的签名/句柄安全校验，以及认证管道按 SID 限流
+- ✅ 提权部署源的 CMS/Authenticode/句柄安全校验，以及认证管道按 SID 限流
 
 ### Phase 5: Optimization and optional split ✅ 第一版决策完成
 

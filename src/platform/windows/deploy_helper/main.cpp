@@ -2,7 +2,7 @@
 //
 // Runs with an elevated token (manifest requireAdministrator) and performs
 // the deployment operations the GUI cannot do unprivileged:
-//   --register-cp [--dll <path>]   enroll the credential provider
+//   --register-cp                  enroll the packaged credential provider
 //   --unregister-cp                remove the logon-UI enrollment
 //   --ensure-service               start the auth service
 //   --inspect                      print the deployment snapshot as JSON
@@ -80,43 +80,16 @@ int fail(std::string_view detail) {
     return 1;
 }
 
-std::string sibling_path(const wchar_t* name) {
-    auto path = std::wstring(32768, L'\0');
-    const auto length = ::GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (length == 0 || length >= path.size()) {
-        return {};
-    }
-    path.resize(length);
-    const auto separator = path.find_last_of(L"\\/");
-    if (separator == std::wstring::npos) {
-        return {};
-    }
-    path.resize(separator + 1);
-    path += name;
-    const auto bytes = ::WideCharToMultiByte(
-        CP_UTF8, 0, path.data(), static_cast<int>(path.size()), nullptr, 0, nullptr, nullptr);
-    auto result = std::string(static_cast<std::size_t>(bytes), '\0');
-    if (bytes > 0) {
-        (void)::WideCharToMultiByte(
-            CP_UTF8, 0, path.data(), static_cast<int>(path.size()), result.data(), bytes,
-            nullptr, nullptr);
-    }
-    return result;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string dll_path = sibling_path(L"su_credential_provider.dll");
     auto register_cp = false;
     auto unregister_cp = false;
     auto ensure_service = false;
     auto inspect = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
-        if (argument == "--dll" && i + 1 < argc) {
-            dll_path = argv[++i];
-        } else if (argument == "--version") {
+        if (argument == "--version") {
             std::cout << "su_deploy_helper 1\n";
             return 0;
         } else if (argument == "--register-cp") {
@@ -149,7 +122,7 @@ int main(int argc, char** argv) {
         return fail("--register-cp and --unregister-cp cannot be combined");
     }
     if (register_cp) {
-        const auto registered = su::windeploy::register_credential_provider(dll_path);
+        const auto registered = su::windeploy::register_credential_provider();
         if (!registered) {
             return fail(registered.error());
         }
@@ -173,7 +146,7 @@ int main(int argc, char** argv) {
         return write_result(R"({"ok":true,"action":"deploy"})");
     }
 
-    std::cerr << "usage: su_deploy_helper [--dll <path>] "
+    std::cerr << "usage: su_deploy_helper "
                  "(--register-cp | --unregister-cp | --ensure-service | --inspect | --version)\n";
     return 64;
 }

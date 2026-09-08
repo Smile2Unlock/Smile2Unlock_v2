@@ -18,7 +18,7 @@ import std;
 export namespace su::control {
 
 inline constexpr std::string_view kDefaultSocketPath = "/run/smile2unlock/control.sock";
-inline constexpr std::uint32_t kProtocolVersion = 1;
+inline constexpr std::uint32_t kProtocolVersion = 2;
 // Profile summaries are variable-sized JSON. Keep a bounded frame while
 // leaving room for large installations instead of failing once the list
 // crosses the old 64 KiB ceiling.
@@ -53,6 +53,11 @@ struct ControlResponse {
     std::string payload_json = "null";
 };
 
+struct PeerCredentials {
+    std::uint32_t uid = 0;
+    std::uint32_t pid = 0;
+};
+
 std::string_view control_result_name(ControlResult result);
 
 class Connection {
@@ -70,6 +75,7 @@ public:
 
     std::expected<void, SocketError> send_frame(std::string_view payload) const;
     std::expected<std::string, SocketError> receive_frame() const;
+    std::expected<PeerCredentials, SocketError> peer_credentials() const;
     std::expected<std::uint32_t, SocketError> peer_uid() const;
     [[nodiscard]] bool valid() const { return fd_ >= 0; }
 
@@ -110,17 +116,27 @@ std::string make_enroll_profile_request(
     std::uint64_t request_id,
     std::string_view username,
     std::string_view label,
-    std::string_view face_sample_source);
+    std::string_view face_sample_source,
+    std::string_view management_token);
 std::string make_delete_profile_request(
     std::uint64_t request_id,
     std::string_view username,
-    std::string_view profile_id);
-std::string make_migrate_profiles_request(std::uint64_t request_id, std::string_view username);
+    std::string_view profile_id,
+    std::string_view management_token);
+std::string make_migrate_profiles_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view management_token);
 std::string make_verify_profile_request(
     std::uint64_t request_id,
     std::string_view username,
     std::string_view face_sample_source,
     bool liveness_ok);
+std::string make_issue_management_capability_request(
+    std::uint64_t request_id,
+    std::uint32_t target_uid,
+    std::uint32_t target_pid,
+    std::string_view operation);
 std::string make_response(
     std::uint64_t request_id,
     ControlResult result,
@@ -296,14 +312,27 @@ std::expected<std::string, SocketError> Connection::receive_frame() const {
     return payload;
 }
 
-std::expected<std::uint32_t, SocketError> Connection::peer_uid() const {
+std::expected<PeerCredentials, SocketError> Connection::peer_credentials() const {
     auto credentials = ucred{};
     auto length = socklen_t{sizeof(credentials)};
     if (::getsockopt(fd_, SOL_SOCKET, SO_PEERCRED, &credentials, &length) != 0
         || length != sizeof(credentials)) {
         return std::unexpected(SocketError::kProtocolError);
     }
-    return static_cast<std::uint32_t>(credentials.uid);
+    if (credentials.pid <= 0) {
+        return std::unexpected(SocketError::kProtocolError);
+    }
+    return PeerCredentials{
+        .uid = static_cast<std::uint32_t>(credentials.uid),
+        .pid = static_cast<std::uint32_t>(credentials.pid),
+    };
+}
+
+std::expected<std::uint32_t, SocketError> Connection::peer_uid() const {
+    const auto credentials = peer_credentials();
+    return credentials
+        ? std::expected<std::uint32_t, SocketError>{credentials->uid}
+        : std::unexpected(credentials.error());
 }
 
 Listener::~Listener() {
@@ -397,27 +426,48 @@ std::string make_enroll_profile_request(
     std::uint64_t request_id,
     std::string_view username,
     std::string_view label,
-    std::string_view face_sample_source) {
+    std::string_view face_sample_source,
+    std::string_view management_token) {
     auto request = nlohmann::json::parse(request_json("enroll_profile", request_id));
     request["username"] = username;
     request["label"] = label;
     request["face_sample_source"] = face_sample_source;
+    request["management_token"] = management_token;
     return request.dump();
 }
 
 std::string make_delete_profile_request(
     std::uint64_t request_id,
     std::string_view username,
-    std::string_view profile_id) {
+    std::string_view profile_id,
+    std::string_view management_token) {
     auto request = nlohmann::json::parse(request_json("delete_profile", request_id));
     request["username"] = username;
     request["profile_id"] = profile_id;
+    request["management_token"] = management_token;
     return request.dump();
 }
 
-std::string make_migrate_profiles_request(std::uint64_t request_id, std::string_view username) {
+std::string make_migrate_profiles_request(
+    std::uint64_t request_id,
+    std::string_view username,
+    std::string_view management_token) {
     auto request = nlohmann::json::parse(request_json("migrate_profiles", request_id));
     request["username"] = username;
+    request["management_token"] = management_token;
+    return request.dump();
+}
+
+std::string make_issue_management_capability_request(
+    std::uint64_t request_id,
+    std::uint32_t target_uid,
+    std::uint32_t target_pid,
+    std::string_view operation) {
+    auto request = nlohmann::json::parse(
+        request_json("issue_management_capability", request_id));
+    request["target_uid"] = target_uid;
+    request["target_pid"] = target_pid;
+    request["operation"] = operation;
     return request.dump();
 }
 

@@ -172,6 +172,18 @@ build_tarball() {
 
 build_pacman() {
     local pkgbuild="${stage_root}/PKGBUILD"
+    local install_script="${stage_root}/smile2unlock.install"
+    cat > "$install_script" <<EOF
+pre_upgrade() {
+    if [[ -x /usr/libexec/smile2unlock/su_deploy_helper ]]; then
+        /usr/libexec/smile2unlock/su_deploy_helper --check-package-version '${package_version}'
+    fi
+}
+pre_remove() {
+    /usr/libexec/smile2unlock/su_deploy_helper --rollback-all
+    systemctl disable --now su-authd.service >/dev/null 2>&1 || true
+}
+EOF
     cat > "$pkgbuild" <<EOF
 pkgname=${package_name}
 pkgver=${package_version}
@@ -180,6 +192,7 @@ pkgdesc='Local face authentication enrollment and diagnostics'
 arch=('${architecture}')
 license=('MIT')
 options=('!debug' '!strip')
+install=smile2unlock.install
 depends=('pam' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
 _stage_root='${root_dir}'
 
@@ -215,11 +228,18 @@ build_fpm() {
     local fpm_arch="$architecture"
     [[ "$target" != deb || "$architecture" != x86_64 ]] || fpm_arch=amd64
     local archive="${output_dir}/${package_name}-${package_version}-linux-${architecture}.${target}"
+    local pre_install="${stage_root}/pre-install-${target}.sh"
+    local pre_remove="${stage_root}/pre-remove-${target}.sh"
+    sed "s/@PACKAGE_VERSION@/${package_version}/g" \
+        "${script_dir}/maintainer/pre-install.sh" > "$pre_install"
+    cp "${script_dir}/maintainer/pre-remove.sh" "$pre_remove"
+    chmod 0755 "$pre_install" "$pre_remove"
     fpm -s dir -t "$target" -n "$package_name" -v "$package_version" --force \
         --architecture "$fpm_arch" \
         --description "Local face authentication enrollment and diagnostics" \
         --license MIT --maintainer "Smile2Unlock Project" --vendor Smile2Unlock \
         --url "https://github.com/Smile2Unlock/Smile2Unlock_v2" \
+        --before-install "$pre_install" --before-remove "$pre_remove" \
         "${dependency_args[@]}" -C "$root_dir" -p "$archive" usr
     package_require_file "$archive"
     produced+=("$archive")

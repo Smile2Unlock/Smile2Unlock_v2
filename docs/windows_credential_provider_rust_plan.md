@@ -12,7 +12,7 @@
 - LocalSystem 服务统一持有 Windows password store 和 per-SID face profile store；主密钥使用 TPM CNG，无法使用 TPM 时回退 machine DPAPI。
 - Credential Provider 通过命名管道请求一次认证。服务在请求指定的 Windows 会话启动 `su_recognition_agent.exe`，取得活体与 embedding 后在服务端比对档案；GUI UDP 识别路径已删除。
 - GUI 通过同一服务的受保护 profile API 完成录入、列出、删除和验证，不再直接打开 ProgramData 档案。
-- 2026-09-03 MinGW/Wine 自动测试为 41 passed + 1 ignored；剩余重点是真实摄像头、LogonUI、TPM/DPAPI、账户与安装生命周期验收，以及部署输入和服务限流加固。
+- 2026-09-05 MinGW/Wine 自动测试为 41 passed + 1 ignored；部署输入已要求 CMS/Authenticode 签名并使用拒绝 reparse point 的句柄复制，认证管道已加入按 SID 限流。剩余重点是真实摄像头、LogonUI、TPM/DPAPI、账户与安装生命周期验收。
 
 ## 非目标
 
@@ -125,7 +125,7 @@ src/platform/windows/credential_provider_rs/
 
 ### Phase 0：冻结接口与安全样例
 
-- [x] 固定 Windows SDK、Rust toolchain、`windows` crate 和 `memsafe` fork 版本。*冻结：rustc/cargo 1.98.0-nightly（toolchain pinned by rust-toolchain.toml），`windows-core` 0.62.2 + `windows-sys` 0.61（仅 Win32_System_Memory / Win32_System_Threading），`zeroize` 1 + derive；`memsafe` 尚未引入——本阶段以本地 `WindowsSecret<N>` 满足固定容量 + PAGE_NOACCESS + zeroize 要求，`memsafe` 仅作后续评估（见下方基线记录）。*
+- [x] 锁定 Rust crate 解析结果、`windows` crate 和 `memsafe` fork。*两个 `Cargo.lock` 已纳入版本控制，Xmake/CI 的 build/test 均使用 `--locked`；`windows-core/windows` 固定 0.62.2、`windows-sys` 固定 0.61，`memsafe` 使用记录上游 commit 的 vendored fork。CI 使用 stable channel；正式候选需按验收清单记录实际 rustc 版本，不再宣称存在仓库级精确 toolchain pin。*
 - [x] 用最小 Rust `cdylib` 验证 MinGW 交叉构建和 DLL 导出检查。*Linux 宿主机完成 x86_64-pc-windows-gnu 交叉构建：release cdylib 244KB，`#[unsafe(no_mangle)]` 导出 DllCanUnloadNow / DllGetClassObject / DllRegisterServer / DllUnregisterServer，objdump 导出表核对无误；`exports.def` 已备好（LIBRARY su_credential_provider，4 导出 PRIVATE），Phase 1 接入。*
 - [x] 写 COM GUID / HRESULT / field descriptor 的纯内存单元测试。*`canonical_clsid_matches_cpp_baseline`（0x5fd3d285_0dd9_4362_8855_e0abaacd4af6）、`hresult_codes_are_stable`、`field_layout_is_stable`、`sdk_constants_match` 等，12/12 通过（宿主 Linux + wine runner 均过）。*
 - [x] 完成 `WindowsSecret` 原型和 Windows 内存保护测试；不接入 LogonUI。*见下方基线记录；seal（PAGE_NOACCESS）测试因 wine 堆页 fault 标 `#[ignore]`，由 `scripts/seal_smoke.c`（VirtualAlloc 版，wine 下通过）与真实 Windows VM 覆盖。*
@@ -203,7 +203,7 @@ src/platform/windows/credential_provider_rs/
 
 - [x] 将 Rust DLL、认证服务、识别 agent、密码工具和运行库加入统一 Windows ZIP，并用当前 verifier 检查 PE 架构、依赖和内容清单。
 - [x] 部署到 `C:\Program Files\Smile2Unlock\bin` 后再切换 CP/服务注册，避免注册表指向可删除的解压目录。
-- [ ] 为安装输入增加签名 manifest/Authenticode 与基于句柄的防 reparse-point 复制；安装失败时必须保留系统密码登录入口。
+- [x] 为安装输入增加签名 manifest/Authenticode 与基于句柄的防 reparse-point 复制；安装失败时保留系统密码登录入口。*正式发布仍需受信任证书和真实 Windows 信任链验收。*
 - [ ] 完成服务 ACL、Provider DLL ACL、注册表卸载、重启后残留和回滚测试。
 
 ### Phase 6：删除旧实现

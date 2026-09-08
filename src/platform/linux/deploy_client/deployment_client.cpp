@@ -434,6 +434,11 @@ std::expected<std::string, std::string> DeploymentClient::initialize_runtime() c
     return call_string_method("InitializeRuntime");
 }
 
+std::expected<std::string, std::string> DeploymentClient::authorize_profile_management(
+    std::string_view operation) const {
+    return call_target_method("AuthorizeProfileManagement", operation);
+}
+
 std::expected<std::string, std::string> DeploymentClient::configure_target(
     std::string_view target,
     bool wallet_token) const {

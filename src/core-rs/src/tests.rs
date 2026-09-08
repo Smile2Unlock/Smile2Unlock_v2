@@ -25,7 +25,7 @@ static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn control_protocol_parses_versioned_requests() {
     let auth = parse_control_request(
-        br#"{"version":1,"msg_type":"authenticate","request_id":42,"username":" alice "}"#,
+        br#"{"version":2,"msg_type":"authenticate","request_id":42,"username":" alice "}"#,
     )
     .unwrap();
     assert_eq!(
@@ -37,11 +37,11 @@ fn control_protocol_parses_versioned_requests() {
     );
 
     let status =
-        parse_control_request(br#"{"version":1,"msg_type":"status","request_id":43}"#).unwrap();
+        parse_control_request(br#"{"version":2,"msg_type":"status","request_id":43}"#).unwrap();
     assert_eq!(status, ControlRequest::Status { request_id: 43 });
 
     let cancel = parse_control_request(
-        br#"{"version":1,"msg_type":"cancel","request_id":44,"target_request_id":42}"#,
+        br#"{"version":2,"msg_type":"cancel","request_id":44,"target_request_id":42}"#,
     )
     .unwrap();
     assert_eq!(
@@ -53,7 +53,7 @@ fn control_protocol_parses_versioned_requests() {
     );
 
     let enroll = parse_control_request(
-        br#"{"version":1,"msg_type":"enroll_profile","request_id":45,"username":"alice","label":"Front","face_sample_source":"embedding:1,0"}"#,
+        br#"{"version":2,"msg_type":"enroll_profile","request_id":45,"username":"alice","label":"Front","face_sample_source":"embedding:1,0","management_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
     )
     .unwrap();
     assert_eq!(
@@ -63,11 +63,12 @@ fn control_protocol_parses_versioned_requests() {
             username: "alice".to_owned(),
             label: "Front".to_owned(),
             face_sample_source: "embedding:1,0".to_owned(),
+            management_token: "a".repeat(64),
         }
     );
 
     let verify = parse_control_request(
-        br#"{"version":1,"msg_type":"verify_profile","request_id":46,"username":"alice","face_sample_source":"embedding:1,0","liveness_ok":false}"#,
+        br#"{"version":2,"msg_type":"verify_profile","request_id":46,"username":"alice","face_sample_source":"embedding:1,0","liveness_ok":false}"#,
     )
     .unwrap();
     assert_eq!(
@@ -79,16 +80,31 @@ fn control_protocol_parses_versioned_requests() {
             liveness_ok: false,
         }
     );
+
+    let capability = parse_control_request(
+        br#"{"version":2,"msg_type":"issue_management_capability","request_id":47,"target_uid":1000,"target_pid":2000,"operation":"delete_profile"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        capability,
+        ControlRequest::IssueManagementCapability {
+            request_id: 47,
+            target_uid: 1000,
+            target_pid: 2000,
+            operation: "delete_profile".to_owned(),
+        }
+    );
 }
 
 #[test]
 fn control_protocol_rejects_untrusted_input() {
     for input in [
-        br#"{"version":2,"msg_type":"status","request_id":1}"#.as_slice(),
-        br#"{"version":1,"msg_type":"authenticate","request_id":0,"username":"alice"}"#,
-        br#"{"version":1,"msg_type":"authenticate","request_id":1,"username":""}"#,
-        br#"{"version":1,"msg_type":"authenticate","request_id":1,"username":"a\nb"}"#,
-        br#"{"version":1,"msg_type":"unknown","request_id":1}"#,
+        br#"{"version":1,"msg_type":"status","request_id":1}"#.as_slice(),
+        br#"{"version":2,"msg_type":"authenticate","request_id":0,"username":"alice"}"#,
+        br#"{"version":2,"msg_type":"authenticate","request_id":1,"username":""}"#,
+        br#"{"version":2,"msg_type":"authenticate","request_id":1,"username":"a\nb"}"#,
+        br#"{"version":2,"msg_type":"unknown","request_id":1}"#,
+        br#"{"version":2,"msg_type":"enroll_profile","request_id":1,"username":"alice","label":"Front","face_sample_source":"embedding:1,0","management_token":"short"}"#,
     ] {
         assert!(parse_control_request(input).is_err());
     }

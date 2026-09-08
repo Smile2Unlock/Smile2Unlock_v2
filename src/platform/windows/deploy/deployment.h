@@ -61,8 +61,10 @@ inline constexpr std::string_view kAuthServiceId = "auth-service";
 [[nodiscard]] std::expected<DeploymentSnapshot, std::string> inspect_deployment();
 
 // Elevation-required operations. On failure the error names the failing step.
-[[nodiscard]] std::expected<void, std::string> register_credential_provider(
-    const std::string& dll_path);
+// Validate the signed package beside the current executable before requesting
+// elevation. The elevated helper repeats the checks before installing files.
+[[nodiscard]] std::expected<void, std::string> validate_deployment_package();
+[[nodiscard]] std::expected<void, std::string> register_credential_provider();
 [[nodiscard]] std::expected<void, std::string> unregister_credential_provider();
 [[nodiscard]] std::expected<void, std::string> ensure_auth_service();
 

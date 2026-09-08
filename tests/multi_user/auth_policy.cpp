@@ -61,6 +61,38 @@ void assert_peer_policy() {
     require(!su::auth::peer_request_allowed(1000, Type::kAuthenticate, std::nullopt));
     require(!su::auth::peer_request_allowed(1000, Type::kStatus, std::nullopt));
     require(!su::auth::peer_request_allowed(1000, Type::kCancel, 1000));
+    require(!su::auth::peer_request_allowed(
+        1000, Type::kIssueManagementCapability, std::nullopt));
+}
+
+void assert_management_capabilities() {
+    using Operation = su::auth::ManagementOperation;
+    auto store = su::auth::ManagementCapabilityStore{};
+    const auto now = std::chrono::steady_clock::time_point{std::chrono::seconds{10}};
+    auto enroll = store.issue(1000, 2000, 3000, Operation::kEnrollProfile, now);
+    require(enroll.has_value());
+    require(enroll->size() == 64);
+    require(!store.consume(
+        *enroll, 1000, 2000, 3000, Operation::kDeleteProfile, now));
+    require(!store.consume(
+        *enroll, 1000, 2000, 3000, Operation::kEnrollProfile, now));
+
+    auto deletion = store.issue(1000, 2000, 3000, Operation::kDeleteProfile, now);
+    require(deletion.has_value());
+    require(!store.consume(
+        *deletion,
+        1000,
+        2000,
+        3000,
+        Operation::kDeleteProfile,
+        now + std::chrono::minutes{2}));
+
+    auto valid = store.issue(1000, 2000, 3000, Operation::kMigrateProfiles, now);
+    require(valid.has_value());
+    require(store.consume(
+        *valid, 1000, 2000, 3000, Operation::kMigrateProfiles, now));
+    require(!store.consume(
+        *valid, 1000, 2000, 3000, Operation::kMigrateProfiles, now));
 }
 
 void assert_path_isolation(const std::filesystem::path& root) {
@@ -165,6 +197,7 @@ void assert_rate_policy() {
 int main() {
     const auto temporary = TemporaryDirectory{};
     assert_peer_policy();
+    assert_management_capabilities();
     assert_path_isolation(temporary.path());
     assert_identity_lookup();
     assert_file_policy(temporary.path());

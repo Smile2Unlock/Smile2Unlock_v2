@@ -4,7 +4,7 @@
 # This script is sourced by the packaging scripts (packaging/windows/package.sh
 # and packaging/linux/package.sh). It provides:
 #
-#   version_read()          -> print the current version from version.txt (2.2.0)
+#   version_read()          -> print the current version from version.txt (2.3.0)
 #   inject_release_info(ROOT PLATFORM) -> write release-info.json into a staged tree
 #
 # Layout:

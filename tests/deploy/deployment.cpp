@@ -1,5 +1,7 @@
 #include "platform/linux/deploy/deployment.h"
 
+#include <nlohmann/json.hpp>
+
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -231,6 +233,104 @@ void external_and_stale_changes_are_refused(const std::filesystem::path& root) {
     check(!applied, "stale PAM plan is rejected");
 }
 
+void managed_upgrade_and_downgrade_guard(const std::filesystem::path& root) {
+    constexpr auto fixture = "auth include system-login\naccount include system-login\n";
+    write_fixture(root, "plasmalogin", fixture);
+    const auto initial = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kPlasmaLogin, false);
+    check(initial && su::deploy::apply_pam_plan(root, *initial).has_value(),
+          "initial managed target applies before upgrade");
+    const auto upgrade = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kPlasmaLogin, true);
+    check(upgrade && !upgrade->already_managed,
+          "wallet policy change produces a managed upgrade plan");
+    check(upgrade && su::deploy::apply_pam_plan(root, *upgrade).has_value(),
+          "managed PAM target upgrades transactionally");
+    check(read_file(root / "etc/pam.d/smile2unlock-plasma-login-auth")
+              .find("pam_systemd_loadkey.so") != std::string::npos,
+          "upgraded child stack contains the requested wallet branch");
+
+    const auto journal_path = root / "var/lib/smile2unlock/deployment.json";
+    auto journal = nlohmann::json::parse(read_file(journal_path));
+    journal["package_version"] = "99.0.0";
+    {
+        auto output = std::ofstream(journal_path, std::ios::binary | std::ios::trunc);
+        output << journal.dump(2) << '\n';
+    }
+    const auto downgrade = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kPlasmaLogin, false);
+    check(!downgrade, "an older package cannot replace a newer managed deployment");
+}
+
+void interrupted_transaction_recovers(const std::filesystem::path& root) {
+    constexpr auto fixture = "auth include system-local-login\n";
+    write_fixture(root, "kde", fixture);
+    const auto plan = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kKscreenlocker, false);
+    check(plan && su::deploy::apply_pam_plan(root, *plan).has_value(),
+          "fixture applies before interrupted rollback simulation");
+    const auto journal_path = root / "var/lib/smile2unlock/deployment.json";
+    auto journal = nlohmann::json::parse(read_file(journal_path));
+    journal["targets"]["kscreenlocker"]["state"] = "rolling_back";
+    {
+        auto output = std::ofstream(journal_path, std::ios::binary | std::ios::trunc);
+        output << journal.dump(2) << '\n';
+    }
+    std::filesystem::remove(root / "etc/pam.d/kde");
+    check(su::deploy::recover_interrupted_pam_transactions(root).has_value(),
+          "interrupted two-file transaction is recovered on startup");
+    check(!std::filesystem::exists(root / "etc/pam.d/smile2unlock-kscreenlocker-auth"),
+          "recovery removes the remaining managed child");
+}
+
+void interrupted_upgrade_rejects_corrupt_backup(const std::filesystem::path& root) {
+    constexpr auto fixture = "auth include system-login\naccount include system-login\n";
+    write_fixture(root, "plasmalogin", fixture);
+    const auto initial = su::deploy::plan_pam_integration(
+        root, su::deploy::TargetKind::kPlasmaLogin, false);
+    check(initial && su::deploy::apply_pam_plan(root, *initial).has_value(),
+          "fixture applies before interrupted upgrade simulation");
+    if (!initial) {
+        return;
+    }
+
+    const auto journal_path = root / "var/lib/smile2unlock/deployment.json";
+    auto journal = nlohmann::json::parse(read_file(journal_path));
+    journal["targets"]["plasma-login"]["state"] = "upgrading";
+    journal["targets"]["plasma-login"]["pending_child_result_fingerprint"] = "pending";
+    {
+        auto output = std::ofstream(journal_path, std::ios::binary | std::ios::trunc);
+        output << journal.dump(2) << '\n';
+    }
+    const auto backup = root
+        / "var/lib/smile2unlock/backups/plasma-login.upgrade-child";
+    std::filesystem::create_directories(backup.parent_path());
+    {
+        auto output = std::ofstream(backup, std::ios::binary);
+        output << "corrupt backup\n";
+    }
+    check(!su::deploy::recover_interrupted_pam_transactions(root).has_value(),
+          "interrupted upgrade rejects a backup with the wrong fingerprint");
+    check(read_file(root / "etc/pam.d/smile2unlock-plasma-login-auth")
+              == initial->child_content,
+          "failed recovery leaves the managed PAM substack unchanged");
+}
+
+void rollback_all_is_idempotent(const std::filesystem::path& root) {
+    write_fixture(root, "kde", "auth include system-local-login\n");
+    write_fixture(root, "sddm", "auth include system-login\n");
+    for (const auto target : {su::deploy::TargetKind::kKscreenlocker,
+             su::deploy::TargetKind::kSddm}) {
+        const auto plan = su::deploy::plan_pam_integration(root, target, false);
+        check(plan && su::deploy::apply_pam_plan(root, *plan).has_value(),
+              "target applies before bulk rollback");
+    }
+    check(su::deploy::rollback_all_pam_integrations(root).has_value(),
+          "bulk rollback removes every managed target");
+    check(su::deploy::rollback_all_pam_integrations(root).has_value(),
+          "bulk rollback is idempotent for package uninstall");
+}
+
 } // namespace
 
 int main() {
@@ -246,6 +346,10 @@ int main() {
     sddm_round_trip(root / "sddm");
     dms_password_fallback_is_detected(root / "dms");
     external_and_stale_changes_are_refused(root / "safety");
+    managed_upgrade_and_downgrade_guard(root / "upgrade");
+    interrupted_transaction_recovers(root / "recovery");
+    interrupted_upgrade_rejects_corrupt_backup(root / "upgrade-corrupt-backup");
+    rollback_all_is_idempotent(root / "uninstall");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {

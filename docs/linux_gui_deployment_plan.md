@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation in progress, reviewed 2026-09-03. The restricted helper,
+Implementation in progress, reviewed 2026-09-05. The restricted helper,
 Polkit/D-Bus activation, deployment client, GUI target controls, package
 staging and direct `pkexec` bootstrap from a complete source-tree Release build are
 implemented. The GUI now offers an install action when the helper is absent,
@@ -11,8 +11,10 @@ enabling privileged integration actions. The deployment engine has field-aware
 PAM parsing plus isolated Arch Plasma, KScreenLocker, Fedora GDM,
 Debian/Ubuntu GDM and SDDM transformation/rollback fixtures. Real interactive
 Polkit acceptance, full upstream fixture sets, pre-commit PAM validation,
-automatic wallet-token eligibility, SELinux policy and lifecycle failure
-testing remain open. The current verified snapshot is in `current_status.md`.
+automatic wallet-token eligibility, SELinux policy and cross-distribution VM
+acceptance remain open. Transactional validation, interrupted-operation recovery,
+downgrade refusal and package removal rollback are implemented. The current
+verified snapshot is in `current_status.md`.
 
 ## Product Boundary
 
@@ -286,7 +288,7 @@ but must never delete an externally modified PAM file.
   control expressions and distribution layout changes.
 - [x] Return dry-run plans with file identities and expiration.
 - [x] Apply atomic transformations and record the deployment journal.
-- [ ] Validate new stacks before commit and automatically roll back failures.
+- [x] Validate new stacks before commit and automatically roll back failures.
 - [x] Add explicit conflict handling for external edits.
 
 ### Phase 4: Guided onboarding
@@ -314,8 +316,8 @@ but must never delete an externally modified PAM file.
 - [ ] Package and validate an optional SELinux policy for Fedora.
 - [x] Verify ownership, modes, policy identifiers and absence of maintainer
   scripts that silently enable authentication.
-- [ ] Add safe upgrade, downgrade refusal, rollback and uninstall behavior.
-- [ ] Keep CLI wrappers for headless recovery using the same typed operations.
+- [x] Add safe upgrade, downgrade refusal, rollback and uninstall behavior.
+- [x] Keep CLI wrappers for headless recovery using the same typed operations.
 
 ### Phase 7: VM acceptance
 

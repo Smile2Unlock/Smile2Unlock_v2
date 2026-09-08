@@ -8,7 +8,7 @@ add_repositories("local-repo local-repo")
 -- project files do not expose file I/O at top level.
 local _su_version = os.getenv("SU_VERSION")
 if not _su_version or _su_version == "" then
-    _su_version = "2.2.0"
+    _su_version = "2.3.0"
 end
 set_version(_su_version, {build = "", arch = os.arch()})
 set_description("Smile2Unlock - local face authentication (Windows sign-in + Linux PAM)")
@@ -18,7 +18,7 @@ set_description("Smile2Unlock - local face authentication (Windows sign-in + Lin
 
 
 add_requires("nlohmann_json v3.12.0", { system = false })
-add_requires("cimg")
+add_requires("cimg v4.0.4")
 -- Static libyuv avoids a runtime dependency on the distro's libyuv.so,
 -- which is not present on many distributions (Arch/Debian/Fedora shipping
 -- different sonames or none at all). Built with JPEG (MJPEG decode) from the
@@ -126,6 +126,27 @@ local function model_stage_dir()
     return path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
 end
 
+-- xmake's default test runner execs the built artifact directly. For mingw
+-- PEs that only works on hosts with a wine binfmt_misc bridge (Arch desktops
+-- have one; hosted CI containers do not), so route through wine explicitly
+-- and keep the native exec everywhere else.
+local function wine_on_test(target, opt)
+    local runargs = table.wrap(((opt and opt.runargs) or target:get("runargs")) or {})
+    local ok
+    if is_plat("mingw") and is_host("linux") then
+        local argv = { path.absolute(target:targetfile()) }
+        for _, arg in ipairs(runargs) do
+            table.insert(argv, arg)
+        end
+        ok = os.execv("wine", argv, { try = true })
+    else
+        ok = os.execv(path.absolute(target:targetfile()), runargs, { try = true })
+    end
+    if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
+        os.raise("test run failed: " .. tostring(ok))
+    end
+    return true
+end
 local function apply_cpp_target(kind)
     set_kind(kind)
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
@@ -151,6 +172,7 @@ target("su_core")
         local cargo_mode = is_mode("release") and "release" or "debug"
         local cargo_args = {
             "build",
+            "--locked",
             "--manifest-path", manifest,
             "--target-dir", path.join(os.projectdir(), "build", "cargo")
         }
@@ -171,16 +193,20 @@ target("su_core")
         os.cp(cargo_out, path.join(outdir, "libsu_core.a"))
     end)
 
-target("su_platform_zig")
-    set_kind("static")
-    set_toolchains("zig")
-    set_default(has_config("with_zig"))
-    add_files("src/platform-zig/src/lib.zig")
-    before_build( function ()
-        local cache_dir = path.join(os.projectdir(), "build", ".zig-cache")
-        os.mkdir(cache_dir)
-        os.setenv("ZIG_GLOBAL_CACHE_DIR", cache_dir)
-    end)
+-- Define the Zig helper only when explicitly enabled: an unconditional
+-- toolchain declaration forces a zig install even for default builds.
+if has_config("with_zig") then
+    target("su_platform_zig")
+        set_kind("static")
+        set_toolchains("zig")
+        set_default(true)
+        add_files("src/platform-zig/src/lib.zig")
+        before_build( function ()
+            local cache_dir = path.join(os.projectdir(), "build", ".zig-cache")
+            os.mkdir(cache_dir)
+            os.setenv("ZIG_GLOBAL_CACHE_DIR", cache_dir)
+        end)
+end
 
 target("su_recognizer")
     apply_cpp_target("static")
@@ -268,7 +294,7 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })
@@ -287,6 +313,21 @@ target("su_recognizer")
                 target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
                 if is_plat("linux") then
                     target:add("rpathdirs", path.join(slint:installdir(), "lib"))
+                end
+                -- The C++26 module prescan parses every source before any
+                -- before_build hook runs; generate the Slint sources at load
+                -- time too so clean checkouts do not fail the prescan.
+                local compiler = path.join(slint:installdir(), "bin", "slint-compiler")
+                local outputdir = path.join(os.projectdir(), "build", "generated", "slint")
+                if os.isfile(compiler) and not os.isfile(path.join(outputdir, "app_window.cpp")) then
+                    os.mkdir(outputdir)
+                    os.execv(compiler, {
+                        "-f", "cpp",
+                        "--cpp-namespace", "su::app::ui",
+                        "-o", path.join(outputdir, "app_window.h"),
+                        "--cpp-file", path.join(outputdir, "app_window.cpp"),
+                        path.join(os.projectdir(), "src", "app", "ui", "app.slint")
+                    })
                 end
             end
         end)
@@ -329,11 +370,14 @@ if is_plat("linux") then
         add_files("src/platform/linux/deploy/*.cpp")
         add_headerfiles("src/platform/linux/deploy/*.h")
         add_packages("nlohmann_json", { public = true })
+        add_defines("SU_VERSION_STR=\"" .. _su_version .. "\"")
 
     target("su_deploy_helper")
         apply_cpp_target("binary")
         add_files("src/platform/linux/deploy_helper/*.cpp")
+        add_files("src/modules/su.control.socket.cppm")
         add_deps("su_deploy")
+        add_packages("nlohmann_json")
         add_syslinks("systemd")
         add_tests("version", {runargs = {"--version"}})
 
@@ -347,8 +391,10 @@ elseif is_plat("windows", "mingw") then
         add_files("src/platform/windows/deploy_helper/helper.rc")
         add_files("src/platform/windows/deploy/deployment.cpp")
         add_includedirs("src/platform/windows/deploy")
-        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid")
+        add_packages("nlohmann_json")
+        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32")
         add_tests("version", {runargs = {"--version"}})
+        on_test(wine_on_test)
 end
 
 if is_plat("linux") then
@@ -517,6 +563,16 @@ target("su_theme_test")
         add_tests("default")
     end
 
+target("su_windows_sid_rate_limiter_test")
+    apply_cpp_target("binary")
+    add_files("tests/windows/sid_rate_limiter.cpp")
+    add_includedirs("src/platform/windows/auth_service")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
 -- reliably reports pass/fail for targets with a build artifact. The binary is
@@ -527,6 +583,7 @@ target("su_core_rust_tests")
     on_test(function (target)
         local ok = os.execv("cargo", {
             "test",
+            "--locked",
             "--manifest-path",
             path.join(os.projectdir(), "src", "core-rs", "Cargo.toml"),
         }, { try = true })
@@ -552,6 +609,7 @@ target("su_credential_provider")
         local cargo_mode = is_mode("release") and "release" or "debug"
         local cargo_args = {
             "build",
+            "--locked",
             "--manifest-path", manifest,
             "--target", "x86_64-pc-windows-gnu",
             "--target-dir", path.join(os.projectdir(), "build", "cargo", "credential_provider_rs")
@@ -578,14 +636,18 @@ target("su_credential_provider_rust_tests")
         if not is_plat("mingw") then
             return true
         end
+        local manifest = path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml")
         local args = {
             "test",
-            "--manifest-path",
-            path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml"),
-            "--target",
-            "x86_64-pc-windows-gnu",
+            "--locked",
+            "--manifest-path", manifest,
+            "--target", "x86_64-pc-windows-gnu",
         }
-        local ok = os.execv("cargo", args, { try = true })
+        -- cargo only discovers .cargo/config.toml from the working directory
+        -- upward, so run from the crate to pick up its wine test runner;
+        -- without it cargo execs the PE directly and hosts without a wine
+        -- binfmt_misc bridge fail with ENOEXEC.
+        local ok = os.execv("cargo", args, { try = true, curdir = path.directory(manifest) })
         if ok == nil or ok == false or (type(ok) == "number" and ok ~= 0) then
             os.raise("credential provider cargo test failed: " .. tostring(ok))
         end

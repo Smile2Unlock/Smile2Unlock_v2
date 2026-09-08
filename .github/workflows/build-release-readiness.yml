@@ -1,0 +1,227 @@
+name: Cross-platform Build and Release Readiness
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-release-readiness-${{ github.ref }}
+  cancel-in-progress: true
+
+# Container jobs (and local act runs) execute as root; xmake requires
+# explicit opt-in there.
+#
+# The Slint and credential-provider builds pull a large Rust dependency
+# graph. Slow or proxied registries otherwise abort the job with cargo's
+# 30s low-speed default ("transfer too slow: failed to transfer more than
+# 10 bytes in 30s") or HTTP/2 multiplexing stalls ("Failed sending data to
+# the peer"). Be tolerant and retry instead of failing the whole job.
+env:
+  XMAKE_ROOT: y
+  CARGO_NET_RETRY: '10'
+  CARGO_HTTP_TIMEOUT: '600'
+  CARGO_HTTP_LOW_SPEED_LIMIT: '1'
+  CARGO_HTTP_MULTIPLEXING: 'false'
+
+jobs:
+  linux:
+    name: Linux build, tests, package
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install system dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
+          pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
+          freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
+          nodejs libinput
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Cache Xmake packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.xmake/packages
+          key: linux-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
+
+      - name: Install Rust toolchain
+        run: >-
+          rustup toolchain install stable --profile minimal
+          --component rustfmt --component clippy --target x86_64-pc-windows-gnu
+
+      - name: Check Rust formatting and tests
+        run: |
+          cargo fmt --manifest-path src/core-rs/Cargo.toml -- --check
+          cargo test --locked --manifest-path src/core-rs/Cargo.toml
+
+      - name: Build and test Linux
+        run: |
+          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake build -v
+          xmake test -j2 -v
+
+      - name: Build and verify Linux tarball
+        run: packaging/linux/package.sh --format tar.gz
+
+  windows-cross:
+    name: Windows service, helper, Rust CP
+    runs-on: ubuntu-24.04
+    # Ubuntu's mingw-w64 GCC is too old for the C++23 features used here
+    # (std::expected, std::format); use the same Arch container as the
+    # windows-package job.
+    container: archlinux:base-devel
+    steps:
+      - name: Install cross-test dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup mingw-w64-gcc
+          wine xorg-server-xvfb nodejs
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Cache Xmake packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.xmake/packages
+          key: mingw-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
+
+      - name: Install Rust toolchain
+        run: >-
+          rustup toolchain install stable --profile minimal
+          --component rustfmt --component clippy --target x86_64-pc-windows-gnu
+
+      - name: Build Windows privileged components
+        run: |
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=n --with_seetaface=n
+          xmake build -v su_deploy_helper su_auth_service su_password_tool su_windows_sid_rate_limiter_test
+
+      - name: Run Windows tests under Wine
+        run: |
+          # GitHub container jobs set HOME to a directory owned by another
+          # uid; wine refuses to initialize there. Use an explicit prefix.
+          export WINEPREFIX="${RUNNER_TEMP:-/tmp}/wineprefix"
+          mkdir -p "$WINEPREFIX"
+          WINEPATH="$(find /usr -type f \( -iname 'libstdc++-6.dll' -o -iname 'libgcc_s_seh-1.dll' -o -iname 'libwinpthread-1.dll' \) -printf '%h\n' 2>/dev/null | sort -u | paste -sd ';' -)"
+          export WINEPATH
+          xvfb-run -a xmake test su_deploy_helper/version -v
+          xvfb-run -a xmake test su_windows_sid_rate_limiter_test/default -v
+          xvfb-run -a xmake test su_credential_provider_rust_tests/default -v
+
+  windows-package:
+    name: Windows release package verification
+    # Full Slint + SeetaFace cross-builds are expensive. Run them after a
+    # change reaches main, for version tags, or when preparing a candidate
+    # manually; PRs still receive the focused Windows compile/Wine suite.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install system dependencies
+        run: >-
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
+          mingw-w64-gcc pkgconf imagemagick python zip unzip openssl
+          nodejs
+
+      # osslsigncode is not in the official repositories; build the pinned
+      # upstream release instead of relying on the AUR.
+      - name: Install osslsigncode from source
+        run: |
+          curl -fsSL https://github.com/mtrojnar/osslsigncode/archive/refs/tags/2.14.tar.gz | tar -xz -C /tmp
+          cmake -S /tmp/osslsigncode-2.14 -B /tmp/osslsigncode-2.14/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/osslsigncode-2.14/build --parallel
+          cmake --install /tmp/osslsigncode-2.14/build
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Xmake
+        uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
+        with:
+          xmake-version: '3.1.1'
+
+      - name: Cache Xmake packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.xmake/packages
+          key: windows-package-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
+
+      - name: Install Rust toolchain
+        run: >-
+          rustup toolchain install stable --profile minimal
+          --target x86_64-pc-windows-gnu
+
+      - name: Build Windows release
+        run: |
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake build -v
+
+      - name: Generate ephemeral CI signing identity
+        run: |
+          openssl req -x509 -newkey rsa:3072 -nodes \
+            -keyout "${RUNNER_TEMP}/windows-ci-signing.key" \
+            -out "${RUNNER_TEMP}/windows-ci-signing.pem" \
+            -days 1 -subj "/CN=Smile2Unlock CI/" \
+            -addext "extendedKeyUsage=codeSigning"
+
+      - name: Build and verify signed Windows zip
+        env:
+          WINDOWS_SIGN_CERTIFICATE: ${{ runner.temp }}/windows-ci-signing.pem
+          WINDOWS_SIGN_KEY: ${{ runner.temp }}/windows-ci-signing.key
+          WINDOWS_VERIFY_CA_FILE: ${{ runner.temp }}/windows-ci-signing.pem
+        run: packaging/windows/package.sh

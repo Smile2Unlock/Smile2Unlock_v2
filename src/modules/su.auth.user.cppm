@@ -6,6 +6,7 @@ module;
 #include <cerrno>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/random.h>
 #include <unistd.h>
 
 export module su.auth.user;
@@ -32,6 +33,45 @@ enum class UserLookupError {
 enum class UserFileKind {
     kConfig,
     kProfiles,
+};
+
+enum class ManagementOperation {
+    kEnrollProfile,
+    kDeleteProfile,
+    kMigrateProfiles,
+};
+
+std::optional<ManagementOperation> management_operation_from_name(std::string_view name);
+std::optional<ManagementOperation> management_operation_for_message(
+    su::app::ControlMessageType message_type);
+
+class ManagementCapabilityStore {
+public:
+    [[nodiscard]] std::expected<std::string, std::string> issue(
+        std::uint32_t uid,
+        std::uint32_t pid,
+        std::uint32_t session_id,
+        ManagementOperation operation,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    [[nodiscard]] bool consume(
+        std::string_view token,
+        std::uint32_t uid,
+        std::uint32_t pid,
+        std::uint32_t session_id,
+        ManagementOperation operation,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+
+private:
+    struct Record {
+        std::uint32_t uid = 0;
+        std::uint32_t pid = 0;
+        std::uint32_t session_id = 0;
+        ManagementOperation operation = ManagementOperation::kEnrollProfile;
+        std::chrono::steady_clock::time_point expires_at;
+    };
+
+    std::mutex mutex_;
+    std::unordered_map<std::string, Record> records_;
 };
 
 class PinnedUserFile {
@@ -84,6 +124,116 @@ bool authentication_rate_limited(
 } // namespace su::auth
 
 namespace su::auth {
+
+namespace {
+
+constexpr auto kManagementCapabilityLifetime = std::chrono::minutes{2};
+constexpr auto kMaximumManagementCapabilities = std::size_t{128};
+
+std::expected<std::array<std::uint8_t, 32>, std::string> random_capability_bytes() {
+    auto bytes = std::array<std::uint8_t, 32>{};
+    auto offset = std::size_t{0};
+    while (offset < bytes.size()) {
+        const auto count = ::getrandom(bytes.data() + offset, bytes.size() - offset, 0);
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            return std::unexpected("kernel random source is unavailable");
+        }
+        offset += static_cast<std::size_t>(count);
+    }
+    return bytes;
+}
+
+std::string hex_token(std::span<const std::uint8_t> bytes) {
+    constexpr auto alphabet = std::string_view{"0123456789abcdef"};
+    auto token = std::string{};
+    token.reserve(bytes.size() * 2);
+    for (const auto byte : bytes) {
+        token.push_back(alphabet[byte >> 4]);
+        token.push_back(alphabet[byte & 0x0f]);
+    }
+    return token;
+}
+
+} // namespace
+
+std::optional<ManagementOperation> management_operation_from_name(std::string_view name) {
+    if (name == "enroll_profile") return ManagementOperation::kEnrollProfile;
+    if (name == "delete_profile") return ManagementOperation::kDeleteProfile;
+    if (name == "migrate_profiles") return ManagementOperation::kMigrateProfiles;
+    return std::nullopt;
+}
+
+std::optional<ManagementOperation> management_operation_for_message(
+    su::app::ControlMessageType message_type) {
+    switch (message_type) {
+    case su::app::ControlMessageType::kEnrollProfile:
+        return ManagementOperation::kEnrollProfile;
+    case su::app::ControlMessageType::kDeleteProfile:
+        return ManagementOperation::kDeleteProfile;
+    case su::app::ControlMessageType::kMigrateProfiles:
+        return ManagementOperation::kMigrateProfiles;
+    default:
+        return std::nullopt;
+    }
+}
+
+std::expected<std::string, std::string> ManagementCapabilityStore::issue(
+    std::uint32_t uid,
+    std::uint32_t pid,
+    std::uint32_t session_id,
+    ManagementOperation operation,
+    std::chrono::steady_clock::time_point now) {
+    if (uid == 0 || pid == 0 || session_id == 0) {
+        return std::unexpected("management capability identity is invalid");
+    }
+    const auto bytes = random_capability_bytes();
+    if (!bytes) {
+        return std::unexpected(bytes.error());
+    }
+    auto token = hex_token(*bytes);
+    const auto lock = std::scoped_lock{mutex_};
+    std::erase_if(records_, [now](const auto& entry) {
+        return entry.second.expires_at <= now;
+    });
+    if (records_.size() >= kMaximumManagementCapabilities) {
+        return std::unexpected("too many pending management capabilities");
+    }
+    const auto [_, inserted] = records_.try_emplace(token, Record{
+        .uid = uid,
+        .pid = pid,
+        .session_id = session_id,
+        .operation = operation,
+        .expires_at = now + kManagementCapabilityLifetime,
+    });
+    if (!inserted) {
+        return std::unexpected("management capability collision");
+    }
+    return token;
+}
+
+bool ManagementCapabilityStore::consume(
+    std::string_view token,
+    std::uint32_t uid,
+    std::uint32_t pid,
+    std::uint32_t session_id,
+    ManagementOperation operation,
+    std::chrono::steady_clock::time_point now) {
+    const auto lock = std::scoped_lock{mutex_};
+    const auto found = records_.find(std::string(token));
+    if (found == records_.end()) {
+        return false;
+    }
+    const auto record = found->second;
+    records_.erase(found);
+    return record.expires_at > now
+        && record.uid == uid
+        && record.pid == pid
+        && record.session_id == session_id
+        && record.operation == operation;
+}
 
 UserPaths paths_for_identity(std::uint32_t uid, const std::filesystem::path& home) {
     return UserPaths{

@@ -55,8 +55,11 @@ int main() {
             && result->reason == "smoke test"
             && result->payload_json == R"({"protection":"host-key"})"
             && su::control::make_enroll_profile_request(
-                8, "test-user", "Front", "embedding:1,0")
+                8, "test-user", "Front", "embedding:1,0", std::string(64, 'a'))
                 .contains(R"("msg_type":"enroll_profile")")
+            && su::control::make_issue_management_capability_request(
+                10, 1000, static_cast<std::uint32_t>(::getpid()), "enroll_profile")
+                .contains(R"("msg_type":"issue_management_capability")")
             && su::control::make_verify_profile_request(
                 9, "test-user", "embedding:1,0", false)
                 .contains(R"("liveness_ok":false)")

@@ -88,6 +88,7 @@ struct ThemePaths {
 struct ThemeLoadResult {
     ThemeSnapshot snapshot;
     std::vector<std::string> diagnostics;
+    std::vector<ThemeSource> rejected_sources;
 };
 
 using ThemeCommandRunner = std::function<std::expected<std::string, std::string>(
@@ -834,6 +835,7 @@ ThemeLoadResult load_desktop_theme(
     const ThemeCommandRunner& run_command,
     ThemePreference preference) {
     auto diagnostics = std::vector<std::string>{};
+    auto rejected_sources = std::vector<ThemeSource>{};
     auto session_text = read_file_limited(paths.dms_session);
 
     auto mode = preferred_theme_mode(preference);
@@ -876,11 +878,18 @@ ThemeLoadResult load_desktop_theme(
             return ThemeLoadResult{
                 .snapshot = ThemeSnapshot{.theme = std::move(*parsed), .source = ThemeSource::dms_cache},
                 .diagnostics = std::move(diagnostics),
+                .rejected_sources = std::move(rejected_sources),
             };
         } else {
             diagnostics.push_back(std::format(
                 "DMS palette {}: {}", paths.dms_palette.string(), parsed.error()));
+            rejected_sources.push_back(ThemeSource::dms_cache);
         }
+    } else if (auto exists_error = std::error_code{};
+               std::filesystem::exists(paths.dms_palette, exists_error) && !exists_error) {
+        diagnostics.push_back(std::format(
+            "DMS palette {}: {}", paths.dms_palette.string(), palette.error()));
+        rejected_sources.push_back(ThemeSource::dms_cache);
     }
 
     auto wallpaper = std::optional<std::filesystem::path>{};
@@ -914,9 +923,11 @@ ThemeLoadResult load_desktop_theme(
                 return ThemeLoadResult{
                     .snapshot = ThemeSnapshot{.theme = std::move(*parsed), .source = ThemeSource::matugen},
                     .diagnostics = std::move(diagnostics),
+                    .rejected_sources = std::move(rejected_sources),
                 };
             } else {
                 diagnostics.push_back(std::format("Matugen palette: {}", parsed.error()));
+                rejected_sources.push_back(ThemeSource::matugen);
             }
         }
     }
@@ -927,7 +938,14 @@ ThemeLoadResult load_desktop_theme(
             .source = ThemeSource::built_in,
         },
         .diagnostics = std::move(diagnostics),
+        .rejected_sources = std::move(rejected_sources),
     };
+}
+
+bool should_preserve_theme(
+    const ThemeLoadResult& loaded,
+    const ThemeSnapshot& current) {
+    return std::ranges::contains(loaded.rejected_sources, current.source);
 }
 
 #if defined(__linux__)
@@ -992,6 +1010,12 @@ private:
     void reload() {
         auto loaded = load_desktop_theme(
             paths_, run_command_, preference_.load(std::memory_order_acquire));
+        if (should_preserve_theme(loaded, current_)) {
+            for (const auto& diagnostic : loaded.diagnostics) {
+                std::println(stderr, "[theme] {}; preserving last valid theme", diagnostic);
+            }
+            return;
+        }
         if (loaded.snapshot == current_) {
             return;
         }
@@ -1137,6 +1161,9 @@ private:
             lock.unlock();
             auto loaded = load_desktop_theme(
                 paths_, run_command_, preference_.load(std::memory_order_acquire));
+            if (should_preserve_theme(loaded, current_)) {
+                continue;
+            }
             if (loaded.snapshot == current_) {
                 continue;
             }

@@ -1,6 +1,6 @@
 # Smile2Unlock 当前状态与剩余工作
 
-更新日期：2026-09-03。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
+更新日期：2026-09-08。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
 
 ## 已实现主线
 
@@ -22,22 +22,33 @@ Credential Provider
 
 `su_app.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
 
-## 2026-09-03 验证快照
+## 2026-09-08 验证快照
 
-- Linux x86_64 Release 主构建成功。
-- Xmake 共执行 13 个 test case：12 通过，1 失败。失败项为 `su_theme_test/default`，损坏的 DMS 调色板原子替换会错误切换到内置主题，而不是保留当前主题。
-- Rust core：42 个单元测试全部通过。
-- Windows Rust Credential Provider（MinGW + Wine）：41 通过，1 忽略。忽略项依赖 Wine 未实现的 `CredIsProtectedW`，必须在真实 Windows 上验收。
-- 现有 Windows 2.2.0 ZIP 通过当前包校验器。Linux 包校验在本机因缺少 `patchelf` 未执行完成，不视为包本身失败。
+- 三个 readiness job 用 `act` + Docker 重新在本地干净环境全部跑绿：Linux 全构建 + 42 个 Rust 单元测试 + 14 个 Xmake test + tar.gz 打包校验；Windows 特权组件 MinGW 构建 + 三组 Wine 测试；Windows 全量 Release + 临时证书签名 ZIP 验证。
+- 加固了工作流对慢/代理 registry 的容忍度：顶层 `CARGO_NET_RETRY`、`CARGO_HTTP_TIMEOUT`、`CARGO_HTTP_LOW_SPEED_LIMIT`、`CARGO_HTTP_MULTIPLEXING=false`，并为三个 job 增加 `~/.cargo/registry`、`~/.cargo/git` 缓存。此前本地 windows-package 曾因 cargo 下载超时（`transfer too slow`）失败。
+- `scripts/local-ci.sh` 增加持久化 `s2u-cargo-registry` 与 `s2u-pacman-cache` 卷，使重试从中断处继续，避免每次重新下载完整 Slint 依赖图与系统包。
+- 修复 `publish-release-artifacts.yml` 中从未同步的 readiness 修复：缺少 `XMAKE_ROOT=y`（容器内 root 运行 xmake 会拒绝启动）、`nodejs`（容器 job 内的 JS actions）与 `libinput`（预编译 Slint 运行时链接依赖），并且 `osslsigncode` 不在官方仓库、改为从固定上游 2.14 源码构建。
+- 托管 GitHub runner 上以 `workflow_dispatch`（run 34233577169）重放同一工作流：Linux、Windows 交叉测试与临时证书签名 Windows ZIP 三个 job 全部通过；PR run 34233566758 的 Linux 与 Windows 交叉两个 job 亦通过。三个 job 的 `Cache Cargo registry` 步骤均生效。
+
+## 2026-09-06 验证快照
+
+- 三个 readiness job 已用 `act` + Docker 在本地干净环境全部跑绿（见 `scripts/local-ci.sh`）：Linux 全构建 + 14 个 Xmake test + tar.gz 打包校验；Windows 全量 Release + 临时证书签名 ZIP 验证；Windows 特权组件 MinGW 构建 + 三组 Wine 测试。本地运行修正了六个此前必然失败的问题（rustup 组件参数、容器 root 需要 `XMAKE_ROOT=y`、zig 工具链误声明、Slint 代码生成时机、缺 `libinput`、`osslsigncode` 与新版 mingw GCC 不在 Ubuntu 源内），修复均已合入工作流。
+- Rust core 42 个单元测试通过；stable channel 实际解析 rustc 1.98.1 (48a229cea 2026-09-01)。
+- Linux 四种包格式（tar.gz、pacman、deb、rpm）在干净 arch 容器内构建并通过 `verify-package.sh` 完整校验。
+- 原生包容器生命周期验证：Arch `pacman -U` 安装、版本检查、重装（pre_upgrade 路径）与卸载全部通过；deb/rpm 在 Debian trixie / Fedora 42 上可安装但运行时二进制要求 GLIBC_2.38 与 GLIBCXX_3.4.36（GCC 16 运行时），Debian bookworm 上 preinst 即失败。结论：当前 Arch 构建的 deb/rpm 仅适用于同代工具链发行版；正式支持 Debian/Fedora 需要按发行版构建。
+- 托管 GitHub runner 的同工作流运行与 `main` 分支保护仍待完成（合并 PR 后确认）。
 
 ## 发布前阻塞项
 
-1. 修复主题热更新回归，恢复 Xmake 测试全绿。
-2. 为 Linux 录入、删除和迁移档案增加独立的 PAM 管理授权与短时 capability，不再只依赖同 UID 身份。
-3. 加固 Windows 提权部署输入：验证签名 manifest/Authenticode，使用基于句柄且拒绝 reparse point 的复制流程，或切换到可审计的 MSI/WiX 安装器。
-4. 恢复 CI，覆盖 Linux/Windows C++ 构建、Rust 测试、MinGW/Wine CP 测试、包校验和部署 smoke test。
-5. 发布前从同一提交重新构建并验证 Windows ZIP，确认包内 `release-info.json` 覆盖全部载荷文件；不得复用 `build/packages/` 中的旧产物。
-6. 为 Windows 认证管道增加按 SID 的连接/请求速率限制；现有 15 秒读取截止不能完全防止同步服务被占用。
+主要安全与生命周期修复已完成：主题回归、Linux 管理授权 capability、Windows 签名输入与句柄复制、按 SID 管道限流、Linux 安装生命周期、crate 锁文件与 CImg 版本固定、FFI 警告和构建验证工作流均已落实。
+
+剩余阻塞项按顺序执行：
+
+1. 为 `main` 配置必需检查。托管 runner 上三个 job 已全部通过（`workflow_dispatch` run 34233577169），本地 act 亦全绿；合并 PR 后启用分支保护即可。
+2. 使用正式受信任且带时间戳的 Windows code-signing 证书，从同一提交生成并验证 Windows ZIP；不得复用旧产物。
+3. 在含 `patchelf` 的干净环境从同一提交生成并验证 Linux 包（tar.gz 已在本地 CI 覆盖）；目标发行版原生包的安装、升级、回滚与卸载需在真实发行版上验收——容器验证已给出工具链兼容矩阵，deb/rpm 正式包需按发行版重建。
+4. 按 `release_acceptance_checklist.md` 完成 Windows 与 Linux 真实系统矩阵，保留日志和版本证据。
+5. 仅在上述证据齐全后创建 `v2.3.0` tag 和 GitHub Release；发布后由独立工作流上传正式构建产物和校验和。
 
 ## 必须的现场验收
 

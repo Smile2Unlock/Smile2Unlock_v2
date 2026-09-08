@@ -587,17 +587,18 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
 }
 
 std::expected<void, std::string> deploy_action(std::string_view arguments) {
+    if (arguments.find("--register-cp") != std::string_view::npos
+        || arguments.find("--ensure-service") != std::string_view::npos) {
+        const auto validated = su::windeploy::validate_deployment_package();
+        if (!validated) {
+            return std::unexpected(validated.error());
+        }
+    }
     if (su::windeploy::process_elevated()) {
         // Already elevated (e.g. launched by the scheduled task): perform
         // the operation directly without a second UAC prompt.
         if (arguments.find("--register-cp") != std::string_view::npos) {
-            const auto helper = deploy_helper_path();
-            const auto separator = helper.find_last_of("\\/");
-            if (separator == std::string::npos) {
-                return std::unexpected("failed to resolve the credential provider path");
-            }
-            const auto registered = su::windeploy::register_credential_provider(
-                helper.substr(0, separator + 1) + "su_credential_provider.dll");
+            const auto registered = su::windeploy::register_credential_provider();
             if (!registered) {
                 return registered;
             }

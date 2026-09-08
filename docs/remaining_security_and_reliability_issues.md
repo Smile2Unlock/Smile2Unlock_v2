@@ -1,6 +1,6 @@
 # 剩余安全与可靠性问题
 
-本文记录认证和部署加固后仍需跟踪的问题，与实现计划分开，作为后续评审和发布检查清单使用。最近复核：2026-09-03；完整状态入口见 `current_status.md`。
+本文记录认证和部署加固后仍需跟踪的问题，与实现计划分开，作为后续评审和发布检查清单使用。最近复核：2026-09-05；完整状态入口见 `current_status.md`。
 
 ## 高优先级：同账户管理授权
 
@@ -8,19 +8,19 @@
 
 管理操作必须使用独立于识别请求的账户授权。建议先验证系统密码/PAM，再签发短时、单次使用的 capability，并绑定 SID/UID、登录会话、操作、随机数和过期时间。识别请求不能签发管理 capability。
 
-状态：部分完成。Windows 在密码验证后签发 256 位、有效期 10 分钟的单次管理令牌，并绑定调用方 SID 和进程；录入和删除会消费并轮换令牌，清除凭据则直接重新验证 Windows 密码。Linux 仍需实现对应的 PAM 管理授权。
+状态：已完成。Windows 在密码验证后签发 256 位、有效期 10 分钟的单次管理令牌，并绑定调用方 SID 和进程。Linux 通过 Polkit 的活动本地会话授权签发 256 位、有效期 2 分钟的单次 capability，并绑定 UID、socket peer PID、登录会话和精确操作；应用协议不传递明文系统密码。
 
 ## 高优先级：校验提权部署输入
 
 Windows 提权 helper 会从解压目录复制服务、识别 agent 和 CP 二进制到 `Program Files`，随后安装 LocalSystem 服务。如果解压目录可被普通用户修改或在复制时被替换，这条链路会变成高权限代码安装入口。
 
-状态：待修复。应验证带签名 manifest 和 Authenticode，并使用基于句柄、禁止 reparse point 的复制流程；更稳妥的方案是改为正式的 MSI/WiX 安装包。
+状态：代码完成，发布证据待补。部署只接受带 detached CMS 签名的 `release-info.json`，验证每个 PE 的 Authenticode 与清单 SHA-256；源文件和目标目录拒绝 reparse point，文件通过保持句柄的临时写入、flush 和原子替换安装。正式发布仍需用受信任的发布证书生成 ZIP，并在真实 Windows 信任链下验证。
 
 ## 中优先级：限制 Windows 认证管道
 
 命名管道 ACL 允许已认证用户访问，服务端仍以单请求同步方式处理连接。恶意客户端可能持续占用服务。
 
-状态：部分完成。已连接客户端必须在 15 秒内发送完整请求；服务仍未实现按 SID 的连接/请求速率限制。
+状态：已完成。已连接客户端必须在 15 秒内发送完整请求；服务在读取请求前执行每 SID 连接令牌桶，并在完整请求后执行请求令牌桶。桶数量有上限，空闲 SID 会清理；隔离和补充行为有纯单元测试及 Wine 回归测试。
 
 ## 中优先级：锁屏认证使用 GUI 配置
 
@@ -48,13 +48,16 @@ Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 
 ## 工程覆盖
 
-原有的 Rust-only CI 已删除，当前仓库没有持续集成工作流。重新建设 CI 时，需要覆盖 Windows/Linux C++ 构建、Rust core、MinGW/Wine Credential Provider、打包校验、服务注册和部署 smoke test。CP crate 的 vendored `memsafe` 仍有格式差异，届时应修正或明确排除。
+仓库已恢复 GitHub Actions 工作流，覆盖 Linux C++ 全构建与 Xmake 测试、Rust core、Linux tar 包、Windows 特权组件交叉构建、MinGW/Wine Credential Provider 和按 SID 限流测试，以及使用临时 CI code-signing 身份生成并验证 Windows 签名 ZIP。临时证书只验证流水线闭环，不能替代正式发布证书。
 
-2026-09-03 本机复核：Linux Release 构建成功；13 个 Xmake test case 中 12 个通过，`su_theme_test/default` 失败；Rust core 42/42 通过；Windows CP 的 MinGW/Wine 测试 41 passed + 1 ignored。Linux 配置下的 `su_credential_provider_rust_tests/default` 会条件跳过，CI 不得把该空跑结果当成 Windows CP 覆盖。
+2026-09-08 复核：三个 job 已在托管 GitHub runner 上以 `workflow_dispatch`（run 34233577169）全部跑绿，包含临时证书签名 Windows ZIP 的完整校验；本地 act 亦全绿。发布流水线本身仍缺正式证书与真实系统验收（见 `release_acceptance_checklist.md`）。
 
 ## 发布完整性
 
-- 主题 monitor 收到损坏的 DMS palette 原子替换时会把当前主题切到 built-in；应保留最后一个有效主题并只报告诊断。目前该行为由 `su_theme_test/default` 稳定复现。
-- 正式发布前必须由同一提交重新构建并验证 Windows ZIP，确认包内 `release-info.json` 的文件集合和 SHA-256 与实际载荷一致；不得复用工作区中的旧 ZIP。
-- `cimg` 依赖当前未固定版本；干净构建会按仓库最新解析结果安装。发布构建应固定并记录版本/校验值，避免依赖解析漂移。
-- `src/app/core_bridge.cpp` 的 FFI 返回值路径在 GCC 下产生 `-Wmaybe-uninitialized`。Rust 端当前所有返回分支都会初始化结构体，但发布前仍应通过显式初始化、ABI 断言或最小复现消除警告，避免真实 ABI 缺陷被误判为噪声。
+- 主题 monitor 已在损坏 DMS/Matugen 输入时保留最后一个有效主题，并报告被拒绝的来源；回归测试通过。
+- 正式发布前仍必须由同一提交重新构建并验证 Windows ZIP，确认正式证书信任链、Authenticode、CMS 和清单 SHA-256；不得复用工作区中的旧 ZIP。
+- `cimg` 已固定为 `v4.0.4`。
+- SeetaFace6Open 本地包配方已固定到验收构建使用的 `a32e2faa0694c0f841ace4df9ead0407b78363c6`；该提交的 gitlinks 固定递归子模块版本，仍需在托管 runner 的干净缓存中验证一次。
+- 两个 Rust crate 的 `Cargo.lock` 已纳入版本控制，Xmake 和 CI 均使用 `--locked`；stable channel 实际解析 rustc 1.98.1 (48a229cea 2026-09-01)，已记录于 2026-09-06 本地验证。
+- Rust FFI 已增加显式 out-parameter API，C++ 调用方先初始化结构体并有 ABI 尺寸断言；GCC `-Wmaybe-uninitialized` 已消除。
+- Linux PAM 升级/回滚已使用写前日志、备份指纹、降级拒绝、启动恢复和幂等批量回滚；真实发行版包管理器与断电场景仍需 VM 验收。
