@@ -13,6 +13,15 @@ concurrency:
 
 env:
   RELEASE_TAG: ${{ github.event.release.tag_name }}
+  # Container jobs execute as root; xmake requires explicit opt-in there.
+  XMAKE_ROOT: y
+  # The Windows release build pulls the full Slint dependency graph; be
+  # tolerant of slow/proxied registries instead of failing the release job
+  # on cargo's 30s low-speed default.
+  CARGO_NET_RETRY: '10'
+  CARGO_HTTP_TIMEOUT: '600'
+  CARGO_HTTP_LOW_SPEED_LIMIT: '1'
+  CARGO_HTTP_MULTIPLEXING: 'false'
 
 jobs:
   validate-release:
@@ -49,6 +58,7 @@ jobs:
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
           pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
           freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
+          nodejs libinput
 
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,6 +78,15 @@ jobs:
         with:
           path: ~/.xmake/packages
           key: release-linux-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
 
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
@@ -98,7 +117,17 @@ jobs:
       - name: Install system dependencies
         run: >-
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
-          mingw-w64-gcc pkgconf imagemagick python zip unzip openssl osslsigncode
+          mingw-w64-gcc pkgconf imagemagick python zip unzip openssl
+          nodejs
+
+      # osslsigncode is not in the official repositories; build the pinned
+      # upstream release instead of relying on the AUR.
+      - name: Install osslsigncode from source
+        run: |
+          curl -fsSL https://github.com/mtrojnar/osslsigncode/archive/refs/tags/2.14.tar.gz | tar -xz -C /tmp
+          cmake -S /tmp/osslsigncode-2.14 -B /tmp/osslsigncode-2.14/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/osslsigncode-2.14/build --parallel
+          cmake --install /tmp/osslsigncode-2.14/build
 
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,6 +147,15 @@ jobs:
         with:
           path: ~/.xmake/packages
           key: release-windows-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
 
       - name: Install Rust toolchain
         run: >-

@@ -16,8 +16,18 @@ concurrency:
 
 # Container jobs (and local act runs) execute as root; xmake requires
 # explicit opt-in there.
+#
+# The Slint and credential-provider builds pull a large Rust dependency
+# graph. Slow or proxied registries otherwise abort the job with cargo's
+# 30s low-speed default ("transfer too slow: failed to transfer more than
+# 10 bytes in 30s") or HTTP/2 multiplexing stalls ("Failed sending data to
+# the peer"). Be tolerant and retry instead of failing the whole job.
 env:
   XMAKE_ROOT: y
+  CARGO_NET_RETRY: '10'
+  CARGO_HTTP_TIMEOUT: '600'
+  CARGO_HTTP_LOW_SPEED_LIMIT: '1'
+  CARGO_HTTP_MULTIPLEXING: 'false'
 
 jobs:
   linux:
@@ -49,6 +59,15 @@ jobs:
         with:
           path: ~/.xmake/packages
           key: linux-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
 
       - name: Install Rust toolchain
         run: >-
@@ -99,6 +118,15 @@ jobs:
         with:
           path: ~/.xmake/packages
           key: mingw-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
 
       - name: Install Rust toolchain
         run: >-
@@ -163,6 +191,15 @@ jobs:
         with:
           path: ~/.xmake/packages
           key: windows-package-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
+          restore-keys: cargo-registry-
 
       - name: Install Rust toolchain
         run: >-

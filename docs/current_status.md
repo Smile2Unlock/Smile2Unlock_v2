@@ -1,6 +1,6 @@
 # Smile2Unlock 当前状态与剩余工作
 
-更新日期：2026-09-05。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
+更新日期：2026-09-08。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
 
 ## 已实现主线
 
@@ -21,6 +21,13 @@ Credential Provider
 ```
 
 `su_app.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
+
+## 2026-09-08 验证快照
+
+- 三个 readiness job 用 `act` + Docker 重新在本地干净环境全部跑绿：Linux 全构建 + 42 个 Rust 单元测试 + 14 个 Xmake test + tar.gz 打包校验；Windows 特权组件 MinGW 构建 + 三组 Wine 测试；Windows 全量 Release + 临时证书签名 ZIP 验证。
+- 加固了工作流对慢/代理 registry 的容忍度：顶层 `CARGO_NET_RETRY`、`CARGO_HTTP_TIMEOUT`、`CARGO_HTTP_LOW_SPEED_LIMIT`、`CARGO_HTTP_MULTIPLEXING=false`，并为三个 job 增加 `~/.cargo/registry`、`~/.cargo/git` 缓存。此前本地 windows-package 曾因 cargo 下载超时（`transfer too slow`）失败。
+- `scripts/local-ci.sh` 增加持久化 `s2u-cargo-registry` 与 `s2u-pacman-cache` 卷，使重试从中断处继续，避免每次重新下载完整 Slint 依赖图与系统包。
+- 修复 `publish-release-artifacts.yml` 中从未同步的 readiness 修复：缺少 `XMAKE_ROOT=y`（容器内 root 运行 xmake 会拒绝启动）、`nodejs`（容器 job 内的 JS actions）与 `libinput`（预编译 Slint 运行时链接依赖），并且 `osslsigncode` 不在官方仓库、改为从固定上游 2.14 源码构建。
 
 ## 2026-09-06 验证快照
 

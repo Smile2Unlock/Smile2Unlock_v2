@@ -23,6 +23,14 @@ arch_image="archlinux:base-devel"
 act_image="catthehacker/ubuntu:act-24.04"
 copy_dir="${LOCAL_CI_COPY_DIR:-/tmp/s2u-ci-src}"
 log_dir="${LOCAL_CI_LOG_DIR:-/tmp/s2u-local-ci}"
+# Hosted runners cache ~/.xmake/packages via actions/cache, which act does not
+# honor; without a registry cache every local run re-downloads the whole Slint
+# dependency graph, which is slow and exposes the run to transient crates.io
+# failures. Persist the Cargo registry and the pacman package cache in named
+# volumes instead, so a retry after a flaky mirror resumes instead of
+# re-downloading everything.
+cargo_volume="${LOCAL_CI_CARGO_VOLUME:-s2u-cargo-registry}"
+pacman_volume="${LOCAL_CI_PACMAN_VOLUME:-s2u-pacman-cache}"
 
 all_jobs=(linux windows-cross windows-package)
 jobs=("$@")
@@ -39,6 +47,8 @@ done
 
 docker image inspect "$arch_image" >/dev/null 2>&1 || docker pull "$arch_image"
 docker image inspect "$act_image" >/dev/null 2>&1 || docker pull "$act_image"
+docker volume inspect "$cargo_volume" >/dev/null 2>&1 || docker volume create "$cargo_volume" >/dev/null
+docker volume inspect "$pacman_volume" >/dev/null 2>&1 || docker volume create "$pacman_volume" >/dev/null
 
 # act shares the `act-toolcache` docker volume across runs. xmake built inside
 # the archlinux container (glibc 2.43) cannot run in the ubuntu 24.04 container
@@ -64,7 +74,9 @@ for job in "${jobs[@]}"; do
     wipe_toolcache_xmake
     echo "==> running job '${job}' (log: ${log})"
     if (cd "$copy_dir" && act push --pull=false -W "$workflow" -j "$job" \
-            -P "$platform" >| "$log" 2>&1); then
+            -P "$platform" \
+            --container-options "-v ${cargo_volume}:/root/.cargo/registry -v ${pacman_volume}:/var/cache/pacman/pkg" \
+            >| "$log" 2>&1); then
         echo "==> job '${job}' PASSED"
     else
         echo "==> job '${job}' FAILED (see ${log})"
