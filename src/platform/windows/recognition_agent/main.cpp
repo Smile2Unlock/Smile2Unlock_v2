@@ -4,6 +4,7 @@
 
 import std;
 import su.recognizer.service;
+import su.recognizer.types;
 
 namespace {
 
@@ -92,7 +93,8 @@ int wmain() {
         wipe(response);
         return 3;
     }
-    if (const auto reset = recognizer.reset_liveness(); !reset) {
+    const auto liveness_enabled = request.liveness_threshold > 0.0F;
+    if (liveness_enabled && !recognizer.reset_liveness()) {
         response.status = AgentStatus::kModelUnavailable;
         (void)write_exact(output, &response, sizeof(response));
         wipe(response);
@@ -100,7 +102,13 @@ int wmain() {
     }
 
     while (std::chrono::steady_clock::now() < deadline) {
-        const auto result = recognizer.extract_features(true);
+        const auto result = recognizer.extract_features(liveness_enabled);
+        if (!result && result.error() == su::recognizer::RecognizerError::kModelUnavailable) {
+            response.status = AgentStatus::kModelUnavailable;
+            (void)write_exact(output, &response, sizeof(response));
+            wipe(response);
+            return 4;
+        }
         if (!result || !result->has_face || result->feature.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
             continue;

@@ -1,4 +1,5 @@
 module;
+#include "liveness_window.h"
 #if SU_HAS_SEETAFACE
 #include <seeta/FaceAntiSpoofing.h>
 #include <seeta/FaceDetector.h>
@@ -123,21 +124,6 @@ bool valid_image(const ImageView image) {
     return image.bytes.size() >= width * height * channels;
 }
 
-float liveness_score_from(
-    const seeta::FaceAntiSpoofing::Status status,
-    const std::pair<float, float> scores) {
-    const auto reality = std::clamp(scores.second, 0.0F, 1.0F);
-    switch (status) {
-    case seeta::FaceAntiSpoofing::REAL:
-        return reality;
-    case seeta::FaceAntiSpoofing::SPOOF:
-    case seeta::FaceAntiSpoofing::FUZZY:
-    case seeta::FaceAntiSpoofing::DETECTING:
-        return 0.0F;
-    }
-    std::unreachable();
-}
-
 // Human-readable label for the anti-spoofing status. Logged on status
 // transitions; compiles to a constant string in release builds.
 const char* liveness_status_name(seeta::FaceAntiSpoofing::Status status) {
@@ -170,6 +156,11 @@ public:
             recognizer_.reset();
         }
 
+        auto model_error = std::error_code{};
+        if (!std::filesystem::is_regular_file(paths_.anti_spoofing_first, model_error)
+            || !std::filesystem::is_regular_file(paths_.anti_spoofing_second, model_error)) {
+            return;
+        }
         try {
             anti_spoofing_ = std::make_unique<seeta::FaceAntiSpoofing>(anti_spoofing_setting_for(paths_));
             anti_spoofing_->SetThreshold(0.3F, 0.8F);
@@ -181,11 +172,11 @@ public:
     }
 
     // Detect the primary face, run landmark detection and, if anti-spoofing is
-    // loaded, run PredictVideo. FaceAntiSpoofing is a stateful video-stream model:
-    // it must be fed on consecutive frames to reach a stable REAL/SPOOF verdict,
+    // loaded, run Predict and aggregate consecutive frame scores locally:
+    // the video policy needs ten frames to reach a stable REAL/SPOOF verdict,
     // so this is called once per preview frame. Returns has_face + face_box +
     // liveness_score. When extract_feature is set, also runs feature extraction
-    // (used on the throttled detect cadence). ResetVideo is called at each new
+    // (used on the throttled detect cadence). The window is reset at each new
     // preview/auth session. The mutex serializes access from
     // the preview thread (predict_liveness) and the detect thread (extract).
     std::expected<RecognitionResult, RecognizerError> run_pipeline(
@@ -195,33 +186,50 @@ public:
             return std::unexpected(RecognizerError::kModelUnavailable);
         }
         if (!valid_image(image)) {
+            reset_liveness_locked();
             return std::unexpected(RecognizerError::kInvalidImage);
         }
+        if (liveness_enabled && !anti_spoofing_) {
+            return std::unexpected(RecognizerError::kModelUnavailable);
+        }
+        if (!liveness_enabled) {
+            reset_liveness_locked();
+        }
 
-        // Zero-overhead copy: std::byte and unsigned char share the same
-        // representation on all supported platforms; a single memcpy replaces
-        // the per-element transform/static_cast chain.
-        auto owned_bytes = std::vector<unsigned char>(image.bytes.size());
-        if (!image.bytes.empty()) {
-            std::memcpy(owned_bytes.data(), image.bytes.data(), image.bytes.size_bytes());
+        // The SDK requires three channels even though ImageView also accepts
+        // grayscale and RGBA. Keep the public RGB channel ordering.
+        const auto pixels = static_cast<std::size_t>(image.width) * image.height;
+        if (pixels > std::numeric_limits<std::size_t>::max() / 3) {
+            reset_liveness_locked();
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
+        auto owned_bytes = std::vector<unsigned char>(pixels * 3);
+        if (image.channels == 3) {
+            std::memcpy(owned_bytes.data(), image.bytes.data(), owned_bytes.size());
+        } else {
+            for (auto i = std::size_t{}; i < pixels; ++i) {
+                for (auto channel = 0; channel < 3; ++channel) {
+                    owned_bytes[i * 3 + channel] = std::to_integer<unsigned char>(
+                        image.bytes[i * image.channels + (image.channels == 1 ? 0 : channel)]);
+                }
+            }
         }
         auto seeta_image = SeetaImageData{
             .width = image.width,
             .height = image.height,
-            .channels = image.channels,
+            .channels = 3,
             .data = owned_bytes.data(),
         };
 
         const auto faces = detector_->detect(seeta_image);
         if (faces.size <= 0 || faces.data == nullptr) {
-            // Still feed anti-spoofing? No: it needs a face box/points. A frame
-            // with no face resets the model's expectation implicitly via the
-            // absence of Predict; report no-face and let the caller decide.
+            reset_liveness_locked();
             return RecognitionResult{};
         }
         if (faces.size != 1) {
             // Authentication must not silently choose one identity from a
             // multi-person frame. Require the user to present alone.
+            reset_liveness_locked();
             return RecognitionResult{};
         }
 
@@ -234,12 +242,12 @@ public:
         // frame still has a face box without a liveness gate.
         auto liveness_score = liveness_enabled ? 0.0F : 1.0F;
         if (liveness_enabled && anti_spoofing_) {
-            const auto liveness_status = anti_spoofing_->PredictVideo(
+            const auto liveness_status = anti_spoofing_->Predict(
                 seeta_image, face, points.data());
             auto clarity = 0.0F;
             auto reality = 0.0F;
             anti_spoofing_->GetPreFrameScore(&clarity, &reality);
-            liveness_score = liveness_score_from(liveness_status, {clarity, reality});
+            liveness_score = liveness_window_.push(clarity, reality);
             // Log only on status transitions to keep stderr quiet during
             // stable REAL/SPOOF stretches (which may last hundreds of frames).
             if (liveness_status != prev_liveness_status_) {
@@ -291,13 +299,18 @@ public:
 
     void reset_liveness() {
         std::lock_guard lock(mutex_);
+        reset_liveness_locked();
+    }
+
+private:
+    void reset_liveness_locked() const {
+        liveness_window_.reset();
         if (anti_spoofing_) {
             anti_spoofing_->ResetVideo();
         }
         prev_liveness_status_ = seeta::FaceAntiSpoofing::DETECTING;
     }
 
-private:
     static seeta::ModelSetting setting_for(const std::filesystem::path& path) {
         auto setting = seeta::ModelSetting{};
         setting.append(path.string());
@@ -317,6 +330,7 @@ private:
     std::unique_ptr<seeta::FaceRecognizer> recognizer_;
     std::unique_ptr<seeta::FaceAntiSpoofing> anti_spoofing_;
     mutable std::mutex mutex_;
+    mutable detail::LivenessWindow liveness_window_;
     mutable seeta::FaceAntiSpoofing::Status prev_liveness_status_ = seeta::FaceAntiSpoofing::DETECTING;
 };
 
