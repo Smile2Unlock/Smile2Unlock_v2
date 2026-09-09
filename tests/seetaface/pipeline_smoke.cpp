@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <array>
 #include <cmath>
@@ -8,6 +11,8 @@
 #include <span>
 #include <string>
 #include <vector>
+#include <limits>
+#include "recognizer/liveness_window.h"
 
 import su.core.types;
 import su.recognizer.types;
@@ -103,6 +108,22 @@ su::recognizer::RecognitionResult extract_required(
 }  // namespace
 
 int main() {
+    auto window = su::recognizer::detail::LivenessWindow{};
+    // Eleven 0.75 scores must never pass the 0.8 gate (upstream computes
+    // 11 * 0.75 / 10). Keep checking after the ring wraps several times.
+    for (auto i = 0; i < 30; ++i) {
+        assert(window.push(1.0F, 0.75F) == 0.0F);
+    }
+    window.reset();
+    for (auto i = 0; i < 9; ++i) {
+        assert(window.push(1.0F, 0.9F) == 0.0F);
+    }
+    assert(window.push(1.0F, 0.9F) == 0.9F);
+    assert(window.push(0.2F, 0.99F) == 0.0F);
+    assert(window.push(1.0F, 0.9F) == 0.0F);
+    assert(window.push(1.0F, std::numeric_limits<float>::quiet_NaN()) == 0.0F);
+    assert(window.push(1.0F, std::numeric_limits<float>::infinity()) == 0.0F);
+
     const auto model_paths = su::recognizer::seetaface_model_paths(
         su::recognizer::default_seetaface_model_dir());
     assert(model_paths.has_value());
@@ -133,6 +154,62 @@ int main() {
     const auto self_score = recognizer.compare_features(first.feature, second.feature);
     assert(self_score.has_value());
     assert(*self_score > 0.99F);
+
+    // Channel normalization must preserve embeddings, including alpha values
+    // that are not opaque. Grayscale must agree with replicated RGB pixels.
+    auto rgba = TestImage{image_a.width, image_a.height, 4, {}};
+    auto gray = TestImage{image_a.width, image_a.height, 1, {}};
+    auto gray_rgb = TestImage{image_a.width, image_a.height, 3, {}};
+    for (auto i = std::size_t{}; i < image_a.bytes.size(); i += 3) {
+        rgba.bytes.insert(rgba.bytes.end(), image_a.bytes.begin() + i,
+                          image_a.bytes.begin() + i + 3);
+        rgba.bytes.push_back(std::byte{17});
+        gray.bytes.push_back(image_a.bytes[i + 1]);
+        gray_rgb.bytes.insert(gray_rgb.bytes.end(), 3, image_a.bytes[i + 1]);
+    }
+    const auto rgba_result = extract_required(backend, rgba, false);
+    const auto rgba_score = recognizer.compare_features(first.feature, rgba_result.feature);
+    assert(rgba_score && *rgba_score > 0.999F);
+    const auto gray_result = extract_required(backend, gray, false);
+    const auto gray_rgb_result = extract_required(backend, gray_rgb, false);
+    const auto gray_score = recognizer.compare_features(gray_result.feature, gray_rgb_result.feature);
+    assert(gray_score && *gray_score > 0.999F);
+
+    const auto view = [](const TestImage& image) {
+        return su::recognizer::ImageView{image.width, image.height, image.channels, image.bytes};
+    };
+    const auto blank = TestImage{image_a.width, image_a.height, 3,
+        std::vector<std::byte>(image_a.bytes.size())};
+    const auto no_face = backend.predict_liveness(view(blank), true);
+    assert(no_face && !no_face->has_face && no_face->liveness_score == 0.0F);
+    // A new uninterrupted stream must start in DETECTING after a gap.
+    const auto after_gap = backend.predict_liveness(view(image_a), true);
+    assert(after_gap && after_gap->has_face && after_gap->liveness_score == 0.0F);
+    auto invalid = view(image_a);
+    invalid.bytes = invalid.bytes.first(10);
+    const auto truncated = backend.extract(invalid, true);
+    assert(!truncated && truncated.error() == su::recognizer::RecognizerError::kInvalidImage);
+    const auto after_invalid = backend.predict_liveness(view(image_a), true);
+    assert(after_invalid && after_invalid->liveness_score == 0.0F);
+
+    auto multiple = TestImage{image_a.width * 2, image_a.height, 3, {}};
+    const auto row_bytes = static_cast<std::size_t>(image_a.width) * 3;
+    for (auto y = 0; y < image_a.height; ++y) {
+        const auto row = image_a.bytes.begin() + y * row_bytes;
+        multiple.bytes.insert(multiple.bytes.end(), row, row + row_bytes);
+        multiple.bytes.insert(multiple.bytes.end(), row, row + row_bytes);
+    }
+    const auto multi_face = backend.extract(view(multiple), true);
+    assert(multi_face && !multi_face->has_face && multi_face->feature.empty());
+
+    auto missing_fas_paths = *model_paths;
+    missing_fas_paths.anti_spoofing_first.clear();
+    const auto missing_fas = su::recognizer::SeetaFaceBackend(missing_fas_paths);
+    assert(missing_fas.available() && !missing_fas.liveness_available());
+    const auto requires_fas = missing_fas.extract(view(image_a), true);
+    assert(!requires_fas && requires_fas.error() == su::recognizer::RecognizerError::kModelUnavailable);
+    const auto skips_fas = missing_fas.extract(view(image_a), false);
+    assert(skips_fas && skips_fas->has_face && skips_fas->liveness_score == 1.0F);
 
     // RAII scope guard: clean up the temp profile store on every exit path.
     const auto store_path = (
@@ -170,6 +247,9 @@ int main() {
             assert(std::isfinite(other->liveness_score));
         }
     }
+
+    const auto jpeg = su::recognizer::load_image_file(sample_dir / "official_face_2.jpg");
+    assert(jpeg && jpeg->width > 0 && jpeg->height > 0 && jpeg->channels == 3);
 
     // Exercise the real app image path: CImg-decoded PNG -> RecognizerService
     // (lazy SeetaFace backend) -> embedding: source -> Rust enroll/auth, with

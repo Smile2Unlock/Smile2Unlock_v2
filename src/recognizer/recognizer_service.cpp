@@ -256,6 +256,9 @@ std::expected<void, RecognizerError> RecognizerService::reset_liveness() const {
     if (auto ensured = ensure_seetaface_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
+    if (!seetaface_backend_->liveness_available()) {
+        return std::unexpected(RecognizerError::kModelUnavailable);
+    }
     seetaface_backend_->reset_liveness();
     return {};
 #else

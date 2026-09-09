@@ -19,6 +19,8 @@ set_description("Smile2Unlock - local face authentication (Windows sign-in + Lin
 
 add_requires("nlohmann_json v3.12.0", { system = false })
 add_requires("cimg v4.0.4")
+add_requires("libpng", { system = false, configs = { shared = false } })
+add_requires("libjpeg-turbo", { system = false, configs = { shared = false } })
 -- Static libyuv avoids a runtime dependency on the distro's libyuv.so,
 -- which is not present on many distributions (Arch/Debian/Fedora shipping
 -- different sonames or none at all). Built with JPEG (MJPEG decode) from the
@@ -232,6 +234,8 @@ target("su_recognizer")
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
     add_packages("cimg")
+    add_packages("libpng", "libjpeg-turbo")
+    add_defines("cimg_use_png", "cimg_use_jpeg")
     add_packages("libyuv")
     if is_plat("mingw") then
         add_files("src/platform/windows/print_shim.cpp")
