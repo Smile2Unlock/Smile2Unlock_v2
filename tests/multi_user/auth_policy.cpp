@@ -171,6 +171,11 @@ void assert_file_policy(const std::filesystem::path& root) {
     require(!su::auth::open_user_file(paths, su::auth::UserFileKind::kProfiles, true).has_value());
 
     std::filesystem::remove(file);
+    require(::mkfifo(file.c_str(), 0600) == 0);
+    ::alarm(3);
+    require(!su::auth::open_user_file(paths, su::auth::UserFileKind::kProfiles, true).has_value());
+    ::alarm(0);
+    std::filesystem::remove(file);
     std::ofstream(file) << "migrate me\n";
     require(::chmod(file.c_str(), 0600) == 0);
     auto migration_source = su::auth::open_user_file(

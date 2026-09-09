@@ -264,6 +264,7 @@ target("su_recognizer")
     end
     if is_plat("linux") then
         add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
+        add_files("src/modules/su.auth.user.cppm")
     else
         add_files("src/app/windows_app_controller.cpp", "src/app/core_bridge.cpp")
         add_files("src/platform/windows/auth_service/profile_client.cpp")

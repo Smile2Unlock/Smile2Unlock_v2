@@ -490,10 +490,18 @@ std::string deploy_helper_path() {
     }
     path.resize(slash + 1);
     path += L"su_deploy_helper.exe";
-    auto narrow = std::string(path.size(), '\0');
-    (void)::WideCharToMultiByte(
-        65001 /* CP_UTF8 */, 0, path.data(), static_cast<int>(path.size()), narrow.data(),
-        static_cast<int>(narrow.size()), nullptr, nullptr);
+    const auto required = ::WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
+        nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        return {};
+    }
+    auto narrow = std::string(static_cast<std::size_t>(required), '\0');
+    if (::WideCharToMultiByte(
+            CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
+            narrow.data(), required, nullptr, nullptr) != required) {
+        return {};
+    }
     return narrow;
 }
 
