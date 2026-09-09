@@ -10,6 +10,7 @@ import su.recognizer.service;
 import su.recognizer.image;
 import su.control.socket;
 import su.app.user;
+import su.auth.user;
 
 namespace su::app {
 
@@ -217,8 +218,10 @@ std::expected<std::string, std::string> resolve_image_sample_source(
 }  // namespace
 
 std::string AppController::config_path() const {
-    if (const auto* xdg_config_home = std::getenv("XDG_CONFIG_HOME")) {
-        return (std::filesystem::path(xdg_config_home) / "smile2unlock" / "config.toml").string();
+    // Authentication settings must use the same NSS-owned path as su_authd.
+    // XDG_CONFIG_HOME remains applicable to UI preferences only.
+    if (const auto paths = su::auth::paths_for_username(current_account_name())) {
+        return paths->config.string();
     }
     if (const auto* home = std::getenv("HOME")) {
         return (std::filesystem::path(home) / ".config" / "smile2unlock" / "config.toml").string();
@@ -248,6 +251,23 @@ std::vector<su::recognizer::CameraInfo> AppController::enumerate_cameras() const
 
 std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
     const auto path = config_path();
+    auto error = std::error_code{};
+    const auto exists = std::filesystem::exists(path, error);
+    if (error) {
+        return std::unexpected("failed to inspect authentication config");
+    }
+    if (!exists) {
+        if (const auto* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
+            const auto legacy = std::filesystem::path(xdg) / "smile2unlock/config.toml";
+            if (legacy.is_absolute() && legacy != path
+                && std::filesystem::is_regular_file(legacy, error) && !error) {
+                const auto config = load_config(legacy.string());
+                if (!config || !save_config(path, *config)) {
+                    return std::unexpected("failed to migrate authentication config");
+                }
+            }
+        }
+    }
     const auto loaded_config = load_config(path);
     if (!loaded_config) {
         return std::unexpected(std::format("failed to load config from Rust core: {}", path));

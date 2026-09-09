@@ -39,6 +39,8 @@ pub struct Credential {
     stale: Cell<bool>,
     /// Set once GetSerialization returned a credential; forbids re-submission.
     serialized: Cell<bool>,
+    broker_request: Cell<Option<(u64, u32)>>,
+    broker_password_invalid: Cell<bool>,
     /// SID of the user this tile is associated with (V2 CP requirement).
     user_sid: RefCell<Option<String>>,
     /// Password entered into the tile. A non-empty value uses the normal
@@ -57,6 +59,8 @@ impl Credential {
             scenario: Cell::new(scenario),
             stale: Cell::new(false),
             serialized: Cell::new(false),
+            broker_request: Cell::new(None),
+            broker_password_invalid: Cell::new(false),
             user_sid: RefCell::new(user_sid),
             password: RefCell::new(Vec::new()),
         }
@@ -377,6 +381,9 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
         let has_manual_password = !self.password.borrow().is_empty();
+        if !has_manual_password && self.broker_password_invalid.get() {
+            return Err(crate::pipe_client::win32_error(1323));
+        }
 
         let scenario = self.scenario.get();
 
@@ -403,6 +410,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let base = (millis << 24) ^ (pid << 8) ^ (millis & 0xff);
         let request_id =
             if base == 0 { 1 } else { base } + NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let mut broker_request = None;
         let mut protected = if has_manual_password {
             let mut entered = self.password.borrow_mut();
             let result = crate::serialization::protect_password(&entered);
@@ -431,6 +439,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                         return Err(err);
                     }
                 };
+            broker_request = Some((request_id, session_id));
             match password.with_password(crate::serialization::protect_password) {
                 Ok(Ok(p)) => p,
                 Ok(Err(err)) => return Err(err),
@@ -503,15 +512,16 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         ));
         crate::pipe_client::secure_clear(&mut protected);
         self.serialized.set(true);
+        self.broker_request.set(broker_request);
         Ok(())
     }
 
     fn ReportResult(
         &self,
         ntsstatus: NTSTATUS,
-        _ntssubstatus: NTSTATUS,
-        _ppszoptionalstatustext: *mut PWSTR,
-        _pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
+        ntssubstatus: NTSTATUS,
+        ppszoptionalstatustext: *mut PWSTR,
+        pcpsioptionalstatusicon: *mut CREDENTIAL_PROVIDER_STATUS_ICON,
     ) -> windows_core::Result<()> {
         crate::log::cp_log(&format!(
             "Credential::ReportResult status={:#x}",
@@ -522,7 +532,131 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         // state instead of permanently disabling it.
         self.serialized.set(false);
         self.stale.set(ntsstatus.0 == 0);
+        if !ppszoptionalstatustext.is_null() {
+            unsafe { *ppszoptionalstatustext = PWSTR::null() };
+        }
+        if !pcpsioptionalstatusicon.is_null() {
+            unsafe { *pcpsioptionalstatusicon = CREDENTIAL_PROVIDER_STATUS_ICON(0) };
+        }
+        if let Some((request_id, session_id)) = self.broker_request.take()
+            && password_requires_refresh(ntsstatus.0, ntssubstatus.0)
+        {
+            // A failed broker notification must not permit repeated old-password
+            // submissions from this tile. Manual Windows passwords remain usable.
+            self.broker_password_invalid.set(true);
+            if let Some(sid) = self.user_sid.borrow().as_ref() {
+                let sid = sid.encode_utf16().collect::<Vec<_>>();
+                if let Err(error) =
+                    crate::pipe_client::PipeClient.mark_stale(&sid, request_id, session_id)
+                {
+                    crate::log::cp_log(&format!("mark_stale failed: {:08x}", error.code().0));
+                }
+            }
+            if !ppszoptionalstatustext.is_null() {
+                unsafe {
+                    *ppszoptionalstatustext = Credential::alloc_string(
+                        "Update the saved Windows password in Smile2Unlock. Use your Windows password to sign in.",
+                    )?;
+                }
+            }
+            if !pcpsioptionalstatusicon.is_null() {
+                unsafe { *pcpsioptionalstatusicon = CREDENTIAL_PROVIDER_STATUS_ICON(1) };
+            }
+        }
         Ok(())
+    }
+}
+
+fn password_requires_refresh(status: i32, substatus: i32) -> bool {
+    if status >= 0 {
+        return false;
+    }
+    let reason = if substatus < 0 { substatus } else { status } as u32;
+    matches!(reason, 0xc000006a | 0xc000006d | 0xc0000071 | 0xc0000224)
+}
+
+#[cfg(test)]
+mod password_result_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_or_expired_broker_password_requires_refresh() {
+        for status in [0xc000006au32, 0xc000006d, 0xc0000071, 0xc0000224] {
+            assert!(password_requires_refresh(status as i32, 0));
+        }
+        assert!(password_requires_refresh(
+            0xc000006e_u32 as i32,
+            0xc0000071_u32 as i32
+        ));
+    }
+
+    #[test]
+    fn success_and_account_restrictions_do_not_invalidate_password() {
+        assert!(!password_requires_refresh(0, 0));
+        assert!(!password_requires_refresh(0, 0xc000006a_u32 as i32));
+        for status in [0xc0000234u32, 0xc0000072, 0xc000015b] {
+            assert!(!password_requires_refresh(status as i32, 0));
+            assert!(!password_requires_refresh(
+                0xc000006d_u32 as i32,
+                status as i32
+            ));
+        }
+    }
+
+    #[test]
+    fn manual_password_failure_keeps_broker_available() {
+        let object = windows_core::ComObject::new(Credential::new(1, None));
+        object.serialized.set(true);
+        let credential = object.to_interface::<ICredentialProviderCredential>();
+        let mut text = PWSTR::null();
+        let mut icon = CREDENTIAL_PROVIDER_STATUS_ICON(1);
+        unsafe {
+            credential
+                .ReportResult(
+                    NTSTATUS(0xc000006d_u32 as i32),
+                    NTSTATUS(0xc000006a_u32 as i32),
+                    &mut text,
+                    &mut icon,
+                )
+                .unwrap();
+        }
+        assert!(!object.serialized.get());
+        assert!(!object.broker_password_invalid.get());
+        assert!(text.is_null());
+        assert_eq!(icon.0, 0);
+    }
+
+    #[test]
+    fn invalid_broker_password_blocks_resubmission_even_without_a_service() {
+        let object = windows_core::ComObject::new(Credential::new(1, None));
+        object.broker_request.set(Some((1, 1)));
+        object.serialized.set(true);
+        let credential = object.to_interface::<ICredentialProviderCredential>();
+        unsafe {
+            credential
+                .ReportResult(
+                    NTSTATUS(0xc000006d_u32 as i32),
+                    NTSTATUS(0xc000006a_u32 as i32),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+                .unwrap();
+        }
+        assert!(object.broker_password_invalid.get());
+        assert!(object.broker_request.get().is_none());
+        let mut response = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(0);
+        let mut serialization = CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION::default();
+        let error = unsafe {
+            credential
+                .GetSerialization(
+                    &mut response,
+                    &mut serialization,
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+                .unwrap_err()
+        };
+        assert_eq!(error.code(), crate::pipe_client::win32_error(1323).code());
     }
 }
 

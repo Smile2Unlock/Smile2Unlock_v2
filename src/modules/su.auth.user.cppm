@@ -457,7 +457,7 @@ std::expected<std::optional<PinnedUserFile>, std::string> open_user_file(
     const auto file_fd = open_beneath(
         home_fd,
         relative_path(kind).c_str(),
-        O_RDONLY | O_CLOEXEC,
+        O_RDONLY | O_CLOEXEC | O_NONBLOCK,
         true);
     const auto saved_errno = errno;
     (void)::close(home_fd);

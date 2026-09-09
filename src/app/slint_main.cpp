@@ -777,8 +777,8 @@ int main(int argc, char** argv) {
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
-    // Recognition trigger policy (Windows only; the UI hides these on Linux,
-    // but the values are still carried in the config struct everywhere).
+    // Retain legacy trigger fields for config compatibility; the broker only
+    // supports manual submission, so these are not exposed as settings.
     window->set_recognition_mode(static_cast<int>(snapshot->config.recognition_mode));
     window->set_auto_delay_sec(static_cast<int>(snapshot->config.auto_delay_sec));
     window->set_retry_delay_sec(static_cast<int>(snapshot->config.retry_delay_sec));
@@ -1081,44 +1081,56 @@ int main(int argc, char** argv) {
     window->on_delete_profile_requested(
         [weak_window, controller, profiles, catalog](
             slint::SharedString profile_id) {
-            const auto deleted = controller->delete_face_profile_by_id(
-                std::string(profile_id));
             const auto window = weak_window.lock();
-            if (!window) {
+            if (!window || (*window)->get_busy()) {
                 return;
             }
-            if (!deleted) {
-                set_activity(
-                    *window,
-                    translated(*catalog, *window, "activity.remove_failed"),
-                    localized_backend_error(*catalog, *window, deleted.error()),
-                    "bad");
-                return;
-            }
-            if (!*deleted) {
-                set_activity(
-                    *window,
-                    translated(*catalog, *window, "activity.sample_not_found"),
-                    translated(*catalog, *window, "activity.refresh_retry"),
-                    "bad");
-                return;
-            }
-
-            const auto rows = controller->list_face_profile_rows();
-            if (!rows) {
-                set_activity(
-                    *window,
-                    translated(*catalog, *window, "activity.removed"),
-                    translated(*catalog, *window, "activity.refresh_after_remove_failed"),
-                    "warn");
-                return;
-            }
-            update_profiles(profiles, *rows);
-            set_activity(
-                *window,
-                translated(*catalog, *window, "activity.removed"),
-                translated(*catalog, *window, "activity.removed_detail"),
-                "good");
+            (*window)->set_busy(true);
+            std::thread([weak_window, controller, profiles, catalog,
+                         profile_id = std::string(profile_id)] {
+                const auto deleted = controller->delete_face_profile_by_id(profile_id);
+                auto rows = deleted && *deleted
+                    ? controller->list_face_profile_rows()
+                    : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
+                        std::unexpected("profile was not deleted")};
+                slint::invoke_from_event_loop(
+                    [weak_window, profiles, catalog, deleted, rows = std::move(rows)] {
+                        const auto window = weak_window.lock();
+                        if (!window) {
+                            return;
+                        }
+                        if (!deleted) {
+                            set_activity(
+                                *window,
+                                translated(*catalog, *window, "activity.remove_failed"),
+                                localized_backend_error(*catalog, *window, deleted.error()),
+                                "bad");
+                            return;
+                        }
+                        if (!*deleted) {
+                            set_activity(
+                                *window,
+                                translated(*catalog, *window, "activity.sample_not_found"),
+                                translated(*catalog, *window, "activity.refresh_retry"),
+                                "bad");
+                            return;
+                        }
+                        if (!rows) {
+                            set_activity(
+                                *window,
+                                translated(*catalog, *window, "activity.removed"),
+                                translated(*catalog, *window, "activity.refresh_after_remove_failed"),
+                                "warn");
+                            return;
+                        }
+                        update_profiles(profiles, *rows);
+                        set_activity(
+                            *window,
+                            translated(*catalog, *window, "activity.removed"),
+                            translated(*catalog, *window, "activity.removed_detail"),
+                            "good");
+                    });
+            }).detach();
         });
 
     window->on_refresh_profiles_requested([weak_window, controller, profiles, catalog] {

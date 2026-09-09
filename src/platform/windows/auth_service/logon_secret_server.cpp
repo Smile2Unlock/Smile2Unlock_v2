@@ -1049,7 +1049,8 @@ Status process_request(
             return Status::kInvalidRequest;
         }
         const auto report = profile_store.authenticate(
-            *sid_utf8, *payload, 0.65F, request.account_kind == 1);
+            *sid_utf8, *payload, recognition_settings(*requested_sid).recognition_threshold,
+            request.account_kind == 1);
         if (!report) {
             return map_profile_error(report.error());
         }
