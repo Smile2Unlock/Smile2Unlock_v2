@@ -7,8 +7,10 @@
 //!
 //! Wire format: fixed-size binary structs shared with the C++ service
 //! (src/platform/windows/auth_service/logon_secret_protocol.h). One
-//! CallNamedPipeW transaction per request; the pipe is message-mode,
-//! 3000 ms timeout.
+//! message-mode transaction per request over an overlapped pipe handle:
+//! the write and the read each wait on `(io completion, abort event,
+//! deadline)`, so cancellation (`CancelIoEx`) and the attempt deadline are
+//! enforced without depending on `CancelSynchronousIo` succeeding.
 //!
 //! Security posture:
 //! - kPrepare / kMarkStale are only honored by the service when the caller
@@ -16,11 +18,22 @@
 //! - Passwords are held in fixed-capacity buffers and wiped with volatile
 //!   stores on every path (success, failure, drop).
 
-use windows::Win32::Foundation::GetLastError;
+use windows::Win32::Foundation::{
+    CloseHandle, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
-use windows::Win32::System::Pipes::CallNamedPipeW;
-use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, OPEN_EXISTING, ReadFile, WriteFile,
+};
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows::Win32::System::Pipes::{
+    PIPE_READMODE_MESSAGE, SetNamedPipeHandleState, WaitNamedPipeW,
+};
+use windows::Win32::System::SystemInformation::GetTickCount64;
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForMultipleObjects, WaitForSingleObject,
+};
 use windows_core::{Error, HRESULT, PCWSTR, PWSTR};
 
 /// HRESULT_FROM_WIN32(code): error codes with the FACILITY_WIN32 severity bit.
@@ -60,6 +73,19 @@ pub const kPayloadCapacity: usize = 48 * 1024;
 const kWin32ErrorInvalidData: u32 = 13;
 const kWin32ErrorPasswordRestriction: u32 = 37;
 const kWin32ErrorServiceNotActive: u32 = 1062;
+const kWin32ErrorSemTimeout: u32 = 121;
+const kWin32ErrorPipeBusy: u32 = 231;
+const kWin32ErrorOperationAborted: u32 = 995;
+const kWin32ErrorIoPending: u32 = 997;
+const kWin32ErrorTimeout: u32 = 1460;
+
+/// Overall budget for the manual (user-initiated) submission path. The
+/// service clamps one recognition transaction to roughly 33 s worst case;
+/// 60 s bounds a hung service without changing interactive behavior.
+const kManualDeadlineMs: u64 = 60_000;
+/// Slice used while waiting for a free pipe instance, so abort and the
+/// deadline stay responsive during connection contention.
+const kConnectWaitSliceMs: u32 = 250;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -236,19 +262,103 @@ impl PreparedPipePassword {
     }
 }
 
-/// Client for one synchronous pipe transaction. Stateless.
+/// Client for one pipe transaction. Stateless.
 pub struct PipeClient;
+
+/// Closes a raw handle on drop; ownership of the connected pipe stays inside
+/// `transact_on`.
+struct PipeGuard(HANDLE);
+
+impl Drop for PipeGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: handle was created by CreateFileW and closed exactly once.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Manual-reset event guard for overlapped waits.
+struct EventGuard(HANDLE);
+
+impl EventGuard {
+    fn new() -> Result<Self, Error> {
+        // SAFETY: no security attributes, manual-reset, initially unset.
+        unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+            .map(EventGuard)
+            .map_err(|_| win32_error(kWin32ErrorServiceNotActive))
+    }
+}
+
+impl Drop for EventGuard {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: handle was created by CreateEventW and closed exactly once.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// Time left until `deadline_ms` (absolute `GetTickCount64` domain), capped
+/// for the Win32 32-bit wait argument.
+fn remaining_wait_ms(now_ms: u64, deadline_ms: u64) -> u32 {
+    deadline_ms.saturating_sub(now_ms).min(u32::MAX as u64) as u32
+}
 
 impl PipeClient {
     /// Ask the broker to run its trusted recognition agent, match the probe
     /// against the SYSTEM-owned profile store, and atomically consume the
     /// one-time logon secret. The service rejects the old unauthenticated
     /// kPrepare operation.
+    ///
+    /// Manual path: no abort event, generous overall deadline (the service
+    /// bounds the recognition work itself).
     pub fn prepare(
         &self,
         sid: &[u16],
         request_id: u64,
         logon_session_id: u32,
+    ) -> Result<PreparedPipePassword, Error> {
+        let deadline = now_tick() + kManualDeadlineMs;
+        self.prepare_with_limits(sid, request_id, logon_session_id, None, deadline)
+    }
+
+    /// `prepare` with caller-owned cancellation and deadline. `abort` is a
+    /// manual-reset event; setting it cancels the in-flight transaction with
+    /// `CancelIoEx` and fails with ERROR_OPERATION_ABORTED (win32 995).
+    /// `deadline_ms` is absolute in `GetTickCount64` domain.
+    pub fn prepare_with_limits(
+        &self,
+        sid: &[u16],
+        request_id: u64,
+        logon_session_id: u32,
+        abort: Option<HANDLE>,
+        deadline_ms: u64,
+    ) -> Result<PreparedPipePassword, Error> {
+        self.prepare_on(
+            kPipeName,
+            sid,
+            request_id,
+            logon_session_id,
+            abort,
+            deadline_ms,
+        )
+    }
+
+    /// `prepare_with_limits` against an explicit pipe name, so tests can
+    /// exercise the full prepare path against an in-process fake server.
+    fn prepare_on(
+        &self,
+        pipe_name: PCWSTR,
+        sid: &[u16],
+        request_id: u64,
+        logon_session_id: u32,
+        abort: Option<HANDLE>,
+        deadline_ms: u64,
     ) -> Result<PreparedPipePassword, Error> {
         let mut request = Request::new(
             kOperationAuthenticateAndPrepare,
@@ -271,7 +381,7 @@ impl PipeClient {
             payload_length: 0,
             payload: [0; kPayloadCapacity],
         };
-        let result = self.transact(&mut request, &mut response);
+        let result = transact_on(pipe_name, &mut request, &mut response, abort, deadline_ms);
         if result.is_err() {
             // Wipe the password we sent (usually empty) and any partial reply.
             request.clear_password();
@@ -349,7 +459,13 @@ impl PipeClient {
             payload_length: 0,
             payload: [0; kPayloadCapacity],
         };
-        let result = self.transact(&mut request, &mut response);
+        let result = transact_on(
+            kPipeName,
+            &mut request,
+            &mut response,
+            None,
+            now_tick() + kManualDeadlineMs,
+        );
         request.clear_password();
         response.clear_password();
         result?;
@@ -358,40 +474,230 @@ impl PipeClient {
         }
         Ok(())
     }
+}
 
-    /// One synchronous, message-mode transaction with a 3000 ms timeout.
-    fn transact(&self, request: &mut Request, response: &mut Response) -> Result<(), Error> {
-        // Safety: buffers are valid for the full duration of the blocking
-        // call; sizes match the protocol structs.
-        let mut bytes_read: u32 = 0;
-        let ok = unsafe {
-            CallNamedPipeW(
-                kPipeName,
-                Some(request.request_bytes().as_ptr().cast()),
-                core::mem::size_of::<Request>() as u32,
-                Some(response.response_bytes_mut().as_mut_ptr().cast()),
-                core::mem::size_of::<Response>() as u32,
-                &mut bytes_read,
-                3000,
+/// Monotonic milliseconds in the same domain as the runtime clock.
+pub fn now_tick() -> u64 {
+    // SAFETY: GetTickCount64 has no parameters and cannot fail.
+    unsafe { GetTickCount64() }
+}
+
+/// Connect to a message-mode pipe instance, bounded by `deadline_ms` and
+/// observing `abort` between wait slices.
+fn connect_pipe(
+    pipe_name: PCWSTR,
+    abort: Option<HANDLE>,
+    deadline_ms: u64,
+) -> Result<PipeGuard, Error> {
+    loop {
+        // SAFETY: pipe_name is a valid NUL-terminated wide string; the handle
+        // is closed by PipeGuard on every path.
+        let handle = unsafe {
+            CreateFileW(
+                pipe_name,
+                (GENERIC_READ | GENERIC_WRITE).0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                None,
             )
         };
-        if !ok.as_bool() {
-            let code = unsafe { GetLastError().0 };
-            crate::log::cp_log(&format!(
-                "pipe transact FAILED code={:#x} bytes_read={}",
-                code, bytes_read
-            ));
-            return Err(win32_error(code));
+        match handle {
+            Ok(handle) => {
+                let mode = PIPE_READMODE_MESSAGE;
+                // SAFETY: handle is a connected pipe; mode points to a valid
+                // NAMED_PIPE_MODE value; the optional out-params are null.
+                unsafe { SetNamedPipeHandleState(handle, Some(&mode), None, None) }?;
+                return Ok(PipeGuard(handle));
+            }
+            Err(error) => {
+                let code = error.code().0 as u32 & 0xffff;
+                if code != kWin32ErrorPipeBusy {
+                    return Err(error);
+                }
+            }
         }
-        crate::log::cp_log(&format!(
-            "pipe transact OK bytes_read={} status={}",
-            bytes_read, response.status
-        ));
-        // Every response must round-trip the request identity before the
-        // caller may consume its payload (magic/version/request_id/session).
-        validate_response(response, request, bytes_read)?;
-        Ok(())
+        let now = now_tick();
+        let remaining = remaining_wait_ms(now, deadline_ms);
+        if remaining == 0 {
+            return Err(win32_error(kWin32ErrorSemTimeout));
+        }
+        if let Some(abort) = abort {
+            // SAFETY: abort is a valid event handle; a zero timeout only polls.
+            if unsafe { WaitForSingleObject(abort, 0) }.0 == WAIT_OBJECT_0.0 {
+                return Err(win32_error(kWin32ErrorOperationAborted));
+            }
+        }
+        // SAFETY: pipe_name is valid; the slice keeps the wait responsive.
+        let waited = unsafe { WaitNamedPipeW(pipe_name, remaining.min(kConnectWaitSliceMs)) };
+        if !waited.as_bool() && now_tick() >= deadline_ms {
+            return Err(win32_error(kWin32ErrorSemTimeout));
+        }
     }
+}
+
+/// Wait for a pending overlapped operation on `(io completion, abort,
+/// deadline)` and reclaim the OVERLAPPED. Returns the transferred byte count
+/// on completion; aborted waits fail with 995, expired deadlines with 1460.
+fn wait_io(
+    pipe: HANDLE,
+    overlapped: &mut OVERLAPPED,
+    io_event: HANDLE,
+    abort: Option<HANDLE>,
+    deadline_ms: u64,
+) -> Result<u32, Error> {
+    let timeout = remaining_wait_ms(now_tick(), deadline_ms);
+    let wait = match abort {
+        Some(abort) => {
+            // SAFETY: both handles are valid; two-entry array, no wait-all.
+            unsafe { WaitForMultipleObjects(&[io_event, abort], false, timeout) }
+        }
+        None => {
+            // SAFETY: valid event handle.
+            unsafe { WaitForSingleObject(io_event, timeout) }
+        }
+    };
+    let mut transferred = 0u32;
+    let trigger = if wait.0 == WAIT_OBJECT_0.0 {
+        // Index 0 is the io event in both wait shapes.
+        // SAFETY: the OVERLAPPED is owned by the caller and complete.
+        return match unsafe {
+            GetOverlappedResult(
+                pipe,
+                overlapped as *const OVERLAPPED,
+                &mut transferred,
+                false,
+            )
+        } {
+            Ok(()) => Ok(transferred),
+            Err(error) => Err(error),
+        };
+    } else if wait.0 == WAIT_TIMEOUT.0 {
+        kWin32ErrorTimeout
+    } else if abort.is_some() && wait.0 == WAIT_OBJECT_0.0 + 1 {
+        kWin32ErrorOperationAborted
+    } else {
+        unsafe { GetLastError().0 }
+    };
+    // CancelIoEx is thread-safe and needs no handle to the waiting thread.
+    // The blocking GetOverlappedResult then reclaims the OVERLAPPED before
+    // the caller drops it; after a successful cancel it returns quickly with
+    // ERROR_OPERATION_ABORTED, which we swallow in favor of the trigger code.
+    // SAFETY: pipe is a valid overlapped handle; overlapped belongs to us.
+    unsafe {
+        let _ = CancelIoEx(pipe, Some(overlapped as *mut OVERLAPPED));
+        let _ = GetOverlappedResult(
+            pipe,
+            overlapped as *const OVERLAPPED,
+            &mut transferred,
+            true,
+        );
+    }
+    Err(win32_error(trigger))
+}
+
+/// One overlapped write. Returns the transferred byte count on completion.
+fn overlapped_write(
+    pipe: HANDLE,
+    buffer: &[u8],
+    abort: Option<HANDLE>,
+    deadline_ms: u64,
+) -> Result<u32, Error> {
+    let io_event = EventGuard::new()?;
+    let mut overlapped = OVERLAPPED {
+        hEvent: io_event.0,
+        ..Default::default()
+    };
+    let mut transferred = 0u32;
+    // SAFETY: buffer is valid for the duration of the call; the OVERLAPPED is
+    // not reused after the wait completes.
+    let immediate = unsafe {
+        WriteFile(
+            pipe,
+            Some(buffer),
+            Some(&mut transferred),
+            Some(&mut overlapped),
+        )
+    };
+    if immediate.is_ok() {
+        return Ok(transferred);
+    }
+    let code = unsafe { GetLastError().0 };
+    if code != kWin32ErrorIoPending {
+        return Err(win32_error(code));
+    }
+    wait_io(pipe, &mut overlapped, io_event.0, abort, deadline_ms)
+}
+
+/// One overlapped read. Returns the transferred byte count on completion.
+fn overlapped_read(
+    pipe: HANDLE,
+    buffer: &mut [u8],
+    abort: Option<HANDLE>,
+    deadline_ms: u64,
+) -> Result<u32, Error> {
+    let io_event = EventGuard::new()?;
+    let mut overlapped = OVERLAPPED {
+        hEvent: io_event.0,
+        ..Default::default()
+    };
+    let mut transferred = 0u32;
+    // SAFETY: buffer is valid for the duration of the call; the OVERLAPPED is
+    // not reused after the wait completes.
+    let immediate = unsafe {
+        ReadFile(
+            pipe,
+            Some(buffer),
+            Some(&mut transferred),
+            Some(&mut overlapped),
+        )
+    };
+    if immediate.is_ok() {
+        return Ok(transferred);
+    }
+    let code = unsafe { GetLastError().0 };
+    if code != kWin32ErrorIoPending {
+        return Err(win32_error(code));
+    }
+    wait_io(pipe, &mut overlapped, io_event.0, abort, deadline_ms)
+}
+
+/// One message-mode transaction with cancellation and an absolute deadline.
+fn transact_on(
+    pipe_name: PCWSTR,
+    request: &mut Request,
+    response: &mut Response,
+    abort: Option<HANDLE>,
+    deadline_ms: u64,
+) -> Result<(), Error> {
+    let pipe = connect_pipe(pipe_name, abort, deadline_ms)?;
+    if let Err(error) = overlapped_write(pipe.0, request.request_bytes(), abort, deadline_ms) {
+        crate::log::cp_log(&format!(
+            "pipe write FAILED code={:#x}",
+            error.code().0 as u32 & 0xffff
+        ));
+        return Err(error);
+    }
+    let bytes_read =
+        match overlapped_read(pipe.0, response.response_bytes_mut(), abort, deadline_ms) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                crate::log::cp_log(&format!(
+                    "pipe read FAILED code={:#x}",
+                    error.code().0 as u32 & 0xffff
+                ));
+                return Err(error);
+            }
+        };
+    crate::log::cp_log(&format!(
+        "pipe transact OK bytes_read={} status={}",
+        bytes_read, response.status
+    ));
+    // Every response must round-trip the request identity before the
+    // caller may consume its payload (magic/version/request_id/session).
+    validate_response(response, request, bytes_read)?;
+    Ok(())
 }
 
 /// Unique-enough request id for the service replay cache. A naive per-process
@@ -676,5 +982,270 @@ mod tests {
         let sid = "S-1-5-21-1-2-3-4".encode_utf16().collect::<Vec<_>>();
         let result = client.prepare(&sid, 99, 1);
         assert!(result.is_err());
+    }
+
+    // ---- overlapped transaction tests against an in-process fake server ----
+
+    use std::thread;
+    use std::time::Duration;
+
+    fn wide_name(tag: &str) -> (Vec<u16>, PCWSTR) {
+        let text = format!(r"\\.\pipe\Smile2UnlockTest.{tag}");
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        wide.push(0);
+        let ptr = PCWSTR(wide.as_ptr());
+        (wide, ptr)
+    }
+
+    /// Serve exactly one transaction: connect, read the request, sleep
+    /// `delay_ms`, echo a valid kStatusOk response, disconnect. Takes the
+    /// NUL-terminated wide name by value: PCWSTR is not Send, so the pointer
+    /// is rebuilt inside the server thread.
+    fn spawn_echo_server(
+        pipe_name_wide: Vec<u16>,
+        delay_ms: u64,
+        seen_request_ids: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    ) -> thread::JoinHandle<()> {
+        use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
+        use windows::Win32::System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
+            PIPE_TYPE_MESSAGE, PIPE_WAIT,
+        };
+        thread::spawn(move || {
+            let pipe_name = PCWSTR(pipe_name_wide.as_ptr());
+            // SAFETY: name is NUL-terminated; one synchronous server instance.
+            let server = unsafe {
+                CreateNamedPipeW(
+                    pipe_name,
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+                    1,
+                    core::mem::size_of::<Response>() as u32,
+                    core::mem::size_of::<Request>() as u32,
+                    0,
+                    None,
+                )
+            };
+            assert!(!server.is_invalid(), "CreateNamedPipeW failed");
+            // SAFETY: server handle is valid and listening. A client that
+            // aborts during connect surfaces on the client side; the server
+            // thread simply finishes without serving.
+            let _ = unsafe { ConnectNamedPipe(server, None) };
+            let mut request = Request {
+                magic: 0,
+                version: 0,
+                operation: 0,
+                request_id: 0,
+                logon_session_id: 0,
+                account_kind: 0,
+                sid: [0; kSidCapacity],
+                canonical_username: [0; kUsernameCapacity],
+                password: [0; kPasswordCapacity],
+                payload_length: 0,
+                payload: [0; kPayloadCapacity],
+            };
+            let mut read_bytes = 0u32;
+            // SAFETY: the byte view of a properly aligned Request is valid
+            // for the full read; casting the struct (not a u8 array) keeps
+            // the u64 fields aligned.
+            let request_bytes = unsafe {
+                core::slice::from_raw_parts_mut(
+                    (&mut request as *mut Request).cast::<u8>(),
+                    core::mem::size_of::<Request>(),
+                )
+            };
+            let read =
+                unsafe { ReadFile(server, Some(request_bytes), Some(&mut read_bytes), None) };
+            if read.is_ok() && read_bytes as usize == core::mem::size_of::<Request>() {
+                seen_request_ids.lock().unwrap().push(request.request_id);
+                if delay_ms > 0 {
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+                let mut response = Response {
+                    magic: kMagic,
+                    version: kVersion,
+                    reserved: 0,
+                    request_id: request.request_id,
+                    logon_session_id: request.logon_session_id,
+                    status: kStatusOk,
+                    password_length: 3,
+                    password: [0; kPasswordCapacity],
+                    payload_length: 0,
+                    payload: [0; kPayloadCapacity],
+                };
+                response.password[0] = b'p' as u16;
+                response.password[1] = b'w' as u16;
+                response.password[2] = 0;
+                // SAFETY: response buffer is valid for the full write.
+                let response_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        (&response as *const Response).cast::<u8>(),
+                        core::mem::size_of::<Response>(),
+                    )
+                };
+                let mut written = 0u32;
+                let write =
+                    unsafe { WriteFile(server, Some(response_bytes), Some(&mut written), None) };
+                // A client that aborted or hit its deadline has closed its
+                // end; the delayed echo failing to deliver is expected.
+                let _ = write;
+            }
+            // SAFETY: server handle is valid.
+            unsafe {
+                let _ = DisconnectNamedPipe(server);
+                let _ = CloseHandle(server);
+            }
+        })
+    }
+
+    fn abort_event() -> HANDLE {
+        // SAFETY: manual-reset, initially unset, unnamed event.
+        unsafe { CreateEventW(None, true, false, PCWSTR::null()) }.expect("CreateEventW")
+    }
+
+    /// Block until the server thread has created its pipe instance, so the
+    /// client's first CreateFileW does not race instance creation.
+    fn wait_pipe_ready(name: PCWSTR) {
+        use windows::Win32::System::Pipes::WaitNamedPipeW;
+        let deadline = now_tick() + 2_000;
+        while now_tick() < deadline {
+            // SAFETY: name is NUL-terminated; a zero timeout only polls.
+            if unsafe { WaitNamedPipeW(name, 0) }.as_bool() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("test pipe was not created in time");
+    }
+
+    fn win32_code(error: &Error) -> u32 {
+        error.code().0 as u32 & 0xffff
+    }
+
+    #[test]
+    fn overlapped_transaction_completes() {
+        let (name_storage, name) = wide_name("happy");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server = spawn_echo_server(name_storage.clone(), 0, std::sync::Arc::clone(&seen));
+        // Give the server a moment to create its instance; a missed race only
+        // costs one connect retry slice, so poll instead of sleeping long.
+        let deadline = now_tick() + 2_000;
+        let mut request = Request::new(kOperationAuthenticateAndPrepare, 4242, 5);
+        let sid = "S-1-5-21-1-2-3-4".encode_utf16().collect::<Vec<_>>();
+        assert!(copy_fixed(&sid, &mut request.sid));
+        let mut response = Response {
+            magic: 0,
+            version: 0,
+            reserved: 0,
+            request_id: 0,
+            logon_session_id: 0,
+            status: 0,
+            password_length: 0,
+            password: [0; kPasswordCapacity],
+            payload_length: 0,
+            payload: [0; kPayloadCapacity],
+        };
+        let mut result = Err(win32_error(kWin32ErrorSemTimeout));
+        while now_tick() < deadline {
+            let mut request_copy = request;
+            let mut response_copy = Response {
+                magic: 0,
+                version: 0,
+                reserved: 0,
+                request_id: 0,
+                logon_session_id: 0,
+                status: 0,
+                password_length: 0,
+                password: [0; kPasswordCapacity],
+                payload_length: 0,
+                payload: [0; kPayloadCapacity],
+            };
+            result = transact_on(name, &mut request_copy, &mut response_copy, None, deadline);
+            response = response_copy;
+            request_copy.clear_password();
+            if result.is_ok() {
+                break;
+            }
+            let code = result.as_ref().map(|_| 0).unwrap_or_else(win32_code);
+            // The server thread may not have created its instance yet, so
+            // FILE_NOT_FOUND is a retryable race like a busy pipe.
+            if code != kWin32ErrorPipeBusy && code != kWin32ErrorSemTimeout && code != 2 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(result.is_ok(), "transact failed: {:?}", result.err());
+        assert_eq!(response.request_id, 4242);
+        assert_eq!(response.logon_session_id, 5);
+        assert_eq!(response.status, kStatusOk);
+        assert_eq!(response.password_length, 3);
+        server.join().unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![4242]);
+        drop(name_storage);
+    }
+
+    #[test]
+    fn overlapped_abort_returns_promptly() {
+        let (name_storage, name) = wide_name("abort");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Server stalls 5 s before responding.
+        let server = spawn_echo_server(name_storage.clone(), 5_000, seen);
+        wait_pipe_ready(name);
+        let abort = abort_event();
+        let client = PipeClient;
+        let sid = "S-1-5-21-1-2-3-4".encode_utf16().collect::<Vec<_>>();
+        // HANDLE is a raw pointer and thus not Send; pass it as a usize and
+        // rebuild it inside the setter thread.
+        let abort_raw = abort.0 as usize;
+        let starter = thread::spawn(move || {
+            use windows::Win32::System::Threading::SetEvent;
+            thread::sleep(Duration::from_millis(150));
+            // SAFETY: rebuilt from a live event handle.
+            unsafe {
+                let _ = SetEvent(HANDLE(abort_raw as *mut core::ffi::c_void));
+            }
+        });
+        let started = std::time::Instant::now();
+        let result = client.prepare_on(name, &sid, 7, 3, Some(abort), now_tick() + 30_000);
+        let elapsed = started.elapsed();
+        let _ = unsafe { CloseHandle(abort) };
+        let error = match result {
+            Ok(_) => panic!("aborted transaction must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(win32_code(&error), kWin32ErrorOperationAborted);
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "abort took {elapsed:?}, cancellation was not prompt"
+        );
+        starter.join().unwrap();
+        // The server eventually finishes its delayed response; join so the
+        // test process exits cleanly.
+        server.join().unwrap();
+        drop(name_storage);
+    }
+
+    #[test]
+    fn overlapped_deadline_returns_promptly() {
+        let (name_storage, name) = wide_name("deadline");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server = spawn_echo_server(name_storage.clone(), 5_000, seen);
+        wait_pipe_ready(name);
+        let client = PipeClient;
+        let sid = "S-1-5-21-1-2-3-4".encode_utf16().collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let result = client.prepare_on(name, &sid, 8, 3, None, now_tick() + 300);
+        let elapsed = started.elapsed();
+        let error = match result {
+            Ok(_) => panic!("expired deadline must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(win32_code(&error), kWin32ErrorTimeout);
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "deadline enforcement took {elapsed:?}"
+        );
+        server.join().unwrap();
+        drop(name_storage);
     }
 }

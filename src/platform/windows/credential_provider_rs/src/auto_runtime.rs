@@ -7,28 +7,29 @@
 //!   runtime. The worker apartment obtains a marshaled proxy and calls
 //!   `CredentialsChanged` from there, which is the only supported way to wake
 //!   LogonUI without storing a raw COM pointer across apartments.
-//! - one worker thread per provider process owns the blocking service call.
-//!   Cancellation uses `CancelSynchronousIo` on that thread, so deselecting or
-//!   locking again never waits for a camera.
+//! - one worker thread per provider process owns the service call. The pipe
+//!   transaction is overlapped I/O bounded by the attempt deadline; aborting
+//!   sets a manual-reset event and cancels the in-flight request with
+//!   `CancelIoEx`, so deselecting or locking again never waits for a camera
+//!   and never depends on `CancelSynchronousIo` succeeding.
 //! - the prepared password stays in `PreparedPipePassword` protected memory
 //!   and is published to the COM side only after a matching completion.
 //!
 //! The scheduling rules live in `auto_recognition`, which is platform
 //! independent and unit tested with a fake clock.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS};
-use windows::Win32::System::IO::CancelSynchronousIo;
+use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
 use windows::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_QUERY_VALUE, REG_DWORD, RegCloseKey, RegOpenKeyExW,
     RegQueryValueExW,
 };
 use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::System::Threading::{GetCurrentThreadId, OpenThread, THREAD_TERMINATE};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent};
 use windows_core::PCWSTR;
 
 use crate::auto_recognition::{AttemptMachine, Completion, Outcome, Phase, Poll, TriggerSettings};
@@ -61,7 +62,9 @@ pub enum TransportResult<G> {
 }
 
 /// Blocking recognition transport. Implemented by the pipe client; tests use
-/// a fake that never touches the service.
+/// a fake that never touches the service. `abort` is a manual-reset event the
+/// runtime signals to cancel the in-flight transaction; `deadline_ms` is the
+/// absolute monotonic deadline of the whole attempt.
 pub trait RecognitionTransport: Send + 'static {
     type Grant: Send + 'static;
     fn recognize(
@@ -69,7 +72,57 @@ pub trait RecognitionTransport: Send + 'static {
         sid: &str,
         request_id: u64,
         session_id: u32,
+        abort: HANDLE,
+        deadline_ms: u64,
     ) -> TransportResult<Self::Grant>;
+}
+
+/// Manual-reset event shared across threads. The raw HANDLE is only used
+/// with `SetEvent`/`ResetEvent`/wait functions, which are thread-safe, so the
+/// `Send`/`Sync` impl is sound.
+struct SharedEvent(HANDLE);
+
+unsafe impl Send for SharedEvent {}
+unsafe impl Sync for SharedEvent {}
+
+impl SharedEvent {
+    fn new() -> Self {
+        // SAFETY: no security attributes, manual-reset, initially unset.
+        // CreateEventW only fails under resource exhaustion; panicking here
+        // matches the surrounding Mutex::new unwrapping style.
+        let handle = unsafe { CreateEventW(None, true, false, None) }
+            .expect("CreateEventW for the cancel event");
+        Self(handle)
+    }
+
+    fn set(&self) {
+        // SAFETY: valid event handle; SetEvent is thread-safe.
+        unsafe {
+            let _ = SetEvent(self.0);
+        }
+    }
+
+    fn reset(&self) {
+        // SAFETY: valid event handle; ResetEvent is thread-safe.
+        unsafe {
+            let _ = ResetEvent(self.0);
+        }
+    }
+
+    fn raw(&self) -> HANDLE {
+        self.0
+    }
+}
+
+impl Drop for SharedEvent {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: created by CreateEventW, closed exactly once.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
 }
 
 struct Inner<G> {
@@ -89,7 +142,7 @@ pub struct AutoRuntime<T: RecognitionTransport> {
     transport: Mutex<T>,
     notifier: Mutex<Option<Arc<dyn ReadyNotifier>>>,
     worker_running: AtomicBool,
-    worker_thread_id: AtomicU32,
+    cancel_event: SharedEvent,
     clock: Box<dyn Clock>,
 }
 
@@ -108,7 +161,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             transport: Mutex::new(transport),
             notifier: Mutex::new(None),
             worker_running: AtomicBool::new(false),
-            worker_thread_id: AtomicU32::new(0),
+            cancel_event: SharedEvent::new(),
             clock,
         })
     }
@@ -140,8 +193,11 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             inner.grant_request = None;
             inner.ready_sid = None;
             inner.notified = false;
+            drop(inner);
+            // Also abort an in-flight transaction so the transport is free
+            // for the manual path immediately.
+            self.cancel_event.set();
         }
-        drop(inner);
         self.wake.notify_all();
     }
 
@@ -175,7 +231,6 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         self.wake.notify_all();
         self.cancel_blocking_io();
     }
-
     /// Stop the worker permanently (provider teardown). The worker exits on
     /// its own; the caller never joins it.
     pub fn shutdown(self: &Arc<Self>) {
@@ -264,18 +319,11 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
     }
 
     fn cancel_blocking_io(&self) {
-        let thread_id = self.worker_thread_id.load(Ordering::Acquire);
-        if thread_id == 0 {
-            return;
-        }
-        // SAFETY: OpenThread returns a real handle for an existing thread id;
-        // CancelSynchronousIo cancels the worker's blocking pipe call.
-        if let Ok(handle) = unsafe { OpenThread(THREAD_TERMINATE, false, thread_id) } {
-            unsafe {
-                let _ = CancelSynchronousIo(handle);
-                let _ = CloseHandle(handle);
-            }
-        }
+        // The overlapped pipe transaction waits on this event; setting it
+        // makes the transport CancelIoEx its in-flight request and return
+        // ERROR_OPERATION_ABORTED without needing a handle to the worker
+        // thread.
+        self.cancel_event.set();
     }
 
     fn ensure_worker(self: &Arc<Self>) {
@@ -296,9 +344,6 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         // The GIT proxy is created and called in an MTA; LogonUI initialized
         // its own apartment, so this thread must join a different one.
         let _apartment = ComApartment::enter_mta();
-        // SAFETY: GetCurrentThreadId has no parameters.
-        self.worker_thread_id
-            .store(unsafe { GetCurrentThreadId() }, Ordering::Release);
         loop {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if inner.shutdown {
@@ -334,10 +379,21 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 Poll::Recognize(request) => {
                     let sid = inner.machine.active_sid().unwrap_or_default().to_owned();
                     drop(inner);
+                    // Clear any stale cancel signal from a previous attempt
+                    // before handing the event to the transport; from here
+                    // the transaction is bounded by (abort, deadline).
+                    self.cancel_event.reset();
+                    let abort = self.cancel_event.raw();
                     let outcome = {
                         let mut transport =
                             self.transport.lock().unwrap_or_else(|e| e.into_inner());
-                        transport.recognize(&sid, request.request_id, request.session_id)
+                        transport.recognize(
+                            &sid,
+                            request.request_id,
+                            request.session_id,
+                            abort,
+                            request.deadline_ms,
+                        )
                     };
                     let completed_at = self.clock.now_ms();
                     let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -376,7 +432,6 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 }
             }
         }
-        self.worker_thread_id.store(0, Ordering::Release);
         self.worker_running.store(false, Ordering::Release);
     }
 }
@@ -418,9 +473,17 @@ impl RecognitionTransport for PipeRecognitionTransport {
         sid: &str,
         request_id: u64,
         session_id: u32,
+        abort: HANDLE,
+        deadline_ms: u64,
     ) -> TransportResult<Self::Grant> {
         let wide: Vec<u16> = sid.encode_utf16().collect();
-        match crate::pipe_client::PipeClient.prepare(&wide, request_id, session_id) {
+        match crate::pipe_client::PipeClient.prepare_with_limits(
+            &wide,
+            request_id,
+            session_id,
+            Some(abort),
+            deadline_ms,
+        ) {
             Ok(password) => TransportResult::Grant(password),
             Err(error) => {
                 let outcome = classify(error.code().0 as u32);
@@ -441,7 +504,8 @@ impl RecognitionTransport for PipeRecognitionTransport {
 /// Map a failed recognition transaction to a retry decision.
 ///
 /// Transient: no face, liveness not met, no profile match, camera busy and
-/// pipe contention. Everything else stops the attempt and leaves the manual
+/// pipe contention, plus cancellation/timeout races where the attempt may
+/// still be alive. Everything else stops the attempt and leaves the manual
 /// password tile in place.
 pub fn classify(hresult: u32) -> Outcome {
     const FACILITY_WIN32: u32 = 0x8007_0000;
@@ -451,7 +515,11 @@ pub fn classify(hresult: u32) -> Outcome {
             // ERROR_LOGON_FAILURE: face did not match, or liveness failed.
             1326
             // ERROR_PIPE_BUSY / ERROR_SEM_TIMEOUT / ERROR_TIMEOUT.
-            | 231 | 121 | 1460 => return Outcome::Transient,
+            | 231 | 121 | 1460
+            // ERROR_OPERATION_ABORTED: the abort event fired; if the attempt
+            // is still active this was a spurious race, so retry rather than
+            // kill.
+            | 995 => return Outcome::Transient,
             _ => {}
         }
     }
@@ -534,6 +602,7 @@ pub fn read_trigger_settings(sid: &str) -> TriggerSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU32;
     use std::sync::atomic::AtomicUsize;
 
     struct FakeClock(AtomicU32);
@@ -572,6 +641,8 @@ mod tests {
             _sid: &str,
             _request_id: u64,
             _session_id: u32,
+            _abort: HANDLE,
+            _deadline_ms: u64,
         ) -> TransportResult<Self::Grant> {
             self.calls.fetch_add(1, Ordering::AcqRel);
             let mut outcomes = self.outcomes.lock().unwrap();
