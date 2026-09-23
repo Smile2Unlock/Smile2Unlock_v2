@@ -600,6 +600,16 @@ target("su_windows_request_worker_pool_test")
     add_tests("default")
     on_test(wine_on_test)
 
+target("su_windows_client_disconnect_watcher_test")
+    apply_cpp_target("binary")
+    add_files("tests/windows/client_disconnect_watcher.cpp")
+    add_includedirs("src/platform/windows/auth_service")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
 -- reliably reports pass/fail for targets with a build artifact. The binary is

@@ -45,6 +45,12 @@ fallback whenever automatic recognition is disabled or cannot complete.
   profile-store mutations are serialized by a mutex held only around the file
   operations; the long agent run stays outside the lock, and
   `ManagementAuthorizer` serializes itself internally.
+- Each transaction runs a `ClientDisconnectWatcher`: a pending overlapped
+  read on the client pipe that completes with `ERROR_BROKEN_PIPE` when the
+  credential provider closes its handle (cancel or deadline). The service's
+  agent wait observes that event and terminates the camera agent immediately,
+  so a cancelled attempt does not keep the camera busy for the remaining
+  capture budget and the next retry can start on schedule.
 
 ## Remaining gaps
 

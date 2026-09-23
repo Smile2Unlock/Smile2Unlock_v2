@@ -1,5 +1,6 @@
 #include "logon_secret_server.h"
 
+#include "client_disconnect_watcher.h"
 #include "logon_secret_protocol.h"
 #include "recognition_agent_protocol.h"
 #include "sid_rate_limiter.h"
@@ -698,6 +699,7 @@ std::filesystem::path sibling_path(const wchar_t* name) {
 
 std::expected<std::vector<float>, DWORD> run_recognition_agent(
     HANDLE stop_event,
+    HANDLE client_gone,
     std::uint32_t requested_session_id,
     const RecognitionSettings& settings) {
     using namespace smile2unlock::recognition_agent_ipc;
@@ -867,8 +869,11 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     auto response = AgentResponse{};
     auto received = std::size_t{0};
     const auto deadline = GetTickCount64() + request.timeout_ms + 3000;
+    const bool watch_client = client_gone != nullptr && client_gone != INVALID_HANDLE_VALUE;
     while (received < sizeof(response)) {
-        if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+        if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0
+            || (watch_client
+                && WaitForSingleObject(client_gone, 0) == WAIT_OBJECT_0)) {
             terminate_agent(ERROR_CANCELLED);
             SecureZeroMemory(&request, sizeof(request));
             SecureZeroMemory(&response, sizeof(response));
@@ -910,8 +915,13 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             SecureZeroMemory(&response, sizeof(response));
             return std::unexpected(ERROR_TIMEOUT);
         }
-        (void)WaitForSingleObject(
-            stop_event, static_cast<DWORD>(std::min<ULONGLONG>(25, deadline - now)));
+        const auto slice = static_cast<DWORD>(std::min<ULONGLONG>(25, deadline - now));
+        if (watch_client) {
+            const HANDLE wait_events[]{stop_event, client_gone};
+            (void)WaitForMultipleObjects(2, wait_events, FALSE, slice);
+        } else {
+            (void)WaitForSingleObject(stop_event, slice);
+        }
     }
 
     auto exit_code = DWORD{STILL_ACTIVE};
@@ -956,6 +966,7 @@ std::string embedding_source(std::span<const float> feature) {
 
 Status process_request(
     HANDLE stop_event,
+    HANDLE client_gone,
     const Request& request,
     Response& response,
     security::LogonSecretStore& store,
@@ -1060,8 +1071,10 @@ Status process_request(
         // The agent run is the long pole (up to ~33 s) and touches no shared
         // state: it must stay outside state_mutex so store and profile
         // mutations from other workers proceed during a recognition attempt.
+        // client_gone terminates the agent as soon as the pipe client
+        // disconnects (credential-provider cancel or deadline).
         const auto feature = run_recognition_agent(
-            stop_event, request.logon_session_id, settings);
+            stop_event, client_gone, request.logon_session_id, settings);
         if (!feature) {
             return Status::kAuthenticationFailed;
         }
@@ -1311,10 +1324,15 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
                      sid = std::move(*caller_sid),
                      caller_pid = *caller_process_id,
                      pipe_handle = raw_pipe]() mutable {
+                        // Cancel the client's camera agent as soon as its
+                        // handle closes; reclaimed before the response write
+                        // reuses the pipe handle.
+                        auto watcher = ClientDisconnectWatcher{pipe_handle};
                         response.status = process_request(
-                            stop_event, request, response, secret_store_,
-                            profile_store_, *management_authorizer_,
+                            stop_event, watcher.event(), request, response,
+                            secret_store_, profile_store_, *management_authorizer_,
                             state_mutex_, sid, caller_pid);
+                        watcher.finish();
                         smile2unlock::logon_secret_ipc::clear_request(request);
                         (void)write_response(pipe_handle, response);
                         (void)FlushFileBuffers(pipe_handle);
