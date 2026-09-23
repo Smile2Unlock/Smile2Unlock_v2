@@ -600,6 +600,8 @@ target("su_windows_request_worker_pool_test")
     add_tests("default")
     on_test(wine_on_test)
 
+-- Windows-only: the watcher exercises Win32 overlapped named pipes.
+if is_plat("windows", "mingw") then
 target("su_windows_client_disconnect_watcher_test")
     apply_cpp_target("binary")
     add_files("tests/windows/client_disconnect_watcher.cpp")
@@ -609,6 +611,7 @@ target("su_windows_client_disconnect_watcher_test")
     end
     add_tests("default")
     on_test(wine_on_test)
+end
 
 -- A real (binary) target whose test runs the Rust core unit suite via Cargo.
 -- Using a binary target instead of a phony one because xmake's on_test only
