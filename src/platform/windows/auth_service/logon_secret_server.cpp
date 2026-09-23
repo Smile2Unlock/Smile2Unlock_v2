@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -26,6 +27,8 @@
 
 namespace su::windows::auth_service {
 
+// Management tokens are issued and consumed from pool worker threads; every
+// entry point takes the same mutex so the grant map needs no external lock.
 class ManagementAuthorizer {
 public:
     static constexpr auto kTokenBytes = std::size_t{32};
@@ -42,6 +45,7 @@ public:
         DWORD process_id,
         wchar_t* output,
         std::size_t capacity) {
+        const auto lock = std::lock_guard{mutex_};
         if (sid.empty() || process_id == 0 || capacity <= kTokenCharacters) {
             return false;
         }
@@ -77,6 +81,7 @@ public:
         std::wstring_view sid,
         DWORD process_id,
         std::wstring_view encoded_token) {
+        const auto lock = std::lock_guard{mutex_};
         if (encoded_token.size() != kTokenCharacters) {
             return false;
         }
@@ -145,11 +150,15 @@ private:
         });
     }
 
+    std::mutex mutex_;
     std::unordered_map<std::wstring, Grant> grants_;
 };
 
-// Diagnostic log (SYSTEM-writable). Diagnostic only.
+// Diagnostic log (SYSTEM-writable). Diagnostic only. Workers append from pool
+// threads, so serialize whole lines.
 void server_log(const char* message) {
+    static std::mutex log_mutex;
+    const auto lock = std::lock_guard{log_mutex};
     std::filesystem::create_directories(L"C:\\ProgramData\\Smile2Unlock\\Logs");
     std::ofstream log(
         L"C:\\ProgramData\\Smile2Unlock\\Logs\\auth-service.log", std::ios::app);
@@ -952,6 +961,7 @@ Status process_request(
     security::LogonSecretStore& store,
     security::FaceProfileStore& profile_store,
     ManagementAuthorizer& management_authorizer,
+    std::mutex& state_mutex,
     std::span<const std::uint8_t> caller_sid,
     DWORD caller_process_id) {
     if (request.magic != smile2unlock::logon_secret_ipc::kMagic
@@ -995,6 +1005,7 @@ Status process_request(
         return Status::kAccessDenied;
     }
     case Operation::kMarkStale: {
+        const auto lock = std::lock_guard{state_mutex};
         const auto marked = store.mark_stale(*sid_utf8);
         return marked ? Status::kOk : map_error(marked.error());
     }
@@ -1010,11 +1021,14 @@ Status process_request(
         if (!verify_windows_password(*account, *password)) {
             return Status::kAuthenticationFailed;
         }
-        const auto stored = store.store(
-            *sid_utf8,
-            account->canonical_username,
-            account->kind,
-            std::span<const wchar_t>{password->data(), password->size()});
+        const auto stored = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return store.store(
+                *sid_utf8,
+                account->canonical_username,
+                account->kind,
+                std::span<const wchar_t>{password->data(), password->size()});
+        }();
         if (!stored) {
             return map_error(stored.error());
         }
@@ -1035,17 +1049,24 @@ Status process_request(
         if (!verify_windows_password(*account, *password)) {
             return Status::kAuthenticationFailed;
         }
-        const auto cleared = store.clear(*sid_utf8);
+        const auto cleared = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return store.clear(*sid_utf8);
+        }();
         return cleared ? Status::kOk : map_error(cleared.error());
     }
     case Operation::kAuthenticateAndPrepare: {
         const auto settings = recognition_settings(*requested_sid);
+        // The agent run is the long pole (up to ~33 s) and touches no shared
+        // state: it must stay outside state_mutex so store and profile
+        // mutations from other workers proceed during a recognition attempt.
         const auto feature = run_recognition_agent(
             stop_event, request.logon_session_id, settings);
         if (!feature) {
             return Status::kAuthenticationFailed;
         }
         const auto source = embedding_source(*feature);
+        const auto lock = std::lock_guard{state_mutex};
         const auto report = profile_store.authenticate(
             *sid_utf8, source, settings.recognition_threshold, true);
         if (!report) {
@@ -1078,15 +1099,24 @@ Status process_request(
         if (!label_utf8) {
             return label_utf8.error();
         }
-        const auto credential_ready = store.configured(*sid_utf8);
+        const auto credential_ready = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return store.configured(*sid_utf8);
+        }();
         if (!credential_ready || !*credential_ready) {
             return credential_ready ? Status::kUnavailable : map_error(credential_ready.error());
         }
-        const auto enrolled = profile_store.enroll(*sid_utf8, *label_utf8, *payload);
+        const auto enrolled = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return profile_store.enroll(*sid_utf8, *label_utf8, *payload);
+        }();
         if (!enrolled) {
             return map_profile_error(enrolled.error());
         }
-        const auto profiles = profile_store.list_json(*sid_utf8);
+        const auto profiles = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return profile_store.list_json(*sid_utf8);
+        }();
         if (!profiles || !copy_payload(*profiles, response)) {
             return profiles ? Status::kCorrupt : map_profile_error(profiles.error());
         }
@@ -1099,7 +1129,10 @@ Status process_request(
         return Status::kOk;
     }
     case Operation::kListProfiles: {
-        const auto profiles = profile_store.list_json(*sid_utf8);
+        const auto profiles = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return profile_store.list_json(*sid_utf8);
+        }();
         return profiles && copy_payload(*profiles, response)
             ? Status::kOk
             : (profiles ? Status::kCorrupt : map_profile_error(profiles.error()));
@@ -1114,7 +1147,10 @@ Status process_request(
                 *requested_sid, caller_process_id, *management_token)) {
             return Status::kAccessDenied;
         }
-        const auto removed = profile_store.remove(*sid_utf8, *profile_id);
+        const auto removed = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return profile_store.remove(*sid_utf8, *profile_id);
+        }();
         if (!removed) {
             return map_profile_error(removed.error());
         }
@@ -1134,9 +1170,13 @@ Status process_request(
         if (!payload) {
             return Status::kInvalidRequest;
         }
-        const auto report = profile_store.authenticate(
-            *sid_utf8, *payload, recognition_settings(*requested_sid).recognition_threshold,
-            request.account_kind == 1);
+        const auto report = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return profile_store.authenticate(
+                *sid_utf8, *payload,
+                recognition_settings(*requested_sid).recognition_threshold,
+                request.account_kind == 1);
+        }();
         if (!report) {
             return map_profile_error(report.error());
         }
@@ -1153,7 +1193,10 @@ Status process_request(
         return copy_payload(report_json, response) ? Status::kOk : Status::kCorrupt;
     }
     case Operation::kCredentialStatus: {
-        const auto configured = store.configured(*sid_utf8);
+        const auto configured = [&] {
+            const auto lock = std::lock_guard{state_mutex};
+            return store.configured(*sid_utf8);
+        }();
         if (!configured) {
             return map_error(configured.error());
         }
@@ -1214,7 +1257,8 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             return std::unexpected(GetLastError());
         }
         server_log("serve: pipe created, waiting for client");
-        const auto pipe = ScopedHandle{raw_pipe};
+        // Non-const: ownership transfers to the pool task via release().
+        auto pipe = ScopedHandle{raw_pipe};
         const auto connected = wait_for_pipe_client(raw_pipe, stop_event);
         if (!connected) {
             if (connected.error() == ERROR_OPERATION_ABORTED
@@ -1257,10 +1301,35 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             server_log("serve: request received");
             response.request_id = request.request_id;
             response.logon_session_id = request.logon_session_id;
-            response.status = process_request(
-                stop_event, request, response, secret_store_, profile_store_,
-                *management_authorizer_, *caller_sid, *caller_process_id);
-            server_log(("serve: response status=" + std::to_string(static_cast<int>(response.status))).c_str());
+            // The transaction owns the pipe once the pool accepts it: the
+            // task closes the raw handle in every path, and the accept loop
+            // releases its guard only on a successful submit. A rejected
+            // closure captured the handle as a plain value and never ran,
+            // so ownership stays with the loop's ScopedHandle below.
+            if (worker_pool_.submit(
+                    [this, stop_event, request, response,
+                     sid = std::move(*caller_sid),
+                     caller_pid = *caller_process_id,
+                     pipe_handle = raw_pipe]() mutable {
+                        response.status = process_request(
+                            stop_event, request, response, secret_store_,
+                            profile_store_, *management_authorizer_,
+                            state_mutex_, sid, caller_pid);
+                        smile2unlock::logon_secret_ipc::clear_request(request);
+                        (void)write_response(pipe_handle, response);
+                        (void)FlushFileBuffers(pipe_handle);
+                        smile2unlock::logon_secret_ipc::clear_response(response);
+                        (void)DisconnectNamedPipe(pipe_handle);
+                        (void)CloseHandle(pipe_handle);
+                    })) {
+                pipe.release();
+                smile2unlock::logon_secret_ipc::clear_request(request);
+                continue;
+            }
+            // Pool saturated: reject now instead of queueing behind up to
+            // ~30 s recognition attempts.
+            server_log("serve: worker pool saturated, rejecting");
+            response.status = Status::kUnavailable;
         } else {
             response.status = Status::kInvalidRequest;
         }
