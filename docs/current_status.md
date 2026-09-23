@@ -5,7 +5,7 @@
 ## 已实现主线
 
 - Linux：Slint GUI、V4L2/SeetaFace 识别、system-owned 加密档案、`su_authd`、PAM bridge、control socket、D-Bus/Polkit 部署 helper，以及 DMS、KScreenLocker、Plasma Login、GDM 和 SDDM 的受控 PAM 转换。
-- Windows：纯 Rust Credential Provider、LocalSystem 认证服务、加密的 per-SID 人脸档案与账户凭据、目标会话识别 agent、命名管道协议、锁屏自动识别（自动模式开关、初始延迟、重试间隔、超时与机器级策略存储）、UAC 部署 helper 和可验证 ZIP 打包。
+- Windows：纯 Rust Credential Provider、LocalSystem 认证服务（有界 worker 池并发处理事务）、加密的 per-SID 人脸档案与账户凭据、目标会话识别 agent、命名管道协议（overlapped 事务、取消与截止时间，客户端断开即终止识别 agent）、锁屏自动识别（自动模式开关、初始延迟、重试间隔、超时与机器级策略存储）、UAC 部署 helper 和可验证 ZIP 打包。
 - 共享核心：C++26 modules 识别流水线、Rust C ABI、XChaCha20-Poly1305 封套、外部 i18n 资源、统一 `assets/` 布局和 Xmake 构建。
 
 Windows 锁屏认证的当前数据流是：
@@ -21,6 +21,13 @@ Credential Provider
 ```
 
 `su_app.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
+
+## 2026-09-23 验证快照
+
+- Windows 锁屏自动识别合入主线（#67）：`auto_recognition.rs` 状态机、`auto_runtime.rs` worker、机器级策略存储与 GUI 开关；Wine 下 69 个凭据提供者测试通过。
+- 服务端有界 worker 池合入（#68）：接受循环把事务分发给 4 worker + 深度 8 的队列，池满即回 `kUnavailable`，关停排空；secret/profile 存储操作加互斥锁，识别 agent 运行保持在锁外。
+- 凭据提供者管道事务改为 overlapped I/O 合入（#69）：写/读各自等待（IO 完成、取消事件、截止时间），取消用 `CancelIoEx`，attempt 预算由传输层强制执行；Wine 假服务器覆盖正常/取消/超时三路径。
+- 本地直接验证（不经容器）：凭据提供者 72/72、worker 池、SID 限流与断开监视 Wine 测试全部通过；`main` 分支保护已生效（必需检查 + review，#68/#69 均按此流程合并）。
 
 ## 2026-09-08 验证快照
 
