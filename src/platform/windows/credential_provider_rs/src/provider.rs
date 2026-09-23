@@ -10,6 +10,7 @@
 
 use core::cell::{Cell, RefCell};
 use core::ptr;
+use std::sync::Arc;
 
 use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree};
 use windows::Win32::UI::Shell::{
@@ -19,22 +20,25 @@ use windows::Win32::UI::Shell::{
     ICredentialProviderSetUserArray, ICredentialProviderSetUserArray_Impl,
     ICredentialProviderUserArray,
 };
-use windows_core::{BOOL, Error, GUID, Interface, PWSTR, Ref, implement};
+use windows_core::{BOOL, Error, GUID, PWSTR, Ref, implement};
 
+use crate::auto_runtime::{AutoRuntime, MonotonicClock, PipeRecognitionTransport};
 use crate::credential::Credential;
+use crate::event_sink::GitEventNotifier;
 use crate::fields::{self, FieldId};
 
 #[implement(ICredentialProvider, ICredentialProviderSetUserArray)]
 pub struct Provider {
     /// CPUS_* value accepted by SetUsageScenario; None until set.
     usage_scenario: Cell<Option<i32>>,
-    /// upadvisecontext from the last Advise call (Phase 2 stores the
-    /// marshalled ICredentialProviderEvents pointer itself).
+    /// upadvisecontext from the last Advise call.
     advised_context: Cell<usize>,
     /// SIDs passed via SetUserArray. V2 credential providers must return a
     /// valid SID from ICredentialProviderCredential2::GetUserSid for every
     /// tile or LogonUI discards it.
     user_sids: RefCell<Vec<String>>,
+    /// Process-wide automatic-recognition worker shared by every tile.
+    runtime: Arc<AutoRuntime<PipeRecognitionTransport>>,
 }
 
 impl Provider {
@@ -43,6 +47,7 @@ impl Provider {
             usage_scenario: Cell::new(None),
             advised_context: Cell::new(0),
             user_sids: RefCell::new(Vec::new()),
+            runtime: AutoRuntime::new(PipeRecognitionTransport, Box::new(MonotonicClock)),
         }
     }
 
@@ -103,22 +108,40 @@ impl ICredentialProvider_Impl for Provider_Impl {
 
     fn Advise(
         &self,
-        _pcpe: Ref<ICredentialProviderEvents>,
+        pcpe: Ref<ICredentialProviderEvents>,
         upadvisecontext: usize,
     ) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::Advise");
         self.advised_context.set(upadvisecontext);
-
-        // Face authorization is synchronous and service-owned in protocol v2.
-        // The legacy UDP worker is deliberately not started; no packet can
-        // trigger auto-submit or release a secret.
-        crate::log::cp_log("Provider::Advise: LocalSystem broker mode");
+        // Allow a provider instance that was UnAdvise'd to be re-armed.
+        self.runtime.arm();
+        // Marshal the events interface through the Global Interface Table so
+        // the recognition worker (a different apartment) can call
+        // CredentialsChanged. Storing the raw pointer across threads is
+        // forbidden; the GIT hands out a proxy instead.
+        match pcpe.as_ref() {
+            Some(events) => match GitEventNotifier::register(events, upadvisecontext) {
+                Ok(notifier) => {
+                    self.runtime.set_notifier(Arc::new(notifier));
+                    crate::log::cp_log("Provider::Advise: events marshalled into GIT");
+                }
+                Err(error) => crate::log::cp_log(&format!(
+                    "Provider::Advise: GIT registration FAILED {:08x}",
+                    error.code().0
+                )),
+            },
+            None => crate::log::cp_log("Provider::Advise: events pointer missing"),
+        }
         Ok(())
     }
 
     fn UnAdvise(&self) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::UnAdvise");
         self.advised_context.set(0);
+        // Stop the worker and revoke the marshalled interface. The worker
+        // exits on its own; the UI thread never joins it.
+        self.runtime.shutdown();
+        self.runtime.clear_notifier();
         Ok(())
     }
 
@@ -188,22 +211,33 @@ impl ICredentialProvider_Impl for Provider_Impl {
         pbautologonwithdefault: *mut BOOL,
     ) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::GetCredentialCount");
-        // Protocol v2 authenticates synchronously in GetSerialization. Do not
-        // cache a face grant or password inside the COM provider.
-        let autologon = false;
-        let user_count = self.user_sids.borrow().len();
+        // When automatic recognition published a grant, LogonUI is woken with
+        // CredentialsChanged and re-queries this method: make that tile the
+        // default and request autologon so LogonUI calls GetSerialization
+        // without a click. The credential still consumes the grant exactly
+        // once, and a manual password tile is unaffected.
+        let user_sids = self.user_sids.borrow();
+        let ready_sid = self.runtime.ready_sid();
+        let default_index = ready_sid
+            .as_ref()
+            .and_then(|sid| user_sids.iter().position(|candidate| candidate == sid))
+            .map(|index| index as u32)
+            .unwrap_or(0);
+        let autologon = ready_sid.is_some();
+        let user_count = user_sids.len();
+        drop(user_sids);
         if !pdwcount.is_null() {
             unsafe { *pdwcount = user_count as u32 };
         }
         if !pdwdefault.is_null() {
-            unsafe { *pdwdefault = 0 };
+            unsafe { *pdwdefault = default_index };
         }
         if !pbautologonwithdefault.is_null() {
             unsafe { *pbautologonwithdefault = BOOL(autologon as i32) };
         }
         crate::log::cp_log(&format!(
-            "Provider::GetCredentialCount autologon={}",
-            autologon
+            "Provider::GetCredentialCount autologon={} default={}",
+            autologon, default_index
         ));
         Ok(())
     }
@@ -214,74 +248,15 @@ impl ICredentialProvider_Impl for Provider_Impl {
         if user_sid.is_none() {
             return Err(Error::from_hresult(crate::E_INVALIDARG));
         }
-        let credential: ICredentialProviderCredential =
-            Credential::new(self.usage_scenario.get().unwrap_or(0), user_sid).into();
-
-        // Diagnostic self-test: exercise the credential immediately to prove
-        // it is functional. If LogonUI never calls credential methods, we want
-        // to know whether the object itself is broken.
-        crate::log::cp_log("Provider::GetCredentialAt: self-test start");
-        match unsafe { credential.SetSelected() } {
-            Ok(b) => crate::log::cp_log(&format!("  SetSelected -> {}", b.0)),
-            Err(e) => crate::log::cp_log(&format!("  SetSelected FAILED: {:08x}", e.code().0)),
-        }
-        match unsafe { credential.GetStringValue(2) } {
-            Ok(s) => {
-                let txt = unsafe { s.to_string().unwrap_or_default() };
-                crate::log::cp_log(&format!("  GetStringValue(2) -> '{}'", txt));
-            }
-            Err(e) => {
-                crate::log::cp_log(&format!("  GetStringValue(2) FAILED: {:08x}", e.code().0))
-            }
-        }
-        match credential.cast::<windows_core::IUnknown>() {
-            Ok(_) => crate::log::cp_log("  cast IUnknown -> ok"),
-            Err(e) => crate::log::cp_log(&format!("  cast IUnknown FAILED: {:08x}", e.code().0)),
-        }
-        // Real-QI checks for the V2/WFO surfaces inside the actual LogonUI
-        // process, mirroring what enum_probe does out-of-process.
-        match credential.cast::<windows::Win32::UI::Shell::ICredentialProviderCredential2>() {
-            Ok(c2) => {
-                crate::log::cp_log("  cast Credential2 -> ok");
-                match unsafe { c2.GetUserSid() } {
-                    Ok(sid) => {
-                        if sid.0.is_null() {
-                            crate::log::cp_log("  GetUserSid -> <null> (S_FALSE empty tile)");
-                        } else {
-                            let txt = unsafe { sid.to_string().unwrap_or_default() };
-                            crate::log::cp_log(&format!("  GetUserSid -> '{}'", txt));
-                            // SAFETY: SID was CoTaskMemAlloc'd by our own code.
-                            unsafe {
-                                windows::Win32::System::Com::CoTaskMemFree(Some(sid.0 as *const _))
-                            };
-                        }
-                    }
-                    Err(e) => {
-                        crate::log::cp_log(&format!("  GetUserSid FAILED: {:08x}", e.code().0))
-                    }
-                }
-            }
-            Err(e) => crate::log::cp_log(&format!("  cast Credential2 FAILED: {:08x}", e.code().0)),
-        }
-        match credential
-            .cast::<windows::Win32::UI::Shell::ICredentialProviderCredentialWithFieldOptions>()
-        {
-            Ok(wfo) => {
-                crate::log::cp_log("  cast WithFieldOptions -> ok");
-                match unsafe { wfo.GetFieldOptions(3) } {
-                    Ok(o) => crate::log::cp_log(&format!("  GetFieldOptions(3) -> {}", o.0)),
-                    Err(e) => {
-                        crate::log::cp_log(&format!("  GetFieldOptions FAILED: {:08x}", e.code().0))
-                    }
-                }
-            }
-            Err(e) => crate::log::cp_log(&format!(
-                "  cast WithFieldOptions FAILED: {:08x}",
-                e.code().0
-            )),
-        }
-        crate::log::cp_log("Provider::GetCredentialAt: self-test end");
-
+        // No diagnostic method calls here: invoking SetSelected during
+        // enumeration would start an automatic recognition attempt before
+        // LogonUI has actually selected the tile.
+        let credential: ICredentialProviderCredential = Credential::new(
+            self.usage_scenario.get().unwrap_or(0),
+            user_sid,
+            Arc::clone(&self.runtime),
+        )
+        .into();
         Ok(credential)
     }
 }
@@ -289,6 +264,8 @@ impl ICredentialProvider_Impl for Provider_Impl {
 impl ICredentialProviderSetUserArray_Impl for Provider_Impl {
     fn SetUserArray(&self, users: Ref<ICredentialProviderUserArray>) -> windows_core::Result<()> {
         crate::log::cp_log("Provider::SetUserArray");
+        // A new user array invalidates every tile that referenced the old one.
+        self.runtime.cancel();
         // V2 credential providers must associate each tile with a valid user
         // SID. Capture every enumerated user so multi-user logon screens get
         // one tile per account.
@@ -308,5 +285,54 @@ impl ICredentialProviderSetUserArray_Impl for Provider_Impl {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auto_recognition::Phase;
+
+    fn object_with_users(sids: &[&str]) -> windows_core::ComObject<Provider> {
+        let object = windows_core::ComObject::new(Provider::new());
+        object.usage_scenario.set(Some(CPUS_LOGON.0));
+        object
+            .user_sids
+            .borrow_mut()
+            .extend(sids.iter().map(|sid| (*sid).to_owned()));
+        object
+    }
+
+    #[test]
+    fn enumeration_does_not_start_recognition() {
+        // GetCredentialAt used to call SetSelected as a diagnostic self-test.
+        // In automatic mode that would start a camera attempt during tile
+        // enumeration, before LogonUI actually selected the tile.
+        let object = object_with_users(&["S-1-5-21-1"]);
+        let provider = object.to_interface::<ICredentialProvider>();
+        let credential = unsafe { provider.GetCredentialAt(0) }.expect("tile should exist");
+        assert_eq!(object.runtime.phase(), Phase::Idle);
+        drop(credential);
+    }
+
+    #[test]
+    fn credential_count_reports_no_autologon_without_grant() {
+        let object = object_with_users(&["S-1-5-21-1", "S-1-5-21-2"]);
+        let provider = object.to_interface::<ICredentialProvider>();
+        let mut count = 0u32;
+        let mut default = 99u32;
+        let mut autologon = BOOL(1);
+        unsafe { provider.GetCredentialCount(&mut count, &mut default, &mut autologon) }
+            .expect("count should succeed");
+        assert_eq!(count, 2);
+        assert_eq!(default, 0);
+        assert_eq!(autologon, BOOL(0));
+    }
+
+    #[test]
+    fn invalid_index_is_rejected() {
+        let object = object_with_users(&["S-1-5-21-1"]);
+        let provider = object.to_interface::<ICredentialProvider>();
+        assert!(unsafe { provider.GetCredentialAt(1) }.is_err());
     }
 }

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -306,6 +307,25 @@ std::expected<std::string, std::string> verify_profile(
         return std::unexpected(response.error());
     }
     return response_payload(*response);
+}
+
+std::expected<void, std::string> store_recognition_settings(
+    const RecognitionSettings& settings) {
+    static_assert(
+        sizeof(RecognitionSettings)
+        == sizeof(smile2unlock::logon_secret_ipc::RecognitionSettingsPayload));
+    auto request = request_for(Operation::kSetRecognitionSettings);
+    if (!request) {
+        return std::unexpected(request.error());
+    }
+    std::memcpy(request->payload, &settings, sizeof(settings));
+    request->payload_length = static_cast<std::uint32_t>(sizeof(settings));
+    auto response = transact(*request);
+    if (!response) {
+        return std::unexpected(response.error());
+    }
+    smile2unlock::logon_secret_ipc::clear_response(*response);
+    return {};
 }
 
 } // namespace su::windows::profile_client
