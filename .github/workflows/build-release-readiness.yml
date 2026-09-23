@@ -136,7 +136,7 @@ jobs:
       - name: Build Windows privileged components
         run: |
           xmake f -y -p mingw -a x86_64 -m release --with_slint=n --with_seetaface=n
-          xmake build -v su_deploy_helper su_auth_service su_password_tool su_windows_sid_rate_limiter_test
+          xmake build -v su_deploy_helper su_auth_service su_password_tool su_windows_sid_rate_limiter_test su_windows_request_worker_pool_test
 
       - name: Run Windows tests under Wine
         run: |
@@ -148,6 +148,7 @@ jobs:
           export WINEPATH
           xvfb-run -a xmake test su_deploy_helper/version -v
           xvfb-run -a xmake test su_windows_sid_rate_limiter_test/default -v
+          xvfb-run -a xmake test su_windows_request_worker_pool_test/default -v
           xvfb-run -a xmake test su_credential_provider_rust_tests/default -v
 
   windows-package:

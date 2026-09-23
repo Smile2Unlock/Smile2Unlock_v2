@@ -34,12 +34,17 @@ fallback whenever automatic recognition is disabled or cannot complete.
 - The service maps a bounded per-capture agent timeout from the same
   `TimeoutSec` value (clamped to 5–30 s) while the provider owns the overall
   attempt deadline, so one slow capture cannot consume the whole budget.
+- The service dispatches accepted transactions to a bounded worker pool
+  (`request_worker_pool.h`: 4 workers, queue depth 8, drain-on-stop), so a
+  recognition attempt no longer blocks settings writes, manual requests or
+  other sessions on the accept loop. When the pool is saturated the caller is
+  rejected with `kUnavailable` instead of queueing. Secret-store and
+  profile-store mutations are serialized by a mutex held only around the file
+  operations; the long agent run stays outside the lock, and
+  `ManagementAuthorizer` serializes itself internally.
 
 ## Remaining gaps
 
-- The service still serializes requests on one pipe instance. A recognition
-  attempt of up to 30 s therefore delays other requests; a bounded worker pool
-  is still required before claiming the service is non-blocking.
 - The blocking pipe transaction is cancelled with `CancelSynchronousIo`
   instead of overlapped pipe I/O. If that call fails, the worker stays blocked
   until the service responds, then discards the stale result.
@@ -95,8 +100,12 @@ Config bounds, provider deadline, service agent timeout and UI text therefore
 agree: the GUI accepts 0–3600 s delays, 1–3600 s retry delay and 5–600 s
 timeout, and the shared Rust core normalizes the same way.
 
-Still required: a bounded worker model in the service so a recognition attempt
-cannot block settings, manual requests or other sessions.
+The accept loop hands each validated transaction to a bounded worker pool
+(4 workers, queue depth 8) and immediately creates the next pipe instance, so
+a long recognition attempt cannot block settings, manual requests or other
+sessions. Store and profile mutations share a mutex that the agent run never
+holds; a saturated pool rejects with `kUnavailable` rather than queueing;
+shutdown drains accepted transactions because each task closes its own pipe.
 
 ## Acceptance tests
 
