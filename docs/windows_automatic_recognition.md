@@ -24,8 +24,11 @@ fallback whenever automatic recognition is disabled or cannot complete.
   call during enumeration was removed.
 - Deselection, password editing, user-array replacement, `UnAdvise`, hard
   failures, a failed Windows logon and deadline expiry invalidate the attempt
-  and erase the prepared secret. Cancellation calls `CancelSynchronousIo` on
-  the worker so the LogonUI thread never waits for a camera.
+  and erase the prepared secret. The pipe transaction is overlapped I/O:
+  each write/read waits on `(io completion, abort event, attempt deadline)`,
+  and aborting cancels the in-flight request with `CancelIoEx`, so the
+  LogonUI thread never waits for a camera and cancellation no longer depends
+  on `CancelSynchronousIo` succeeding.
 - The GUI exposes the automatic-mode switch plus initial delay, retry delay
   and timeout. Saving pushes the policy to the service, which persists it
   machine-wide under
@@ -45,9 +48,6 @@ fallback whenever automatic recognition is disabled or cannot complete.
 
 ## Remaining gaps
 
-- The blocking pipe transaction is cancelled with `CancelSynchronousIo`
-  instead of overlapped pipe I/O. If that call fails, the worker stays blocked
-  until the service responds, then discards the stale result.
 - Real Windows secure-desktop acceptance (cold boot, lock/unlock, switching
   users, RDP, unplugged camera, missing model, expired password, service
   restart) has not been run. Wine cannot establish these behaviors.
@@ -116,6 +116,10 @@ shutdown drains accepted transactions because each task closes its own pipe.
   model, no profile, mismatch followed by a match and broker password rejection.
   Retry, cancellation and single-use grant consumption are covered in
   `auto_runtime.rs`; the service-side mapping is covered by `classify` tests.
+  The overlapped pipe transaction itself is exercised under Wine against an
+  in-process fake server in `pipe_client.rs`: happy path, mid-transaction
+  abort returning ERROR_OPERATION_ABORTED promptly, and deadline expiry
+  returning ERROR_TIMEOUT promptly.
 - COM integration: stable identity after `CredentialsChanged`, no recognition
   during enumeration, one serialization per result, event revocation and DLL
   lifetime while an operation is being cancelled. Enumeration and autologon are
