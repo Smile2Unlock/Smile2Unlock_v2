@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <iomanip>
@@ -158,6 +159,7 @@ void server_log(const char* message) {
 namespace {
 
 using smile2unlock::logon_secret_ipc::Operation;
+using smile2unlock::logon_secret_ipc::RecognitionSettingsPayload;
 using smile2unlock::logon_secret_ipc::Request;
 using smile2unlock::logon_secret_ipc::Response;
 using smile2unlock::logon_secret_ipc::Status;
@@ -360,6 +362,9 @@ struct RecognitionSettings {
     float recognition_threshold = 0.65F;
     bool liveness_detection = true;
     float liveness_threshold = 0.5F;
+    // Per-capture agent deadline, from the same TimeoutSec the credential
+    // provider uses for its overall attempt.
+    std::uint32_t timeout_ms = 10'000;
 };
 
 std::optional<DWORD> registry_dword(HKEY key, const wchar_t* name) {
@@ -375,16 +380,16 @@ std::optional<DWORD> registry_dword(HKEY key, const wchar_t* name) {
     return value;
 }
 
-RecognitionSettings recognition_settings(std::wstring_view sid) {
-    auto settings = RecognitionSettings{};
-    const auto path = std::wstring{sid} + L"\\Software\\Smile2Unlock\\Recognition";
+std::optional<RecognitionSettings> recognition_settings_at(
+    HKEY root, const std::wstring& path) {
     auto raw_key = HKEY{};
-    if (RegOpenKeyExW(HKEY_USERS, path.c_str(), 0, KEY_QUERY_VALUE, &raw_key)
+    if (RegOpenKeyExW(root, path.c_str(), 0, KEY_QUERY_VALUE, &raw_key)
         != ERROR_SUCCESS) {
-        return settings;
+        return std::nullopt;
     }
     const auto key = std::unique_ptr<std::remove_pointer_t<HKEY>, decltype(&RegCloseKey)>{
         raw_key, &RegCloseKey};
+    auto settings = RecognitionSettings{};
     if (const auto value = registry_dword(raw_key, L"CameraIndex"); value && *value <= 64) {
         settings.camera_index = static_cast<std::int32_t>(*value);
     }
@@ -399,7 +404,83 @@ RecognitionSettings recognition_settings(std::wstring_view sid) {
         value && *value >= 300 && *value <= 1000) {
         settings.liveness_threshold = static_cast<float>(*value) / 1000.0F;
     }
+    if (const auto value = registry_dword(raw_key, L"TimeoutSec");
+        value && *value >= 5 && *value <= 600) {
+        settings.timeout_ms = *value * 1000;
+    }
     return settings;
+}
+
+// The machine-wide key written by kSetRecognitionSettings is authoritative so
+// a cold boot (user hive not loaded) still sees the configured policy. The
+// per-user key remains a fallback for installs that predate the service store.
+RecognitionSettings recognition_settings(std::wstring_view sid) {
+    if (const auto settings = recognition_settings_at(
+            HKEY_LOCAL_MACHINE,
+            L"SOFTWARE\\Smile2Unlock\\Recognition\\" + std::wstring{sid})) {
+        return *settings;
+    }
+    if (const auto settings = recognition_settings_at(
+            HKEY_USERS, std::wstring{sid} + L"\\Software\\Smile2Unlock\\Recognition")) {
+        return *settings;
+    }
+    return {};
+}
+
+bool valid_recognition_settings(
+    const smile2unlock::logon_secret_ipc::RecognitionSettingsPayload& payload) {
+    return payload.camera_index <= 64
+        && payload.recognition_threshold_milli >= 500
+        && payload.recognition_threshold_milli <= 1000
+        && payload.liveness_enabled <= 1
+        && payload.liveness_threshold_milli >= 300
+        && payload.liveness_threshold_milli <= 1000
+        && payload.recognition_mode <= 1
+        && payload.auto_delay_sec <= 3600
+        && payload.retry_delay_sec >= 1
+        && payload.retry_delay_sec <= 3600
+        && payload.timeout_sec >= 5
+        && payload.timeout_sec <= 600;
+}
+
+bool write_recognition_settings(
+    std::wstring_view sid,
+    const smile2unlock::logon_secret_ipc::RecognitionSettingsPayload& payload) {
+    const auto path =
+        L"SOFTWARE\\Smile2Unlock\\Recognition\\" + std::wstring{sid};
+    auto raw_key = HKEY{};
+    if (RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            path.c_str(),
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            nullptr,
+            &raw_key,
+            nullptr) != ERROR_SUCCESS) {
+        return false;
+    }
+    const auto key = std::unique_ptr<std::remove_pointer_t<HKEY>, decltype(&RegCloseKey)>{
+        raw_key, &RegCloseKey};
+    const auto set = [raw_key](const wchar_t* name, DWORD value) {
+        return RegSetValueExW(
+                   raw_key,
+                   name,
+                   0,
+                   REG_DWORD,
+                   reinterpret_cast<const BYTE*>(&value),
+                   sizeof(value))
+            == ERROR_SUCCESS;
+    };
+    return set(L"CameraIndex", payload.camera_index)
+        && set(L"RecognitionThresholdMilli", payload.recognition_threshold_milli)
+        && set(L"LivenessEnabled", payload.liveness_enabled)
+        && set(L"LivenessThresholdMilli", payload.liveness_threshold_milli)
+        && set(L"RecognitionMode", payload.recognition_mode)
+        && set(L"AutoDelaySec", payload.auto_delay_sec)
+        && set(L"RetryDelaySec", payload.retry_delay_sec)
+        && set(L"TimeoutSec", payload.timeout_sec);
 }
 
 std::expected<ResolvedAccount, Status> resolve_account(
@@ -759,7 +840,11 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
         return std::unexpected(ERROR_GEN_FAILURE);
     }
     request.camera_index = settings.camera_index;
-    request.timeout_ms = 10'000;
+    // Per-capture deadline: bounded independently of the credential
+    // provider's overall attempt deadline so one slow capture cannot consume
+    // the whole budget and so a long attempt cannot block the service loop for
+    // minutes. The provider retries transient outcomes inside its own deadline.
+    request.timeout_ms = std::clamp<std::uint32_t>(settings.timeout_ms, 5'000, 30'000);
     request.liveness_threshold = settings.liveness_detection
         ? settings.liveness_threshold
         : 0.0F;
@@ -891,7 +976,8 @@ Status process_request(
         || request.operation == Operation::kListProfiles
         || request.operation == Operation::kDeleteProfile
         || request.operation == Operation::kVerifyProfile
-        || request.operation == Operation::kCredentialStatus) {
+        || request.operation == Operation::kCredentialStatus
+        || request.operation == Operation::kSetRecognitionSettings) {
         const auto caller_sid_text = sid_string(caller_sid);
         if (!caller_sid_text || !std::ranges::equal(*caller_sid_text, *requested_sid)) {
             return Status::kAccessDenied;
@@ -1074,6 +1160,19 @@ Status process_request(
         response.payload[0] = *configured ? 1 : 0;
         response.payload_length = 1;
         return Status::kOk;
+    }
+    case Operation::kSetRecognitionSettings: {
+        if (request.payload_length != sizeof(RecognitionSettingsPayload)) {
+            return Status::kInvalidRequest;
+        }
+        auto payload = RecognitionSettingsPayload{};
+        std::memcpy(&payload, request.payload, sizeof(payload));
+        if (!valid_recognition_settings(payload)) {
+            return Status::kInvalidRequest;
+        }
+        return write_recognition_settings(*requested_sid, payload)
+            ? Status::kOk
+            : Status::kUnavailable;
     }
     }
     return Status::kInvalidRequest;

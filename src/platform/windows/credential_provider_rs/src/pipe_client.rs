@@ -394,6 +394,38 @@ impl PipeClient {
     }
 }
 
+/// Unique-enough request id for the service replay cache. A naive per-process
+/// counter starting at 1 collides with ids the service has already seen (it
+/// keeps a process-lifetime cache), so seed with the current time and PID and
+/// then bump a process-local counter.
+pub fn next_request_id() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    // SAFETY: GetCurrentProcessId has no parameters and cannot fail.
+    let pid = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() } as u64;
+    let base = (millis << 24) ^ (pid << 8) ^ (millis & 0xff);
+    let base = if base == 0 { 1 } else { base };
+    base + NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// LogonUI's session id (the console session on the lock screen).
+pub fn current_session_id() -> u32 {
+    let mut session_id = 0u32;
+    // SAFETY: both arguments are valid; a failure leaves session_id at 0 and
+    // the service falls back to the active console session.
+    let _ = unsafe {
+        windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+            windows::Win32::System::Threading::GetCurrentProcessId(),
+            &mut session_id,
+        )
+    };
+    session_id
+}
+
 /// Current process owner SID as a string, or Err on failure.
 pub fn current_user_sid() -> Result<String, Error> {
     let process = unsafe { GetCurrentProcess() };

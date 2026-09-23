@@ -182,10 +182,34 @@ bool save_recognition_settings(const CoreConfig& config) {
             raw_key, name, 0, REG_DWORD,
             reinterpret_cast<const BYTE*>(&value), sizeof(value)) == ERROR_SUCCESS;
     };
-    return set(L"CameraIndex", camera_index)
+    const auto trigger_saved =
+        set(L"CameraIndex", camera_index)
         && set(L"RecognitionThresholdMilli", recognition_threshold)
         && set(L"LivenessEnabled", liveness_enabled)
-        && set(L"LivenessThresholdMilli", liveness_threshold);
+        && set(L"LivenessThresholdMilli", liveness_threshold)
+        && set(L"RecognitionMode", static_cast<DWORD>(config.recognition_mode))
+        && set(L"AutoDelaySec", static_cast<DWORD>(config.auto_delay_sec))
+        && set(L"RetryDelaySec", static_cast<DWORD>(config.retry_delay_sec))
+        && set(L"TimeoutSec", static_cast<DWORD>(config.timeout_sec));
+    if (!trigger_saved) {
+        return false;
+    }
+    // The credential provider runs as SYSTEM in LogonUI and reads the
+    // machine-wide copy written by the service, which survives a cold boot
+    // where HKEY_USERS\<SID> is not loaded. The service is a required part of
+    // the Windows deployment, so a failed push is a real save failure.
+    const auto pushed = su::windows::profile_client::store_recognition_settings(
+        su::windows::profile_client::RecognitionSettings{
+            .camera_index = camera_index,
+            .recognition_threshold_milli = recognition_threshold,
+            .liveness_enabled = liveness_enabled,
+            .liveness_threshold_milli = liveness_threshold,
+            .recognition_mode = static_cast<std::uint32_t>(config.recognition_mode),
+            .auto_delay_sec = static_cast<std::uint32_t>(config.auto_delay_sec),
+            .retry_delay_sec = static_cast<std::uint32_t>(config.retry_delay_sec),
+            .timeout_sec = static_cast<std::uint32_t>(config.timeout_sec),
+        });
+    return pushed.has_value();
 }
 
 }  // namespace

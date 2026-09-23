@@ -869,6 +869,39 @@ export component AppWindow inherits Window {
                                 }
                                 StatusPill { width: 70px; label: Math.round(root.liveness_threshold * 100) + "%"; tone: "neutral"; }
                             }
+                            if root.platform_windows: VerticalLayout {
+                                spacing: 10px;
+                                Rectangle { height: 1px; background: UiTheme.divider; }
+                                Switch {
+                                    text: root.translate("settings.auto_recognition", root.language_index);
+                                    checked: root.recognition_mode == 1;
+                                    toggled => {
+                                        root.recognition_mode = self.checked ? 1 : 0;
+                                        root.settings_status = root.translate("settings.unsaved", root.language_index);
+                                    }
+                                }
+                                HorizontalLayout {
+                                    spacing: 16px;
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 6px;
+                                        Text { text: root.translate("settings.auto_delay", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
+                                        SpinBox { enabled: root.recognition_mode == 1; width: 110px; minimum: 0; maximum: 60; value <=> root.auto_delay_sec; }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 6px;
+                                        Text { text: root.translate("settings.retry_delay", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
+                                        SpinBox { enabled: root.recognition_mode == 1; width: 110px; minimum: 1; maximum: 60; value <=> root.retry_delay_sec; }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        spacing: 6px;
+                                        Text { text: root.translate("settings.auto_timeout", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
+                                        SpinBox { enabled: root.recognition_mode == 1; width: 110px; minimum: 5; maximum: 600; value <=> root.timeout_sec; }
+                                    }
+                                }
+                            }
                         }
                     }
 

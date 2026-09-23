@@ -1,26 +1,53 @@
 # Windows automatic recognition: implementation design
 
-Status: design reviewed against the current code, not implemented. The automatic
-mode, initial delay, retry delay and timeout controls remain hidden. Manual face
-submission and manual password submission remain the supported login paths.
+Status: implemented in the Rust credential provider, the LocalSystem service
+and the GUI; real Windows secure-desktop acceptance is still pending. Manual
+face submission and manual password submission remain supported and are the
+fallback whenever automatic recognition is disabled or cannot complete.
 
-## Current gaps
+## What is implemented
 
-- `CoreConfig` persists `recognition_mode`, `auto_delay_sec`, `retry_delay_sec`
-  and `timeout_sec`, but the Credential Provider does not read them.
-- `Provider::Advise` discards the events interface; `event_sink.rs` is a skeleton.
-  No worker can currently notify LogonUI that face authentication completed.
-- `GetCredentialAt` creates a new credential on every call. It also calls
-  `SetSelected` during a diagnostic self-test. Adding a timer to `SetSelected`
-  alone would start recognition during enumeration and lose state on requery.
-- `GetSerialization` blocks in `CallNamedPipeW`. Its 3000 ms argument controls
-  waiting for an available pipe, not the duration of the complete transaction.
-  Changing that argument does not implement an authentication deadline.
-- The service serializes requests and launches an agent with a fixed 10 second
-  timeout. The agent accepts at most 30 seconds, while config accepts up to 600.
-  It returns the first live embedding; the service compares it only once.
+- `auto_recognition.rs` holds the trigger policy and the attempt state machine
+  (idle, initial delay, recognizing, retry delay, ready, submitted, stopped)
+  with generation-based cancellation. It is platform independent and tested
+  with a fake clock: zero delay, retry delay, exact deadline, repeated
+  selection, deselection in every phase, stale completion after reselection,
+  the per-attempt cap and single-use grant consumption.
+- `auto_runtime.rs` owns the worker thread. `Provider::Advise` registers the
+  events interface in the process-wide Global Interface Table; the worker
+  obtains a marshaled `ICredentialProviderEvents` proxy and calls
+  `CredentialsChanged`. No raw COM pointer crosses apartments and no
+  `Send`/`Sync` bypass is used.
+- `Provider::GetCredentialCount` returns the ready tile index and enables
+  autologon only while a grant is published. `Credential::GetSerialization`
+  consumes the prepared password exactly once; the diagnostic `SetSelected`
+  call during enumeration was removed.
+- Deselection, password editing, user-array replacement, `UnAdvise`, hard
+  failures, a failed Windows logon and deadline expiry invalidate the attempt
+  and erase the prepared secret. Cancellation calls `CancelSynchronousIo` on
+  the worker so the LogonUI thread never waits for a camera.
+- The GUI exposes the automatic-mode switch plus initial delay, retry delay
+  and timeout. Saving pushes the policy to the service, which persists it
+  machine-wide under
+  `HKLM\SOFTWARE\Smile2Unlock\Recognition\<SID>`; the provider reads that key
+  first (cold-boot safe) and falls back to `HKEY_USERS\<SID>` and defaults.
+- The service maps a bounded per-capture agent timeout from the same
+  `TimeoutSec` value (clamped to 5–30 s) while the provider owns the overall
+  attempt deadline, so one slow capture cannot consume the whole budget.
 
-## Proposed lifecycle
+## Remaining gaps
+
+- The service still serializes requests on one pipe instance. A recognition
+  attempt of up to 30 s therefore delays other requests; a bounded worker pool
+  is still required before claiming the service is non-blocking.
+- The blocking pipe transaction is cancelled with `CancelSynchronousIo`
+  instead of overlapped pipe I/O. If that call fails, the worker stays blocked
+  until the service responds, then discards the stale result.
+- Real Windows secure-desktop acceptance (cold boot, lock/unlock, switching
+  users, RDP, unplugged camera, missing model, expired password, service
+  restart) has not been run. Wine cannot establish these behaviors.
+
+## Lifecycle
 
 Keep stable credentials indexed by SID for the current user-array generation.
 Remove the diagnostic `SetSelected` invocation before adding selection effects.
@@ -52,33 +79,39 @@ idle, initial delay, recognizing, retry delay, ready, submitted and stopped.
 The UI thread must never join a blocking worker. Worker ownership and module
 lifetime must allow cancellation and eventual cleanup after UI teardown.
 
-## Service and configuration changes required
+## Service and configuration changes
 
-Persist bounded trigger settings in the existing per-SID registry location and
-load them for the selected SID, never LogonUI's SYSTEM account. Define how cold
-logon works when that user's registry hive is not loaded: the current registry
-lookup otherwise silently falls back to defaults. A service-owned settings API
-and store is preferable before claiming automatic mode works at cold boot.
+The trigger policy is persisted machine-wide by the service under
+`HKLM\SOFTWARE\Smile2Unlock\Recognition\<SID>` (operation
+`kSetRecognitionSettings`). The GUI pushes the bounded values when the user
+saves settings; the service validates the ranges and writes the key as SYSTEM.
+The provider reads that key first, so automatic mode is available at cold boot
+before the user hive is loaded, and falls back to `HKEY_USERS\<SID>` for
+installs that predate the service store. Never read LogonUI's SYSTEM account.
 
-Add bounded attempt/deadline and cancellation semantics to the authenticated IPC
-contract. Use overlapped pipe I/O with an absolute deadline; closing or cancelling
-the client must also terminate its camera agent. The service needs a bounded
-worker model so a long recognition attempt cannot block settings, manual requests
-or other sessions. Keep face matching in the service. Retry capture and matching
-within the attempt, not just capture of the first live face.
+The service derives the per-capture agent timeout from the same `TimeoutSec`
+value, clamped to 5–30 s, while the provider owns the overall attempt deadline.
+Config bounds, provider deadline, service agent timeout and UI text therefore
+agree: the GUI accepts 0–3600 s delays, 1–3600 s retry delay and 5–600 s
+timeout, and the shared Rust core normalizes the same way.
 
-Config bounds, CP deadline, service deadline, agent timeout and UI text must agree.
-No UI controls should be restored until all of these consumers are connected.
+Still required: a bounded worker model in the service so a recognition attempt
+cannot block settings, manual requests or other sessions.
 
 ## Acceptance tests
 
 - Fake-clock state tests: zero initial delay, retry delay, exact deadline, repeated
   selection, deselection during every phase and stale completion after reselection.
+  Implemented in `auto_recognition.rs` (runs on Linux and under Wine).
 - Fake transport: timeout, cancellation, wrong SID/session/request ID, invalid
   model, no profile, mismatch followed by a match and broker password rejection.
+  Retry, cancellation and single-use grant consumption are covered in
+  `auto_runtime.rs`; the service-side mapping is covered by `classify` tests.
 - COM integration: stable identity after `CredentialsChanged`, no recognition
   during enumeration, one serialization per result, event revocation and DLL
-  lifetime while an operation is being cancelled.
+  lifetime while an operation is being cancelled. Enumeration and autologon are
+  covered by `provider.rs` tests; the GIT notification path and serialization of
+  a real grant still need a real LogonUI run.
 - Real Windows secure desktop: cold boot, lock/unlock, switching users, RDP,
   password typing during countdown, unplugged camera, missing model, expired
   password and service restart. Wine cannot establish these behaviors.

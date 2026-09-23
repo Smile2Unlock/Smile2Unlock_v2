@@ -24,6 +24,7 @@ enum class Operation : std::uint16_t {
     kDeleteProfile = 8,
     kVerifyProfile = 9,
     kCredentialStatus = 10,
+    kSetRecognitionSettings = 11,
 };
 
 enum class Status : std::uint32_t {
@@ -68,6 +69,23 @@ struct Response {
 // either fixed-size protocol must update both sides deliberately.
 static_assert(sizeof(Request) == 51608);
 static_assert(sizeof(Response) == 50216);
+
+// Payload of kSetRecognitionSettings. The service persists these machine-wide
+// under HKLM\SOFTWARE\Smile2Unlock\Recognition\<SID> so the credential
+// provider can read the trigger policy at cold boot, before the user hive is
+// loaded. Fixed-width little-endian fields only.
+struct RecognitionSettingsPayload {
+    std::uint32_t camera_index = 0;
+    std::uint32_t recognition_threshold_milli = 650;
+    std::uint32_t liveness_enabled = 1;
+    std::uint32_t liveness_threshold_milli = 500;
+    std::uint32_t recognition_mode = 0;
+    std::uint32_t auto_delay_sec = 3;
+    std::uint32_t retry_delay_sec = 5;
+    std::uint32_t timeout_sec = 30;
+};
+
+static_assert(sizeof(RecognitionSettingsPayload) == 32);
 
 inline void clear_request(Request& request) noexcept {
     SecureZeroMemory(request.password, sizeof(request.password));

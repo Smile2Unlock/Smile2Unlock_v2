@@ -10,9 +10,12 @@
 //! Phase 1: DllGetClassObject + class factory + provider + empty credential
 //! tile, verified against a pure-memory COM test host.
 
+mod auto_recognition;
 mod fields;
 mod secret_buffer;
 
+#[cfg(windows)]
+mod auto_runtime;
 #[cfg(windows)]
 mod class_factory;
 #[cfg(windows)]
@@ -29,6 +32,17 @@ mod provider;
 #[cfg(windows)]
 mod serialization;
 
+pub use auto_recognition::{
+    AttemptMachine, Completion, Outcome, Phase, Poll, RecognitionRequest, TriggerMode,
+    TriggerSettings,
+};
+#[cfg(windows)]
+pub use auto_runtime::{
+    AutoRuntime, Clock, MonotonicClock, PipeRecognitionTransport, RecognitionTransport,
+    TransportResult, read_trigger_settings,
+};
+#[cfg(windows)]
+pub use event_sink::{GitEventNotifier, ReadyNotifier};
 pub use fields::{FieldId, FieldState, FieldStatePair, InteractiveState};
 #[cfg(windows)]
 pub use pipe_client::{PipeClient, PreparedPipePassword, current_user_sid};
@@ -389,7 +403,7 @@ mod com_tests {
         // The SID the provider captured from SetUserArray must be returned
         // verbatim: LogonUI discards tiles whose GetUserSid does not match a
         // user in the array (V2 rule, see provider.rs SetUserArray).
-        let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
+        let credential: ICredentialProviderCredential2 = crate::credential::Credential::new_test(
             2, // CPUS_LOGON
             Some("S-1-5-21-123-456-789-1001".to_owned()),
         )
@@ -408,7 +422,7 @@ mod com_tests {
         // ICredentialProviderCredential2. `cast` performs a REAL QI through
         // the vtable, unlike `.into()`, so this catches a broken generated
         // QueryInterface for the v1+v2 interface pair.
-        let credential: ICredentialProviderCredential = crate::credential::Credential::new(
+        let credential: ICredentialProviderCredential = crate::credential::Credential::new_test(
             2, // CPUS_LOGON
             Some("S-1-5-21-123-456-789-1001".to_owned()),
         )
@@ -428,7 +442,7 @@ mod com_tests {
         // The C++ baseline credential exposes
         // ICredentialProviderCredentialWithFieldOptions; LogonUI may QI for
         // it during enumeration. Verify the real vtable QI returns it.
-        let credential: ICredentialProviderCredential = crate::credential::Credential::new(
+        let credential: ICredentialProviderCredential = crate::credential::Credential::new_test(
             2, // CPUS_LOGON
             None,
         )
@@ -455,7 +469,7 @@ mod com_tests {
         // S_FALSE + null SID (empty-user-tile association). windows-core
         // surfaces S_FALSE (HRESULT 1, a success code) as Ok with the
         // unwritten null out-param; native LogonUI sees S_FALSE + NULL.
-        let credential: ICredentialProviderCredential2 = crate::credential::Credential::new(
+        let credential: ICredentialProviderCredential2 = crate::credential::Credential::new_test(
             2, // CPUS_LOGON
             None,
         )

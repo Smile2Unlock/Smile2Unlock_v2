@@ -5,7 +5,7 @@
 ## 已实现主线
 
 - Linux：Slint GUI、V4L2/SeetaFace 识别、system-owned 加密档案、`su_authd`、PAM bridge、control socket、D-Bus/Polkit 部署 helper，以及 DMS、KScreenLocker、Plasma Login、GDM 和 SDDM 的受控 PAM 转换。
-- Windows：纯 Rust Credential Provider、LocalSystem 认证服务、加密的 per-SID 人脸档案与账户凭据、目标会话识别 agent、命名管道协议、UAC 部署 helper 和可验证 ZIP 打包。
+- Windows：纯 Rust Credential Provider、LocalSystem 认证服务、加密的 per-SID 人脸档案与账户凭据、目标会话识别 agent、命名管道协议、锁屏自动识别（自动模式开关、初始延迟、重试间隔、超时与机器级策略存储）、UAC 部署 helper 和可验证 ZIP 打包。
 - 共享核心：C++26 modules 识别流水线、Rust C ABI、XChaCha20-Poly1305 封套、外部 i18n 资源、统一 `assets/` 布局和 Xmake 构建。
 
 Windows 锁屏认证的当前数据流是：
@@ -56,6 +56,7 @@ Credential Provider
 ### Windows
 
 - 真实摄像头与真人活体的录入、锁屏、解锁和冷启动闭环。
+- 锁屏自动识别：自动模式开关、初始延迟、重试间隔与超时在真实 LogonUI 下生效；倒计时中输入密码立即取消自动尝试；切换用户、断开摄像头、模型/档案缺失和失败登录后不再自动重试。
 - 系统密码 tile、辅助功能、取消、错误提示、切换用户和服务停止时的安全回退。
 - 物理 TPM2、无 TPM 的 machine-DPAPI 回退、BitLocker、密钥不可用和服务重启。
 - 本地账户、Microsoft 账户、密码修改后的 stale 凭据和离线服务。域/Entra 账户当前明确拒绝，除非单独完成威胁建模与验收。
