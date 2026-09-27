@@ -120,6 +120,9 @@ install -m 0644 "${build_dir}/assets/i18n/"*.json "${root_dir}/usr/share/smile2u
 install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${root_dir}/usr/share/smile2unlock/models/"
 install -m 0644 "${project_dir}/LICENSE" "${root_dir}/usr/share/doc/smile2unlock/LICENSE"
 install -m 0644 "${project_dir}/NOTICE/THIRD-PARTY-NOTICES.md" "${root_dir}/usr/share/doc/smile2unlock/"
+# Full third-party license texts referenced by the notices (Slint, SeetaFace6,
+# libjpeg-turbo IJG terms, Rust crate inventory, ...).
+cp -r "${project_dir}/licenses" "${root_dir}/usr/share/doc/smile2unlock/licenses"
 install -m 0644 "${project_dir}/packaging/linux/README.md" "${root_dir}/usr/share/doc/smile2unlock/README.md"
 install -m 0644 "${project_dir}/docs/linux_pam_setup.md" "${root_dir}/usr/share/doc/smile2unlock/"
 

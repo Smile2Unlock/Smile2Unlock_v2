@@ -1,83 +1,68 @@
-## 第三方组件许可证声明
+# 第三方组件许可证声明
 
-此项目根据 MIT 许可证发布。有关详细信息，请参阅 LICENSE 文件。
+本项目根据 MIT 许可证发布（见 LICENSE 文件）。本文件列出发行物中实际链接或内嵌的
+第三方组件及其许可证；每项的许可证原文随发行物一并提供，亦见仓库 `licenses/`
+目录（含索引 `licenses/README.md`）。核对日期：2026-09-28，所有条款均按上游
+仓库/官方发布物核对。
 
-本项目使用以下第三方软件：
+## C/C++ 组件
 
-   **SeetaFace6** (https://github.com/SeetaFace6Open/index)
+   **Slint** v1.17.0 (https://github.com/slint-ui/slint)
+   - 许可证: 三重许可 — GPL-3.0-only / Slint Royalty-free Desktop, Mobile, and
+     Web Applications License 2.0 / Slint Software License 3.0（发行方按自身适用
+     条件择一履行）
+   - 版权: Copyright (c) SixtyFPS GmbH
+   - 另含内嵌第三方资源（字体 OFL-1.1、qskinny 等），原文见 `licenses/slint/`
+
+   **SeetaFace6**（seetaface6open，含随包 .csta 模型）
+   (https://github.com/SeetaFace6Open/index)
    - 许可证: BSD-2-Clause (SPDX: BSD-2-Clause)
-   - 版权: 
-
-    Copyright (c) 2019, SeetaTech, Institute of Computing Technology, Chinese Academy of Sciences, Beijing, China  
-    All rights reserved.
-   - 许可证原文见: licenses/SeetaFace6-BSD-2-Clause.txt
-
-   **Cxxopts** (https://github.com/jarro2783/cxxopts)
-   - 许可证: MIT (SPDX: MIT)
    - 版权:
 
-    Copyright (c) 2014 Jarryd Beck
-   - 许可证原文见: licenses/Cxxopts-MIT.txt
+    Copyright (c) 2019, SeetaTech, Institute of Computing Technology, Chinese Academy of Sciences, Beijing, China
 
-   **INIcpp** (https://gitee.com/dujingning/inicpp)
-   - 许可证: MIT (SPDX: MIT)
-   - 版权:
+   **libpng** v1.6.58 (https://github.com/pnggroup/libpng)
+   - 许可证: PNG Reference Library License version 2
+   - 版权: The PNG Reference Library Authors (1995-2026) 及此前各版权人
+     （Cosmin Truta, Glenn Randers-Pehrson, Andreas Dilger, Guy Eric Schalnat）
 
-    Copyright (c) 2023 dujingning
-   - 许可证原文见: licenses/INIcpp-MIT.txt
+   **libjpeg-turbo** v3.1.4 (https://github.com/libjpeg-turbo/libjpeg-turbo)
+   - 许可证: IJG 许可 与 Modified BSD-3-Clause 双许可（zlib 与 PNG Reference
+     Library v2 条款按其汇总被覆盖）
+   - 版权: IJG 贡献者；Copyright (C) 2009-2026 D. R. Commander 等
+   - 二进制分发声明（IJG 条款要求）: This software is based in part on the work
+     of the Independent JPEG Group.
 
-   **Windows-classic-samples** (https://github.com/microsoft/Windows-classic-samples)
-   - 许可证: MIT (SPDX: MIT)
-   - 版权:
+   **CImg** v4.0.4 (https://github.com/dtschump/CImg)
+   - 许可证: CeCILL-C 或 CeCILL v2.0 双许可（法文原文为准，随附官方英文译本）
+   - 版权: Copyright © David Tschumperlé
 
-    Copyright (c) Microsoft Corporation
-   - 许可证原文见: licenses/Windows-classic-samples-MIT.txt
-
-   **Boost** (https://www.boost.org)
-   - 许可证: BSL-1.0 (SPDX: BSL-1.0)
-   - 版权:
-
-    Copyright © 2003, 2004 Jeremy B. Maitin-Shepard
-    Copyright © 2005-2008 Daniel James
-    Copyright © 2022-2025 Christian Mazakas
-    Copyright © 2022-2025 Joaquín M López Muñoz
-    Copyright © 2022-2023 Peter Dimov
-    Copyright © 2024 Braden Ganetsky
-   - 许可证原文见: licenses/Boost-BSL-1.0.txt
-
-   **libyuv** (https://github.com/lemenkov/libyuv.git)
+   **libyuv** (https://chromium.googlesource.com/libyuv/libyuv)
    - 许可证: BSD-3-Clause (SPDX: BSD-3-Clause)
    - 版权:
 
     Copyright 2011 The LibYuv Project Authors. All rights reserved.
-   - 许可证原文见: licenses/libyuv-BSD-3-Clause.txt
 
-   **GLFW** (https://www.glfw.org)
-   - 许可证: zlib/libpng License
-   - 版权:
-
-    Copyright (c) 2002-2006 Marcus Geelnard
-    Copyright (c) 2006-2019 Camilla Löwy
-   - 许可证原文见: licenses/GLFW-zlib-libpng.txt
-
-   **Dear ImGui** (https://github.com/ocornut/imgui)
+   **nlohmann_json** v3.12.0 (https://github.com/nlohmann/json)
    - 许可证: MIT (SPDX: MIT)
-   - 版权:
+   - 版权: Copyright (c) 2013-2025 Niels Lohmann
 
-    Copyright (c) 2014-2026 Omar Cornut
-   - 许可证原文见: licenses/DearImGui-MIT.txt
+## Rust 组件
 
-   **SQLite** (https://www.sqlite.org)
-   - 许可证: Public Domain
-   - 版权:
+   **memsafe**（vendored fork，含本项目的安全加固补丁）
+   (https://crates.io/crates/memsafe)
+   - 许可证: MIT (SPDX: MIT)
+   - 版权: Copyright (c) 2025 pouyan shalbafan
 
-    SQLite deliverable code and documentation have been dedicated to the public domain by the authors.
-   - 许可证原文见: licenses/SQLite-Public-Domain.txt
+   **registry 依赖（70 个 crate）**
+   - 许可证以 MIT / Apache-2.0 双许可为主，另含 subtle (BSD-3-Clause)、
+     unicode-ident（附加 Unicode-3.0）、wasi 系（Apache-2.0 WITH LLVM-exception
+     可选）等；完整清单与各许可证全文见 `licenses/rust-crates.md` 与
+     `licenses/rust/`。
 
-   **Mbedtls** (https://tls.mbed.org/)
-   - 许可证: Dual License, Apache-2.0 OR GPL-2.0-or-later (SPDX: Apache-2.0 OR GPL-2.0-or-later)
-   - 版权:
+## 运行环境依赖
 
-    Copyright The Mbed TLS Contributors
-   - 说明: Unless specifically indicated otherwise in a file, Mbed TLS files are provided under a dual Apache-2.0 OR GPL-2.0-or-later license.
-   - 许可证原文见: licenses/Mbedtls-Apache-2.0-OR-GPL-2.0-or-later.txt
+Linux 发行物动态链接发行版提供的系统库（glibc、wayland/compositor 相关库、
+libstdc++ 等），其许可由发行版提供，不在本文件范围内。Windows 发行物仅依赖
+操作系统组件（DirectShow/Media Foundation、NCrypt/BCrypt、LSA 等），随 Windows
+授权提供。

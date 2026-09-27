@@ -107,6 +107,13 @@ install -m 0644 "${build_dir}/Smile2Unlock.ico" "${package_root}/bin/Smile2Unloc
 install -m 0644 "${build_dir}/assets/i18n/"*.json "${package_root}/assets/i18n/"
 install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${package_root}/assets/models/seeta/"
 
+# Third-party attribution: project license, notices, and every license text
+# (Slint triple-license, SeetaFace6 BSD-2, libjpeg-turbo IJG notice, Rust
+# crates inventory) ship next to the binaries they cover.
+install -m 0644 "${project_dir}/LICENSE" "${package_root}/LICENSE"
+install -m 0644 "${project_dir}/NOTICE/THIRD-PARTY-NOTICES.md" "${package_root}/"
+cp -r "${project_dir}/licenses" "${package_root}/licenses"
+
 find_runtime_dll() {
     local name="$1"
     local candidate
