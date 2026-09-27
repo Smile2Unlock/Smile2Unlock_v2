@@ -29,6 +29,10 @@ Credential Provider
 - 凭据提供者管道事务改为 overlapped I/O 合入（#69）：写/读各自等待（IO 完成、取消事件、截止时间），取消用 `CancelIoEx`，attempt 预算由传输层强制执行；Wine 假服务器覆盖正常/取消/超时三路径。
 - 本地直接验证（不经容器）：凭据提供者 72/72、worker 池、SID 限流与断开监视 Wine 测试全部通过；`main` 分支保护已生效（必需检查 + review，#68/#69 均按此流程合并）。
 
+## 2026-09-28 KVM 实机验收
+
+在 KVM 虚拟机（Windows 10 21H2）上完成签名 ZIP 全链路实机验收，详见 `windows_kvm_acceptance.md`：部署 verify、服务运行、CP 注册、密码/档案录入（真实 LSA 校验）、识别 agent 经驱动级虚拟摄像头提取 1024 维特征、SYSTEM 端到端认证返回一次性密钥（AUTH-OK）、非 SYSTEM 调用者拒绝、客户端断开后 agent 约 220 ms 终止。验收发现并修复了管道客户端缺失 SQOS 模拟标志的产品 bug（#71；Wine 假服务器不解析调用方身份，属覆盖盲区），验收工具（`su_embed_probe`、服务端身份拒绝错误码日志）以 #72 合入。
+
 ## 2026-09-08 验证快照
 
 - 三个 readiness job 用 `act` + Docker 重新在本地干净环境全部跑绿：Linux 全构建 + 42 个 Rust 单元测试 + 14 个 Xmake test + tar.gz 打包校验；Windows 特权组件 MinGW 构建 + 三组 Wine 测试；Windows 全量 Release + 临时证书签名 ZIP 验证。

@@ -741,6 +741,28 @@ if has_config("with_seetaface") then
         if not is_plat("mingw") then
             add_tests("default")
         end
+
+    -- Acceptance-test helper: prints the embedding:... source for a face
+    -- photo so a headless Windows VM can enroll a profile without the GUI
+    -- camera preview (the same photo is looped through a virtual camera).
+    target("su_embed_probe")
+        apply_cpp_target("binary")
+        add_files("tools/embed_probe.cpp")
+        add_deps("su_core", "su_recognizer")
+        add_packages("seetaface6open")
+        add_files("src/app/core_bridge.cpp")
+        add_files("src/modules/su.core.*.cppm")
+        add_files("src/modules/su.recognizer.*.cppm")
+        add_includedirs("src/core-rs/include")
+        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        on_load( function (target)
+            local root = seetaface_root_from_target(target)
+            target:add("sysincludedirs", path.join(root, "include"))
+            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
+                target:add("rpathdirs", dir)
+            end
+        end)
 end
 
 -- Auto-generate compile_commands.json for clangd LSP after each full build.

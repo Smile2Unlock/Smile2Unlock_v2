@@ -1294,6 +1294,17 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
         }
         if (!caller_sid || !caller_process_id || !caller_sid_text
             || !rate_limiter_->allow_connection(*caller_sid_text)) {
+            // The Win32 error codes (e.g. 1368 ERROR_NO_IMPERSONATION_TOKEN
+            // when the client did not request an impersonation-capable pipe
+            // handle) are the only way to tell misbehaving clients from a
+            // misconfigured service, so log them before dropping the pipe.
+            server_log(("serve: caller identity rejected sid_err="
+                        + std::to_string(caller_sid ? 0ul : caller_sid.error())
+                        + " pid_err="
+                        + std::to_string(caller_process_id ? 0ul : caller_process_id.error())
+                        + " text_err="
+                        + std::to_string(caller_sid_text ? 0ul : caller_sid_text.error()))
+                           .c_str());
             (void)DisconnectNamedPipe(raw_pipe);
             continue;
         }
@@ -1303,11 +1314,18 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
         auto response = Response{};
         const auto read = read_request(raw_pipe, stop_event, request, bytes_read);
         if (!read || !*read) {
+            server_log(read ? "serve: read_request failed"
+                            : "serve: read_request stopped");
             smile2unlock::logon_secret_ipc::clear_request(request);
             if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
                 break;
             }
             continue;
+        }
+        if (bytes_read != sizeof(request)) {
+            server_log(("serve: short read " + std::to_string(bytes_read)
+                        + " of " + std::to_string(sizeof(request)))
+                           .c_str());
         }
         if (bytes_read == sizeof(request)
             && rate_limiter_->allow_request(*caller_sid_text)) {
