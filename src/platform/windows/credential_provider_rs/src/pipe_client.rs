@@ -24,7 +24,8 @@ use windows::Win32::Foundation::{
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, OPEN_EXISTING, ReadFile, WriteFile,
+    CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, OPEN_EXISTING, SECURITY_IMPERSONATION,
+    SECURITY_SQOS_PRESENT, ReadFile, WriteFile,
 };
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{
@@ -490,6 +491,10 @@ fn connect_pipe(
     deadline_ms: u64,
 ) -> Result<PipeGuard, Error> {
     loop {
+        // SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION lets the service's
+        // ImpersonateNamedPipeClient resolve our token to a SID; without it
+        // the client connects anonymously and the service rejects us with
+        // ERROR_NO_IMPERSONATION_TOKEN (observed on real Windows 10).
         // SAFETY: pipe_name is a valid NUL-terminated wide string; the handle
         // is closed by PipeGuard on every path.
         let handle = unsafe {
@@ -499,7 +504,7 @@ fn connect_pipe(
                 FILE_SHARE_NONE,
                 None,
                 OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION,
                 None,
             )
         };
