@@ -124,15 +124,42 @@ std::string status_error(Status status) {
 
 std::expected<Response, std::string> transact(Request& request) {
     auto response = Response{};
-    DWORD bytes_read = 0;
-    const auto ok = CallNamedPipeW(
-        smile2unlock::logon_secret_ipc::kPipeName,
+    // CallNamedPipeW's implicit CreateFileW does not request an impersonation
+    // capable pipe handle, so the service's ImpersonateNamedPipeClient cannot
+    // resolve our SID and drops the connection (ERROR_NO_IMPERSONATION_TOKEN,
+    // observed on real Windows 10). Open the pipe explicitly with SQOS flags
+    // and run one message-mode transaction.
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    for (auto attempt = 0; attempt < 2; ++attempt) {
+        pipe = CreateFileW(
+            smile2unlock::logon_secret_ipc::kPipeName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IMPERSONATION,
+            nullptr);
+        if (pipe != INVALID_HANDLE_VALUE) {
+            break;
+        }
+        if (GetLastError() != ERROR_PIPE_BUSY || attempt == 1
+            || !WaitNamedPipeW(smile2unlock::logon_secret_ipc::kPipeName, 5000)) {
+            return std::unexpected("Smile2Unlock auth service is unreachable");
+        }
+    }
+    const auto pipe_closer = std::unique_ptr<void, decltype(&CloseHandle)>{
+        pipe, &CloseHandle};
+    auto mode = DWORD{PIPE_READMODE_MESSAGE};
+    (void)SetNamedPipeHandleState(pipe, &mode, nullptr, nullptr);
+    auto bytes_read = DWORD{0};
+    const auto ok = TransactNamedPipe(
+        pipe,
         &request,
         sizeof(request),
         &response,
         sizeof(response),
         &bytes_read,
-        5000);
+        nullptr);
     const auto request_id = request.request_id;
     smile2unlock::logon_secret_ipc::clear_request(request);
     if (!ok || bytes_read != sizeof(response)
