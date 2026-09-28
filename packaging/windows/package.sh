@@ -189,3 +189,30 @@ if [[ "$verify" == true ]]; then
     "${script_dir}/verify-package.sh" "$archive"
 fi
 echo "created ${archive}"
+
+# NSIS setup exe from the SAME staged tree: the installer embeds this package
+# verbatim and only orchestrates the audited su_deploy_helper, so ZIP,
+# installer and release-info.json cannot drift apart. Built whenever makensis
+# is installed; signing reuses the certificate configured above.
+if command -v makensis >/dev/null 2>&1; then
+    setup="${output_dir}/${package_name}-${package_version}-windows-${architecture}-setup.exe"
+    makensis -V2 \
+        -DVERSION="${package_version}" \
+        -DSTAGE_DIR="${stage_root}" \
+        -DOUT_FILE="${setup}" \
+        "${script_dir}/installer.nsi"
+    if [[ "$unsigned_development" == false ]]; then
+        signed_setup="${setup}.signed"
+        osslsigncode sign "${sign_args[@]}" -in "$setup" -out "$signed_setup" >/dev/null
+        mv -- "$signed_setup" "$setup"
+        authenticode_verify_args=()
+        if [[ -n "${WINDOWS_VERIFY_CA_FILE:-}" ]]; then
+            authenticode_verify_args=(-CAfile "$WINDOWS_VERIFY_CA_FILE")
+        fi
+        osslsigncode verify "${authenticode_verify_args[@]}" -in "$setup" >/dev/null \
+            || package_die "invalid Authenticode signature: $(basename "$setup")"
+    fi
+    echo "created ${setup}"
+else
+    echo "note: makensis not found, skipped the NSIS setup exe"
+fi
