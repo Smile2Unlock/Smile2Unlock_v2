@@ -118,16 +118,21 @@ jobs:
         run: >-
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
           mingw-w64-gcc pkgconf imagemagick python zip unzip openssl
-          nodejs
+          nodejs scons
 
       # osslsigncode is not in the official repositories; build the pinned
-      # upstream release instead of relying on the AUR.
-      - name: Install osslsigncode from source
+      # upstream release instead of relying on the AUR. NSIS likewise: the
+      # scons build needs only the mingw cross compiler already installed.
+      - name: Install osslsigncode and NSIS from source
         run: |
           curl -fsSL https://github.com/mtrojnar/osslsigncode/archive/refs/tags/2.14.tar.gz | tar -xz -C /tmp
           cmake -S /tmp/osslsigncode-2.14 -B /tmp/osslsigncode-2.14/build -DCMAKE_BUILD_TYPE=Release
           cmake --build /tmp/osslsigncode-2.14/build --parallel
           cmake --install /tmp/osslsigncode-2.14/build
+          curl -fsSL "https://prdownloads.sourceforge.net/nsis/nsis-3.12-src.tar.bz2" | tar -xj -C /tmp
+          scons -C /tmp/nsis-3.12-src SKIPDOC=all \
+            SKIPUTILS="Library/RegTool,MakeLangId,Makensisw,NSIS Menu,SubStart,VPatch/Source/GenPat,zip2exe" \
+            NSIS_MAX_STRLEN=8192 PREFIX=/usr/local install
 
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -215,7 +220,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-release-${{ needs.validate-release.outputs.version }}
-          path: dist/smile2unlock-${{ needs.validate-release.outputs.version }}-windows-x86_64.zip
+          path: |
+            dist/smile2unlock-${{ needs.validate-release.outputs.version }}-windows-x86_64.zip
+            dist/smile2unlock-${{ needs.validate-release.outputs.version }}-windows-x86_64-setup.exe
           if-no-files-found: error
           retention-days: 14
 
@@ -240,6 +247,7 @@ jobs:
         run: |
           linux_archive="dist/smile2unlock-${VERSION}-linux-x86_64.tar.gz"
           windows_archive="dist/smile2unlock-${VERSION}-windows-x86_64.zip"
+          windows_setup="dist/smile2unlock-${VERSION}-windows-x86_64-setup.exe"
           [[ -f "$linux_archive" ]] || { echo "missing $linux_archive" >&2; exit 1; }
           [[ -f "$windows_archive" ]] || { echo "missing $windows_archive" >&2; exit 1; }
           if tar -tzf "$linux_archive" | grep -Ei '(^|/)(release-signing(/|$)|[^/]+\.(key|pem|p12|pfx)$)' >/dev/null; then
@@ -250,10 +258,16 @@ jobs:
             echo "Windows archive contains signing material" >&2
             exit 1
           fi
+          # The setup exe is optional: only produced when the release job had
+          # NSIS available (it always does; guarded for robustness).
+          release_assets=("$linux_archive" "$windows_archive")
+          if [[ -f "$windows_setup" ]]; then
+              release_assets+=("$windows_setup")
+          fi
           (
             cd dist
-            sha256sum "$(basename "$linux_archive")" "$(basename "$windows_archive")" > SHA256SUMS
+            sha256sum "${release_assets[@]##*/}" > SHA256SUMS
           )
           gh release upload "$RELEASE_TAG" \
-            "$linux_archive" "$windows_archive" dist/SHA256SUMS \
+            "${release_assets[@]}" dist/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY"
