@@ -1032,6 +1032,9 @@ std::expected<void, std::string> ensure_auth_service() {
         manager,
         kServiceName,
         SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG);
+    // Capture immediately: stage_security_components below performs dozens of
+    // file operations that would clobber this error code before it is read.
+    const auto open_error = service != nullptr ? ERROR_SUCCESS : ::GetLastError();
     if (service != nullptr) {
         SERVICE_STATUS current{};
         if (::QueryServiceStatus(service, &current)
@@ -1061,7 +1064,16 @@ std::expected<void, std::string> ensure_auth_service() {
         return std::unexpected(installed.error());
     }
     if (service == nullptr) {
-        if (::GetLastError() != ERROR_SERVICE_DOES_NOT_EXIST) {
+        // A freshly deleted service lingers as marked-for-delete until the
+        // last handle closes (uninstall-then-reinstall in one go); that is
+        // transient, so ask the caller to retry rather than failing hard.
+        if (open_error == ERROR_SERVICE_MARKED_FOR_DELETE) {
+            ::CloseServiceHandle(manager);
+            return std::unexpected(
+                "the auth service is still shutting down from a previous "
+                "removal; retry in a few seconds");
+        }
+        if (open_error != ERROR_SERVICE_DOES_NOT_EXIST) {
             ::CloseServiceHandle(manager);
             return std::unexpected("failed to open the auth service");
         }
@@ -1085,6 +1097,14 @@ std::expected<void, std::string> ensure_auth_service() {
             nullptr,
             nullptr,
             nullptr);
+        if (service == nullptr && ::GetLastError() == ERROR_SERVICE_EXISTS) {
+            // Lost the create race: open the winner's entry instead.
+            service = ::OpenServiceW(
+                manager,
+                kServiceName,
+                SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS
+                    | SERVICE_CHANGE_CONFIG);
+        }
         if (service == nullptr) {
             ::CloseServiceHandle(manager);
             return std::unexpected("failed to register the auth service");
