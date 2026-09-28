@@ -20,6 +20,8 @@
 #include <mfreadwrite.h>
 #include <wrl/client.h>
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
@@ -135,6 +137,65 @@ bool enumerate_devices(std::vector<ComPtr<IMFActivate>>& out) {
 
 } // namespace
 
+// Grab-completion sink implemented by MfCameraStream::Impl. A plain
+// namespace-scope interface keeps the reader callback independent of the
+// private nested Impl name.
+class MfGrabSink {
+public:
+    virtual ~MfGrabSink() = default;
+    virtual void on_read_sample(HRESULT status, DWORD flags, IMFSample* sample) = 0;
+};
+
+// Async IMFSourceReader callback. The reader is created in async mode so a
+// grab is a request + bounded wait instead of a synchronous ReadSample that
+// can block forever when a (virtual) camera stops delivering frames — the
+// old sync path left the worker stuck mid-call, so a pending Quit could
+// never be processed and stopping the camera hung the UI thread.
+// MF invokes OnReadSample on one of its work-queue threads; it only touches
+// the per-request completion state below, guarded by the grab mutex, and
+// never the op-dispatch mutex.
+class StreamCallback final : public IMFSourceReaderCallback {
+public:
+    explicit StreamCallback(MfGrabSink* sink) : sink_(sink) {}
+
+    // IUnknown
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
+        if (ppv == nullptr) {
+            return E_POINTER;
+        }
+        // __uuidof rather than the IID_ constants: mingw's import libraries
+        // do not carry every IID symbol.
+        if (riid == __uuidof(IUnknown)
+            || riid == __uuidof(IMFSourceReaderCallback)) {
+            *ppv = static_cast<IMFSourceReaderCallback*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+    STDMETHODIMP_(ULONG) AddRef() override {
+        return references_.fetch_add(1) + 1;
+    }
+    STDMETHODIMP_(ULONG) Release() override {
+        const auto remaining = references_.fetch_sub(1) - 1;
+        if (remaining == 0) {
+            delete this;
+        }
+        return remaining;
+    }
+
+    // IMFSourceReaderCallback
+    STDMETHODIMP OnReadSample(HRESULT status, DWORD, DWORD flags, LONGLONG,
+                              IMFSample* sample) override;
+    STDMETHODIMP OnFlush(DWORD) override { return S_OK; }
+    STDMETHODIMP OnEvent(DWORD, IMFMediaEvent*) override { return S_OK; }
+
+private:
+    MfGrabSink* sink_;
+    std::atomic<ULONG> references_{1};
+};
+
 std::vector<MfCameraDeviceInfo> mf_enumerate_cameras() {
     // Enumeration is stateless and cheap; run it on a scratch worker thread
     // so it never depends on the caller's apartment.
@@ -175,10 +236,30 @@ std::vector<MfCameraDeviceInfo> mf_enumerate_cameras() {
     return result;
 }
 
-class MfCameraStream::Impl {
+class MfCameraStream::Impl final : public MfGrabSink {
 public:
     Impl() = default;
     ~Impl() { close(); }
+
+    // MfGrabSink: called by StreamCallback on an MF work-queue thread.
+    void on_read_sample(HRESULT status, DWORD flags, IMFSample* sample) override {
+        std::lock_guard lock(grab_mutex_);
+        if (!grab_pending_) {
+            return; // request already timed out and was cancelled
+        }
+        grab_done_ = true;
+        grab_pending_ = false;
+        sample_status_ = status;
+        sample_flags_ = flags;
+        // ComPtr assignment from a raw pointer attaches without AddRef, but
+        // MF drops its reference as soon as OnReadSample returns — take our
+        // own reference so the sample survives until the worker consumes it.
+        if (sample != nullptr) {
+            sample->AddRef();
+        }
+        sample_ = sample;
+        grab_cv_.notify_all();
+    }
 
     bool open(int index) {
         std::unique_lock lock(mutex_);
@@ -230,6 +311,13 @@ public:
 
 private:
     enum class Op { None, Open, Grab, Quit };
+
+    // Per-read cap: bounds how long the worker can be inside one grab when a
+    // device stalls, and therefore how long a Quit (camera stop) can be
+    // delayed before the UI sees the worker exit. The drain window after
+    // Flush() is shorter: MF completes a flushed request promptly.
+    static constexpr auto kReadDeadline = std::chrono::milliseconds(500);
+    static constexpr auto kCancelDrain = std::chrono::milliseconds(200);
 
     bool ensure_worker(std::unique_lock<std::mutex>& lock) {
         if (worker_alive_) {
@@ -312,9 +400,17 @@ private:
             finish_open(false);
             return;
         }
+        // Async reader: hand MF our callback so reads are cancellable waits
+        // instead of unbounded synchronous calls.
+        callback_ = new StreamCallback(static_cast<MfGrabSink*>(this));
+        ComPtr<IMFAttributes> attributes;
         ComPtr<IMFSourceReader> reader;
-        if (FAILED(::MFCreateSourceReaderFromMediaSource(
-                source.Get(), nullptr, &reader))) {
+        if (FAILED(::MFCreateAttributes(&attributes, 1))
+            || FAILED(attributes->SetUnknown(
+                   MF_SOURCE_READER_ASYNC_CALLBACK, callback_.Get()))
+            || FAILED(::MFCreateSourceReaderFromMediaSource(
+                   source.Get(), attributes.Get(), &reader))) {
+            callback_.Reset();
             finish_open(false);
             return;
         }
@@ -427,20 +523,60 @@ private:
             return;
         }
         for (int attempts = 0; attempts < 32; ++attempts) {
-            DWORD stream_index = 0;
-            DWORD flags = 0;
-            LONGLONG timestamp = 0;
-            ComPtr<IMFSample> sample;
-            const HRESULT hr = reader_->ReadSample(
-                MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-                0,
-                &stream_index,
-                &flags,
-                &timestamp,
-                &sample);
-            if (FAILED(hr)) {
+            {
+                std::lock_guard lock(grab_mutex_);
+                grab_done_ = false;
+                grab_pending_ = true;
+                sample_ = nullptr;
+                sample_status_ = E_FAIL;
+                sample_flags_ = 0;
+            }
+            // Async request: all out-params must be null in callback mode.
+            // The reader allows one outstanding request per stream, and we
+            // never issue the next one before this one completes (or is
+            // cancelled below), so requests can never overlap.
+            const HRESULT requested = reader_->ReadSample(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr,
+                nullptr, nullptr);
+            if (FAILED(requested)) {
+                std::lock_guard lock(grab_mutex_);
+                grab_pending_ = false;
                 finish_grab(false);
                 return;
+            }
+            ComPtr<IMFSample> held;
+            IMFSample* sample = nullptr;
+            DWORD flags = 0;
+            {
+                std::unique_lock lock(grab_mutex_);
+                if (!grab_cv_.wait_for(lock, kReadDeadline, [this] {
+                        return grab_done_;
+                    })) {
+                    // Device stalled (virtual camera stopped feeding, driver
+                    // wedged). Cancel the outstanding request and fail the
+                    // grab so the op loop can process a pending Quit.
+                    lock.unlock();
+                    (void)reader_->Flush(MF_SOURCE_READER_ALL_STREAMS);
+                    lock.lock();
+                    (void)grab_cv_.wait_for(lock, kCancelDrain, [this] {
+                        return grab_done_;
+                    });
+                    grab_pending_ = false;
+                    finish_grab(false);
+                    return;
+                }
+                grab_pending_ = false;
+                if (FAILED(sample_status_)) {
+                    finish_grab(false);
+                    return;
+                }
+                flags = sample_flags_;
+                // ComPtr-to-ComPtr copy AddRefs, so the reference the
+                // callback took stays balanced when we clear sample_ here and
+                // again when `held` below goes out of scope.
+                held = sample_;
+                sample_ = nullptr;
+                sample = held.Get();
             }
             if ((flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0) {
                 finish_grab(false);
@@ -450,11 +586,11 @@ private:
                 || (flags & MF_SOURCE_READERF_STREAMTICK) != 0) {
                 continue;
             }
-            if (!sample) {
+            if (sample == nullptr) {
                 continue;
             }
             ComPtr<IMFMediaBuffer> buffer;
-            if (FAILED(sample->ConvertToContiguousBuffer(&buffer))) {
+            if (FAILED(held->ConvertToContiguousBuffer(&buffer))) {
                 finish_grab(false);
                 return;
             }
@@ -497,7 +633,14 @@ private:
     }
 
     void close_worker() {
+        // Flush first so a request still outstanding on a stalled device is
+        // completed/cancelled by MF; releasing a reader with a pending request
+        // can otherwise block inside the driver.
+        if (reader_) {
+            (void)reader_->Flush(MF_SOURCE_READER_ALL_STREAMS);
+        }
         reader_.Reset();
+        callback_.Reset();
         open_ = false;
     }
 
@@ -532,14 +675,36 @@ private:
     MfCameraFrame frame_;
     std::vector<std::uint8_t> grab_buffer_;
 
+    // Per-request completion state, signalled by StreamCallback on an MF
+    // work-queue thread. grab_pending_ also fences late deliveries: a
+    // callback firing after the request was cancelled finds it false and
+    // drops the sample instead of corrupting the next grab.
+    std::mutex grab_mutex_;
+    std::condition_variable grab_cv_;
+    bool grab_done_ = false;
+    bool grab_pending_ = false;
+    HRESULT sample_status_ = E_FAIL;
+    DWORD sample_flags_ = 0;
+    ComPtr<IMFSample> sample_;
+
     // Worker-thread-owned MF state.
     ComPtr<IMFSourceReader> reader_;
+    ComPtr<StreamCallback> callback_;
     UINT32 width_ = 0;
     UINT32 height_ = 0;
     std::size_t stride_ = 0;
     bool bottom_up_ = false;
     std::uint32_t v4l2_format_ = 0;
 };
+
+STDMETHODIMP StreamCallback::OnReadSample(
+    HRESULT status, DWORD stream_index, DWORD flags, LONGLONG timestamp,
+    IMFSample* sample) {
+    (void)stream_index;
+    (void)timestamp;
+    sink_->on_read_sample(status, flags, sample);
+    return S_OK;
+}
 
 MfCameraStream::MfCameraStream() : impl_(std::make_unique<Impl>()) {}
 MfCameraStream::~MfCameraStream() = default;
