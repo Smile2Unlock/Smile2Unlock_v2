@@ -263,7 +263,7 @@ public:
 
     bool open(int index) {
         std::unique_lock lock(mutex_);
-        if (!ensure_worker(lock)) {
+        if (quit_pending_ || !ensure_worker(lock)) {
             return false;
         }
         op_ = Op::Open;
@@ -276,7 +276,7 @@ public:
 
     bool grab(MfCameraFrame& out) {
         std::unique_lock lock(mutex_);
-        if (!worker_alive_ || !open_) {
+        if (!worker_alive_ || !open_ || quit_pending_) {
             return false;
         }
         op_ = Op::Grab;
@@ -295,6 +295,11 @@ public:
         if (!worker_alive_) {
             return;
         }
+        // quit_pending_ stops the grab loop from re-submitting Op::Grab after
+        // the worker finished the in-flight one: without it the capture thread
+        // can overwrite a pending Quit (or keep the worker busy forever) and
+        // close()'s join() never returns — the camera-stop UI freeze.
+        quit_pending_ = true;
         op_ = Op::Quit;
         done_ = false;
         cv_.notify_all();
@@ -356,6 +361,11 @@ private:
                     std::lock_guard lock(mutex_);
                     op_ = Op::None;
                     done_ = true;
+                    // Publish the shutdown atomically so a grab() that lost
+                    // the race sees a dead worker instead of resubmitting,
+                    // and a subsequent open() may start a fresh worker.
+                    quit_pending_ = false;
+                    worker_alive_ = false;
                     cv_.notify_all();
                 }
                 if (mf_ok) {
@@ -647,7 +657,13 @@ private:
     void finish_open(bool ok) {
         std::lock_guard lock(mutex_);
         open_result_ = ok;
-        op_ = Op::None;
+        // Clear only our own op: a Quit (or a newer op) posted by the caller
+        // while the worker was executing must survive, or the worker parks in
+        // its dispatch wait forever and close()'s join() never returns — the
+        // camera-stop UI freeze.
+        if (op_ == Op::Open) {
+            op_ = Op::None;
+        }
         done_ = true;
         cv_.notify_all();
     }
@@ -655,7 +671,11 @@ private:
     void finish_grab(bool ok) {
         std::lock_guard lock(mutex_);
         grab_result_ = ok;
-        op_ = Op::None;
+        // Same guard as finish_open: a concurrent close() sets Op::Quit while
+        // this grab is in flight; clobbering it loses the stop request.
+        if (op_ == Op::Grab) {
+            op_ = Op::None;
+        }
         done_ = true;
         cv_.notify_all();
     }
@@ -666,6 +686,9 @@ private:
     bool worker_ready_ = false;
     bool worker_failed_ = false;
     bool worker_alive_ = false;
+    // Set by close() until the worker has fully exited; grab()/open() refuse
+    // to submit while it is set so a pending Quit can never be overwritten.
+    bool quit_pending_ = false;
     bool open_ = false;
     Op op_ = Op::None;
     int open_index_ = -1;
