@@ -705,7 +705,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     using namespace smile2unlock::recognition_agent_ipc;
     using AgentRequest = smile2unlock::recognition_agent_ipc::Request;
     using AgentResponse = smile2unlock::recognition_agent_ipc::Response;
-    const auto agent_path = sibling_path(L"su_recognition_agent.exe");
+    const auto agent_path = sibling_path(L"Smile2UnlockRecognitionAgent.exe");
     const auto attributes = GetFileAttributesW(agent_path.c_str());
     if (agent_path.empty() || attributes == INVALID_FILE_ATTRIBUTES
         || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {

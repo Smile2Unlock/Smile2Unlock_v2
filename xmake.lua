@@ -257,15 +257,19 @@ target("su_recognizer")
     end
 
     target("su_app")
-    apply_cpp_target("binary")
-    add_includedirs("src/core-rs/include", {public = true})
-    add_packages("nlohmann_json")
-    add_deps("su_core", "su_recognizer")
-    if is_plat("mingw") then
-        -- Ship the Rust Credential Provider DLL next to the GUI binary so a
-        -- plain `xmake build` produces the full deployable set.
-        add_deps("su_credential_provider")
-    end
+        apply_cpp_target("binary")
+        add_includedirs("src/core-rs/include", {public = true})
+        add_packages("nlohmann_json")
+        add_deps("su_core", "su_recognizer")
+        if is_plat("mingw") then
+            -- Product-facing Windows binary names: the UAC prompt and the
+            -- installed tree show these verbatim, so they carry the full
+            -- product name instead of the internal target name.
+            set_basename("Smile2Unlock")
+            -- Ship the Rust Credential Provider DLL next to the GUI binary so a
+            -- plain `xmake build` produces the full deployable set.
+            add_deps("su_credential_provider")
+        end
     if is_plat("linux") then
         add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
         add_files("src/modules/su.auth.user.cppm")
@@ -403,6 +407,7 @@ elseif is_plat("windows", "mingw") then
     -- triggered from the GUI deployment panel.
     target("su_deploy_helper")
         apply_cpp_target("binary")
+        set_basename("Smile2UnlockDeployHelper")
         add_files("src/platform/windows/deploy_helper/main.cpp")
         add_files("src/platform/windows/deploy_helper/helper.rc")
         add_files("src/platform/windows/deploy/deployment.cpp")
@@ -516,6 +521,8 @@ if is_plat("windows", "mingw") then
     -- used by the C++ Credential Provider baseline and the Rust CP client.
     target("su_auth_service")
         apply_cpp_target("binary")
+        set_basename("Smile2UnlockAuthService")
+        add_files("src/platform/windows/auth_service/service.rc")
         set_targetdir("$(builddir)/$(plat)/$(arch)/$(mode)")
         add_files("src/platform/windows/security/storage_key_provider.cpp")
         add_files("src/platform/windows/security/logon_secret_store.cpp")
@@ -539,6 +546,8 @@ if is_plat("windows", "mingw") then
     -- evidence through inherited anonymous-pipe handles.
     target("su_recognition_agent")
         apply_cpp_target("binary")
+        set_basename("Smile2UnlockRecognitionAgent")
+        add_files("src/platform/windows/recognition_agent/agent.rc")
         add_files("src/platform/windows/recognition_agent/main.cpp")
         add_files("src/modules/su.recognizer.*.cppm")
         add_deps("su_recognizer")
@@ -549,6 +558,10 @@ if is_plat("windows", "mingw") then
     -- validates the caller SID before accepting either operation.
     target("su_password_tool")
         apply_cpp_target("binary")
+        if is_plat("mingw") then
+            set_basename("Smile2UnlockPasswordTool")
+            add_files("src/platform/windows/password_tool/password_tool.rc")
+        end
         add_files("src/platform/windows/password_tool/main.cpp")
         add_includedirs("src/platform/windows/auth_service")
         add_ldflags("-static", "-municode", {force = true})
@@ -662,7 +675,8 @@ target("su_credential_provider")
         local cargo_out = path.join(
             os.projectdir(), "build", "cargo", "credential_provider_rs",
             "x86_64-pc-windows-gnu", cargo_mode, "su_credential_provider.dll")
-        os.cp(cargo_out, path.join(outdir, "su_credential_provider.dll"))
+        -- Product-facing DLL name (COM InprocServer32 registration).
+        os.cp(cargo_out, path.join(outdir, "Smile2UnlockCredentialProvider.dll"))
     end)
 
 target("su_credential_provider_rust_tests")

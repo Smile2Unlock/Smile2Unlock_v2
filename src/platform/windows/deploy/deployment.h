@@ -4,7 +4,7 @@
 // su_deploy library. Owns the credential-provider registration (CLSID +
 // CredentialProviders logon-UI enrollment) and the auth-service lifecycle
 // checks. The GUI (AppController) runs these either directly when already
-// elevated, or through su_deploy_helper.exe relaunched with UAC.
+// elevated, or through Smile2UnlockDeployHelper.exe relaunched with UAC.
 
 #ifndef SU_PLATFORM_WINDOWS_DEPLOY_DEPLOYMENT_H_
 #define SU_PLATFORM_WINDOWS_DEPLOY_DEPLOYMENT_H_

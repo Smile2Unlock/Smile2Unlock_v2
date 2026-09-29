@@ -46,10 +46,10 @@ removes them when packaging finishes. Never commit or attach a private key to a
 GitHub Release. Release assets contain only public packages and checksums.
 
 The archive contains a stable `Smile2Unlock/` directory with sibling `bin/`
-and `assets/` directories. `bin/su_credential_provider.dll` is the only CP DLL
+and `assets/` directories. `bin/Smile2UnlockCredentialProvider.dll` is the only CP DLL
 name accepted by the verifier; suffixed copies are rejected.
 
-After extraction, run `bin/su_app.exe` and use its deployment action. The UAC
+After extraction, run `bin/Smile2Unlock.exe` and use its deployment action. The UAC
 helper installs security components under:
 
 ```text
@@ -59,7 +59,7 @@ C:\Program Files\Smile2Unlock\bin
 The service ImagePath becomes
 `C:\Program Files\Smile2Unlock\bin\Smile2UnlockAuthService.exe`, and the CP
 `InprocServer32` value becomes
-`C:\Program Files\Smile2Unlock\bin\su_credential_provider.dll`. The extraction
+`C:\Program Files\Smile2Unlock\bin\Smile2UnlockCredentialProvider.dll`. The extraction
 directory can then be removed after the application is no longer running.
 
 Use `--stage-only` to inspect `build/package-stage/windows/Smile2Unlock`

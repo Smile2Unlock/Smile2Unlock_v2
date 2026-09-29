@@ -154,7 +154,7 @@ int run(Operation operation) {
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2 || (std::wstring_view{argv[1]} != L"--store"
         && std::wstring_view{argv[1]} != L"--clear")) {
-        std::wcerr << L"Usage: su_password_tool.exe --store|--clear\n";
+        std::wcerr << L"Usage: Smile2UnlockPasswordTool.exe --store|--clear\n";
         return 64;
     }
     return run(std::wstring_view{argv[1]} == L"--store"

@@ -52,7 +52,7 @@
 smile2unlock-2.3.1-setup.exe (NSIS, Authenticode 签名)
   ├─ 向导页：许可(MIT + THIRD-PARTY-NOTICES) → 安装目录(默认 Program Files)
   ├─ 解压内嵌文件到临时目录（LZMA solid，SeetaFace 模型可显著压缩）
-  ├─ 执行 bin\su_deploy_helper.exe --verify --register-cp --ensure-service
+  ├─ 执行 bin\Smile2UnlockDeployHelper.exe --verify --register-cp --ensure-service
   │    （内部证书 PIN 校验 → 服务 → CP，全部走已审计代码路径）
   ├─ 成功：把文件落到安装目录、写 ARP 卸载项
   └─ 失败：回滚（删临时文件），显示 helper 的错误文本

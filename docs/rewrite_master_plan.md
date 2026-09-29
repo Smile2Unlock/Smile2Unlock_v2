@@ -8,7 +8,7 @@
 
 Phase 0、1、2 — **全部完成**。Phase 3 — **Linux 主链路、GUI 部署、PAM 目标转换、管理 capability、事务化生命周期、打包和自动验收已实现；跨发行版现场矩阵仍未完成**。Phase 4 — **Windows 已切换到纯 Rust Credential Provider + LocalSystem 认证服务 + 目标会话识别 agent，并完成签名部署输入、句柄复制与按 SID 限流；真实 Windows 验收仍未完成**。Phase 5 — **评估完成，第一版不启用无实际调用方的 Zig / SIMD，也不拆分通用 recognizer 服务**。
 
-当前 Windows 构建包含 `su_app`、`su_deploy_helper`、`su_auth_service`、`su_recognition_agent`、`su_password_tool` 和 `su_credential_provider.dll`。CP 与 GUI 都只通过受保护的命名管道访问 LocalSystem 服务；服务统一持有 per-SID 加密 profile/password store，并在目标会话启动一次性识别 agent。Windows ZIP 使用 `bin/` + `assets/` 平级布局，部署后安全组件位于 `C:\Program Files\Smile2Unlock\bin`。
+当前 Windows 构建包含 `su_app`、`su_deploy_helper`、`su_auth_service`、`su_recognition_agent`、`su_password_tool` 和 `Smile2UnlockCredentialProvider.dll`。CP 与 GUI 都只通过受保护的命名管道访问 LocalSystem 服务；服务统一持有 per-SID 加密 profile/password store，并在目标会话启动一次性识别 agent。Windows ZIP 使用 `bin/` + `assets/` 平级布局，部署后安全组件位于 `C:\Program Files\Smile2Unlock\bin`。
 
 2026-09-05 复核：Linux Release 主构建成功，14 个 Xmake test case 全部通过；Rust core 42/42 通过；Windows 全量 Release 通过 MinGW 交叉构建；Windows Rust CP 的 MinGW/Wine 测试 41 通过、1 个真实 Windows 专用用例忽略，按 SID 限流测试通过。CI 已覆盖 Linux 包与临时证书 Windows 签名包，但托管 runner 和真实系统验收仍需执行。当前发布阻塞项和现场矩阵统一记录在 `docs/current_status.md`。
 
@@ -506,7 +506,7 @@ locate glCreateShader symbol". Fix without touching the VM hardware config:
   `opengl32.dll` (loader) + `libgallium_wgl.dll` (llvmpipe, OpenGL 4.5,
   CPU-rendered) from mesa-dist-win release-mingw into `C:\su-deploy\bin\`.
   DLL search order loads the app-local copy before system32.
-- Verified: su_app.exe starts and enters its GUI event loop (no GL panic).
+- Verified: Smile2Unlock.exe starts and enters its GUI event loop (no GL panic).
 - Optional hardware path (not needed for acceptance): libvirt video model
   `virtio` + accel3d with virglrenderer (host has virglrenderer 1.3), plus
   the virtio-win viogpudo guest driver; Windows-side virtio-gpu 3D support
@@ -590,7 +590,7 @@ flow is:
 Rust Credential Provider
   -> authenticated named pipe
   -> LocalSystem auth service
-  -> su_recognition_agent.exe in the requested Windows session
+  -> Smile2UnlockRecognitionAgent.exe in the requested Windows session
   -> liveness + embedding over inherited anonymous pipes
   -> service-owned encrypted profile comparison
   -> one-time password response
@@ -803,7 +803,7 @@ Slint 是唯一计划内 GUI。
 - ✅ MinGW 交叉构建和 Windows Rust core 静态库
 - ✅ 纯 Rust COM Provider（`credential_provider_rs`）：命名管道客户端、SID/session/request 绑定、一次性凭据与安全序列化；2026-09-05 MinGW/Wine 复核为 41 passed + 1 ignored
 - ✅ Windows profile 存储位置 system-owned（ProgramData + 加密 envelope；见"凭据存储"的平台决策）
-- ✅ LocalSystem 服务在目标会话启动 `su_recognition_agent.exe`，通过继承匿名管道接收活体分数与 embedding，再以 service-owned profile store 比对
+- ✅ LocalSystem 服务在目标会话启动 `Smile2UnlockRecognitionAgent.exe`，通过继承匿名管道接收活体分数与 embedding，再以 service-owned profile store 比对
 - ✅ Windows GUI profile 操作通过命名管道请求服务执行；录入/删除使用密码验证后的短时单次管理 capability
 - ✅ Windows ZIP 使用 `bin/` + `assets/` 平级布局；安全组件部署到 `C:\Program Files\Smile2Unlock\bin` 后注册 CP 与服务
 - ✅ `logon_secret_protocol.h` 恢复至 `src/platform/windows/auth_service/`（随 `common/` 删除而丢失），`su_auth_service` 加入 xmake 主构建（此前仅由已删除的 tests/windows 构建）

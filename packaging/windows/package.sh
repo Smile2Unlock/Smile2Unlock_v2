@@ -64,12 +64,12 @@ package_require_command x86_64-w64-mingw32-objdump
 package_require_command python3
 
 primary_files=(
-    su_app.exe
-    su_deploy_helper.exe
-    su_credential_provider.dll
-    su_auth_service.exe
-    su_password_tool.exe
-    su_recognition_agent.exe
+    Smile2Unlock.exe
+    Smile2UnlockDeployHelper.exe
+    Smile2UnlockCredentialProvider.dll
+    Smile2UnlockAuthService.exe
+    Smile2UnlockPasswordTool.exe
+    Smile2UnlockRecognitionAgent.exe
     Smile2Unlock.ico
 )
 for name in "${primary_files[@]}"; do
@@ -97,12 +97,12 @@ package_reset_stage "$stage_root"
 mkdir -p "${package_root}/bin" "${package_root}/assets/i18n" \
     "${package_root}/assets/models/seeta"
 
-install -m 0755 "${build_dir}/su_app.exe" "${package_root}/bin/su_app.exe"
-install -m 0755 "${build_dir}/su_deploy_helper.exe" "${package_root}/bin/su_deploy_helper.exe"
-install -m 0755 "${build_dir}/su_credential_provider.dll" "${package_root}/bin/su_credential_provider.dll"
-install -m 0755 "${build_dir}/su_auth_service.exe" "${package_root}/bin/Smile2UnlockAuthService.exe"
-install -m 0755 "${build_dir}/su_password_tool.exe" "${package_root}/bin/su_password_tool.exe"
-install -m 0755 "${build_dir}/su_recognition_agent.exe" "${package_root}/bin/su_recognition_agent.exe"
+install -m 0755 "${build_dir}/Smile2Unlock.exe" "${package_root}/bin/Smile2Unlock.exe"
+install -m 0755 "${build_dir}/Smile2UnlockDeployHelper.exe" "${package_root}/bin/Smile2UnlockDeployHelper.exe"
+install -m 0755 "${build_dir}/Smile2UnlockCredentialProvider.dll" "${package_root}/bin/Smile2UnlockCredentialProvider.dll"
+install -m 0755 "${build_dir}/Smile2UnlockAuthService.exe" "${package_root}/bin/Smile2UnlockAuthService.exe"
+install -m 0755 "${build_dir}/Smile2UnlockPasswordTool.exe" "${package_root}/bin/Smile2UnlockPasswordTool.exe"
+install -m 0755 "${build_dir}/Smile2UnlockRecognitionAgent.exe" "${package_root}/bin/Smile2UnlockRecognitionAgent.exe"
 install -m 0644 "${build_dir}/Smile2Unlock.ico" "${package_root}/bin/Smile2Unlock.ico"
 install -m 0644 "${build_dir}/assets/i18n/"*.json "${package_root}/assets/i18n/"
 install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${package_root}/assets/models/seeta/"
@@ -145,7 +145,7 @@ stage_dependencies() {
         | sed -n 's/^[[:space:]]*DLL Name: \(.*\)/\1/p')
 }
 
-for binary in "${package_root}/bin/"*.exe "${package_root}/bin/su_credential_provider.dll"; do
+for binary in "${package_root}/bin/"*.exe "${package_root}/bin/Smile2UnlockCredentialProvider.dll"; do
     stage_dependencies "$binary"
 done
 

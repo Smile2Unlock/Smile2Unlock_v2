@@ -457,7 +457,7 @@ SystemStatus AppController::load_system_status() {
     auto status = SystemStatus{};
     status.service_reason = "per-user profile store and LocalSystem auth service";
     status.storage_protection = StorageProtection::kHostKey;
-    // su_deploy_helper.exe sits next to su_app.exe in the flat deployment
+    // Smile2UnlockDeployHelper.exe sits next to Smile2Unlock.exe in the flat deployment
     // layout; report availability so the deployment panel does not ask the
     // user to install a helper that is already deployed.
     status.deployment_helper_available = !deploy_helper_path().empty();
@@ -500,7 +500,7 @@ SystemStatus AppController::load_system_status() {
 
 namespace {
 
-// Path of su_deploy_helper.exe next to the current executable.
+// Path of Smile2UnlockDeployHelper.exe next to the current executable.
 std::string deploy_helper_path() {
     wchar_t buffer[512] = {};
     const auto length = ::GetModuleFileNameW(nullptr, buffer, 512);
@@ -513,7 +513,7 @@ std::string deploy_helper_path() {
         return {};
     }
     path.resize(slash + 1);
-    path += L"su_deploy_helper.exe";
+    path += L"Smile2UnlockDeployHelper.exe";
     const auto required = ::WideCharToMultiByte(
         CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
         nullptr, 0, nullptr, nullptr);
@@ -553,7 +553,7 @@ std::wstring utf8_to_wide(std::string_view value) {
 std::expected<std::string, std::string> run_elevated_deploy(std::string_view arguments) {
     const auto helper = deploy_helper_path();
     if (helper.empty()) {
-        return std::unexpected("failed to locate su_deploy_helper.exe");
+        return std::unexpected("failed to locate Smile2UnlockDeployHelper.exe");
     }
     const auto wide_helper = utf8_to_wide(helper);
     if (wide_helper.empty()) {
@@ -669,7 +669,7 @@ std::expected<void, std::string> deploy_action(std::string_view arguments) {
 std::expected<std::string, std::string> AppController::install_deployment_helper() {
     const auto helper = deploy_helper_path();
     if (helper.empty() || !std::filesystem::exists(helper)) {
-        return std::unexpected("su_deploy_helper.exe is not deployed next to su_app.exe");
+        return std::unexpected("Smile2UnlockDeployHelper.exe is not deployed next to Smile2Unlock.exe");
     }
     return helper;
 }

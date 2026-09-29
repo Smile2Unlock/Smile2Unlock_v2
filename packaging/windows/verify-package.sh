@@ -29,11 +29,11 @@ unzip -q "$archive" -d "$verify_root"
 root="${verify_root}/Smile2Unlock"
 
 required=(
-    bin/su_app.exe
-    bin/su_deploy_helper.exe
-    bin/su_password_tool.exe
-    bin/su_recognition_agent.exe
-    bin/su_credential_provider.dll
+    bin/Smile2Unlock.exe
+    bin/Smile2UnlockDeployHelper.exe
+    bin/Smile2UnlockPasswordTool.exe
+    bin/Smile2UnlockRecognitionAgent.exe
+    bin/Smile2UnlockCredentialProvider.dll
     bin/Smile2UnlockAuthService.exe
     bin/Smile2Unlock.ico
     assets/i18n/en.json
@@ -55,7 +55,7 @@ if find "${root}/bin" -maxdepth 1 -type f -name 'su_credential_provider-*.dll' -
     package_die "credential provider must not use a suffixed filename"
 fi
 
-for binary in "${root}/bin/"*.exe "${root}/bin/su_credential_provider.dll"; do
+for binary in "${root}/bin/"*.exe "${root}/bin/Smile2UnlockCredentialProvider.dll"; do
     x86_64-w64-mingw32-objdump -f "$binary" | grep -q 'pei-x86-64' \
         || package_die "not an x86_64 Windows binary: $binary"
     while IFS= read -r dependency; do

@@ -208,8 +208,8 @@ Completed in source and automated tests:
 - Removal of the legacy SQLite/AES-CBC and UDP password-return path. Existing
   SQLite password fields are retired without decryption and require the user to
   enter the current Windows password again.
-- MinGW builds for `Smile2UnlockAuthService.exe`, `su_recognition_agent.exe`,
-  the pure Rust `su_credential_provider.dll` and the Windows Rust core. On
+- MinGW builds for `Smile2UnlockAuthService.exe`, `Smile2UnlockRecognitionAgent.exe`,
+  the pure Rust `Smile2UnlockCredentialProvider.dll` and the Windows Rust core. On
   2026-09-03 the Linux Release build passed, Rust core was 42/42, and the Rust
   Provider MinGW/Wine suite was 41 passed + 1 ignored. The Xmake suite is not
   currently all green: `su_theme_test/default` is the single failure out of 13.
