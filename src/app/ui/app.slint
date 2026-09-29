@@ -831,7 +831,10 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
-                        height: 260px;
+                        // No fixed height: the Windows-only auto-unlock block
+                        // (+~120px) overflows a fixed 260px card and visually
+                        // overlaps the save-status row below it. The page is
+                        // a ScrollView, so sizing to content is safe.
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
