@@ -64,9 +64,25 @@ struct SystemStatus {
     std::vector<DeploymentTargetStatus> deployment_targets;
 };
 
+struct ModelsStatus {
+    bool present = false;
+    std::string model_dir;
+};
+
 class AppController {
 public:
     std::expected<AppSnapshot, std::string> load_initial_snapshot();
+    // Face-model availability for the download card. `present` mirrors the
+    // recognizer backend's own notion (all .csta files loadable).
+    ModelsStatus models_status();
+    // Downloads the SeetaFace6 model archive in the background. `url_prefix`
+    // is either empty (GitHub direct) or a mirror prefix in front of the
+    // asset URL. Both callbacks fire on the worker thread; callers marshal
+    // to the UI loop. `finished` receives an empty string on success.
+    void download_models(
+        const std::string& url_prefix,
+        std::function<void(std::uint64_t done, std::uint64_t total)> progress,
+        std::function<void(std::string error)> finished);
     std::vector<su::recognizer::CameraInfo> enumerate_cameras() const;
     std::expected<bool, std::string> evaluate_demo_auth(std::string_view username);
     std::expected<CoreConfig, std::string> load_config_snapshot();

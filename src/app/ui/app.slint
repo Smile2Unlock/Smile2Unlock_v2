@@ -32,6 +32,10 @@ export component AppWindow inherits Window {
     in property <bool> lock_pam_configured: false;
     in property <[DeploymentTargetRow]> deployment_targets;
     in-out property <string> deployment_operation_status: "";
+    in-out property <bool> models_present: true;
+    in-out property <bool> models_downloading: false;
+    in-out property <float> models_progress: 0;
+    in-out property <string> models_status_text: "";
     in-out property <bool> desktop_auth_passed: false;
     in property <[ProfileRow]> profiles;
     in property <[string]> camera_options;
@@ -79,6 +83,7 @@ export component AppWindow inherits Window {
     callback refresh_system_status_requested();
     callback install_deployment_helper_requested();
     callback initialize_system_deployment_requested();
+    callback models_download_requested(bool, string);
     callback configure_desktop_target_requested(string, bool);
     callback rollback_desktop_target_requested(string);
     callback start_preview_requested();
@@ -958,8 +963,15 @@ export component AppWindow inherits Window {
                         platform_windows: root.platform_windows;
                         language_index: root.language_index;
                         operation_status: root.deployment_operation_status;
+                        models_present: root.models_present;
+                        models_downloading: root.models_downloading;
+                        models_progress: root.models_progress;
+                        models_status_text: root.models_status_text;
                         translate(key, index) => { root.translate(key, index) }
                         initialize_requested => { root.initialize_system_deployment_requested(); }
+                        models_download_requested(accelerated, prefix) => {
+                            root.models_download_requested(accelerated, prefix);
+                        }
                         install_helper_requested => { root.install_deployment_helper_requested(); }
                         configure_requested(target, wallet) => {
                             root.configure_desktop_target_requested(target, wallet);

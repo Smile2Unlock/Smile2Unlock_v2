@@ -313,7 +313,7 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })

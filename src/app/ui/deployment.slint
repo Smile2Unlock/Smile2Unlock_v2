@@ -1,4 +1,4 @@
-import { Switch } from "std-widgets.slint";
+import { LineEdit, ProgressIndicator, Switch } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import {
     CenteredActionButton, InlineStatus, SectionTitle,
@@ -27,8 +27,16 @@ export component DeploymentPanel inherits Rectangle {
     in property <bool> platform_windows: false;
     in property <int> language_index: 0;
     in property <string> operation_status: "";
+    // Face-model download card state.
+    in property <bool> models_present: true;
+    in property <string> models_dir: "";
+    in property <bool> models_downloading: false;
+    in property <float> models_progress: 0;
+    in property <string> models_status_text: "";
+    in-out property <string> models_mirror_default: "https://ghproxy.com/";
 
     callback initialize_requested();
+    callback models_download_requested(bool, string);
     callback install_helper_requested();
     callback configure_requested(string, bool);
     callback rollback_requested(string);
@@ -78,6 +86,83 @@ export component DeploymentPanel inherits Rectangle {
                 primary: true;
                 enabled: !root.busy;
                 activated => { root.initialize_requested(); }
+            }
+        }
+
+        if !root.models_present || root.models_downloading: Rectangle {
+            height: root.models_downloading ? 132px : 118px;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: root.models_present ? UiTheme.border : UiTheme.danger-text;
+            background: UiTheme.surface;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                HorizontalLayout {
+                    height: 22px;
+                    spacing: 12px;
+                    Text {
+                        text: root.translate("models.title", root.language_index);
+                        color: UiTheme.text-primary;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.models_present
+                            ? root.translate("models.ok", root.language_index)
+                            : root.translate("models.missing", root.language_index);
+                        color: root.models_present ? UiTheme.text-secondary : UiTheme.danger-text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                }
+
+                if !root.models_downloading: HorizontalLayout {
+                    height: 34px;
+                    spacing: 10px;
+                    Text {
+                        text: root.translate("models.mirror_hint", root.language_index);
+                        color: UiTheme.text-secondary;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    LineEdit {
+                        width: 210px;
+                        text <=> root.models_mirror_default;
+                        font-size: 12px;
+                    }
+                    CenteredActionButton {
+                        width: 132px;
+                        label: root.translate("models.download_mirror", root.language_index);
+                        primary: false;
+                        enabled: !root.models_downloading;
+                        activated => { root.models_download_requested(true, root.models_mirror_default); }
+                    }
+                    CenteredActionButton {
+                        width: 132px;
+                        label: root.translate("models.download_direct", root.language_index);
+                        primary: true;
+                        enabled: !root.models_downloading;
+                        activated => { root.models_download_requested(false, ""); }
+                    }
+                }
+
+                if root.models_downloading: ProgressIndicator {
+                    height: 18px;
+                    progress: min(1, max(0, root.models_progress));
+                }
+                if root.models_downloading: Text {
+                    height: 16px;
+                    text: root.models_status_text;
+                    color: UiTheme.text-secondary;
+                    font-size: 12px;
+                    overflow: elide;
+                }
             }
         }
 
