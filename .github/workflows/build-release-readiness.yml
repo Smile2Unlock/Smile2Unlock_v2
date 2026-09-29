@@ -242,4 +242,4 @@ jobs:
           export WINEPATH
           rm -rf "${RUNNER_TEMP}/package-verify"
           unzip -q build/packages/smile2unlock-*-windows-x86_64.zip -d "${RUNNER_TEMP}/package-verify"
-          xvfb-run -a wine "${RUNNER_TEMP}/package-verify/Smile2Unlock/bin/su_deploy_helper.exe" --verify
+          xvfb-run -a wine "${RUNNER_TEMP}/package-verify/Smile2Unlock/bin/Smile2UnlockDeployHelper.exe" --verify

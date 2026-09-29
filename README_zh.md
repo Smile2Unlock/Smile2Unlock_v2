@@ -40,12 +40,12 @@ Smile2Unlock 是一套**本地人脸认证系统**:人脸特征全部在本机�
 
 | 组件 | 形态 | 职责 |
 | --- | --- | --- |
-| `su_app.exe` | Slint GUI | 人脸档案管理、预览、设置与部署面板；通过认证服务管理受保护档案 |
-| `su_credential_provider.dll` | Rust CP | Winlogon 登录界面集成；向 LocalSystem 服务请求一次已认证登录 |
-| `su_deploy_helper.exe` | UAC 提权助手 | Credential Provider 注册/注销、认证服务安装,由 GUI 面板触发 |
+| `Smile2Unlock.exe` | Slint GUI | 人脸档案管理、预览、设置与部署面板；通过认证服务管理受保护档案 |
+| `Smile2UnlockCredentialProvider.dll` | Rust CP | Winlogon 登录界面集成；向 LocalSystem 服务请求一次已认证登录 |
+| `Smile2UnlockDeployHelper.exe` | UAC 提权助手 | Credential Provider 注册/注销、认证服务安装,由 GUI 面板触发 |
 | `Smile2UnlockAuthService.exe` | LocalSystem 服务 | 持有加密人脸档案与账户凭据，并协调目标会话中的识别 |
-| `su_recognition_agent.exe` | 会话工作进程 | 在目标登录会话打开摄像头，执行一次服务授权的识别 |
-| `su_password_tool.exe` | 用户工具 | 保存或清除当前 Windows 账户的一份登录凭据 |
+| `Smile2UnlockRecognitionAgent.exe` | 会话工作进程 | 在目标登录会话打开摄像头，执行一次服务授权的识别 |
+| `Smile2UnlockPasswordTool.exe` | 用户工具 | 保存或清除当前 Windows 账户的一份登录凭据 |
 
 登录流程:锁定屏幕 → CP 磁贴 → 受 ACL 保护的命名管道 → LocalSystem 认证服务 → 目标会话识别 agent → 一次性登录凭据 → Windows LSA。GUI 不在锁屏认证边界内，全程不出本机。
 
@@ -67,9 +67,9 @@ Windows 采用 **`bin\` + `assets\` 平级布局**:可执行文件(及其运行 
 ```text
 Windows:  C:\su-deploy\
 ├── bin\                     # 可执行文件 + 运行 DLL
-│   ├── su_app.exe
-│   ├── su_deploy_helper.exe
-│   ├── su_credential_provider.dll
+│   ├── Smile2Unlock.exe
+│   ├── Smile2UnlockDeployHelper.exe
+│   ├── Smile2UnlockCredentialProvider.dll
 │   ├── Smile2UnlockAuthService.exe
 │   ├── Smile2Unlock.ico
 │   └── (SeetaFace / tennis / MinGW 运行库)
@@ -94,19 +94,19 @@ Linux(打包后):  /usr/bin/su_app
 ```
 
 - 模型目录按 `SU_SEETAFACE_MODEL_DIR` 环境变量、编译期宏、「从当前目录向上查找 `assets/models/seeta`」的顺序解析;i18n 用同样的向上查找定位 `assets/i18n`(这正是 `bin\` + `assets\` 平级布局能工作的原因);Linux 系统安装后回退到 `/usr/share/smile2unlock/models`
-- Windows 解压后运行 `bin\su_app.exe`,再在 GUI 的 **Deployment(部署)** 面板执行安装。提权 helper 会先把安全组件复制到 `C:\Program Files\Smile2Unlock\bin`,然后注册 CP 和服务；注册表不指向解压目录
+- Windows 解压后运行 `bin\Smile2Unlock.exe`,再在 GUI 的 **Deployment(部署)** 面板执行安装。提权 helper 会先把安全组件复制到 `C:\Program Files\Smile2Unlock\bin`,然后注册 CP 和服务；注册表不指向解压目录
 
 ## 架构
 
 ```mermaid
 flowchart LR
     subgraph Windows
-        CP[su_credential_provider.dll] -- 命名管道 --> SERVICE[认证服务]
-        GUIW[su_app.exe] -- 命名管道 --> SERVICE
+        CP[Smile2UnlockCredentialProvider.dll] -- 命名管道 --> SERVICE[认证服务]
+        GUIW[Smile2Unlock.exe] -- 命名管道 --> SERVICE
         SERVICE --> AGENT[识别 agent]
         AGENT --> REC[src/recognizer<br/>SeetaFace 6]
         SERVICE --> CORE[(Rust core<br/>加密档案与凭据)]
-        GUIW -- UAC --> HELPER[su_deploy_helper.exe]
+        GUIW -- UAC --> HELPER[Smile2UnlockDeployHelper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
@@ -175,7 +175,7 @@ cargo build --release --target x86_64-pc-windows-gnu \
     --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
 ```
 
-主要产物位于 `build/mingw/x86_64/release/`:包括 `su_app.exe`、`su_deploy_helper.exe`、`su_credential_provider.dll`、`su_auth_service.exe`、`su_recognition_agent.exe` 和 `su_password_tool.exe`。
+主要产物位于 `build/mingw/x86_64/release/`:包括 `Smile2Unlock.exe`、`Smile2UnlockDeployHelper.exe`、`Smile2UnlockCredentialProvider.dll`、`Smile2UnlockAuthService.exe`、`Smile2UnlockRecognitionAgent.exe` 和 `Smile2UnlockPasswordTool.exe`。
 
 ### Linux
 

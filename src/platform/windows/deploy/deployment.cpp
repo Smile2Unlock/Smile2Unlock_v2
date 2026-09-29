@@ -532,17 +532,17 @@ std::expected<InstalledComponents, std::string> stage_security_components(
     }
 
     const auto installed = InstalledComponents{
-        .credential_provider = install_bin / "su_credential_provider.dll",
+        .credential_provider = install_bin / "Smile2UnlockCredentialProvider.dll",
         .auth_service = install_bin / "Smile2UnlockAuthService.exe",
-        .recognition_agent = install_bin / "su_recognition_agent.exe",
+        .recognition_agent = install_bin / "Smile2UnlockRecognitionAgent.exe",
     };
     for (const auto& item : {
              std::tuple{"bin/Smile2UnlockAuthService.exe", installed.auth_service, true},
-             std::tuple{"bin/su_recognition_agent.exe", installed.recognition_agent, true},
-             std::tuple{"bin/su_app.exe", install_bin / "su_app.exe", true},
-             std::tuple{"bin/su_deploy_helper.exe", install_bin / "su_deploy_helper.exe", true},
-             std::tuple{"bin/su_password_tool.exe", install_bin / "su_password_tool.exe", true},
-             std::tuple{"bin/su_credential_provider.dll", install_bin / "su_credential_provider.dll", true},
+             std::tuple{"bin/Smile2UnlockRecognitionAgent.exe", installed.recognition_agent, true},
+             std::tuple{"bin/Smile2Unlock.exe", install_bin / "Smile2Unlock.exe", true},
+             std::tuple{"bin/Smile2UnlockDeployHelper.exe", install_bin / "Smile2UnlockDeployHelper.exe", true},
+             std::tuple{"bin/Smile2UnlockPasswordTool.exe", install_bin / "Smile2UnlockPasswordTool.exe", true},
+             std::tuple{"bin/Smile2UnlockCredentialProvider.dll", install_bin / "Smile2UnlockCredentialProvider.dll", true},
              std::tuple{"bin/Smile2Unlock.ico", install_bin / "Smile2Unlock.ico", false},
          }) {
         if (const auto copied = copy_required_file(
@@ -611,14 +611,14 @@ std::expected<std::filesystem::path, std::string> stage_credential_provider(
     // the lifetime of a logon session, so an in-use update is rejected with a
     // clear error instead of silently switching the registry to an opaque
     // content-addressed filename. The user can sign out or reboot, then retry.
-    const auto destination = install_bin / "su_credential_provider.dll";
+    const auto destination = install_bin / "Smile2UnlockCredentialProvider.dll";
     for (const auto& directory : {install_root, install_bin}) {
         if (const auto checked = ensure_plain_directory(directory); !checked) {
             return std::unexpected(checked.error());
         }
     }
     if (const auto copied = copy_required_file(
-            *package, "bin/su_credential_provider.dll", destination, true); !copied) {
+            *package, "bin/Smile2UnlockCredentialProvider.dll", destination, true); !copied) {
         return std::unexpected(copied.error()
             + "; sign out or reboot Windows before updating the credential provider");
     }
@@ -782,7 +782,7 @@ std::expected<void, std::string> validate_deployment_package() {
     }
     // This check happens in the unelevated GUI before ShellExecuteEx(runas),
     // preventing a replaced helper from becoming the UAC elevation target.
-    return verify_manifest_file(*package, "bin/su_deploy_helper.exe", true);
+    return verify_manifest_file(*package, "bin/Smile2UnlockDeployHelper.exe", true);
 }
 
 bool credential_provider_enrolled() {

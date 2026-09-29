@@ -57,7 +57,7 @@ RequestExecutionLevel admin
 !insertmacro MUI_LANGUAGE "English"
 
 Function LaunchApp
-    Exec '"$INSTDIR\bin\su_app.exe"'
+    Exec '"$INSTDIR\bin\Smile2Unlock.exe"'
 FunctionEnd
 
 Section "Smile2Unlock" SecMain
@@ -71,7 +71,7 @@ Section "Smile2Unlock" SecMain
     DetailPrint "Verifying the signed manifest..."
     ; su_deploy_helper refuses --verify combined with deployment operations,
     ; so run the manifest check and the deployment as two steps.
-    nsExec::ExecToLog '"$INSTDIR\package\bin\su_deploy_helper.exe" --verify'
+    nsExec::ExecToLog '"$INSTDIR\package\bin\Smile2UnlockDeployHelper.exe" --verify'
     Pop $0
     ${If} $0 != 0
         DetailPrint "manifest verification failed (exit $0)"
@@ -99,7 +99,7 @@ Section "Smile2Unlock" SecMain
     ; before giving up.
     StrCpy $1 0
     ${While} $1 < 3
-        nsExec::ExecToLog '"$INSTDIR\package\bin\su_deploy_helper.exe" --register-cp --ensure-service'
+        nsExec::ExecToLog '"$INSTDIR\package\bin\Smile2UnlockDeployHelper.exe" --register-cp --ensure-service'
         Pop $0
         ${If} $0 == 0
             ${Break}
@@ -128,18 +128,18 @@ Section "Smile2Unlock" SecMain
 
     CreateDirectory "$SMPROGRAMS\Smile2Unlock"
     CreateShortcut "$SMPROGRAMS\Smile2Unlock\Smile2Unlock.lnk" \
-        "$INSTDIR\bin\su_app.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
+        "$INSTDIR\bin\Smile2Unlock.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
     CreateShortcut "$SMPROGRAMS\Smile2Unlock\Uninstall Smile2Unlock.lnk" \
         "$INSTDIR\Uninstall.exe"
     CreateShortcut "$DESKTOP\Smile2Unlock.lnk" \
-        "$INSTDIR\bin\su_app.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
+        "$INSTDIR\bin\Smile2Unlock.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
 
     SetRegView 64
     WriteRegStr HKLM "Software\Smile2Unlock" "InstallLocation" "$INSTDIR"
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "Smile2Unlock"
     WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
     WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "Smile2Unlock contributors"
-    WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\bin\su_app.exe"
+    WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\bin\Smile2Unlock.exe"
     WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
     ; Windows' "Apps & features" entry point; the path contains spaces, so
     ; quote it.
@@ -154,10 +154,10 @@ Section "Uninstall"
     ; Order matters: the helper must still exist when we unregister the
     ; credential provider, and the service must be stopped before its
     ; files are deleted.
-    nsExec::ExecToLog 'taskkill /IM su_app.exe /F'
+    nsExec::ExecToLog 'taskkill /IM Smile2Unlock.exe /F'
     Pop $0
 
-    nsExec::ExecToLog '"$INSTDIR\package\bin\su_deploy_helper.exe" --unregister-cp'
+    nsExec::ExecToLog '"$INSTDIR\package\bin\Smile2UnlockDeployHelper.exe" --unregister-cp'
     Pop $0
 
     nsExec::ExecToLog 'sc stop Smile2UnlockAuthService'

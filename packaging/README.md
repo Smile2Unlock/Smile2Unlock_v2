@@ -36,8 +36,8 @@ own `release-info.json` with version, platform, architecture, and checksums.
 ## Windows layout
 
 The zip has a stable `Smile2Unlock/` top-level directory. Its `bin/` directory
-contains `su_credential_provider.dll` with no version or hash suffix. Running
-deployment from the GUI elevates `su_deploy_helper.exe`, copies the trusted
+contains `Smile2UnlockCredentialProvider.dll` with no version or hash suffix. Running
+deployment from the GUI elevates `Smile2UnlockDeployHelper.exe`, copies the trusted
 runtime set into `C:\Program Files\Smile2Unlock\bin`, and registers both the
 Credential Provider and service against that protected, stable location. The
 directory used to extract the zip is not written into either registration.

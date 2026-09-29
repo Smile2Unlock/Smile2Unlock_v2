@@ -40,12 +40,12 @@ Both platforms share the same core: a recognition pipeline written with C++26 mo
 
 | Component | Form | Responsibility |
 | --- | --- | --- |
-| `su_app.exe` | Slint GUI | Face-profile management, preview, settings, and deployment panel |
-| `su_credential_provider.dll` | Rust CP | Winlogon sign-in integration; requests one authenticated attempt from the LocalSystem service |
-| `su_deploy_helper.exe` | UAC-elevated helper | Credential Provider register/unregister, auth-service install; triggered from the GUI panel |
+| `Smile2Unlock.exe` | Slint GUI | Face-profile management, preview, settings, and deployment panel |
+| `Smile2UnlockCredentialProvider.dll` | Rust CP | Winlogon sign-in integration; requests one authenticated attempt from the LocalSystem service |
+| `Smile2UnlockDeployHelper.exe` | UAC-elevated helper | Credential Provider register/unregister, auth-service install; triggered from the GUI panel |
 | `Smile2UnlockAuthService.exe` | LocalSystem service | Owns encrypted account credentials and brokers recognition in the target session |
-| `su_recognition_agent.exe` | Session worker | Opens the camera and performs one service-authorized recognition attempt |
-| `su_password_tool.exe` | User utility | Stores or clears the one-password-per-Windows-account credential |
+| `Smile2UnlockRecognitionAgent.exe` | Session worker | Opens the camera and performs one service-authorized recognition attempt |
+| `Smile2UnlockPasswordTool.exe` | User utility | Stores or clears the one-password-per-Windows-account credential |
 
 Sign-in flow: lock screen -> CP tile -> authenticated named pipe -> LocalSystem
 service -> recognition agent in the target session -> one-time logon secret ->
@@ -69,9 +69,9 @@ Windows uses a **bin/ + assets/ sibling layout**: the executables (and their run
 ```text
 Windows package:  Smile2Unlock\
 ├── bin\                     # executables + runtime DLLs
-│   ├── su_app.exe
-│   ├── su_deploy_helper.exe
-│   ├── su_credential_provider.dll
+│   ├── Smile2Unlock.exe
+│   ├── Smile2UnlockDeployHelper.exe
+│   ├── Smile2UnlockCredentialProvider.dll
 │   ├── Smile2UnlockAuthService.exe
 │   ├── Smile2Unlock.ico
 │   └── (SeetaFace / tennis / MinGW runtime DLLs)
@@ -96,7 +96,7 @@ Linux (packaged):  /usr/bin/su_app
 ```
 
 - The model directory is resolved via `SU_SEETAFACE_MODEL_DIR` (env), a compile-time macro, or by walking up from the current directory looking for `assets/models/seeta`; i18n uses the same walk-up for `assets/i18n` (this is what makes the `bin\` + `assets\` sibling layout work); a system install on Linux falls back to `/usr/share/smile2unlock/models`
-- On Windows, extract the zip anywhere, run `bin\su_app.exe`, then use the
+- On Windows, extract the zip anywhere, run `bin\Smile2Unlock.exe`, then use the
   Deployment panel. The elevated helper copies security components to
   `C:\Program Files\Smile2Unlock\bin` before registering the CP and service;
   registry values never point at the extraction directory.
@@ -106,12 +106,12 @@ Linux (packaged):  /usr/bin/su_app
 ```mermaid
 flowchart LR
     subgraph Windows
-        CP[su_credential_provider.dll] -- named pipe --> SERVICE[Auth service]
-        GUIW[su_app.exe] -- named pipe --> SERVICE
+        CP[Smile2UnlockCredentialProvider.dll] -- named pipe --> SERVICE[Auth service]
+        GUIW[Smile2Unlock.exe] -- named pipe --> SERVICE
         SERVICE --> AGENT[Recognition agent]
         AGENT --> REC[src/recognizer<br/>SeetaFace 6]
         SERVICE --> CORE[(Rust core<br/>encrypted profiles and credentials)]
-        GUIW -- UAC --> HELPER[su_deploy_helper.exe]
+        GUIW -- UAC --> HELPER[Smile2UnlockDeployHelper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
@@ -180,9 +180,9 @@ cargo build --release --target x86_64-pc-windows-gnu \
     --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
 ```
 
-The main outputs under `build/mingw/x86_64/release/` are `su_app.exe`,
-`su_deploy_helper.exe`, `su_credential_provider.dll`, `su_auth_service.exe`,
-`su_recognition_agent.exe`, and `su_password_tool.exe`.
+The main outputs under `build/mingw/x86_64/release/` are `Smile2Unlock.exe`,
+`Smile2UnlockDeployHelper.exe`, `Smile2UnlockCredentialProvider.dll`, `Smile2UnlockAuthService.exe`,
+`Smile2UnlockRecognitionAgent.exe`, and `Smile2UnlockPasswordTool.exe`.
 
 ### Linux
 

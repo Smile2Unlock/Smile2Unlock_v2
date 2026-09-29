@@ -42,6 +42,24 @@ printf '%s\n' "${new_version}" > "${version_file}"
 # Keep the standalone xmake fallback synchronized for callers that do not
 # export SU_VERSION.
 sed -i -E 's/_su_version = "[0-9]+\.[0-9]+\.[0-9]+"/_su_version = "'"${new_version}"'"/' "${xmake_file}"
+# Keep the VERSIONINFO macros embedded in the Windows resource files in
+# sync with version.txt (they carry the same dotted version).
+for rc in \
+    src/platform/windows/deploy_helper/helper.rc \
+    src/app/su_app.rc \
+    src/platform/windows/auth_service/service.rc \
+    src/platform/windows/recognition_agent/agent.rc \
+    src/platform/windows/password_tool/password_tool.rc; do
+    [[ -f "${project_dir}/${rc}" ]] || continue
+    IFS='.' read -r ma mi pa <<< "$new_version"
+    sed -i \
+        -e "s/^#define SU_VER_A .*/#define SU_VER_A ${ma}/" \
+        -e "s/^#define SU_VER_B .*/#define SU_VER_B ${mi}/" \
+        -e "s/^#define SU_VER_C .*/#define SU_VER_C ${pa}/" \
+        -e "s/^#define SU_VERSION_STR .*/#define SU_VERSION_STR \"${new_version}\"/" \
+        "${project_dir}/${rc}"
+done
+
 echo "version: ${old_version:-<empty>} -> ${new_version}"
 
 if [[ "$tag" == true ]]; then
@@ -49,7 +67,7 @@ if [[ "$tag" == true ]]; then
     if git -C "$project_dir" rev-parse "v${new_version}" >/dev/null 2>&1; then
         echo "note: tag v${new_version} already exists (skipped)"
     else
-        git -C "$project_dir" add version.txt xmake.lua
+        git -C "$project_dir" add version.txt xmake.lua src/platform/windows/deploy_helper/helper.rc src/app/su_app.rc src/platform/windows/auth_service/service.rc src/platform/windows/recognition_agent/agent.rc src/platform/windows/password_tool/password_tool.rc
         git -C "$project_dir" commit -m "chore: bump version to ${new_version}" >/dev/null
         git -C "$project_dir" tag "v${new_version}"
         echo "tagged: v${new_version}"
