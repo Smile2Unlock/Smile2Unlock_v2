@@ -1,18 +1,18 @@
 name: Publish GitHub Release Artifacts
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-release-artifacts-${{ github.event.release.tag_name }}
+  group: publish-release-artifacts-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: ${{ github.event.release.tag_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
   # Container jobs execute as root; xmake requires explicit opt-in there.
   XMAKE_ROOT: y
   # The Windows release build pulls the full Slint dependency graph; be
@@ -27,6 +27,8 @@ jobs:
   validate-release:
     name: Validate release tag and version
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -34,7 +36,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RELEASE_TAG }}
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Match tag to version.txt
         id: version
@@ -47,6 +49,83 @@ jobs:
           }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      # The release itself is created here so pushing a tag is all a human
+      # does: notes are generated (changelog + badges + model links) and the
+      # downstream jobs attach their artifacts to it. Re-running the workflow
+      # skips creation when the release already exists.
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; keeping its notes"
+            exit 0
+          fi
+          prev_tag="$(git describe --abbrev=0 --tags "${RELEASE_TAG}^" 2>/dev/null || true)"
+          repo="$GITHUB_REPOSITORY"
+          compare_url="https://github.com/${repo}/compare/${prev_tag:-${RELEASE_TAG}^}...${RELEASE_TAG}"
+
+          {
+            echo "# Smile2Unlock v${VERSION}"
+            echo
+            echo "[![total downloads](https://img.shields.io/github/downloads/${repo}/total?label=total%20downloads&cacheSeconds=3600)](https://github.com/${repo}/releases)"
+            echo "[![latest downloads](https://img.shields.io/github/downloads/${repo}/latest/total?label=latest%20downloads&cacheSeconds=3600)](https://github.com/${repo}/releases/latest)"
+            echo
+            echo "## 更新日志 / Changelog"
+            echo
+            if [[ -n "$prev_tag" ]]; then
+              echo "[完整对比 ${prev_tag} → ${RELEASE_TAG}](${compare_url})"
+              echo
+              while read -r subject; do
+                case "$subject" in
+                  feat*)  icon='✨' ;;
+                  fix*)   icon='🐛' ;;
+                  perf*)  icon='⚡' ;;
+                  docs*)  icon='📝' ;;
+                  test*)  icon='✅' ;;
+                  ci*)    icon='👷' ;;
+                  chore*) icon='🔧' ;;
+                  *)      icon='•' ;;
+                esac
+                echo "- ${icon} ${subject}"
+              done < <(git log --no-merges --pretty=format:'%s' "${prev_tag}..${RELEASE_TAG}")
+            else
+              echo "- 首个自动发布的标签版本。"
+            fi
+            echo
+            echo "## 下载 / Downloads"
+            echo
+            echo "### Linux"
+            echo
+            echo "[![deb](https://img.shields.io/badge/DEB-Debian%20%7C%20Ubuntu-A80030?style=flat-square&logo=debian)](https://github.com/${repo}/releases/download/${RELEASE_TAG}/smile2unlock-${VERSION}-linux-x86_64.deb)"
+            echo "[![rpm](https://img.shields.io/badge/RPM-Fedora%20%7C%20openSUSE-071D49?style=flat-square)](https://github.com/${repo}/releases/download/${RELEASE_TAG}/smile2unlock-${VERSION}-linux-x86_64.rpm)"
+            echo "[![pacman](https://img.shields.io/badge/PACMAN-Arch-1793D1?style=flat-square)](https://github.com/${repo}/releases/download/${RELEASE_TAG}/smile2unlock-${VERSION}-1-x86_64.pkg.tar.zst)"
+            echo "[![tar.gz](https://img.shields.io/badge/TAR.GZ-通用二进制-6E7681?style=flat-square)](https://github.com/${repo}/releases/download/${RELEASE_TAG}/smile2unlock-${VERSION}-linux-x86_64.tar.gz)"
+            echo
+            echo "### Windows"
+            echo
+            echo "[![setup exe](https://img.shields.io/badge/SETUP-安装器-0078D6?style=flat-square&logo=windows)](https://github.com/${repo}/releases/download/${RELEASE_TAG}/smile2unlock-${VERSION}-windows-x86_64-setup.exe)"
+            echo "[![zip](https://img.shields.io/badge/ZIP-签名压缩包-4C8CBF?style=flat-square&logo=windows)](https://github.com/${repo}/releases/download/${RELEASE_TAG}/smile2unlock-${VERSION}-windows-x86_64.zip)"
+            echo
+            echo "SHA-256 摘要见附件 \`SHA256SUMS\`;签名 ZIP 与安装器使用内部证书,部署时由 \`su_deploy_helper --verify\` 按编译内置指纹校验。"
+            echo
+            echo "## 🧠 人脸模型 / Face models"
+            echo
+            models_page="https://github.com/${repo}/releases/tag/models-seetaface6-v1"
+            models_url="$(gh api "repos/${repo}/releases/tags/models-seetaface6-v1" --jq '.assets[0].browser_download_url' 2>/dev/null || true)"
+            models_badge_link="${models_url:-${models_page}}"
+            echo "[![models](https://img.shields.io/badge/models-SeetaFace6-8A2BE2?style=flat-square)](${models_badge_link})"
+            echo
+            echo "所有发行包均已内嵌模型;独立的模型包([models-seetaface6-v1](${models_page}))用于离线安装与单独更新,按来源分类(当前:SeetaFace6,BSD-2-Clause)。"
+          } > /tmp/release-notes.md
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Smile2Unlock v${VERSION}" \
+            --notes-file /tmp/release-notes.md
+
   linux-package:
     name: Build Linux release archive
     needs: validate-release
@@ -54,11 +133,13 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install system dependencies
-        run: >-
+        run: |
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
-          pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
-          freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
-          nodejs libinput
+            pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
+            freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
+            nodejs libinput ruby ruby-rdoc
+          # fpm (deb/rpm packaging) is a ruby gem, not in the repos.
+          gem install --no-document fpm
 
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -96,14 +177,19 @@ jobs:
           xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y
           xmake build -v
 
-      - name: Build and verify Linux archive
-        run: packaging/linux/package.sh --format tar.gz --output-dir "$GITHUB_WORKSPACE/dist"
+      - name: Build and verify Linux packages
+        run: |
+          packaging/linux/package.sh --format all --output-dir "$GITHUB_WORKSPACE/dist"
 
-      - name: Preserve Linux archive
+      - name: Preserve Linux packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-release-${{ needs.validate-release.outputs.version }}
-          path: dist/smile2unlock-${{ needs.validate-release.outputs.version }}-linux-x86_64.tar.gz
+          path: |
+            dist/smile2unlock-${{ needs.validate-release.outputs.version }}-linux-x86_64.tar.gz
+            dist/smile2unlock-${{ needs.validate-release.outputs.version }}-linux-x86_64.deb
+            dist/smile2unlock-${{ needs.validate-release.outputs.version }}-linux-x86_64.rpm
+            dist/smile2unlock-${{ needs.validate-release.outputs.version }}-1-x86_64.pkg.tar.zst
           if-no-files-found: error
           retention-days: 14
 
@@ -246,10 +332,16 @@ jobs:
           VERSION: ${{ needs.validate-release.outputs.version }}
         run: |
           linux_archive="dist/smile2unlock-${VERSION}-linux-x86_64.tar.gz"
+          linux_deb="dist/smile2unlock-${VERSION}-linux-x86_64.deb"
+          linux_rpm="dist/smile2unlock-${VERSION}-linux-x86_64.rpm"
+          linux_pacman="dist/smile2unlock-${VERSION}-1-x86_64.pkg.tar.zst"
           windows_archive="dist/smile2unlock-${VERSION}-windows-x86_64.zip"
           windows_setup="dist/smile2unlock-${VERSION}-windows-x86_64-setup.exe"
-          [[ -f "$linux_archive" ]] || { echo "missing $linux_archive" >&2; exit 1; }
-          [[ -f "$windows_archive" ]] || { echo "missing $windows_archive" >&2; exit 1; }
+          release_assets=("$linux_archive" "$linux_deb" "$linux_rpm" "$linux_pacman"
+                          "$windows_archive" "$windows_setup")
+          for asset in "${release_assets[@]}"; do
+            [[ -f "$asset" ]] || { echo "missing $asset" >&2; exit 1; }
+          done
           if tar -tzf "$linux_archive" | grep -Ei '(^|/)(release-signing(/|$)|[^/]+\.(key|pem|p12|pfx)$)' >/dev/null; then
             echo "Linux archive contains signing material" >&2
             exit 1
@@ -258,16 +350,21 @@ jobs:
             echo "Windows archive contains signing material" >&2
             exit 1
           fi
-          # The setup exe is optional: only produced when the release job had
-          # NSIS available (it always does; guarded for robustness).
-          release_assets=("$linux_archive" "$windows_archive")
-          if [[ -f "$windows_setup" ]]; then
-              release_assets+=("$windows_setup")
-          fi
+          # The same guard across every archive format we ship.
+          for deb_rpm_pacman in "$linux_deb" "$linux_rpm" "$linux_pacman"; do
+            if dpkg-deb -c "$deb_rpm_pacman" 2>/dev/null \
+               | grep -Ei '(^|/)(release-signing(/|$)|[^/]+\.(key|pem|p12|pfx)$)' >/dev/null \
+               || bsdtar -tf "$deb_rpm_pacman" 2>/dev/null \
+               | grep -Ei '(^|/)(release-signing(/|$)|[^/]+\.(key|pem|p12|pfx)$)' >/dev/null; then
+              echo "$deb_rpm_pacman contains signing material" >&2
+              exit 1
+            fi
+          done
           (
             cd dist
             sha256sum "${release_assets[@]##*/}" > SHA256SUMS
           )
           gh release upload "$RELEASE_TAG" \
             "${release_assets[@]}" dist/SHA256SUMS \
+            --clobber \
             --repo "$GITHUB_REPOSITORY"
