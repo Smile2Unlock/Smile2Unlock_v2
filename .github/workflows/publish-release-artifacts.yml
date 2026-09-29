@@ -134,9 +134,9 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
-            pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
-            freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
+          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja \
+            pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig \
+            freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip \
             nodejs libinput ruby ruby-rdoc
           # fpm (deb/rpm packaging) is a ruby gem, not in the repos.
           gem install --no-document fpm
