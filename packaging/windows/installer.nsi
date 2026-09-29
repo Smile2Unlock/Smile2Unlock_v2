@@ -75,8 +75,18 @@ Section "Smile2Unlock" SecMain
     Pop $0
     ${If} $0 != 0
         DetailPrint "manifest verification failed (exit $0)"
+        ; The helper writes the precise reason (Authenticode status, hash
+        ; mismatch, missing manifest entry, ...) to %TEMP%\su_deploy_result.json;
+        ; surface it in the dialog so failures are diagnosable off-site.
+        StrCpy $2 ""
+        ClearErrors
+        FileOpen $3 "$TEMP\su_deploy_result.json" r
+        ${Unless} ${Errors}
+            FileRead $3 $2
+            FileClose $3
+        ${EndUnless}
         MessageBox MB_ICONSTOP \
-            "签名清单校验失败（退出码 $0）。$\n$\nManifest verification failed (exit code $0)." \
+            "签名清单校验失败（退出码 $0）。$\n$\n$2$\n$\nManifest verification failed (exit code $0)." \
             /SD IDOK
         SetErrorLevel $0
         Abort
@@ -102,8 +112,15 @@ Section "Smile2Unlock" SecMain
     ${EndWhile}
     ${If} $0 != 0
         DetailPrint "su_deploy_helper failed (exit $0)"
+        StrCpy $2 ""
+        ClearErrors
+        FileOpen $3 "$TEMP\su_deploy_result.json" r
+        ${Unless} ${Errors}
+            FileRead $3 $2
+            FileClose $3
+        ${EndUnless}
         MessageBox MB_ICONSTOP \
-            "部署失败（退出码 $0）。详见详细信息日志。$\n$\nDeployment failed (exit code $0). See the detail log." \
+            "部署失败（退出码 $0）。$\n$\n$2$\n$\nDeployment failed (exit code $0)." \
             /SD IDOK
         SetErrorLevel $0
         Abort
