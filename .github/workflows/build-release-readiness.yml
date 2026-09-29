@@ -1,9 +1,6 @@
 name: Cross-platform Build and Release Readiness
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
