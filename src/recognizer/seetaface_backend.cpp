@@ -221,7 +221,63 @@ public:
             .data = owned_bytes.data(),
         };
 
-        const auto faces = detector_->detect(seeta_image);
+        // Detection cost scales with pixel count, and high-resolution cameras
+        // (1080p+) otherwise push the preview under 1 fps. Detect on a
+        // box-downscaled copy capped to ~640px width — the detector only
+        // needs to locate the face — then map the box back to the full
+        // resolution so landmarking, anti-spoofing and embedding keep their
+        // accuracy on the original image.
+        SeetaImageData detect_image = seeta_image;
+        auto downscaled = std::vector<unsigned char>{};
+        auto scale_x = 1.0;
+        auto scale_y = 1.0;
+        constexpr int kDetectMaxWidth = 640;
+        if (seeta_image.width > kDetectMaxWidth) {
+            const auto scaled_width = kDetectMaxWidth;
+            const auto scaled_height = std::max(
+                1, seeta_image.height * kDetectMaxWidth / seeta_image.width);
+            downscaled.assign(
+                static_cast<std::size_t>(scaled_width) * scaled_height * 3, 0);
+            // Integer box filter: average each source block into one pixel.
+            const auto* src = owned_bytes.data();
+            auto* dst = downscaled.data();
+            for (int y = 0; y < scaled_height; ++y) {
+                const auto y0 = seeta_image.height * y / scaled_height;
+                const auto y1 = std::max(y0 + 1, seeta_image.height * (y + 1) / scaled_height);
+                for (int x = 0; x < scaled_width; ++x) {
+                    const auto x0 = seeta_image.width * x / scaled_width;
+                    const auto x1 = std::max(x0 + 1, seeta_image.width * (x + 1) / scaled_width);
+                    auto r = 0UL;
+                    auto g = 0UL;
+                    auto b = 0UL;
+                    auto count = 0UL;
+                    for (int sy = y0; sy < y1; ++sy) {
+                        const auto* row = src
+                            + (static_cast<std::size_t>(sy) * seeta_image.width + x0) * 3;
+                        for (int sx = x0; sx < x1; ++sx) {
+                            r += row[0];
+                            g += row[1];
+                            b += row[2];
+                            row += 3;
+                            ++count;
+                        }
+                    }
+                    *dst++ = static_cast<unsigned char>(r / count);
+                    *dst++ = static_cast<unsigned char>(g / count);
+                    *dst++ = static_cast<unsigned char>(b / count);
+                }
+            }
+            detect_image = SeetaImageData{
+                .width = scaled_width,
+                .height = scaled_height,
+                .channels = 3,
+                .data = downscaled.data(),
+            };
+            scale_x = static_cast<double>(seeta_image.width) / scaled_width;
+            scale_y = static_cast<double>(seeta_image.height) / scaled_height;
+        }
+
+        const auto faces = detector_->detect(detect_image);
         if (faces.size <= 0 || faces.data == nullptr) {
             reset_liveness_locked();
             return RecognitionResult{};
@@ -233,7 +289,13 @@ public:
             return RecognitionResult{};
         }
 
-        const auto face = faces.data[0].pos;
+        const auto scaled_face = faces.data[0].pos;
+        const auto face = SeetaRect{
+            .x = static_cast<int32_t>(scaled_face.x * scale_x),
+            .y = static_cast<int32_t>(scaled_face.y * scale_y),
+            .width = static_cast<int32_t>(scaled_face.width * scale_x),
+            .height = static_cast<int32_t>(scaled_face.height * scale_y),
+        };
         const auto points = landmarker_->mark(seeta_image, face);
 
         // Liveness is optional per-call: when disabled in config the caller

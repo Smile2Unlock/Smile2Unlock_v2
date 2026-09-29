@@ -445,8 +445,13 @@ private:
         const auto packed_size = [](std::uint32_t w, std::uint32_t h) {
             return (static_cast<std::uint64_t>(w) << 32) | static_cast<std::uint64_t>(h);
         };
+        // 720p leads: high-resolution cameras negotiate 1080p YUY2 which
+        // saturates USB bandwidth and drops capture to ~1 fps, while the
+        // recognition pipeline detects on a downscaled copy anyway, so the
+        // extra pixels buy nothing. 1080p stays second for devices that only
+        // offer it.
         static constexpr std::array kSizes = std::array{
-            packed_size(1920, 1080), packed_size(1280, 720), packed_size(960, 540),
+            packed_size(1280, 720), packed_size(1920, 1080), packed_size(960, 540),
             packed_size(640, 480), packed_size(320, 240), packed_size(176, 144),
         };
         bool type_set = false;
