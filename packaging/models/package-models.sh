@@ -31,9 +31,12 @@ source "${project_dir}/packaging/lib/common.sh"
 }
 
 rm -rf -- "${staging}"
-mkdir -p -- "${staging}"
+# Top-level seeta/ directory so extracting the archive straight into the
+# models parent dir lands the .csta files in assets/models/seeta/ (Windows)
+# or /usr/share/smile2unlock/models/seeta/ (Linux).
+mkdir -p -- "${staging}/seeta"
 
-cp "${model_dir}"/*.csta "${staging}/"
+cp "${model_dir}"/*.csta "${staging}/seeta/"
 cp "${project_dir}/licenses/SeetaFace6-BSD-2-Clause.txt" \
     "${staging}/LICENSE-SeetaFace6-BSD-2-Clause.txt"
 
@@ -70,7 +73,7 @@ SHA-256 digests for this archive ship next to the download
 (\`<archive>.zip.sha256\`); per-file digests are in \`SHA256SUMS\` inside.
 EOF
 
-( cd "${staging}" && sha256sum -- *.csta > SHA256SUMS )
+( cd "${staging}" && sha256sum -- seeta/*.csta > SHA256SUMS )
 
 mkdir -p -- "${output_dir}"
 archive="${output_dir}/${name}.zip"
