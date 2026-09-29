@@ -3,6 +3,8 @@ module;
 #include <nlohmann/json.hpp>
 #include <windows.h>
 #include <shellapi.h>
+#include <winhttp.h>
+#include <wincrypt.h>
 #include "../platform/windows/auth_service/profile_client.h"
 #include "../platform/windows/deploy/deployment.h"
 
@@ -713,6 +715,322 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
         return std::unexpected(rolled_back.error());
     }
     return "credential provider unregistered";
+}
+
+
+// ---------------------------------------------------------------------------
+// Face-model download (SeetaFace6 archive from the models GitHub release).
+// ---------------------------------------------------------------------------
+namespace {
+
+// Mirrors the recognizer backend's model-dir resolution: walk up from the
+// executable looking for assets/models/seeta.
+constexpr auto kRequiredModels = std::array{
+    L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
+    L"fas_first.csta", L"fas_second.csta",
+};
+
+constexpr char kModelsAssetUrl[] =
+    "https://github.com/Smile2Unlock/Smile2Unlock_v2/releases/download/"
+    "models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip";
+
+std::filesystem::path expected_model_dir() {
+    wchar_t exe[MAX_PATH] = {};
+    if (::GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) {
+        return {};
+    }
+    auto dir = std::filesystem::path(exe).parent_path();
+    for (int depth = 0; depth < 6 && dir.has_parent_path(); ++depth) {
+        const auto candidate = dir / "assets" / "models" / "seeta";
+        std::error_code ignored{};
+        if (std::filesystem::is_directory(candidate, ignored)) {
+            return candidate;
+        }
+        dir = dir.parent_path();
+    }
+    return std::filesystem::path(exe).parent_path() / "assets" / "models" / "seeta";
+}
+
+std::expected<std::string, std::string> http_download_to_file(
+    const std::string& url, const std::filesystem::path& dest,
+    const std::function<void(std::uint64_t, std::uint64_t)>& progress) {
+    if (url.rfind("https://", 0) != 0) {
+        return std::unexpected("only https:// download URLs are supported");
+    }
+    const auto authority = url.substr(8);
+    const auto slash = authority.find('/');
+    if (slash == std::string::npos) {
+        return std::unexpected("invalid download URL");
+    }
+    const auto host = utf8_to_wide(authority.substr(0, slash));
+    const auto path = utf8_to_wide(authority.substr(slash));
+    if (host.empty()) {
+        return std::unexpected("invalid download URL");
+    }
+
+    const auto session = ::WinHttpOpen(
+        L"Smile2Unlock/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (session == nullptr) {
+        return std::unexpected("failed to open the HTTP session");
+    }
+    const auto close_session = std::unique_ptr<std::remove_pointer_t<HINTERNET>, decltype(&::WinHttpCloseHandle)>{
+        session, &::WinHttpCloseHandle};
+    const auto connection = ::WinHttpConnect(
+        session, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (connection == nullptr) {
+        return std::unexpected("failed to connect to the download host");
+    }
+    const auto close_connection = std::unique_ptr<std::remove_pointer_t<HINTERNET>, decltype(&::WinHttpCloseHandle)>{
+        connection, &::WinHttpCloseHandle};
+    const auto request = ::WinHttpOpenRequest(
+        connection, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (request == nullptr) {
+        return std::unexpected("failed to open the download request");
+    }
+    const auto close_request = std::unique_ptr<std::remove_pointer_t<HINTERNET>, decltype(&::WinHttpCloseHandle)>{
+        request, &::WinHttpCloseHandle};
+    if (!::WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+        || !::WinHttpReceiveResponse(request, nullptr)) {
+        return std::unexpected("the download request failed (network or mirror unreachable)");
+    }
+
+    auto status_code = DWORD{};
+    DWORD status_size = sizeof(status_code);
+    if (!::WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &status_code, &status_size, WINHTTP_NO_HEADER_INDEX)
+        || status_code != 200) {
+        return std::unexpected("the download server returned status "
+            + std::to_string(status_code));
+    }
+
+    DWORD total = 0;
+    DWORD length_size = sizeof(total);
+    if (!::WinHttpQueryHeaders(request, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &total, &length_size, WINHTTP_NO_HEADER_INDEX)) {
+        total = 0;
+    }
+
+    const auto file = ::CreateFileW(dest.c_str(), GENERIC_WRITE, 0, nullptr,
+        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return std::unexpected("failed to create the download file");
+    }
+    const auto close_file = std::unique_ptr<std::remove_pointer_t<HANDLE>, decltype(&::CloseHandle)>{
+        file, &::CloseHandle};
+
+    auto buffer = std::array<char, 64 * 1024>{};
+    std::uint64_t done = 0;
+    for (;;) {
+        auto read = DWORD{};
+        if (!::WinHttpReadData(request, buffer.data(), static_cast<DWORD>(buffer.size()), &read)) {
+            return std::unexpected("the download was interrupted");
+        }
+        if (read == 0) {
+            break;
+        }
+        auto written = DWORD{};
+        if (!::WriteFile(file, buffer.data(), read, &written, nullptr) || written != read) {
+            return std::unexpected("failed to write the download file");
+        }
+        done += read;
+        if (progress) {
+            progress(done, total);
+        }
+    }
+    if (total != 0 && done != total) {
+        return std::unexpected("the download ended early");
+    }
+    return std::string{};
+}
+
+std::expected<std::string, std::string> sha256_file_hex(const std::filesystem::path& path) {
+    const auto file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return std::unexpected("failed to open the downloaded archive");
+    }
+    const auto close_file = std::unique_ptr<std::remove_pointer_t<HANDLE>, decltype(&::CloseHandle)>{
+        file, &::CloseHandle};
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    if (!::CryptAcquireContextW(&provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+        || !::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+        if (hash != 0) ::CryptDestroyHash(hash);
+        if (provider != 0) ::CryptReleaseContext(provider, 0);
+        return std::unexpected("failed to hash the downloaded archive");
+    }
+    auto buffer = std::array<char, 64 * 1024>{};
+    for (;;) {
+        auto read = DWORD{};
+        if (!::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) || read == 0) {
+            break;
+        }
+        if (!::CryptHashData(hash, reinterpret_cast<const BYTE*>(buffer.data()), read, 0)) {
+            ::CryptDestroyHash(hash);
+            ::CryptReleaseContext(provider, 0);
+            return std::unexpected("failed to hash the downloaded archive");
+        }
+    }
+    auto digest = std::array<BYTE, 32>{};
+    DWORD digest_size = static_cast<DWORD>(digest.size());
+    const auto ok = ::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digest_size, 0);
+    ::CryptDestroyHash(hash);
+    ::CryptReleaseContext(provider, 0);
+    if (!ok) {
+        return std::unexpected("failed to hash the downloaded archive");
+    }
+    auto hex = std::string{};
+    hex.reserve(digest.size() * 2);
+    static constexpr auto kHex = "0123456789abcdef";
+    for (const auto byte : digest) {
+        hex.push_back(kHex[byte >> 4]);
+        hex.push_back(kHex[byte & 0xF]);
+    }
+    return hex;
+}
+
+// Windows 10 1803+ ships bsdtar as tar.exe; it extracts zip archives, so no
+// third-party unpacker is needed.
+std::expected<std::string, std::string> extract_archive_with_tar(
+    const std::filesystem::path& archive, const std::filesystem::path& destination) {
+    std::error_code ignored{};
+    std::filesystem::create_directories(destination, ignored);
+    auto command = std::format(
+        L"tar -xf \"{}\" -C \"{}\"", archive.wstring(), destination.wstring());
+    auto startup = STARTUPINFOW{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    auto process = PROCESS_INFORMATION{};
+    if (!::CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+        return std::unexpected("failed to launch the archive extractor (tar.exe)");
+    }
+    const auto close_process = std::unique_ptr<std::remove_pointer_t<HANDLE>, decltype(&::CloseHandle)>{
+        process.hProcess, &::CloseHandle};
+    const auto close_thread = std::unique_ptr<std::remove_pointer_t<HANDLE>, decltype(&::CloseHandle)>{
+        process.hThread, &::CloseHandle};
+    if (::WaitForSingleObject(process.hProcess, 120'000) != WAIT_OBJECT_0) {
+        ::TerminateProcess(process.hProcess, 1);
+        return std::unexpected("the archive extraction timed out");
+    }
+    auto exit_code = DWORD{};
+    if (!::GetExitCodeProcess(process.hProcess, &exit_code) || exit_code != 0) {
+        return std::unexpected("the archive extraction failed");
+    }
+    return std::string{};
+}
+
+} // namespace
+
+ModelsStatus AppController::models_status() {
+    auto status = ModelsStatus{};
+    const auto dir = expected_model_dir();
+    status.model_dir = dir.string();
+    auto present = recognizer_.seetaface_available();
+    if (present) {
+        for (const auto* name : kRequiredModels) {
+            std::error_code ignored{};
+            present = present && std::filesystem::exists(dir / name, ignored);
+        }
+    }
+    status.present = present;
+    return status;
+}
+
+void AppController::download_models(
+    const std::string& url_prefix,
+    std::function<void(std::uint64_t, std::uint64_t)> progress,
+    std::function<void(std::string)> finished) {
+    std::thread([url_prefix, progress = std::move(progress), finished = std::move(finished)]() mutable {
+        const auto fail = [&finished](std::string message) {
+            if (finished) {
+                finished(std::move(message));
+            }
+        };
+        const auto model_dir = expected_model_dir();
+        const auto models_parent = model_dir.parent_path(); // .../assets/models
+        wchar_t temp[MAX_PATH] = {};
+        if (::GetTempPathW(MAX_PATH, temp) == 0) {
+            fail("failed to resolve the temporary directory");
+            return;
+        }
+        const auto archive = std::filesystem::path(temp) / "smile2unlock-models.zip";
+        const auto archive_hash_file = std::filesystem::path(temp) / "smile2unlock-models.zip.sha256";
+        const auto archive_url = url_prefix.empty()
+            ? std::string{kModelsAssetUrl}
+            : url_prefix + kModelsAssetUrl;
+        const auto hash_url = archive_url + ".sha256";
+
+        // The archive dominates the transfer; the tiny .sha256 rides the last
+        // few percent so the progress bar keeps moving to the end.
+        const auto archive_progress =
+            [&progress](std::uint64_t done, std::uint64_t total) {
+                if (progress && total != 0) {
+                    progress(done * 95 / total, total);
+                }
+            };
+        if (const auto downloaded = http_download_to_file(archive_url, archive, archive_progress); !downloaded) {
+            fail(downloaded.error());
+            return;
+        }
+        if (progress) {
+            progress(96, 100);
+        }
+        if (const auto downloaded = http_download_to_file(hash_url, archive_hash_file, nullptr); !downloaded) {
+            fail("failed to fetch the checksum file: " + downloaded.error());
+            return;
+        }
+        if (progress) {
+            progress(97, 100);
+        }
+        // The .sha256 sidecar carries "<hex>  <filename>".
+        auto hash_in = std::ifstream{archive_hash_file};
+        auto expected_hex = std::string{};
+        hash_in >> expected_hex;
+        std::ranges::transform(expected_hex, expected_hex.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        const auto actual = sha256_file_hex(archive);
+        if (!actual) {
+            fail(actual.error());
+            return;
+        }
+        if (*actual != expected_hex) {
+            std::error_code ignored{};
+            std::filesystem::remove(archive, ignored);
+            fail("checksum mismatch; the download was corrupted, please retry");
+            return;
+        }
+        if (progress) {
+            progress(98, 100);
+        }
+        if (const auto extracted = extract_archive_with_tar(archive, models_parent); !extracted) {
+            fail(extracted.error());
+            return;
+        }
+        std::error_code ignored{};
+            std::filesystem::remove(archive, ignored);
+        std::filesystem::remove(archive_hash_file, ignored);
+        // The archive nests seeta/*.csta, so extracting into the models
+        // parent lands the files directly in the expected directory.
+        for (const auto* name : kRequiredModels) {
+            std::error_code ignored{};
+            if (!std::filesystem::exists(model_dir / name, ignored)) {
+                fail("the extracted archive is missing " + std::filesystem::path(name).string());
+                return;
+            }
+        }
+        if (progress) {
+            progress(100, 100);
+        }
+        if (finished) {
+            finished({});
+        }
+    }).detach();
 }
 
 }  // namespace su::app

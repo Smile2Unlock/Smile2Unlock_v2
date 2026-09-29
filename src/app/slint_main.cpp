@@ -771,6 +771,13 @@ int main(int argc, char** argv) {
         snapshot->cameras.size(),
         snapshot->cameras.empty() ? "<none>" : snapshot->cameras.front().name));
     window->set_seetaface_available(snapshot->seetaface_available);
+    {
+        const auto models = controller->models_status();
+        window->set_models_present(models.present);
+        window->set_models_downloading(false);
+        window->set_models_progress(0);
+        window->set_models_status_text(slint::SharedString(models.model_dir));
+    }
     apply_system_status(window, controller->load_system_status(), deployment_targets);
     window->set_desktop_auth_passed(preferences->desktop_auth_test_passed);
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
@@ -849,6 +856,53 @@ int main(int argc, char** argv) {
                 catalog,
                 "deployment.initialize_success",
                 [controller] { return controller->initialize_system_deployment(); });
+        });
+
+    window->on_models_download_requested(
+        [weak_window, controller, catalog](bool accelerated, slint::SharedString prefix) {
+            if (const auto window = weak_window.lock()) {
+                (*window)->set_models_downloading(true);
+                (*window)->set_models_progress(0);
+                (*window)->set_models_status_text(slint::SharedString(
+                    translated(*catalog, *window, accelerated
+                        ? "models.status_downloading_mirror"
+                        : "models.status_downloading_direct")));
+            }
+            const auto url_prefix = accelerated ? std::string(prefix) : std::string{};
+            controller->download_models(
+                url_prefix,
+                [weak_window](std::uint64_t done, std::uint64_t total) {
+                    if (total == 0) {
+                        return;
+                    }
+                    const auto fraction =
+                        static_cast<float>(static_cast<double>(done) / total);
+                    slint::invoke_from_event_loop([weak_window, fraction]() {
+                        if (const auto window = weak_window.lock()) {
+                            (*window)->set_models_progress(fraction);
+                        }
+                    });
+                },
+                [weak_window, controller, catalog](std::string error) {
+                    slint::invoke_from_event_loop([weak_window, controller, catalog,
+                                                      error = std::move(error)]() mutable {
+                        const auto window = weak_window.lock();
+                        if (!window) {
+                            return;
+                        }
+                        (*window)->set_models_downloading(false);
+                        if (error.empty()) {
+                            const auto models = controller->models_status();
+                            (*window)->set_models_present(models.present);
+                            (*window)->set_seetaface_available(models.present);
+                            (*window)->set_models_status_text(slint::SharedString(
+                                translated(*catalog, *window, "models.done")));
+                        } else {
+                            (*window)->set_models_status_text(
+                                slint::SharedString(std::move(error)));
+                        }
+                    });
+                });
         });
 
     window->on_install_deployment_helper_requested(

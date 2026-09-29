@@ -645,4 +645,27 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
     return su::deploy::DeploymentClient{}.rollback_target(target);
 }
 
+
+ModelsStatus AppController::models_status() {
+    // The distribution packages install the model set under the shared
+    // location; the recognizer backend resolves it the same way.
+    auto status = ModelsStatus{};
+    status.model_dir = "/usr/share/smile2unlock/models/seeta";
+    status.present = recognizer_.seetaface_available();
+    return status;
+}
+
+void AppController::download_models(
+    const std::string& url_prefix,
+    std::function<void(std::uint64_t, std::uint64_t)> progress,
+    std::function<void(std::string)> finished) {
+    (void)url_prefix;
+    (void)progress;
+    // Linux installs ship the models inside the deb/rpm/pacman package; an
+    // in-app downloader would write outside the package manager's view.
+    if (finished) {
+        finished("on Linux the face models are part of the distribution package");
+    }
+}
+
 }  // namespace su::app
