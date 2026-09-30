@@ -14,6 +14,7 @@
 // %TEMP%\su_deploy_result.json (exit code 0 = success).
 
 #include "deployment.h"
+#include "result_file.h"
 
 #include <windows.h>
 
@@ -25,20 +26,15 @@
 
 namespace {
 
-constexpr std::string_view kResultFile = "su_deploy_result.json";
-
-std::string result_file_path() {
-    wchar_t buffer[512] = {};
-    const auto length = ::GetTempPathW(512, buffer);
-    if (length == 0 || length >= 512) {
-        return "su_deploy_result.json";
+void write_result(std::string_view content) {
+    const auto path = su::windeploy::result_file_path();
+    if (!path) {
+        std::cerr << "su_deploy_helper: failed to resolve result path (Win32 error "
+                  << path.error() << ")\n";
+        return;
     }
-    return std::string(buffer, buffer + length) + std::string(kResultFile);
-}
-
-int write_result(std::string_view content) {
-    HANDLE file = ::CreateFileA(
-        result_file_path().c_str(),
+    HANDLE file = ::CreateFileW(
+        path->c_str(),
         GENERIC_WRITE,
         0,
         nullptr,
@@ -46,11 +42,25 @@ int write_result(std::string_view content) {
         FILE_ATTRIBUTE_NORMAL,
         nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        return 1;
+        std::cerr << "su_deploy_helper: failed to create result file (Win32 error "
+                  << ::GetLastError() << ")\n";
+        return;
     }
     DWORD written = 0;
-    ::WriteFile(file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+    const auto succeeded = ::WriteFile(
+        file, content.data(), static_cast<DWORD>(content.size()), &written, nullptr);
+    const auto error = succeeded ? ERROR_WRITE_FAULT : ::GetLastError();
     ::CloseHandle(file);
+    if (!succeeded || written != content.size()) {
+        std::cerr << "su_deploy_helper: failed to write complete result file (Win32 error "
+                  << error << ")\n";
+    }
+}
+
+int succeed(std::string_view content) {
+    // The installer consumes the operation's exit code; the GUI consumes the
+    // JSON. Report I/O failures separately without undoing a successful action.
+    write_result(content);
     return 0;
 }
 
@@ -76,7 +86,7 @@ int fail(std::string_view detail) {
         }
     }
     const auto json = std::format(R"({{"ok":false,"error":"{}"}})", escaped);
-    (void)write_result(json);
+    write_result(json);
     std::cerr << "su_deploy_helper: " << detail << "\n";
     return 1;
 }
@@ -120,7 +130,7 @@ int main(int argc, char** argv) {
         const auto payload = std::format(
             R"({{"ok":true,"snapshot":{}}})", su::windeploy::snapshot_json(*snapshot));
         std::cout << payload << "\n";
-        return write_result(payload);
+        return succeed(payload);
     }
     if (verify) {
         if (register_cp || unregister_cp || ensure_service || inspect) {
@@ -131,7 +141,7 @@ int main(int argc, char** argv) {
             return fail(validated.error());
         }
         std::cout << "deployment package verified\n";
-        return write_result(R"({"ok":true,"action":"verify"})");
+        return succeed(R"({"ok":true,"action":"verify"})");
     }
     if (register_cp && unregister_cp) {
         return fail("--register-cp and --unregister-cp cannot be combined");
@@ -158,7 +168,7 @@ int main(int argc, char** argv) {
         std::cout << "auth service ensured\n";
     }
     if (register_cp || unregister_cp || ensure_service) {
-        return write_result(R"({"ok":true,"action":"deploy"})");
+        return succeed(R"({"ok":true,"action":"deploy"})");
     }
 
     std::cerr << "usage: su_deploy_helper "

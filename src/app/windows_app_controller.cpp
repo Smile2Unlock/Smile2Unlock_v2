@@ -7,6 +7,7 @@ module;
 #include <wincrypt.h>
 #include "../platform/windows/auth_service/profile_client.h"
 #include "../platform/windows/deploy/deployment.h"
+#include "../platform/windows/deploy/result_file.h"
 
 module su.app.controller;
 import std;
@@ -565,19 +566,18 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
 
     // Remove the previous helper result before launching so a timeout or
     // crash can never be mistaken for this operation's response.
-    wchar_t temp[512] = {};
-    if (::GetTempPathW(512, temp) == 0) {
-        return std::unexpected("failed to resolve the temporary directory");
+    const auto result_path = su::windeploy::result_file_path();
+    if (!result_path) {
+        return std::unexpected(std::format(
+            "failed to resolve deployment result path (Win32 error {})", result_path.error()));
     }
-    auto narrow_temp = std::string(512, '\0');
-    const auto converted = ::WideCharToMultiByte(
-        65001 /* CP_UTF8 */, 0, temp, -1, narrow_temp.data(), 512, nullptr, nullptr);
-    if (converted == 0) {
-        return std::unexpected("failed to convert the temporary directory path");
+    if (!::DeleteFileW(result_path->c_str())) {
+        const auto error = ::GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+            return std::unexpected(std::format(
+                "failed to remove previous deployment result (Win32 error {})", error));
+        }
     }
-    narrow_temp.resize(std::strlen(narrow_temp.c_str()));
-    const auto result_path = narrow_temp + "su_deploy_result.json";
-    (void)::DeleteFileA(result_path.c_str());
 
     auto info = SHELLEXECUTEINFOW{};
     info.cbSize = sizeof(info);
@@ -602,8 +602,8 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
         return std::unexpected("failed while waiting for su_deploy_helper");
     }
 
-    const auto file = ::CreateFileA(
-        result_path.c_str(),
+    const auto file = ::CreateFileW(
+        result_path->c_str(),
         GENERIC_READ,
         FILE_SHARE_READ,
         nullptr,
@@ -615,8 +615,13 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
     }
     char buffer[8192] = {};
     unsigned long read = 0;
-    (void)::ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+    const auto succeeded = ::ReadFile(file, buffer, sizeof(buffer) - 1, &read, nullptr);
+    const auto error = succeeded ? ERROR_SUCCESS : ::GetLastError();
     (void)::CloseHandle(file);
+    if (!succeeded) {
+        return std::unexpected(std::format(
+            "failed to read deployment result (Win32 error {})", error));
+    }
     return std::string(buffer, read);
 }
 
@@ -670,7 +675,9 @@ std::expected<void, std::string> deploy_action(std::string_view arguments) {
 
 std::expected<std::string, std::string> AppController::install_deployment_helper() {
     const auto helper = deploy_helper_path();
-    if (helper.empty() || !std::filesystem::exists(helper)) {
+    const auto wide_helper = utf8_to_wide(helper);
+    auto error = std::error_code{};
+    if (wide_helper.empty() || !std::filesystem::exists(std::filesystem::path{wide_helper}, error)) {
         return std::unexpected("Smile2UnlockDeployHelper.exe is not deployed next to Smile2Unlock.exe");
     }
     return helper;

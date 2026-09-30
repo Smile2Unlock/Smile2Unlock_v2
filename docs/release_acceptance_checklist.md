@@ -30,6 +30,7 @@
 - [ ] 系统密码 tile、辅助功能、切换用户、服务停止和组件损坏时仍可安全登录。
 - [ ] 物理 TPM2、无 TPM 的 machine-DPAPI 回退、BitLocker、密钥不可用和服务重启。
 - [ ] 安装、升级、卸载、注册表/服务/Provider DLL 清理及重启后残留。
+- [ ] 中文用户名及中文/含空格 TEMP：安装器签名校验、服务部署及 GUI 提权部署成功；确认 UAC 后 `su_deploy_result.json` 的落点与调用方一致。阻止 JSON 写入时，helper 记录 I/O 错误且退出码仍表示操作本身的结果。
 
 ## 5. Linux 真实系统验收
 

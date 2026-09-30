@@ -65,3 +65,34 @@ directory can then be removed after the application is no longer running.
 Use `--stage-only` to inspect `build/package-stage/windows/Smile2Unlock`
 without creating an archive. Packaging does not modify tracked repository
 files; release metadata is embedded in the archive as `release-info.json`.
+
+## Unicode TEMP regression
+
+The helper and GUI use UTF-16 paths for `su_deploy_result.json`. The helper's
+exit code describes the requested operation: failure to write diagnostic JSON
+is logged separately and cannot turn successful verification/deployment into
+exit code 1. The GUI still requires a valid result file to report success.
+
+Build and run the focused regression under Wine (or an elevated Windows test
+process, because the helper requires administrator privileges):
+
+```bash
+xmake build su_windows_deploy_helper_result_test
+xmake test su_windows_deploy_helper_result_test/default -v
+```
+
+It launches the real helper with ASCII and Chinese TEMP/TMP directories,
+checks its success/error JSON, and blocks result-file creation to check that
+operation exit codes are preserved. Release CI also runs this executable with
+the freshly signed package's helper and `--signed-package`, exercising a
+successful `--verify` in both directories and with blocked JSON output.
+
+For existing 2.3.0 installers affected by this bug, redirect TEMP and TMP to an
+existing, writable ASCII-only directory in the shell launching the installer.
+Check that the elevated installer actually uses that directory. This is a
+temporary installation workaround; the old GUI still needs the source fix.
+
+For a corrected release, rebuild both the GUI and helper with the release
+signer pin, then run the signing/packaging command above to regenerate payload
+signatures, `release-info.json`, `release-info.p7s`, ZIP and setup.exe. Replacing
+only the helper in an existing signed package invalidates its manifest hash.
