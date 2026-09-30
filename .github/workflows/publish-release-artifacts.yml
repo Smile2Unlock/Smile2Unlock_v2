@@ -138,8 +138,12 @@ jobs:
             pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig \
             freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip \
             nodejs libinput ruby ruby-rdoc
-          # fpm (deb/rpm packaging) is a ruby gem, not in the repos.
-          gem install --no-document fpm
+          # fpm (deb/rpm packaging) is a ruby gem, not in the repos. The
+          # default user-local install lands outside later steps' PATH, so
+          # install system-wide and export the gem bin dir for the whole job.
+          sudo gem install --no-document fpm
+          GEM_BINDIR="$(ruby -e 'puts Gem.bindir')"
+          echo "${GEM_BINDIR}" >> "${GITHUB_PATH}"
 
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,6 +256,30 @@ jobs:
         run: >-
           rustup toolchain install stable --profile minimal
           --target x86_64-pc-windows-gnu
+
+      # Slint from source costs ~15 min per cold cache (host slint-compiler +
+      # windows-gnu runtime); a prebuilt identical package lives on the
+      # slint-prebuilt-v1.17.0 release. Seed the xmake package store with it
+      # so the recipe resolves without compiling. The recipe hash directory
+      # name must match what xmake computes for this recipe+config, so rename
+      # the placeholder after extracting.
+      - name: Seed prebuilt Slint package
+        run: |
+          if ls ~/.xmake/packages/s/slint/v1.17.0/*/lib/libslint_cpp.a >/dev/null 2>&1; then
+            echo "slint already cached; skipping seed"
+            exit 0
+          fi
+          set -e
+          curl -fsSL --retry 3 -o /tmp/slint-prebuilt.tar.gz \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/slint-prebuilt-v1.17.0/slint-mingw-x86_64-v1.17.0.tar.gz"
+          curl -fsSL --retry 3 -o /tmp/slint-prebuilt.sha256 \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/slint-prebuilt-v1.17.0/slint-mingw-x86_64-v1.17.0.tar.gz.sha256"
+          expected="$(cut -d' ' -f1 /tmp/slint-prebuilt.sha256)"
+          actual="$(sha256sum /tmp/slint-prebuilt.tar.gz | cut -d' ' -f1)"
+          [[ "${expected}" == "${actual}" ]] || { echo "slint prebuilt checksum mismatch" >&2; exit 1; }
+          mkdir -p ~/.xmake/packages/s/slint
+          tar -xzf /tmp/slint-prebuilt.tar.gz -C ~/.xmake/packages/s/slint
+          echo "seeded slint v1.17.0 (prebuilt)"
 
       - name: Materialize release signing identity
         shell: bash
