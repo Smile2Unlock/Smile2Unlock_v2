@@ -1,4 +1,5 @@
 #include "app_window.h"
+#include "username_initial.h"
 
 import std;
 import su.app.controller;
@@ -106,14 +107,6 @@ void log_theme_diagnostics(const std::vector<std::string>& diagnostics) {
     for (const auto& diagnostic : diagnostics) {
         std::println(stderr, "[theme] {}", diagnostic);
     }
-}
-
-std::string username_initial(std::string_view username) {
-    if (username.empty()) {
-        return "U";
-    }
-    auto initial = static_cast<char>(std::toupper(static_cast<unsigned char>(username.front())));
-    return std::string(1, initial);
 }
 
 std::string enrollment_date(std::uint64_t created_at_unix) {
@@ -750,7 +743,7 @@ int main(int argc, char** argv) {
     // snapshot->title for the diagnostics view).
     window->set_title_text(slint::SharedString("Smile2Unlock"));
     window->set_username(slint::SharedString(username));
-    window->set_username_initial(slint::SharedString(username_initial(username)));
+    window->set_username_initial(slint::SharedString(su::app::username_initial(username)));
     window->set_core_version(slint::SharedString(catalog->translate_value(
         selected_language,
         "diagnostics.core_version",

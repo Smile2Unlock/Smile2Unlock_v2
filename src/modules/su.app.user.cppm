@@ -31,7 +31,8 @@ namespace su::app {
 #if defined(_WIN32)
 
 std::optional<std::string> username_for_uid(std::uint32_t) {
-    char name[256] = {};
+    // UTF-8 needs multiple bytes per UTF-16 code unit returned by Windows.
+    char name[256 * 4 + 1] = {};
     if (su_win_username_for_uid(name, sizeof(name)) != 0 || name[0] == '\0') {
         return std::nullopt;
     }
