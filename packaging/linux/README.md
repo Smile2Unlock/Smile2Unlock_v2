@@ -33,6 +33,12 @@ On Arch Linux, `makepkg` is used directly:
 packaging/linux/package.sh --format pacman
 ```
 
+`makepkg` always runs as a non-root user. In a root container, the script uses
+`runuser` and the `nobody` account with a temporary copy of the package inputs
+under `/tmp`, then copies the archive to the requested output directory. It does
+not change ownership of the checkout or build caches. The temporary copy is
+removed on success or failure. Non-root callers run `makepkg` directly.
+
 For DEB or RPM output, install [fpm](https://github.com/jordansissel/fpm)
 and select the format:
 

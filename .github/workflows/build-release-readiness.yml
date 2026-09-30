@@ -27,6 +27,28 @@ env:
   CARGO_HTTP_MULTIPLEXING: 'false'
 
 jobs:
+  linux-packaging-smoke:
+    name: Linux packaging smoke (${{ matrix.user }})
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    strategy:
+      matrix:
+        user: [root, nobody]
+    steps:
+      - name: Install packaging dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git nodejs patchelf python ruby ruby-rdoc dpkg rpm-tools cpio
+          gem install --no-document --no-user-install --bindir /usr/local/bin fpm
+          /usr/local/bin/fpm --version >/dev/null
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build and verify all formats with ELF fixtures
+        env:
+          PACKAGE_TEST_USER: ${{ matrix.user }}
+        run: runuser -u "$PACKAGE_TEST_USER" -- bash packaging/testing/linux-package-smoke.sh
+
   linux:
     name: Linux build, tests, package
     runs-on: ubuntu-24.04
