@@ -598,6 +598,46 @@ target("su_face_auth_smoke_test")
         add_tests("default")
     end
 
+-- Username display crosses the C++/Rust boundary even before the GUI runs.
+-- Headless jobs test Unicode logic; full GUI jobs also exercise Slint's FFI.
+local function add_username_slint_test()
+    if has_config("with_slint") then
+        set_policy("check.target_package_licenses", false)
+        add_defines("SU_TEST_HAS_SLINT=1")
+        add_packages("slint")
+        on_load(function (target)
+            local slint = assert(target:pkg("slint"))
+            target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
+            if is_plat("linux") then
+                target:add("rpathdirs", path.join(slint:installdir(), "lib"))
+            end
+        end)
+        if is_plat("windows", "mingw") then
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32")
+        end
+    else
+        add_defines("SU_TEST_HAS_SLINT=0")
+    end
+end
+
+target("su_username_initial_test")
+    apply_cpp_target("binary")
+    add_files("tests/user/username_initial.cpp")
+    add_username_slint_test()
+    add_tests("default")
+    on_test(wine_on_test)
+
+if is_plat("windows", "mingw") then
+    target("su_windows_username_utf8_test")
+        apply_cpp_target("binary")
+        add_files("tests/windows/username_utf8.cpp", "src/platform/windows/user/user_windows.cpp")
+        add_includedirs("src/platform/windows/user")
+        add_syslinks("wtsapi32")
+        add_username_slint_test()
+        add_tests("default")
+        on_test(wine_on_test)
+end
+
 target("su_theme_test")
     apply_cpp_target("binary")
     add_files(

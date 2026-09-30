@@ -6,6 +6,8 @@
 #include <sddl.h>
 #include <tlhelp32.h>
 #include <wtsapi32.h>
+#include <lmcons.h>
+#include "username_utf8.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -17,11 +19,18 @@
 extern "C" {
 
 int su_win_username_for_uid(char* out, unsigned long cap) {
-    DWORD name_length = static_cast<DWORD>(cap);
-    if (::GetUserNameA(out, &name_length) == 0 || name_length == 0 || out[0] == '\0') {
+    if (out == nullptr || cap == 0) {
         return -1;
     }
-    return 0;
+    out[0] = '\0';
+    wchar_t name[UNLEN + 1] = {};
+    DWORD name_length = UNLEN + 1;
+    if (::GetUserNameW(name, &name_length) == 0 || name_length <= 1
+        || name_length > UNLEN + 1) {
+        return -1;
+    }
+    return su::windows::copy_username_utf8(
+        std::wstring_view{name, name_length - 1}, out, cap);
 }
 
 unsigned int su_win_current_uid() {
