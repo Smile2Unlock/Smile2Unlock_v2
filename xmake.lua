@@ -417,6 +417,22 @@ elseif is_plat("windows", "mingw") then
         add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32")
         add_tests("version", {runargs = {"--version"}})
         on_test(wine_on_test)
+
+    target("su_windows_deploy_helper_result_test")
+        apply_cpp_target("binary")
+        add_files("tests/windows/deploy_helper_result.cpp")
+        add_includedirs("src/platform/windows/deploy")
+        add_packages("nlohmann_json")
+        add_deps("su_deploy_helper")
+        if is_plat("mingw") then
+            add_ldflags("-static", "-municode", {force = true})
+        end
+        add_tests("default")
+        on_test(function (target)
+            return wine_on_test(target, {
+                runargs = {path.absolute(target:dep("su_deploy_helper"):targetfile())}
+            })
+        end)
 end
 
 if is_plat("linux") then
