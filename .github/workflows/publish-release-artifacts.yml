@@ -138,12 +138,14 @@ jobs:
             pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig \
             freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip \
             nodejs libinput ruby ruby-rdoc
-          # fpm (deb/rpm packaging) is a ruby gem, not in the repos. The
-          # default user-local install lands outside later steps' PATH, so
-          # install system-wide and export the gem bin dir for the whole job.
-          sudo gem install --no-document fpm
-          GEM_BINDIR="$(ruby -e 'puts Gem.bindir')"
-          echo "${GEM_BINDIR}" >> "${GITHUB_PATH}"
+          # fpm (deb/rpm packaging) is a ruby gem, not in the repos. Arch's
+          # ruby puts gem executables in a user-local dir that later steps'
+          # PATH never contains (and Gem.bindir reports the SYSTEM dir, so
+          # exporting it is wrong too). Force the wrappers into /usr/local/bin
+          # — on PATH everywhere — and verify immediately so this step fails
+          # fast instead of 20 minutes later at package time.
+          gem install --no-document --bindir /usr/local/bin fpm
+          /usr/local/bin/fpm --version >/dev/null
 
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
