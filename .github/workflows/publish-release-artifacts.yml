@@ -137,14 +137,14 @@ jobs:
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja \
             pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig \
             freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip \
-            nodejs libinput ruby ruby-rdoc
+            nodejs libinput ruby ruby-rdoc dpkg rpm-tools cpio
           # fpm (deb/rpm packaging) is a ruby gem, not in the repos. Arch's
           # ruby puts gem executables in a user-local dir that later steps'
           # PATH never contains (and Gem.bindir reports the SYSTEM dir, so
-          # exporting it is wrong too). Force the wrappers into /usr/local/bin
-          # — on PATH everywhere — and verify immediately so this step fails
+          # exporting it is wrong too). Install gems system-wide and force the
+          # wrappers into /usr/local/bin, then verify immediately so this fails
           # fast instead of 20 minutes later at package time.
-          gem install --no-document --bindir /usr/local/bin fpm
+          gem install --no-document --no-user-install --bindir /usr/local/bin fpm
           /usr/local/bin/fpm --version >/dev/null
 
       - name: Check out release tag
@@ -154,6 +154,9 @@ jobs:
           lfs: true
           submodules: recursive
           fetch-depth: 1
+
+      - name: Smoke-test all Linux package formats before compiling
+        run: packaging/testing/linux-package-smoke.sh
 
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5

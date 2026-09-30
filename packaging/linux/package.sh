@@ -75,6 +75,29 @@ case "$format" in
         ;;
 esac
 
+# Check native packaging/verification tools before staging a large release.
+if [[ "$format" == pacman || "$format" == all ]]; then
+    package_require_command fakeroot
+    if (( EUID == 0 )); then
+        package_require_command runuser
+        makepkg_uid="$(id -u nobody)" || package_die "makepkg requires a nobody account"
+        (( makepkg_uid > 0 )) || package_die "makepkg requires a non-root nobody account"
+    fi
+fi
+if [[ "$format" == rpm || "$format" == all ]]; then
+    package_require_command rpmbuild
+fi
+if [[ "$verify" == true ]]; then
+    if [[ "$format" == deb || "$format" == all ]]; then
+        package_require_command dpkg-deb
+    fi
+    if [[ "$format" == rpm || "$format" == all ]]; then
+        for command in rpm rpm2cpio cpio; do
+            package_require_command "$command"
+        done
+    fi
+fi
+
 stage_root="${project_dir}/build/package-stage/linux"
 root_dir="${stage_root}/root"
 package_reset_stage "$stage_root"
@@ -197,20 +220,44 @@ license=('MIT')
 options=('!debug' '!strip')
 install=smile2unlock.install
 depends=('pam' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
-_stage_root='${root_dir}'
+_stage_root="\$startdir/root"
 
 package() {
     install -d "\$pkgdir"
     cp -a --no-preserve=ownership "\$_stage_root"/. "\$pkgdir"/
 }
 EOF
-    local makepkg_config="${stage_root}/makepkg.conf"
-    {
-        echo 'source /etc/makepkg.conf'
-        printf 'PKGDEST=%q\n' "$output_dir"
-    } > "$makepkg_config"
-    (cd "$stage_root" && makepkg --force --nodeps --config "$makepkg_config" -p PKGBUILD)
-    local archive="${output_dir}/${package_name}-${package_version}-1-${architecture}.pkg.tar.zst"
+    local archive_name="${package_name}-${package_version}-1-${architecture}.pkg.tar.zst"
+    (
+        work_dir="$stage_root"
+        pkgdest="$output_dir"
+        if (( EUID == 0 )); then
+            # Arch's makepkg refuses root. Copy only package inputs to a private
+            # workspace outside the checkout (which may be under /root), then
+            # drop privileges. Never chown the checkout or the build cache.
+            work_dir="$(mktemp -d /tmp/smile2unlock-makepkg.XXXXXX)"
+            trap 'rm -rf -- "$work_dir"' EXIT
+            cp -a "$root_dir" "$pkgbuild" "$install_script" "$work_dir/"
+            pkgdest="${work_dir}/packages"
+            mkdir -p "$pkgdest"
+        fi
+        makepkg_config="${work_dir}/makepkg.conf"
+        {
+            echo 'source /etc/makepkg.conf'
+            printf 'PKGDEST=%q\n' "$pkgdest"
+        } > "$makepkg_config"
+        if (( EUID == 0 )); then
+            chown -R nobody: "${work_dir}"
+            runuser -u nobody -- env HOME="$work_dir" TMPDIR="$work_dir" \
+                bash -c 'cd "$1" && exec makepkg --force --nodeps --config "$2" -p PKGBUILD' \
+                bash "$work_dir" "$makepkg_config"
+            install -m 0644 "${pkgdest}/${archive_name}" "${output_dir}/${archive_name}"
+        else
+            cd "$work_dir"
+            makepkg --force --nodeps --config "$makepkg_config" -p PKGBUILD
+        fi
+    )
+    local archive="${output_dir}/${archive_name}"
     package_require_file "$archive"
     produced+=("$archive")
 }
