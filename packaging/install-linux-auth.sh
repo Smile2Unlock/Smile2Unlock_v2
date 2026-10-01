@@ -53,6 +53,11 @@ install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" \
     "$(destination /usr/libexec/smile2unlock/install-dms-lock)"
 install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" \
     "$(destination /usr/libexec/smile2unlock/setup-storage-key)"
+install -m 0755 "${project_dir}/packaging/linux/selinux/manage-policy.sh" \
+    "$(destination /usr/libexec/smile2unlock/manage-selinux-policy)"
+install -d -m 0755 "$(destination /usr/share/smile2unlock/selinux)"
+install -m 0644 "${project_dir}/packaging/linux/selinux/smile2unlock.cil" \
+    "$(destination /usr/share/smile2unlock/selinux/smile2unlock.cil)"
 
 install -d -m 0755 "$(destination "${pam_module_dir}")"
 install -m 0755 "${build_dir}/pam_smile2unlock.so" \
@@ -118,6 +123,7 @@ install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployme
     "$(destination "${polkit_action_dir}/io.github.smile2unlock.deployment.policy")"
 
 if [[ -z "${destination_root}" ]]; then
+    /usr/libexec/smile2unlock/manage-selinux-policy install
     systemctl daemon-reload
     busctl --system call \
         org.freedesktop.DBus \

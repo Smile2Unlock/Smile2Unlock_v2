@@ -17,6 +17,8 @@ required_paths=(
     usr/libexec/smile2unlock/su_deploy_helper
     usr/libexec/smile2unlock/install-dms-lock
     usr/libexec/smile2unlock/setup-storage-key
+    usr/libexec/smile2unlock/manage-selinux-policy
+    usr/share/smile2unlock/selinux/smile2unlock.cil
     usr/lib/systemd/system/su-authd.service
     usr/lib/systemd/system/su-deploy-helper.service
     usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
@@ -56,7 +58,8 @@ verify_tree() {
     for path in usr/bin/su_app usr/libexec/smile2unlock/su_authd \
         usr/libexec/smile2unlock/su_deploy_helper \
         usr/libexec/smile2unlock/install-dms-lock \
-        usr/libexec/smile2unlock/setup-storage-key; do
+        usr/libexec/smile2unlock/setup-storage-key \
+        usr/libexec/smile2unlock/manage-selinux-policy; do
         require_mode "$root" 755 "$path"
     done
     [[ "$(stat -c '%a' "${pam_modules[0]}")" == 755 ]] \
@@ -66,7 +69,8 @@ verify_tree() {
         usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service \
         usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf \
         usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy \
-        usr/share/smile2unlock/pam/dankshell-smile2unlock; do
+        usr/share/smile2unlock/pam/dankshell-smile2unlock \
+        usr/share/smile2unlock/selinux/smile2unlock.cil; do
         require_mode "$root" 644 "$path"
     done
 

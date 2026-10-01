@@ -10,7 +10,7 @@ source "${script_dir}/../version/versions.sh"
 build_dir="${BUILD_DIR:-${project_dir}/build/linux/x86_64/release}"
 output_dir="${OUTPUT_DIR:-${project_dir}/build/packages}"
 format="${PACKAGE_FORMAT:-tar.gz}"
-pam_module_dir="${PAM_MODULE_DIR:-/usr/lib/security}"
+pam_module_dir="${PAM_MODULE_DIR:-}"
 architecture="${PACKAGE_ARCH:-x86_64}"
 stage_only=false
 verify=true
@@ -23,7 +23,8 @@ Options:
   --format FORMAT       tar.gz, pacman, deb, rpm, or all (default: tar.gz)
   --build-dir DIR       Linux release build directory
   --output-dir DIR      Package output directory (default: build/packages)
-  --pam-module-dir DIR  Absolute PAM module directory (default: /usr/lib/security)
+  --pam-module-dir DIR  Absolute PAM module directory (RPM 64-bit default: /usr/lib64/security;
+                        other formats: /usr/lib/security)
   --arch ARCH           Package architecture (default: x86_64)
   --stage-only          Create the common filesystem tree without an archive
   --no-verify           Do not verify completed packages
@@ -50,6 +51,18 @@ done
 build_dir="$(package_absolute_path "$build_dir")"
 output_dir="$(package_absolute_path "$output_dir")"
 case "$format" in tar.gz|pacman|deb|rpm|all) ;; *) package_die "unsupported format: $format" ;; esac
+explicit_pam_module_dir=false
+if [[ -n "$pam_module_dir" ]]; then
+    explicit_pam_module_dir=true
+fi
+rpm_pam_module_dir=/usr/lib/security
+case "$architecture" in
+    x86_64|aarch64|ppc64le|s390x) rpm_pam_module_dir=/usr/lib64/security ;;
+esac
+if [[ -z "$pam_module_dir" ]]; then
+    pam_module_dir=/usr/lib/security
+    [[ "$format" != rpm ]] || pam_module_dir="$rpm_pam_module_dir"
+fi
 [[ "$pam_module_dir" == /* ]] || package_die "PAM module directory must be absolute"
 [[ "$architecture" =~ ^[A-Za-z0-9_.-]+$ ]] || package_die "invalid architecture: $architecture"
 
@@ -123,6 +136,9 @@ install -m 0755 "${build_dir}/su_authd" "${root_dir}/usr/libexec/smile2unlock/su
 install -m 0755 "${build_dir}/su_deploy_helper" "${root_dir}/usr/libexec/smile2unlock/su_deploy_helper"
 install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" "${root_dir}/usr/libexec/smile2unlock/install-dms-lock"
 install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" "${root_dir}/usr/libexec/smile2unlock/setup-storage-key"
+install -m 0755 "${script_dir}/selinux/manage-policy.sh" "${root_dir}/usr/libexec/smile2unlock/manage-selinux-policy"
+install -d -m 0755 "${root_dir}/usr/share/smile2unlock/selinux"
+install -m 0644 "${script_dir}/selinux/smile2unlock.cil" "${root_dir}/usr/share/smile2unlock/selinux/"
 install -m 0755 "${build_dir}/pam_smile2unlock.so" "${root_dir}${pam_module_dir}/pam_smile2unlock.so"
 
 install -m 0644 "${project_dir}/packaging/systemd/su-authd.service" "${root_dir}/usr/lib/systemd/system/"
@@ -205,9 +221,16 @@ pre_upgrade() {
         /usr/libexec/smile2unlock/su_deploy_helper --check-package-version '${package_version}'
     fi
 }
+post_install() {
+    /usr/libexec/smile2unlock/manage-selinux-policy install
+}
+post_upgrade() {
+    post_install
+}
 pre_remove() {
     /usr/libexec/smile2unlock/su_deploy_helper --rollback-all
     systemctl disable --now su-authd.service >/dev/null 2>&1 || true
+    /usr/libexec/smile2unlock/manage-selinux-policy remove
 }
 EOF
     cat > "$pkgbuild" <<EOF
@@ -264,10 +287,23 @@ EOF
 
 build_fpm() {
     local target="$1"
+    local native_root="$root_dir"
+    # --format all shares inputs, but RPM uses a different PAM lookup directory.
+    # An explicit user override continues to apply to every output format.
+    if [[ "$target" == rpm && "$explicit_pam_module_dir" == false \
+        && "$pam_module_dir" != "$rpm_pam_module_dir" ]]; then
+        native_root="${stage_root}/rpm-root"
+        cp -a "$root_dir" "$native_root"
+        mkdir -p "${native_root}${rpm_pam_module_dir}"
+        mv "${native_root}${pam_module_dir}/pam_smile2unlock.so" \
+            "${native_root}${rpm_pam_module_dir}/pam_smile2unlock.so"
+        PACKAGE_ARCH="$architecture" inject_release_info "$native_root" linux \
+            "${native_root}/usr/share/smile2unlock/release-info.json"
+    fi
     local default_depends
     case "$target" in
         deb) default_depends="libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd" ;;
-        rpm) default_depends="glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit" ;;
+        rpm) default_depends="glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit,policycoreutils,selinux-policy-targeted" ;;
     esac
     local -a dependency_args=()
     local dependency
@@ -290,7 +326,8 @@ build_fpm() {
         --license MIT --maintainer "Smile2Unlock Project" --vendor Smile2Unlock \
         --url "https://github.com/Smile2Unlock/Smile2Unlock_v2" \
         --before-install "$pre_install" --before-remove "$pre_remove" \
-        "${dependency_args[@]}" -C "$root_dir" -p "$archive" usr
+        --after-install "${script_dir}/maintainer/post-install.sh" \
+        "${dependency_args[@]}" -C "$native_root" -p "$archive" usr
     package_require_file "$archive"
     produced+=("$archive")
 }
