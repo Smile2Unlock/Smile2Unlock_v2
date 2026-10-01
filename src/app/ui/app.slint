@@ -2,6 +2,8 @@ import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from
 export { UiTheme } from "theme.slint";
 export { ProfileRow } from "components.slint";
 export { DeploymentTargetRow } from "deployment.slint";
+export { ContributorRow, LicenseSummaryRow } from "about.slint";
+import { AboutPanel, ContributorRow, LicenseSummaryRow } from "about.slint";
 import { UiTheme } from "theme.slint";
 import { DeploymentPanel, DeploymentTargetRow } from "deployment.slint";
 import {
@@ -15,6 +17,13 @@ export component AppWindow inherits Window {
     in property <string> username: "";
     in property <string> username_initial: "U";
     in property <string> core_version: "";
+    in property <string> app_version: "";
+    in property <[ContributorRow]> contributors;
+    in property <[LicenseSummaryRow]> open_source_components;
+    in property <[string]> license_names;
+    in-out property <int> license_index: 0;
+    in property <string> license_text: "";
+    in property <string> about_link_status: "";
     in property <string> config_path_text: "";
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "";
@@ -92,6 +101,9 @@ export component AppWindow inherits Window {
     callback language_selected(int);
     callback theme_mode_selected(int);
     callback window_controls_selected(int);
+    callback license_selected(int);
+    callback project_link_requested(int);
+    callback contributor_link_requested(int);
     pure callback translate(string, int) -> string;
     pure callback translate_value(string, int, string) -> string;
 
@@ -170,6 +182,11 @@ export component AppWindow inherits Window {
                     selected: root.current_page == 3;
                     activated => { root.current_page = 3; }
                 }
+                NavButton {
+                    label: root.translate("nav.about", root.language_index);
+                    selected: root.current_page == 4;
+                    activated => { root.current_page = 4; }
+                }
 
                 Rectangle { vertical-stretch: 1; background: transparent; }
 
@@ -204,6 +221,21 @@ export component AppWindow inherits Window {
         Rectangle {
             horizontal-stretch: 1;
             background: UiTheme.canvas;
+
+            if root.current_page == 4: AboutPanel {
+                app-version: root.app_version;
+                language-index: root.language_index;
+                contributors: root.contributors;
+                components: root.open_source_components;
+                license-names: root.license_names;
+                license-index <=> root.license_index;
+                license-text: root.license_text;
+                link-status: root.about_link_status;
+                translate(key, index) => { root.translate(key, index) }
+                license-selected(index) => { root.license_selected(index); }
+                project-link-requested(index) => { root.project_link_requested(index); }
+                contributor-link-requested(index) => { root.contributor_link_requested(index); }
+            }
 
             if root.current_page == 0: ScrollView {
                 viewport-width: self.width;

@@ -215,6 +215,12 @@ status and the remaining release work.
 
 ## Contributors
 
+The desktop sidebar's **About** page shows the build version, the credits below,
+and third-party license summaries. Its document viewer includes the project
+license, third-party notices, and every text in `licenses/` for offline reading.
+Update `assets/about/credits.json` when adding contributor credits or component
+summaries; license documents are embedded automatically during the Xmake build.
+
 **Code**
 
 - [ation_ciger](https://github.com/aurorae114514)
