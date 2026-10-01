@@ -84,7 +84,7 @@ for name in face_detector.csta face_landmarker_pts5.csta face_recognizer.csta \
 done
 
 xmake_home="${XMAKE_GLOBALDIR:-${HOME}/.xmake}"
-seeta_package_root="${xmake_home}/packages/s/seetaface6open"
+seeta_package_root="${SEETAFACE_PACKAGE_ROOT:-${xmake_home}/packages/s/seetaface6open}"
 find "$seeta_package_root" -type f -iname 'libSeetaFaceDetector600.dll' -print -quit \
     | grep -q . || package_die "cannot locate the MinGW SeetaFace package"
 
@@ -117,9 +117,19 @@ cp -r "${project_dir}/licenses" "${package_root}/licenses"
 find_runtime_dll() {
     local name="$1"
     local candidate
-    candidate="$(find "$mingw_bin" -maxdepth 1 -type f -iname "$name" -print -quit)"
+    # A build can stage its exact SDK DLLs. Prefer these over another cache
+    # entry (e.g. the pre-Unicode package) with the same runtime filename.
+    candidate="$(find "$build_dir" -maxdepth 1 -type f -iname "$name" -print -quit)"
     if [[ -z "$candidate" ]]; then
-        candidate="$(find "$seeta_package_root" -type f -iname "$name" -print -quit)"
+        candidate="$(find "$mingw_bin" -maxdepth 1 -type f -iname "$name" -print -quit)"
+    fi
+    if [[ -z "$candidate" ]]; then
+        local candidates=()
+        mapfile -t candidates < <(find "$seeta_package_root" -type f -iname "$name")
+        if ((${#candidates[@]} > 1)); then
+            package_die "ambiguous SDK DLL $name; stage the exact build DLLs or set SEETAFACE_PACKAGE_ROOT"
+        fi
+        candidate="${candidates[0]:-}"
     fi
     printf '%s\n' "$candidate"
 }
@@ -147,6 +157,15 @@ stage_dependencies() {
 
 for binary in "${package_root}/bin/"*.exe "${package_root}/bin/Smile2UnlockCredentialProvider.dll"; do
     stage_dependencies "$binary"
+done
+
+# TenniS loads these at runtime on CPUs that cannot use its baseline build;
+# they do not appear in the PE import table scanned above.
+for name in libtennis_haswell.dll libtennis_sandy_bridge.dll libtennis_pentium.dll; do
+    source="$(find_runtime_dll "$name")"
+    [[ -n "$source" ]] || package_die "CPU runtime DLL was not found: $name"
+    install -m 0755 "$source" "${package_root}/bin/${name}"
+    stage_dependencies "$source"
 done
 
 if [[ "$unsigned_development" == false ]]; then

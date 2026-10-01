@@ -36,6 +36,9 @@ required=(
     bin/Smile2UnlockCredentialProvider.dll
     bin/Smile2UnlockAuthService.exe
     bin/Smile2Unlock.ico
+    bin/libtennis_haswell.dll
+    bin/libtennis_sandy_bridge.dll
+    bin/libtennis_pentium.dll
     assets/i18n/en.json
     assets/i18n/zh-CN.json
     assets/models/seeta/face_detector.csta
@@ -55,7 +58,7 @@ if find "${root}/bin" -maxdepth 1 -type f -name 'su_credential_provider-*.dll' -
     package_die "credential provider must not use a suffixed filename"
 fi
 
-for binary in "${root}/bin/"*.exe "${root}/bin/Smile2UnlockCredentialProvider.dll"; do
+for binary in "${root}/bin/"*.exe "${root}/bin/"*.dll; do
     x86_64-w64-mingw32-objdump -f "$binary" | grep -q 'pei-x86-64' \
         || package_die "not an x86_64 Windows binary: $binary"
     while IFS= read -r dependency; do
