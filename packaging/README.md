@@ -4,6 +4,25 @@
 uses one version, output directory, release metadata format, and verification
 policy for Linux and Windows.
 
+## Product version
+
+`version.txt` is the only product release version to edit. Xmake reads it when
+loading targets and generates the C++ version define and Windows VERSIONINFO
+header. Package names, release manifests and release tag validation read the
+same file. `SU_VERSION` no longer overrides the build version.
+
+To prepare a version change for a PR without creating a release tag:
+
+```bash
+packaging/version/bump-version.sh 2.3.1 --no-tag
+```
+
+Rebuild before packaging so executable metadata matches the package version.
+The Rust crates' internal package versions and the core ABI version describe
+their own interfaces; they are independent of the product release version.
+
+## Build and package
+
 Package the existing release builds:
 
 ```bash

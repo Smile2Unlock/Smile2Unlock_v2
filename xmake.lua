@@ -3,14 +3,14 @@ add_rules("mode.debug", "mode.release")
 -- Xmake's repository syntax is "<name> <path>"; both tokens are required.
 add_repositories("local-repo local-repo")
 
--- Project identity + version. CI may override SU_VERSION; the literal
--- fallback is synchronized with version.txt by bump-version.sh because
--- project files do not expose file I/O at top level.
-local _su_version = os.getenv("SU_VERSION")
-if not _su_version or _su_version == "" then
-    _su_version = "2.3.0"
-end
-set_version(_su_version, {build = "", arch = os.arch()})
+-- Product version is loaded from version.txt for every target. A rule keeps
+-- this separate from existing target on_load hooks and generates PE resources.
+rule("su.version")
+    on_load(function (target)
+        import("project-version", {rootdir = path.join(os.projectdir(), "scripts")})(target)
+    end)
+rule_end()
+add_rules("su.version")
 set_description("Smile2Unlock - local face authentication (Windows sign-in + Linux PAM)")
 -- Package metadata and per-file hashes are embedded in each package's
 -- release-info.json; xmake's project API has no setters for the remaining
@@ -188,7 +188,6 @@ end
 -- targets depend on su_recognizer and inherit its module BMIs.
 
 target("su_core")
-    set_version(_su_version)
     set_kind("phony")
     on_build( function ()
         local outdir = path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"))
@@ -221,7 +220,6 @@ target("su_core")
 -- toolchain declaration forces a zig install even for default builds.
 if has_config("with_zig") then
     target("su_platform_zig")
-        set_version(_su_version)
         set_kind("static")
         set_toolchains("zig")
         set_default(true)
@@ -234,11 +232,11 @@ if has_config("with_zig") then
 end
 
 target("su_capture_pipeline_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/recognizer/capture_pipeline.cpp")
     if not is_plat("linux") then
-        -- Compile the actual MF backend even in the SDK-free Windows PR job.
+        -- Focused local tests can compile the actual MF backend without the SDK.
         add_files("src/recognizer/camera/windows_mf_camera.cpp")
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
     end
@@ -246,7 +244,6 @@ target("su_capture_pipeline_test")
     on_test(wine_on_test)
 
 target("su_recognizer")
-    set_version(_su_version)
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
     add_files("src/recognizer/image/*.cpp")
@@ -285,7 +282,6 @@ target("su_recognizer")
     end
 
     target("su_app")
-        set_version(_su_version)
         apply_cpp_target("binary")
         add_includedirs("src/core-rs/include", {public = true})
         add_packages("nlohmann_json")
@@ -320,8 +316,7 @@ target("su_recognizer")
     if not is_plat("linux") then
         add_files("src/platform/windows/user/user_windows.cpp")
     end
-    -- Build-time version string for su_app, using the resolved project version.
-    add_defines("SU_VERSION_STR=\"" .. _su_version .. "\"")
+
     if is_plat("linux") then
         add_files("src/modules/su.control.socket.cppm")
         add_files("src/platform/linux/deploy_client/*.cpp")
@@ -417,15 +412,12 @@ target("su_recognizer")
 
 if is_plat("linux") then
     target("su_deploy")
-        set_version(_su_version)
         apply_cpp_target("static")
         add_files("src/platform/linux/deploy/*.cpp")
         add_headerfiles("src/platform/linux/deploy/*.h")
         add_packages("nlohmann_json", { public = true })
-        add_defines("SU_VERSION_STR=\"" .. _su_version .. "\"")
 
     target("su_deploy_helper")
-        set_version(_su_version)
         apply_cpp_target("binary")
         add_files("src/platform/linux/deploy_helper/*.cpp")
         add_files("src/modules/su.control.socket.cppm")
@@ -439,7 +431,6 @@ elseif is_plat("windows", "mingw") then
     -- perform credential-provider registration and auth-service actions
     -- triggered from the GUI deployment panel.
     target("su_deploy_helper")
-        set_version(_su_version)
         apply_cpp_target("binary")
         set_basename("Smile2UnlockDeployHelper")
         add_files("src/platform/windows/deploy_helper/main.cpp")
@@ -453,7 +444,7 @@ elseif is_plat("windows", "mingw") then
         on_test(wine_on_test)
 
     target("su_windows_deploy_helper_result_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/windows/deploy_helper_result.cpp")
         add_includedirs("src/platform/windows/deploy")
@@ -472,7 +463,6 @@ end
 
 if is_plat("linux") then
     target("pam_smile2unlock")
-        set_version(_su_version)
         apply_cpp_target("shared")
         set_filename("pam_smile2unlock.so")
         set_prefixname("")
@@ -483,7 +473,6 @@ if is_plat("linux") then
         add_syslinks("pam")
 
     target("su_authd")
-        set_version(_su_version)
         apply_cpp_target("binary")
         add_files("src/platform/linux/authd/*.cpp", "src/app/core_bridge.cpp")
         add_files(
@@ -500,28 +489,28 @@ if is_plat("linux") then
         add_links("su_core")
 
     target("su_control_socket_smoke_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/control/*.cpp", "src/modules/su.control.socket.cppm")
         add_packages("nlohmann_json")
         add_tests("default")
 
     target("su_session_lock_monitor_smoke_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/session/*.cpp", "src/modules/su.app.session.cppm")
         add_syslinks("systemd")
         add_tests("default")
 
     target("su_deploy_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/deploy/*.cpp")
         add_deps("su_deploy")
         add_tests("default")
 
     target("su_multi_user_auth_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files(
             "tests/multi_user/*.cpp",
@@ -534,7 +523,7 @@ if is_plat("linux") then
         add_tests("default")
 
     target("su_pam_integration_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/pam/*.cpp", "src/modules/su.control.socket.cppm")
         add_deps("pam_smile2unlock")
@@ -546,14 +535,14 @@ if is_plat("linux") then
         add_tests("default")
 
     target("su_key_provider_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/storage/*.cpp")
         add_files("src/modules/su.auth.storage.cppm", "src/modules/su.core.types.cppm")
         add_tests("default")
 
     target("su_pam_acceptance")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("src/platform/linux/pam_acceptance/*.cpp")
         add_files("src/modules/su.control.socket.cppm")
@@ -570,7 +559,6 @@ end
 
 if is_plat("windows", "mingw") then
     target("su_windows_storage")
-        set_version(_su_version)
         apply_cpp_target("static")
         set_default(false)
         set_toolchains("mingw")
@@ -581,7 +569,6 @@ if is_plat("windows", "mingw") then
     -- LocalSystem auth service: named-pipe host for the logon-secret store,
     -- used by the C++ Credential Provider baseline and the Rust CP client.
     target("su_auth_service")
-        set_version(_su_version)
         apply_cpp_target("binary")
         set_basename("Smile2UnlockAuthService")
         add_files("src/platform/windows/auth_service/service.rc")
@@ -607,7 +594,6 @@ if is_plat("windows", "mingw") then
     -- console session. It has no UI and only returns liveness + embedding
     -- evidence through inherited anonymous-pipe handles.
     target("su_recognition_agent")
-        set_version(_su_version)
         apply_cpp_target("binary")
         set_basename("Smile2UnlockRecognitionAgent")
         add_files("src/platform/windows/recognition_agent/agent.rc")
@@ -620,7 +606,6 @@ if is_plat("windows", "mingw") then
     -- Interactive per-user password enrollment/clear utility. The service
     -- validates the caller SID before accepting either operation.
     target("su_password_tool")
-        set_version(_su_version)
         apply_cpp_target("binary")
         if is_plat("mingw") then
             set_basename("Smile2UnlockPasswordTool")
@@ -633,7 +618,7 @@ if is_plat("windows", "mingw") then
 end
 
 target("su_face_auth_smoke_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/face_auth/*.cpp")
     add_deps("su_core", "su_recognizer")
@@ -648,7 +633,7 @@ target("su_face_auth_smoke_test")
     end
 
 -- Username display crosses the C++/Rust boundary even before the GUI runs.
--- Headless jobs test Unicode logic; full GUI jobs also exercise Slint's FFI.
+-- Focused tests can cover Unicode logic and, with Slint, the GUI's FFI.
 local function add_username_slint_test()
     if has_config("with_slint") then
         set_policy("check.target_package_licenses", false)
@@ -670,7 +655,7 @@ local function add_username_slint_test()
 end
 
 target("su_username_initial_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/user/username_initial.cpp")
     add_username_slint_test()
@@ -679,7 +664,7 @@ target("su_username_initial_test")
 
 if is_plat("windows", "mingw") then
     target("su_windows_unicode_paths_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/windows/unicode_paths.cpp", "src/platform/windows/paths.cpp")
         add_files("src/modules/su.app.preferences.cppm", "src/modules/su.app.i18n.cppm")
@@ -696,7 +681,7 @@ if is_plat("windows", "mingw") then
         on_test(wine_on_test)
 
     target("su_windows_username_utf8_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/windows/username_utf8.cpp", "src/platform/windows/user/user_windows.cpp")
         add_includedirs("src/platform/windows/user")
@@ -707,7 +692,7 @@ if is_plat("windows", "mingw") then
 end
 
 target("su_about_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/app/about.cpp", "src/app/web_link.cpp")
     add_about_content()
@@ -720,7 +705,7 @@ target("su_about_test")
     on_test(wine_on_test)
 
 target("su_theme_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files(
         "tests/theme/*.cpp",
@@ -736,7 +721,7 @@ target("su_theme_test")
     end
 
 target("su_windows_sid_rate_limiter_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/windows/sid_rate_limiter.cpp")
     add_includedirs("src/platform/windows/auth_service")
@@ -747,7 +732,7 @@ target("su_windows_sid_rate_limiter_test")
     on_test(wine_on_test)
 
 target("su_windows_request_worker_pool_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/windows/request_worker_pool.cpp")
     add_includedirs("src/platform/windows/auth_service")
@@ -760,7 +745,7 @@ target("su_windows_request_worker_pool_test")
 -- Windows-only: the watcher exercises Win32 overlapped named pipes.
 if is_plat("windows", "mingw") then
 target("su_windows_client_disconnect_watcher_test")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/windows/client_disconnect_watcher.cpp")
     add_includedirs("src/platform/windows/auth_service")
@@ -776,7 +761,7 @@ end
 -- reliably reports pass/fail for targets with a build artifact. The binary is
 -- a trivial main that is never run; cargo test is what on_test executes.
 target("su_core_rust_tests")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/rust/main.cpp")
     on_test(function (target)
@@ -794,7 +779,6 @@ target("su_core_rust_tests")
     add_tests("default")
 
 target("su_credential_provider")
-    set_version(_su_version)
     -- Rust cdylib Credential Provider, cross-built from the Linux host.
     -- Mirrors su_core's cargo integration: only active for mingw (the crate
     -- is cfg(windows)-only); a phony target so `xmake build` produces the
@@ -827,7 +811,7 @@ target("su_credential_provider")
     end)
 
 target("su_credential_provider_rust_tests")
-    set_version(_su_version)
+    set_default(false)
     apply_cpp_target("binary")
     add_files("tests/rust/main.cpp")
     on_test(function (target)
@@ -860,7 +844,7 @@ target("su_credential_provider_rust_tests")
 if has_config("with_seetaface") then
     if is_plat("windows", "mingw") then
         target("su_windows_unicode_models_test")
-            set_version(_su_version)
+            set_default(false)
             apply_cpp_target("binary")
             add_files("tests/windows/unicode_models.cpp")
             add_files("src/modules/su.recognizer.*.cppm")
@@ -891,7 +875,7 @@ if has_config("with_seetaface") then
     end
 
     target("su_seetaface_pipeline_smoke_test")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tests/seetaface/*.cpp")
         add_deps("su_core", "su_recognizer")
@@ -941,7 +925,7 @@ if has_config("with_seetaface") then
     -- photo so a headless Windows VM can enroll a profile without the GUI
     -- camera preview (the same photo is looped through a virtual camera).
     target("su_embed_probe")
-        set_version(_su_version)
+        set_default(false)
         apply_cpp_target("binary")
         add_files("tools/embed_probe.cpp")
         add_deps("su_core", "su_recognizer")

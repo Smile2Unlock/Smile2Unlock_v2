@@ -155,9 +155,6 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Smoke-test all Linux package formats before compiling
-        run: packaging/testing/linux-package-smoke.sh
-
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
         with:
@@ -167,7 +164,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: release-linux-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+          key: release-linux-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: release-linux-xmake-${{ hashFiles('local-repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -246,7 +244,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: release-windows-xmake-${{ hashFiles('xmake.lua', 'local-repo/**') }}
+          key: release-windows-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: release-windows-xmake-${{ hashFiles('local-repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

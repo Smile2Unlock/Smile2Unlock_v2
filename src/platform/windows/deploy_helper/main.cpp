@@ -102,7 +102,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument(argv[i]);
         if (argument == "--version") {
-            std::cout << "su_deploy_helper 1\n";
+            std::cout << "su_deploy_helper " << SU_VERSION_STR << "\n";
             return 0;
         } else if (argument == "--register-cp") {
             register_cp = true;
