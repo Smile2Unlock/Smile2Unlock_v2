@@ -1,5 +1,7 @@
 // Plain (non-module) TU: winreg.h etc. are safe to include here.
 
+#include "common/utf8_path.h"
+
 #include "deployment.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -99,16 +101,16 @@ std::expected<UniqueHandle, std::string> open_plain_file(
         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN,
         nullptr)};
     if (!handle) {
-        return std::unexpected(win32_error("failed to open " + path.filename().string()));
+        return std::unexpected(win32_error("failed to open " + su::path_utf8(path.filename())));
     }
     FILE_ATTRIBUTE_TAG_INFO attributes{};
     if (!::GetFileInformationByHandleEx(
             handle.get(), FileAttributeTagInfo, &attributes, sizeof(attributes))) {
-        return std::unexpected(win32_error("failed to inspect " + path.filename().string()));
+        return std::unexpected(win32_error("failed to inspect " + su::path_utf8(path.filename())));
     }
     if ((attributes.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
         return std::unexpected("deployment input must be a regular non-reparse file: "
-            + path.string());
+            + su::path_utf8(path));
     }
     return handle;
 }
@@ -127,7 +129,7 @@ std::expected<void, std::string> ensure_plain_directory(const std::filesystem::p
     }
     if ((attributes.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0
         || (attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        return std::unexpected("protected install path is not a plain directory: " + path.string());
+        return std::unexpected("protected install path is not a plain directory: " + su::path_utf8(path));
     }
     return {};
 }
@@ -240,7 +242,7 @@ std::expected<void, std::string> verify_authenticode(
     if (status != ERROR_SUCCESS) {
         return std::unexpected(std::format(
             "Authenticode verification failed for {} (status 0x{:08x})",
-            display_path.filename().string(), static_cast<std::uint32_t>(status)));
+            su::path_utf8(display_path.filename()), static_cast<std::uint32_t>(status)));
     }
     return {};
 }
@@ -405,7 +407,7 @@ std::expected<void, std::string> copy_required_file(
     if (destination_attributes != INVALID_FILE_ATTRIBUTES
         && (destination_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         return std::unexpected("refusing to replace a reparse-point destination: "
-            + destination.string());
+            + su::path_utf8(destination));
     }
     auto temp = destination;
     temp += std::format(L".install-{:08x}-{:08x}",
@@ -486,7 +488,7 @@ std::expected<void, std::string> copy_required_file(
     if (!::MoveFileExW(temp.c_str(), destination.c_str(),
             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const auto error = win32_error("failed to atomically install "
-            + destination.filename().string());
+            + su::path_utf8(destination.filename()));
         (void)::DeleteFileW(temp.c_str());
         return std::unexpected(error);
     }

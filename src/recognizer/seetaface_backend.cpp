@@ -1,5 +1,9 @@
 module;
 #include "liveness_window.h"
+#include "common/utf8_path.h"
+#if defined(_WIN32)
+#include "platform/windows/paths.h"
+#endif
 #if SU_HAS_SEETAFACE
 #include <seeta/FaceAntiSpoofing.h>
 #include <seeta/FaceDetector.h>
@@ -66,10 +70,20 @@ std::optional<std::filesystem::path> installed_model_dir() {
 
 std::filesystem::path default_seetaface_model_dir() {
     auto error = std::error_code{};
+#if defined(_WIN32)
+    if (const auto configured = su::windows::environment_path(L"SU_SEETAFACE_MODEL_DIR");
+        configured && std::filesystem::is_directory(*configured, error)) {
+        return *configured;
+    }
+    if (const auto model_dir = find_model_dir_from(su::windows::executable_path().parent_path())) {
+        return *model_dir;
+    }
+#else
     if (const auto* configured = std::getenv("SU_SEETAFACE_MODEL_DIR");
         configured != nullptr && std::filesystem::is_directory(configured, error)) {
         return std::filesystem::path(configured);
     }
+#endif
 #ifdef SU_SEETAFACE_MODEL_DIR
     error.clear();
     if (std::filesystem::is_directory(SU_SEETAFACE_MODEL_DIR, error)) {
@@ -83,7 +97,11 @@ std::filesystem::path default_seetaface_model_dir() {
     if (const auto model_dir = installed_model_dir()) {
         return *model_dir;
     }
+#if defined(_WIN32)
+    return su::windows::executable_path().parent_path() / L"assets" / L"models" / L"seeta";
+#else
     return std::filesystem::current_path() / "assets" / "models" / "seeta";
+#endif
 }
 
 std::expected<SeetaFaceModelPaths, RecognizerError> seetaface_model_paths(
@@ -375,14 +393,14 @@ private:
 
     static seeta::ModelSetting setting_for(const std::filesystem::path& path) {
         auto setting = seeta::ModelSetting{};
-        setting.append(path.string());
+        setting.append(su::path_utf8(path));
         return setting;
     }
 
     static seeta::ModelSetting anti_spoofing_setting_for(const SeetaFaceModelPaths& paths) {
         auto setting = seeta::ModelSetting{};
-        setting.append(paths.anti_spoofing_first.string());
-        setting.append(paths.anti_spoofing_second.string());
+        setting.append(su::path_utf8(paths.anti_spoofing_first));
+        setting.append(su::path_utf8(paths.anti_spoofing_second));
         return setting;
     }
 
