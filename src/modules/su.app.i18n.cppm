@@ -1,5 +1,7 @@
 module;
 
+#include "common/utf8_path.h"
+
 #include <nlohmann/json.hpp>
 
 export module su.app.i18n;
@@ -73,14 +75,14 @@ std::expected<LanguageCatalog::LanguagePack, std::string> LanguageCatalog::load_
     try {
         auto stream = std::ifstream(path);
         if (!stream) {
-            return std::unexpected(std::format("cannot open {}", path.string()));
+            return std::unexpected(std::format("cannot open {}", su::path_utf8(path)));
         }
 
         const auto document = nlohmann::json::parse(stream);
         if (!document.contains("code") || !document["code"].is_string()
             || !document.contains("name") || !document["name"].is_string()
             || !document.contains("strings") || !document["strings"].is_object()) {
-            return std::unexpected(std::format("invalid language pack schema: {}", path.string()));
+            return std::unexpected(std::format("invalid language pack schema: {}", su::path_utf8(path)));
         }
 
         LanguageCatalog::LanguagePack pack{
@@ -89,18 +91,18 @@ std::expected<LanguageCatalog::LanguagePack, std::string> LanguageCatalog::load_
             .strings = {},
         };
         if (pack.code.empty() || pack.name.empty()) {
-            return std::unexpected(std::format("language code and name must not be empty: {}", path.string()));
+            return std::unexpected(std::format("language code and name must not be empty: {}", su::path_utf8(path)));
         }
 
         for (const auto& [key, value] : document["strings"].items()) {
             if (!value.is_string()) {
-                return std::unexpected(std::format("translation '{}' is not a string: {}", key, path.string()));
+                return std::unexpected(std::format("translation '{}' is not a string: {}", key, su::path_utf8(path)));
             }
             pack.strings.emplace(key, value.get<std::string>());
         }
         return pack;
     } catch (const std::exception& error) {
-        return std::unexpected(std::format("failed to parse {}: {}", path.string(), error.what()));
+        return std::unexpected(std::format("failed to parse {}: {}", su::path_utf8(path), error.what()));
     }
 }
 
@@ -108,7 +110,7 @@ std::expected<LanguageCatalog, std::string> LanguageCatalog::load(
     const std::filesystem::path& directory) {
     std::error_code error;
     if (!std::filesystem::is_directory(directory, error)) {
-        return std::unexpected(std::format("language directory is unavailable: {}", directory.string()));
+        return std::unexpected(std::format("language directory is unavailable: {}", su::path_utf8(directory)));
     }
 
     std::vector<std::filesystem::path> files;
@@ -132,7 +134,7 @@ std::expected<LanguageCatalog, std::string> LanguageCatalog::load(
         catalog.packs_.push_back(std::move(*pack));
     }
     if (catalog.packs_.empty()) {
-        return std::unexpected(std::format("no valid language packs found in {}", directory.string()));
+        return std::unexpected(std::format("no valid language packs found in {}", su::path_utf8(directory)));
     }
 
     auto has_english_fallback = false;
@@ -145,7 +147,7 @@ std::expected<LanguageCatalog, std::string> LanguageCatalog::load(
     }
     if (!has_english_fallback) {
         return std::unexpected(std::format(
-            "English fallback language pack is missing from {}", directory.string()));
+            "English fallback language pack is missing from {}", su::path_utf8(directory)));
     }
     return catalog;
 }

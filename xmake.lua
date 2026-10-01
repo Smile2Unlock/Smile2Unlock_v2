@@ -69,7 +69,7 @@ option("with_seetaface")
 option_end()
 
 if has_config("with_seetaface") then
-    add_requires("seetaface6open", { system = false })
+    add_requires("seetaface6open", { system = false, configs = {unicode_paths = true} })
 end
 
 local function seetaface_libdir(root)
@@ -125,7 +125,7 @@ local function seetaface_root_from_target(target)
 end
 
 local function model_stage_dir()
-    return path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
+    return path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
 end
 
 -- xmake's default test runner execs the built artifact directly. For mingw
@@ -179,7 +179,7 @@ end
 target("su_core")
     set_kind("phony")
     on_build( function ()
-        local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
+        local outdir = path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"))
         local manifest = path.join(os.projectdir(), "src", "core-rs", "Cargo.toml")
         local cargo_mode = is_mode("release") and "release" or "debug"
         local cargo_args = {
@@ -229,7 +229,9 @@ target("su_recognizer")
     else
         add_files("src/recognizer/camera/windows_camera.cpp")
         add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_files("src/platform/windows/paths.cpp")
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
+        add_syslinks("shell32", "uuid")
     end
     add_files("src/modules/su.recognizer.*.cppm")
     add_files("src/modules/su.core.*.cppm")
@@ -246,7 +248,7 @@ target("su_recognizer")
         add_seetaface_backend()
         before_build( function ()
             local srcdir = path.join(os.projectdir(), "assets", "models", "seeta")
-            local dstdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
+            local dstdir = path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
             os.mkdir(dstdir)
             for _, file in ipairs(os.files(path.join(srcdir, "*.csta"))) do
                 os.cp(file, dstdir)
@@ -381,7 +383,7 @@ target("su_recognizer")
         add_defines("SU_HAS_SLINT=0")
         add_files("src/app/console_main.cpp")
     end
-    add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+    add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
 
 if is_plat("linux") then
@@ -459,7 +461,7 @@ if is_plat("linux") then
         add_packages("nlohmann_json")
         add_deps("su_core", "su_recognizer")
         add_rpathdirs("/usr/lib/smile2unlock")
-        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
 
     target("su_control_socket_smoke_test")
@@ -549,7 +551,7 @@ if is_plat("windows", "mingw") then
             "src/platform/windows/security",
             "src/platform/windows/auth_service",
             "src/core-rs/include")
-        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
         add_ldflags("-static", "-municode", "-mwindows", {force = true})
         add_syslinks(
@@ -592,7 +594,7 @@ target("su_face_auth_smoke_test")
     add_files("src/modules/su.core.*.cppm")
     add_files("src/modules/su.recognizer.*.cppm")
     add_includedirs("src/core-rs/include")
-    add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+    add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
     add_links("su_core")
     if not is_plat("mingw") then
         add_tests("default")
@@ -628,6 +630,22 @@ target("su_username_initial_test")
     on_test(wine_on_test)
 
 if is_plat("windows", "mingw") then
+    target("su_windows_unicode_paths_test")
+        apply_cpp_target("binary")
+        add_files("tests/windows/unicode_paths.cpp", "src/platform/windows/paths.cpp")
+        add_files("src/modules/su.app.preferences.cppm", "src/modules/su.app.i18n.cppm")
+        if is_plat("mingw") then
+            add_files("src/platform/windows/print_shim.cpp")
+        end
+        add_packages("nlohmann_json")
+        add_deps("su_core")
+        add_includedirs("src/core-rs/include")
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        add_syslinks("shell32", "ole32", "uuid", "bcrypt")
+        add_tests("default")
+        on_test(wine_on_test)
+
     target("su_windows_username_utf8_test")
         apply_cpp_target("binary")
         add_files("tests/windows/username_utf8.cpp", "src/platform/windows/user/user_windows.cpp")
@@ -645,6 +663,10 @@ target("su_theme_test")
         "src/modules/su.app.preferences.cppm",
         "src/modules/su.app.theme.cppm")
     add_packages("nlohmann_json")
+    if is_plat("windows", "mingw") then
+        add_files("src/platform/windows/paths.cpp")
+        add_syslinks("shell32", "ole32", "uuid")
+    end
     if not is_plat("mingw") then
         add_tests("default")
     end
@@ -713,7 +735,7 @@ target("su_credential_provider")
         if not is_plat("mingw") then
             return
         end
-        local outdir = path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode"))
+        local outdir = path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"))
         local manifest = path.join(os.projectdir(), "src", "platform", "windows", "credential_provider_rs", "Cargo.toml")
         local cargo_mode = is_mode("release") and "release" or "debug"
         local cargo_args = {
@@ -766,6 +788,37 @@ target("su_credential_provider_rust_tests")
     add_tests("default")
 
 if has_config("with_seetaface") then
+    if is_plat("windows", "mingw") then
+        target("su_windows_unicode_models_test")
+            apply_cpp_target("binary")
+            add_files("tests/windows/unicode_models.cpp")
+            add_files("src/modules/su.recognizer.*.cppm")
+            add_deps("su_recognizer")
+            add_seetaface_backend()
+            on_load(function (target)
+                local root = assert(seetaface_root_from_target(target))
+                target:add("includedirs", path.join(root, "src", "TenniS", "include"),
+                    path.join(root, "src", "TenniS", "src"))
+            end)
+            before_build(function (target)
+                local modeldir = path.join(target:targetdir(), "assets", "models", "seeta")
+                os.mkdir(modeldir)
+                os.cp(path.join(os.projectdir(), "assets", "models", "seeta", "*.csta"), modeldir)
+                local root = assert(seetaface_root_from_target(target))
+                -- Test exactly this package's DLLs, even if the cache also
+                -- contains an older build whose readers still use ANSI.
+                for _, directory in ipairs({"bin", "lib"}) do
+                    for _, dll in ipairs(os.files(path.join(root, directory, "**.dll"))) do
+                        os.cp(dll, target:targetdir())
+                    end
+                end
+                os.cp(path.join(root, "src", "FaceRecognizer6", "example", "1.png"),
+                    path.join(target:targetdir(), "unicode-model-face.png"))
+            end)
+            add_tests("default")
+            on_test(wine_on_test)
+    end
+
     target("su_seetaface_pipeline_smoke_test")
         apply_cpp_target("binary")
         add_files("tests/seetaface/*.cpp")
@@ -776,7 +829,7 @@ if has_config("with_seetaface") then
         add_files("src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_defines("SU_SEETAFACE_TEST_DATA_DIR=\"" .. path.unix(seetaface_test_data_dir()) .. "\"")
-        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
         on_load( function (target)
             local root = seetaface_root_from_target(target)
@@ -824,7 +877,7 @@ if has_config("with_seetaface") then
         add_files("src/modules/su.core.*.cppm")
         add_files("src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
-        add_linkdirs(path.join(os.projectdir(), "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
         on_load( function (target)
             local root = seetaface_root_from_target(target)

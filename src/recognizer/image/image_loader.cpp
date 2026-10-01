@@ -1,4 +1,5 @@
 module;
+#include "common/utf8_path.h"
 // CImg pulls in platform display backends we do not use; disable them so the
 // header compiles without X11/Wayland/OpenGL dependencies.
 #ifndef cimg_display
@@ -29,7 +30,7 @@ std::expected<LoadedImage, RecognizerError> load_image_file(
 
     cimg_library::CImg<unsigned char> image;
     try {
-        image.load(path.string().c_str());
+        image.load(su::path_utf8(path).c_str());
     } catch (const cimg_library::CImgException&) {
         return std::unexpected(RecognizerError::kImageLoadFailed);
     } catch (const std::exception&) {

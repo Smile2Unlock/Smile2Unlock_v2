@@ -1,5 +1,9 @@
 #include "app_window.h"
 #include "username_initial.h"
+#include "common/utf8_path.h"
+#ifdef _WIN32
+#include "platform/windows/paths.h"
+#endif
 
 import std;
 import su.app.controller;
@@ -25,7 +29,6 @@ extern "C" int __stdcall SystemParametersInfoW(unsigned int action, unsigned int
 extern "C" void* __stdcall LoadImageW(void* instance, const wchar_t* name, unsigned int type, int width, int height, unsigned int flags);
 extern "C" unsigned long long __stdcall SendMessageW(void* window, unsigned int message, unsigned long long wparam, long long lparam);
 extern "C" void* __stdcall FindWindowW(const wchar_t* class_name, const wchar_t* window_name);
-extern "C" unsigned long __stdcall GetModuleFileNameW(void* module, wchar_t* buffer, unsigned long size);
 extern "C" void __stdcall DestroyIcon(void* icon);
 #endif
 
@@ -184,6 +187,14 @@ void set_activity(
 // Diagnostic log for GUI bring-up (window creation, GL, event loop). File
 // based because GUI-subsystem builds have no console; fail-silent.
 void gui_log(const std::string& message) {
+#ifdef _WIN32
+    try {
+        const auto path = su::windows::temporary_directory() / L"su_gui.log";
+        if (auto file = std::ofstream(path, std::ios::app)) file << message << '\n';
+    } catch (...) {
+        // Logging must never stop GUI startup if TEMP is unavailable.
+    }
+#else
     std::error_code error;
     const auto path = std::filesystem::temp_directory_path(error) / "su_gui.log";
     if (!error) {
@@ -191,6 +202,7 @@ void gui_log(const std::string& message) {
             file << message << "\n";
         }
     }
+#endif
 }
 
 #ifdef _WIN32
@@ -223,17 +235,12 @@ void gui_log_t(const std::string& message) {
 // the icon directly via WM_SETICON once the native window exists. Call on
 // the event-loop thread (e.g. from a timer callback).
 void apply_window_icon() {
-    wchar_t exe_path[260] = {};
-    if (::GetModuleFileNameW(nullptr, exe_path, 260) == 0) {
+    auto icon_path = std::wstring{};
+    try {
+        icon_path = (su::windows::executable_path().parent_path() / L"Smile2Unlock.ico").native();
+    } catch (const std::exception&) {
         return;
     }
-    std::wstring icon_path(exe_path);
-    const auto slash = icon_path.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) {
-        return;
-    }
-    icon_path.resize(slash + 1);
-    icon_path += L"Smile2Unlock.ico";
     if (void* hwnd = ::FindWindowW(nullptr, L"Smile2Unlock"); hwnd != nullptr) {
         const auto set_icon = [hwnd, &icon_path](int size, unsigned long long which) {
             if (void* icon = ::LoadImageW(
@@ -300,6 +307,10 @@ void set_preview_idle(
 }
 
 std::filesystem::path executable_directory(const char* argument_zero) {
+#ifdef _WIN32
+    (void)argument_zero;
+    return su::windows::executable_path().parent_path();
+#else
     std::error_code error;
     auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
     if (!error) {
@@ -307,6 +318,7 @@ std::filesystem::path executable_directory(const char* argument_zero) {
     }
     executable = std::filesystem::absolute(argument_zero, error);
     return error ? std::filesystem::current_path() : executable.parent_path();
+#endif
 }
 
 std::filesystem::path language_directory(const std::filesystem::path& executable_dir) {
@@ -330,16 +342,8 @@ std::filesystem::path language_directory(const std::filesystem::path& executable
 
 std::filesystem::path ui_preference_path() {
 #ifdef _WIN32
-    if (const auto* appdata = std::getenv("APPDATA");
-        appdata != nullptr && *appdata != '\0') {
-        return std::filesystem::path(appdata) / "smile2unlock" / "ui.json";
-    }
-    if (const auto* profile = std::getenv("USERPROFILE");
-        profile != nullptr && *profile != '\0') {
-        return std::filesystem::path(profile) / "AppData" / "Roaming"
-            / "smile2unlock" / "ui.json";
-    }
-#endif
+    return su::windows::roaming_app_data() / L"smile2unlock" / L"ui.json";
+#else
     if (const auto* config_home = std::getenv("XDG_CONFIG_HOME");
         config_home != nullptr && *config_home != '\0') {
         return std::filesystem::path(config_home) / "smile2unlock" / "ui.json";
@@ -348,6 +352,7 @@ std::filesystem::path ui_preference_path() {
         return std::filesystem::path(home) / ".config" / "smile2unlock" / "ui.json";
     }
     return std::filesystem::current_path() / ".smile2unlock-ui.json";
+#endif
 }
 
 std::string system_locale() {
@@ -575,7 +580,7 @@ bool detect_linux_desktop_size(float& width, float& height) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
 #ifdef _WIN32
     // GUI-subsystem builds have no console: capture stderr so Rust-side
     // diagnostics from slint (backend/renderer errors, panics) are visible.
@@ -598,7 +603,7 @@ int main(int argc, char** argv) {
 #endif
     slint::set_xdg_app_id(xdg_app_id);
     const auto preference_path = ui_preference_path();
-    gui_log_t("preference path: " + preference_path.string());
+    gui_log_t("preference path: " + su::path_utf8(preference_path));
     auto preferences = std::make_shared<su::app::UiPreferences>();
     if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
         *preferences = std::move(*loaded);
@@ -1457,4 +1462,9 @@ int main(int argc, char** argv) {
     preview->stop();
     gui_log_t("main exiting");
     return 0;
+} catch (const std::exception& error) {
+    // A resource/path failure before the first window must leave a readable
+    // diagnostic in the redirected stderr log rather than an uncaught abort.
+    std::fprintf(stderr, "Smile2Unlock failed: %s\n", error.what());
+    return 1;
 }

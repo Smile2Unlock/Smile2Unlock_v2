@@ -1,6 +1,11 @@
 module;
 
+#include "common/utf8_path.h"
+
 #include <nlohmann/json.hpp>
+#if defined(_WIN32)
+#include "platform/windows/paths.h"
+#endif
 
 #if defined(__linux__)
 #include <fcntl.h>
@@ -233,18 +238,18 @@ std::expected<std::string, std::string> read_file_limited(
     auto error = std::error_code{};
     const auto size = std::filesystem::file_size(path, error);
     if (error) {
-        return std::unexpected(std::format("cannot inspect {}: {}", path.string(), error.message()));
+        return std::unexpected(std::format("cannot inspect {}: {}", su::path_utf8(path), error.message()));
     }
     if (size > limit) {
-        return std::unexpected(std::format("{} exceeds the theme input limit", path.string()));
+        return std::unexpected(std::format("{} exceeds the theme input limit", su::path_utf8(path)));
     }
     auto stream = std::ifstream(path, std::ios::binary);
     if (!stream) {
-        return std::unexpected(std::format("cannot open {}", path.string()));
+        return std::unexpected(std::format("cannot open {}", su::path_utf8(path)));
     }
     auto text = std::string(std::istreambuf_iterator<char>{stream}, {});
     if (stream.bad() || text.size() > limit) {
-        return std::unexpected(std::format("failed to read {} safely", path.string()));
+        return std::unexpected(std::format("failed to read {} safely", su::path_utf8(path)));
     }
     return text;
 }
@@ -799,6 +804,12 @@ std::expected<AppTheme, std::string> parse_material_theme(
 }
 
 ThemePaths default_theme_paths() {
+#if defined(_WIN32)
+    // Native Windows paths must not pass through the CRT's ANSI environment.
+    const auto home = su::windows::environment_path(L"HOME").value_or(std::filesystem::path{});
+    const auto cache = su::windows::environment_path(L"XDG_CACHE_HOME").value_or(home / L".cache");
+    const auto state = su::windows::environment_path(L"XDG_STATE_HOME").value_or(home / L".local" / L"state");
+#else
     const auto* home_value = std::getenv("HOME");
     const auto home = home_value != nullptr && home_value[0] != '\0'
         ? std::filesystem::path(home_value)
@@ -811,6 +822,7 @@ ThemePaths default_theme_paths() {
     const auto state = state_value != nullptr && state_value[0] != '\0'
         ? std::filesystem::path(state_value)
         : home / ".local" / "state";
+#endif
     return ThemePaths{
         .dms_palette = cache / "DankMaterialShell" / "dms-colors.json",
         .dms_session = state / "DankMaterialShell" / "session.json",
@@ -882,13 +894,13 @@ ThemeLoadResult load_desktop_theme(
             };
         } else {
             diagnostics.push_back(std::format(
-                "DMS palette {}: {}", paths.dms_palette.string(), parsed.error()));
+                "DMS palette {}: {}", su::path_utf8(paths.dms_palette), parsed.error()));
             rejected_sources.push_back(ThemeSource::dms_cache);
         }
     } else if (auto exists_error = std::error_code{};
                std::filesystem::exists(paths.dms_palette, exists_error) && !exists_error) {
         diagnostics.push_back(std::format(
-            "DMS palette {}: {}", paths.dms_palette.string(), palette.error()));
+            "DMS palette {}: {}", su::path_utf8(paths.dms_palette), palette.error()));
         rejected_sources.push_back(ThemeSource::dms_cache);
     }
 
@@ -1003,8 +1015,8 @@ private:
             return false;
         }
         const auto name = std::string_view(event.name);
-        return name == paths_.dms_palette.filename().string()
-            || name == paths_.dms_session.filename().string();
+        return name == su::path_utf8(paths_.dms_palette.filename())
+            || name == su::path_utf8(paths_.dms_session.filename());
     }
 
     void reload() {

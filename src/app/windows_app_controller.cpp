@@ -8,6 +8,8 @@ module;
 #include "../platform/windows/auth_service/profile_client.h"
 #include "../platform/windows/deploy/deployment.h"
 #include "../platform/windows/deploy/result_file.h"
+#include "common/utf8_path.h"
+#include "platform/windows/paths.h"
 
 module su.app.controller;
 import std;
@@ -80,11 +82,11 @@ std::expected<std::string, std::string> resolve_image_sample_source(
         return std::string{face_sample_source};
     }
 
-    const auto path = std::filesystem::path(
+    const auto path = su::path_from_utf8(
         face_sample_source.substr(kImageSourcePrefix.size()));
     auto loaded = su::recognizer::load_image_file(path);
     if (!loaded) {
-        return std::unexpected(std::format("failed to load image: {}", path.string()));
+        return std::unexpected(std::format("failed to load image: {}", su::path_utf8(path)));
     }
 
     auto result = recognizer.extract_from_image(su::recognizer::ImageView{
@@ -94,7 +96,7 @@ std::expected<std::string, std::string> resolve_image_sample_source(
         .bytes = std::span<const std::byte>(loaded->bytes),
     });
     if (!result) {
-        return std::unexpected(std::format("failed to extract face features: {}", path.string()));
+        return std::unexpected(std::format("failed to extract face features: {}", su::path_utf8(path)));
     }
     return su::recognizer::embedding_sample_source(result->feature);
 }
@@ -218,13 +220,7 @@ bool save_recognition_settings(const CoreConfig& config) {
 }  // namespace
 
 std::string AppController::config_path() const {
-    if (const auto* appdata = std::getenv("APPDATA")) {
-        return (std::filesystem::path(appdata) / "smile2unlock" / "config.toml").string();
-    }
-    if (const auto* home = std::getenv("USERPROFILE")) {
-        return (std::filesystem::path(home) / "AppData" / "Roaming" / "smile2unlock" / "config.toml").string();
-    }
-    return (std::filesystem::temp_directory_path() / "smile2unlock" / "config.toml").string();
+    return su::path_utf8(su::windows::roaming_app_data() / L"smile2unlock" / L"config.toml");
 }
 
 std::string AppController::profile_store_path() const {
@@ -505,31 +501,12 @@ namespace {
 
 // Path of Smile2UnlockDeployHelper.exe next to the current executable.
 std::string deploy_helper_path() {
-    wchar_t buffer[512] = {};
-    const auto length = ::GetModuleFileNameW(nullptr, buffer, 512);
-    if (length == 0 || length >= 512) {
+    try {
+        return su::path_utf8(su::windows::executable_path().parent_path()
+            / L"Smile2UnlockDeployHelper.exe");
+    } catch (const std::exception&) {
         return {};
     }
-    std::wstring path(buffer, buffer + length);
-    const auto slash = path.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) {
-        return {};
-    }
-    path.resize(slash + 1);
-    path += L"Smile2UnlockDeployHelper.exe";
-    const auto required = ::WideCharToMultiByte(
-        CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
-        nullptr, 0, nullptr, nullptr);
-    if (required <= 0) {
-        return {};
-    }
-    auto narrow = std::string(static_cast<std::size_t>(required), '\0');
-    if (::WideCharToMultiByte(
-            CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(path.size()),
-            narrow.data(), required, nullptr, nullptr) != required) {
-        return {};
-    }
-    return narrow;
 }
 
 std::wstring utf8_to_wide(std::string_view value) {
@@ -742,11 +719,8 @@ constexpr char kModelsAssetUrl[] =
     "models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip";
 
 std::filesystem::path expected_model_dir() {
-    wchar_t exe[MAX_PATH] = {};
-    if (::GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) {
-        return {};
-    }
-    auto dir = std::filesystem::path(exe).parent_path();
+    const auto executable_dir = su::windows::executable_path().parent_path();
+    auto dir = executable_dir;
     for (int depth = 0; depth < 6 && dir.has_parent_path(); ++depth) {
         const auto candidate = dir / "assets" / "models" / "seeta";
         std::error_code ignored{};
@@ -755,7 +729,7 @@ std::filesystem::path expected_model_dir() {
         }
         dir = dir.parent_path();
     }
-    return std::filesystem::path(exe).parent_path() / "assets" / "models" / "seeta";
+    return executable_dir / "assets" / "models" / "seeta";
 }
 
 std::expected<std::string, std::string> http_download_to_file(
@@ -936,7 +910,7 @@ std::expected<std::string, std::string> extract_archive_with_tar(
 ModelsStatus AppController::models_status() {
     auto status = ModelsStatus{};
     const auto dir = expected_model_dir();
-    status.model_dir = dir.string();
+    status.model_dir = su::path_utf8(dir);
     auto present = recognizer_.seetaface_available();
     if (present) {
         for (const auto* name : kRequiredModels) {
@@ -960,13 +934,15 @@ void AppController::download_models(
         };
         const auto model_dir = expected_model_dir();
         const auto models_parent = model_dir.parent_path(); // .../assets/models
-        wchar_t temp[MAX_PATH] = {};
-        if (::GetTempPathW(MAX_PATH, temp) == 0) {
+        auto temp = std::filesystem::path{};
+        try {
+            temp = su::windows::temporary_directory();
+        } catch (const std::exception&) {
             fail("failed to resolve the temporary directory");
             return;
         }
-        const auto archive = std::filesystem::path(temp) / "smile2unlock-models.zip";
-        const auto archive_hash_file = std::filesystem::path(temp) / "smile2unlock-models.zip.sha256";
+        const auto archive = temp / "smile2unlock-models.zip";
+        const auto archive_hash_file = temp / "smile2unlock-models.zip.sha256";
         const auto archive_url = url_prefix.empty()
             ? std::string{kModelsAssetUrl}
             : url_prefix + kModelsAssetUrl;
@@ -1027,7 +1003,7 @@ void AppController::download_models(
         for (const auto* name : kRequiredModels) {
             std::error_code ignored{};
             if (!std::filesystem::exists(model_dir / name, ignored)) {
-                fail("the extracted archive is missing " + std::filesystem::path(name).string());
+                fail("the extracted archive is missing " + su::path_utf8(std::filesystem::path(name)));
                 return;
             }
         }

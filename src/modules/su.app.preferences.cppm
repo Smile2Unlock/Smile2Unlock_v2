@@ -1,5 +1,7 @@
 module;
 
+#include "common/utf8_path.h"
+
 #include <nlohmann/json.hpp>
 
 export module su.app.preferences;
@@ -226,11 +228,11 @@ std::expected<UiPreferences, std::string> load_ui_preferences(
     try {
         auto stream = std::ifstream(path, std::ios::binary);
         if (!stream) {
-            return std::unexpected(std::format("cannot open {}", path.string()));
+            return std::unexpected(std::format("cannot open {}", su::path_utf8(path)));
         }
         const auto document = Json::parse(stream);
         if (!document.is_object()) {
-            return std::unexpected(std::format("invalid UI preference file: {}", path.string()));
+            return std::unexpected(std::format("invalid UI preference file: {}", su::path_utf8(path)));
         }
 
         auto preferences = UiPreferences{};
@@ -266,7 +268,7 @@ std::expected<UiPreferences, std::string> load_ui_preferences(
         }
         return preferences;
     } catch (const std::exception& error) {
-        return std::unexpected(std::format("failed to load {}: {}", path.string(), error.what()));
+        return std::unexpected(std::format("failed to load {}: {}", su::path_utf8(path), error.what()));
     }
 }
 
@@ -289,11 +291,11 @@ std::expected<void, std::string> save_ui_preferences(
         {
             auto stream = std::ofstream(temporary, std::ios::binary | std::ios::trunc);
             if (!stream) {
-                return std::unexpected(std::format("cannot write {}", temporary.string()));
+                return std::unexpected(std::format("cannot write {}", su::path_utf8(temporary)));
             }
             stream << document.dump(2) << '\n';
             if (!stream) {
-                return std::unexpected(std::format("failed to write {}", temporary.string()));
+                return std::unexpected(std::format("failed to write {}", su::path_utf8(temporary)));
             }
         }
         std::filesystem::permissions(
@@ -308,11 +310,11 @@ std::expected<void, std::string> save_ui_preferences(
             std::filesystem::rename(temporary, path, error);
         }
         if (error) {
-            return std::unexpected(std::format("failed to replace {}: {}", path.string(), error.message()));
+            return std::unexpected(std::format("failed to replace {}: {}", su::path_utf8(path), error.message()));
         }
         return {};
     } catch (const std::exception& error) {
-        return std::unexpected(std::format("failed to save {}: {}", path.string(), error.what()));
+        return std::unexpected(std::format("failed to save {}: {}", su::path_utf8(path), error.what()));
     }
 }
 

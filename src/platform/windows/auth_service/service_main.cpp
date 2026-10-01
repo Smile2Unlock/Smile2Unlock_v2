@@ -1,3 +1,5 @@
+#include "common/utf8_path.h"
+
 #include "logon_secret_server.h"
 
 #include "storage_key_provider.h"
@@ -68,7 +70,7 @@ void WINAPI service_main(DWORD, PWSTR*) {
     }
 
     const auto key_path = su::windows::security::default_storage_key_path();
-    log_line("service_main: key_path=" + key_path.string());
+    log_line("service_main: key_path=" + su::path_utf8(key_path));
     auto storage_key = key_path.empty()
         ? std::expected<su::windows::security::StorageKey,
                         su::windows::security::StorageKeyError>{
