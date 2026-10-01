@@ -47,10 +47,11 @@ packaging/linux/package.sh --format deb
 packaging/linux/package.sh --format rpm
 ```
 
-The package layout is the same for every format. DEB dependencies default to
+DEB dependencies default to
 `libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd`;
 RPM dependencies default to
-`glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit`. Override
+`glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit,policycoreutils,selinux-policy-targeted`
+(Fedora targeted policy). Override
 `PACKAGE_DEPENDS` when a target distribution uses different package names:
 
 ```bash
@@ -63,7 +64,9 @@ family. The packaged executables still use the build environment's glibc ABI;
 an Arch-built binary is not expected to run on an older Debian or Fedora
 release merely because it was wrapped in a DEB or RPM.
 
-If the target distribution uses a multiarch PAM directory, override it while
+64-bit RPMs default to `/usr/lib64/security`, including RPM output from
+`--format all`. Other formats default to `/usr/lib/security`. If the target
+distribution uses another PAM directory, override it while
 building the package:
 
 ```bash
@@ -83,6 +86,39 @@ managed PAM target and stops the daemon; if an administrator changed a managed
 file, removal fails closed so the package cannot leave a dangling PAM module
 reference. Headless recovery uses
 `sudo /usr/libexec/smile2unlock/su_deploy_helper --rollback-all`.
+
+## Fedora SELinux
+
+Native package installation/upgrade loads the versioned
+`/usr/share/smile2unlock/selinux/smile2unlock.cil` policy at priority 200 when
+SELinux is enabled, then relabels an existing runtime socket. No policy compiler
+is required. A source installation does the same; `DESTDIR` staging has no
+policy side effects. Portable archive installation requires running:
+
+```bash
+sudo /usr/libexec/smile2unlock/manage-selinux-policy install
+```
+
+The policy labels only `/run/smile2unlock` and its `control.sock` with
+`smile2unlock_runtime_t`. It permits `xdm_t` (SDDM and Plasma Login Manager on
+Fedora) to search that directory and write to that socket, and permits systemd
+to mount the directory for the existing service sandbox. Newly created runtime
+directories/sockets retain the label through named type transitions.
+It adds no generic `var_run_t` socket access, network access, password access,
+or permissive domains. It relies on Fedora's existing connection permission to
+`unconfined_service_t`; it does not introduce a confined daemon domain. The
+daemon's systemd sandbox and `SO_PEERCRED` authorization remain in force.
+
+Final package removal first rolls back PAM and stops the daemon, then removes
+only the priority-200 module. Administrator overrides at other priorities are
+preserved. Manual policy removal after stopping the service uses:
+
+```bash
+sudo /usr/libexec/smile2unlock/manage-selinux-policy remove
+```
+
+Other SELinux distributions/policies require separate validation; this module
+targets Fedora's `xdm_t` and `unconfined_service_t` policy types.
 
 When running `su_app` directly from a complete Release build, the same section
 can bootstrap missing system components through `pkexec`. The GUI accepts only

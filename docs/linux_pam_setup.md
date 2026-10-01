@@ -47,6 +47,12 @@ root privileges or `systemctl` side effects:
 DESTDIR=build/test-data/install-root packaging/install-linux-auth.sh
 ```
 
+On Fedora with SELinux enabled, installation also loads the packaged runtime
+socket policy without changing Enforcing mode. It supports the `xdm_t` domain
+used by SDDM and Plasma Login Manager. See the
+[SELinux packaging notes](../packaging/linux/README.md#fedora-selinux) for policy
+scope, manual installation and removal.
+
 The install script deliberately does not edit `/etc/pam.d`. A bad PAM stack can
 lock out every login path, and distributions compose these files differently.
 

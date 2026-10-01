@@ -14,3 +14,4 @@ fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now su-authd.service >/dev/null 2>&1 || true
 fi
+/usr/libexec/smile2unlock/manage-selinux-policy remove

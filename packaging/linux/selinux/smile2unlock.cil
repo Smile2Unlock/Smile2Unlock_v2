@@ -1,0 +1,17 @@
+; Smile2Unlock runtime socket policy, version 1.0.
+; Fedora's xdm_t covers both SDDM and Plasma Login Manager. Its existing
+; policy permits connecting to the daemon's unconfined_service_t domain;
+; only access to our specifically labelled runtime directory/socket is added.
+; This does not grant access to generic var_run_t sockets or confine su_authd.
+(type smile2unlock_runtime_t)
+(typeattributeset file_type (smile2unlock_runtime_t))
+(typeattributeset pidfile (smile2unlock_runtime_t))
+(roletype object_r smile2unlock_runtime_t)
+(filecon "/run/smile2unlock" dir (system_u object_r smile2unlock_runtime_t ((s0) (s0))))
+(filecon "/run/smile2unlock/control[.]sock" socket (system_u object_r smile2unlock_runtime_t ((s0) (s0))))
+(typetransition init_t var_run_t dir "smile2unlock" smile2unlock_runtime_t)
+(typetransition unconfined_service_t smile2unlock_runtime_t sock_file "control.sock" smile2unlock_runtime_t)
+; Preserve the service's ProtectSystem/RuntimeDirectory mount namespace.
+(allow init_t smile2unlock_runtime_t (dir (mounton)))
+(allow xdm_t smile2unlock_runtime_t (dir (search)))
+(allow xdm_t smile2unlock_runtime_t (sock_file (write)))
