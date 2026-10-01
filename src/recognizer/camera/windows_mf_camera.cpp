@@ -6,13 +6,13 @@
 //   source reader is apartment-affine; routing every call through one worker
 //   keeps it on a stable MTA regardless of the caller's apartment, and the
 //   synchronous request/response protocol makes open/grab thread-safe.
-// - Frames are captured as YUY2 (identical byte packing to V4L2 YUYV) when
-//   the device supports it, falling back to the native subtype (MJPEG is
-//   passed through as-is; other subtypes are reported as unavailable).
+// - Native MJPEG/YUY2 modes are ranked by cadence and recognition-sized
+//   resolution. MJPEG avoids saturating USB with uncompressed HD video.
 // - The frame buffer is copied into a stream-owned buffer so the returned
 //   pointer stays valid until the next grab (mirrors the V4L2 mmap contract).
 
 #include "windows_mf_camera.h"
+#include "capture_mode.h"
 
 #include <windows.h>
 #include <mfapi.h>
@@ -21,9 +21,11 @@
 #include <wrl/client.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <cstdio>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -129,7 +131,9 @@ bool enumerate_devices(std::vector<ComPtr<IMFActivate>>& out) {
     out.clear();
     out.reserve(count);
     for (UINT32 i = 0; i < count; ++i) {
-        out.emplace_back(raw_devices[i]);
+        ComPtr<IMFActivate> device;
+        device.Attach(raw_devices[i]); // adopt MFEnumDeviceSources' reference
+        out.push_back(std::move(device));
     }
     ::CoTaskMemFree(raw_devices);
     return true;
@@ -251,12 +255,8 @@ public:
         grab_pending_ = false;
         sample_status_ = status;
         sample_flags_ = flags;
-        // ComPtr assignment from a raw pointer attaches without AddRef, but
-        // MF drops its reference as soon as OnReadSample returns — take our
-        // own reference so the sample survives until the worker consumes it.
-        if (sample != nullptr) {
-            sample->AddRef();
-        }
+        // Raw-pointer assignment AddRefs. An extra explicit AddRef leaks a
+        // sample (and potentially its multi-megabyte frame) on every read.
         sample_ = sample;
         grab_cv_.notify_all();
     }
@@ -412,7 +412,7 @@ private:
         }
         // Async reader: hand MF our callback so reads are cancellable waits
         // instead of unbounded synchronous calls.
-        callback_ = new StreamCallback(static_cast<MfGrabSink*>(this));
+        callback_.Attach(new StreamCallback(static_cast<MfGrabSink*>(this)));
         ComPtr<IMFAttributes> attributes;
         ComPtr<IMFSourceReader> reader;
         if (FAILED(::MFCreateAttributes(&attributes, 1))
@@ -425,56 +425,72 @@ private:
             return;
         }
 
-        // Prefer YUY2 (same packing as V4L2 YUYV). Some devices — notably
-        // virtual cameras behind a KVM (QEMU/usbredir) — return a zero
-        // MF_MT_FRAME_SIZE when the media type only pins the subtype. Set an
-        // explicit resolution so negotiation yields a real size; otherwise the
-        // open fails even though the device enumerates fine.
-        const auto try_media_type = [&](const GUID& subtype, std::uint64_t size) {
-            ComPtr<IMFMediaType> requested;
-            if (FAILED(::MFCreateMediaType(&requested))) {
-                return false;
+        (void)reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
+        if (FAILED(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE))) {
+            finish_open(false);
+            return;
+        }
+        struct Candidate {
+            detail::CaptureMode mode;
+            ComPtr<IMFMediaType> type;
+        };
+        auto candidates = std::vector<Candidate>{};
+        for (DWORD index = 0;; ++index) {
+            ComPtr<IMFMediaType> type;
+            if (FAILED(reader->GetNativeMediaType(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, index, &type))) {
+                break;
             }
-            if (FAILED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
-                || FAILED(requested->SetGUID(MF_MT_SUBTYPE, subtype))
-                || FAILED(requested->SetUINT64(MF_MT_FRAME_SIZE, size))) {
-                return false;
+            GUID subtype{};
+            UINT64 size = 0;
+            UINT64 rate = 0;
+            if (FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype))
+                || !is_supported_subtype(subtype)
+                || FAILED(type->GetUINT64(MF_MT_FRAME_SIZE, &size))) {
+                continue;
             }
-            return SUCCEEDED(reader->SetCurrentMediaType(0, nullptr, requested.Get()));
-        };
-        const auto packed_size = [](std::uint32_t w, std::uint32_t h) {
-            return (static_cast<std::uint64_t>(w) << 32) | static_cast<std::uint64_t>(h);
-        };
-        // 720p leads: high-resolution cameras negotiate 1080p YUY2 which
-        // saturates USB bandwidth and drops capture to ~1 fps, while the
-        // recognition pipeline detects on a downscaled copy anyway, so the
-        // extra pixels buy nothing. 1080p stays second for devices that only
-        // offer it.
-        static constexpr std::array kSizes = std::array{
-            packed_size(1280, 720), packed_size(1920, 1080), packed_size(960, 540),
-            packed_size(640, 480), packed_size(320, 240), packed_size(176, 144),
-        };
-        bool type_set = false;
-        for (const auto size : kSizes) {
-            if (try_media_type(MFVideoFormat_YUY2, size)) {
+            (void)type->GetUINT64(MF_MT_FRAME_RATE, &rate);
+            const auto mode = detail::CaptureMode{
+                static_cast<std::uint32_t>(size >> 32), static_cast<std::uint32_t>(size),
+                static_cast<std::uint32_t>(rate >> 32), static_cast<std::uint32_t>(rate),
+                subtype == MFVideoFormat_MJPG};
+            if (mode.valid()) {
+                candidates.push_back({mode, std::move(type)});
+            }
+        }
+        std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+            return detail::capture_mode_rank(a.mode) < detail::capture_mode_rank(b.mode);
+        });
+        auto type_set = false;
+        for (const auto& candidate : candidates) {
+            if (SUCCEEDED(reader->SetCurrentMediaType(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, candidate.type.Get()))) {
                 type_set = true;
                 break;
             }
         }
-        if (!type_set) {
-            for (const auto size : kSizes) {
-                if (try_media_type(MFVideoFormat_MJPG, size)) {
-                    type_set = true;
+        if (!type_set && candidates.empty()) {
+            // Some virtual drivers omit sizes in their native descriptors.
+            // Preserve their explicit-size fallback, bounded to 720p rather
+            // than accepting the driver's arbitrary (possibly 4K) default.
+            for (const auto& subtype : {MFVideoFormat_MJPG, MFVideoFormat_YUY2}) {
+                for (const auto& size : {std::pair{1280U, 720U}, std::pair{640U, 480U},
+                                        std::pair{320U, 240U}}) {
+                    ComPtr<IMFMediaType> requested;
+                    if (SUCCEEDED(::MFCreateMediaType(&requested))
+                        && SUCCEEDED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
+                        && SUCCEEDED(requested->SetGUID(MF_MT_SUBTYPE, subtype))
+                        && SUCCEEDED(requested->SetUINT64(MF_MT_FRAME_SIZE,
+                            (static_cast<UINT64>(size.first) << 32) | size.second))
+                        && SUCCEEDED(reader->SetCurrentMediaType(
+                            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, requested.Get()))) {
+                        type_set = true;
+                        break;
+                    }
+                }
+                if (type_set) {
                     break;
                 }
-            }
-        }
-        if (!type_set) {
-            // Last resort: let the reader pick any format/ratio.
-            ComPtr<IMFMediaType> requested;
-            if (SUCCEEDED(::MFCreateMediaType(&requested))
-                && SUCCEEDED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))) {
-                type_set = SUCCEEDED(reader->SetCurrentMediaType(0, nullptr, requested.Get()));
             }
         }
         if (!type_set) {
@@ -483,7 +499,7 @@ private:
         }
 
         ComPtr<IMFMediaType> negotiated;
-        if (FAILED(reader->GetCurrentMediaType(0, &negotiated))) {
+        if (FAILED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &negotiated))) {
             finish_open(false);
             return;
         }
@@ -527,6 +543,11 @@ private:
         }
         v4l2_format_ = v4l2_format_for(subtype);
         bottom_up_ = stride < 0 && v4l2_format_ == kV4l2Yuyv;
+        UINT64 rate = 0;
+        (void)negotiated->GetUINT64(MF_MT_FRAME_RATE, &rate);
+        std::fprintf(stderr, "[camera] MF mode=%s size=%ux%u fps=%u/%u\n",
+            v4l2_format_ == kV4l2Mjpg ? "MJPEG" : "YUY2", width_, height_,
+            static_cast<unsigned>(rate >> 32), static_cast<unsigned>(rate));
         open_ = true;
         finish_open(true);
     }

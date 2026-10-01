@@ -1,10 +1,13 @@
 module;
 #include <slint/slint.h>
+#include "recognizer/latest_frame.h"
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 
@@ -56,14 +59,19 @@ PreviewOverlay overlay_from_result(const su::recognizer::RecognitionResult& resu
 
 }  // namespace
 
-// Single capture+detect thread. SeetaFace's FaceAntiSpoofing is a stateful
-// video-stream model that must be fed on consecutive frames to reach a stable
-// REAL/SPOOF verdict, so predict_liveness runs on EVERY preview frame (not a
-// throttled subset). Feature extraction (the expensive, liveness-irrelevant
-// step) is NOT done here; it only runs on explicit enroll/auth. This keeps the
-// liveness score accurate while the preview stays on one thread with no
-// cross-thread snapshot ownership.
+// Capture and inference have independent cadences. The inference mailbox
+// retains one immutable frame, so slow anti-spoofing cannot block preview or
+// accumulate a backlog. Each consumed frame is evaluated exactly once.
 class PreviewController::Impl {
+    struct State {
+        su::recognizer::detail::LatestFrameQueue<su::recognizer::PreviewFrame> frames;
+        std::mutex mutex;
+        PreviewOverlay overlay;
+        std::chrono::steady_clock::time_point overlay_frame_time{};
+        std::optional<std::pair<slint::Image, PreviewOverlay>> pending_ui;
+        bool ui_scheduled = false;
+    };
+
 public:
     void start(su::recognizer::RecognizerService& recognizer,
                int camera_index,
@@ -89,65 +97,126 @@ public:
         }
         recognizer_ = &recognizer;
         running_ = std::make_shared<std::atomic<bool>>(true);
+        state_ = std::make_shared<State>();
 
         const auto interval = std::chrono::milliseconds(1000 / fps);
         auto running = running_;
+        auto state = state_;
         auto shared_callback = std::make_shared<FrameCallback>(std::move(callback));
 
+        inference_thread_ = std::thread([running, state, &recognizer, liveness_enabled] {
+            auto consumed = std::uint64_t{};
+            auto next_log = std::chrono::steady_clock::now();
+            while (running->load(std::memory_order_relaxed)) {
+                const auto frame = state->frames.wait_next(consumed);
+                if (!frame) {
+                    break;
+                }
+                const auto frame_time = std::chrono::steady_clock::now();
+                const auto result = recognizer.predict_liveness(su::recognizer::ImageView{
+                    .width = frame->width,
+                    .height = frame->height,
+                    .channels = 3,
+                    .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
+                }, liveness_enabled);
+                const auto finished = std::chrono::steady_clock::now();
+                if (finished >= next_log) {
+                    std::println(stderr, "[preview] inference_ms={}",
+                        std::chrono::duration_cast<std::chrono::milliseconds>(finished - frame_time).count());
+                    next_log = finished + std::chrono::seconds{5};
+                }
+                auto overlay = PreviewOverlay{};
+                if (result && result->has_face) {
+                    overlay = overlay_from_result(*result);
+                    if (!liveness_enabled) {
+                        overlay.status_text = "preview.liveness_disabled";
+                    }
+                } else {
+                    overlay.status_text = result ? "preview.no_face" : "preview.detect_failed";
+                }
+                overlay.source_width = frame->width;
+                overlay.source_height = frame->height;
+                std::lock_guard lock(state->mutex);
+                state->overlay = std::move(overlay);
+                state->overlay_frame_time = frame_time;
+            }
+        });
+
         thread_ = std::thread(
-            [running, interval, callback = std::move(shared_callback),
-             &recognizer, liveness_enabled]() mutable {
+            [running, state, interval, callback = std::move(shared_callback),
+             &recognizer]() mutable {
+                auto measured_since = std::chrono::steady_clock::now();
+                auto captured_count = 0;
+                const auto publish_ui = [&](slint::Image image, PreviewOverlay overlay) {
+                    {
+                        std::lock_guard lock(state->mutex);
+                        state->pending_ui.emplace(std::move(image), std::move(overlay));
+                        if (state->ui_scheduled) {
+                            return;
+                        }
+                        state->ui_scheduled = true;
+                    }
+                    slint::invoke_from_event_loop([running, state, callback]() mutable {
+                        std::optional<std::pair<slint::Image, PreviewOverlay>> latest;
+                        {
+                            std::lock_guard lock(state->mutex);
+                            latest.swap(state->pending_ui);
+                            state->ui_scheduled = false;
+                        }
+                        if (latest && running->load(std::memory_order_relaxed)) {
+                            (*callback)(std::move(latest->first), std::move(latest->second));
+                        }
+                    });
+                };
                 while (running->load(std::memory_order_relaxed)) {
+                    const auto tick = std::chrono::steady_clock::now();
                     auto frame = recognizer.capture_preview_frame();
                     if (!frame) {
-                        slint::invoke_from_event_loop(
-                            [running, callback]() {
-                                if (running->load(std::memory_order_relaxed)) {
-                                    (*callback)(slint::Image(),
-                                                PreviewOverlay{.face_box = {}, .status_text = "preview.capture_failed"});
-                                }
-                            });
-                        std::this_thread::sleep_for(interval);
+                        publish_ui(slint::Image(), PreviewOverlay{
+                            .face_box = {}, .status_text = "preview.capture_failed"});
+                        std::this_thread::sleep_until(tick + interval);
                         continue;
                     }
 
-                    auto image = preview_frame_to_image(*frame);
-
-                    // Run detection + (optionally) liveness on this frame.
-                    // predict_liveness feeds anti-spoofing every tick so the
-                    // verdict stabilizes; when liveness is disabled in config
-                    // the Predict call is skipped entirely and the score is
-                    // pinned to 1.0 (passing).
-                    auto result = recognizer.predict_liveness(su::recognizer::ImageView{
-                        .width = frame->width,
-                        .height = frame->height,
-                        .channels = 3,
-                        .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
-                    }, liveness_enabled);
-
-                    PreviewOverlay overlay;
-                    if (result && result->has_face) {
-                        overlay = overlay_from_result(*result);
-                        if (!liveness_enabled) {
-                            overlay.status_text = "preview.liveness_disabled";
-                        }
-                    } else if (result && !result->has_face) {
-                        overlay.status_text = "preview.no_face";
-                    } else {
-                        overlay.status_text = "preview.detect_failed";
-                    }
-                    overlay.source_width = frame->width;
-                    overlay.source_height = frame->height;
-
-                    slint::invoke_from_event_loop(
-                        [running, callback, image = std::move(image),
-                         overlay = std::move(overlay)]() mutable {
-                            if (running->load(std::memory_order_relaxed)) {
-                                (*callback)(std::move(image), std::move(overlay));
+                    const auto shared_frame = std::make_shared<const su::recognizer::PreviewFrame>(
+                        std::move(*frame));
+                    state->frames.publish(shared_frame);
+                    auto overlay = PreviewOverlay{};
+                    {
+                        std::lock_guard lock(state->mutex);
+                        // Overlay is informational only. Expire old geometry
+                        // and scores instead of displaying a frozen verdict.
+                        if (state->overlay.source_width == shared_frame->width
+                            && state->overlay.source_height == shared_frame->height) {
+                            overlay = state->overlay;
+                            if (std::chrono::steady_clock::now() - state->overlay_frame_time
+                                > std::chrono::milliseconds{500}) {
+                                overlay.face_box.reset();
                             }
-                        });
+                            if (std::chrono::steady_clock::now() - state->overlay_frame_time
+                                > std::chrono::seconds{2}) {
+                                overlay.liveness_score = 0.0F;
+                                overlay.status_text = "preview.starting";
+                            }
+                        } else {
+                            overlay.status_text = "preview.starting";
+                        }
+                    }
+                    overlay.source_width = shared_frame->width;
+                    overlay.source_height = shared_frame->height;
+                    publish_ui(preview_frame_to_image(*shared_frame), std::move(overlay));
+                    ++captured_count;
+                    const auto measured_until = std::chrono::steady_clock::now();
+                    const auto seconds = std::chrono::duration<double>(measured_until - measured_since).count();
+                    if (seconds >= 5.0) {
+                        std::println(stderr, "[preview] capture_fps={:.1f} size={}x{}",
+                            captured_count / seconds, shared_frame->width, shared_frame->height);
+                        measured_since = measured_until;
+                        captured_count = 0;
+                    }
 
-                    std::this_thread::sleep_for(interval);
+                    // Work time counts toward the requested frame period.
+                    std::this_thread::sleep_until(tick + interval);
                 }
             });
     }
@@ -156,14 +225,21 @@ public:
         if (running_) {
             running_->store(false, std::memory_order_relaxed);
         }
+        if (state_) {
+            state_->frames.close();
+        }
         if (thread_.joinable()) {
             thread_.join();
+        }
+        if (inference_thread_.joinable()) {
+            inference_thread_.join();
         }
         if (recognizer_ != nullptr) {
             recognizer_->close_camera();
             recognizer_ = nullptr;
         }
         running_.reset();
+        state_.reset();
     }
 
     [[nodiscard]] bool is_running() const {
@@ -174,6 +250,8 @@ public:
 
 private:
     std::thread thread_;
+    std::thread inference_thread_;
+    std::shared_ptr<State> state_;
     std::shared_ptr<std::atomic<bool>> running_;
     su::recognizer::RecognizerService* recognizer_ = nullptr;
 };

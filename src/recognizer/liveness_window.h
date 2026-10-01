@@ -12,6 +12,8 @@ class LivenessWindow {
 public:
     void reset() { *this = {}; }
 
+    std::size_t sample_count() const { return count_; }
+
     float push(float clarity, float reality) {
         if (!std::isfinite(clarity) || !std::isfinite(reality)
             || clarity < 0.3F || reality < 0.0F || reality > 1.0F) {
