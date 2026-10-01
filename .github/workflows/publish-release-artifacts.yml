@@ -177,7 +177,7 @@ jobs:
           restore-keys: cargo-registry-
 
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: bash packaging/slint/setup-rust.sh
 
       - name: Build Linux release
         run: |
@@ -256,10 +256,8 @@ jobs:
           key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
           restore-keys: cargo-registry-
 
-      - name: Install Rust toolchain
-        run: >-
-          rustup toolchain install stable --profile minimal
-          --target x86_64-pc-windows-gnu
+      - name: Install Rust toolchain for prebuilt Slint
+        run: bash packaging/slint/setup-rust.sh --target x86_64-pc-windows-gnu
 
       - name: Seed prebuilt Slint package
         run: bash packaging/slint/seed-slint-mingw.sh

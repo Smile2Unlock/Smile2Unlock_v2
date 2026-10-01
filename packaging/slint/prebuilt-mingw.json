@@ -1,0 +1,8 @@
+{
+  "version": "v1.17.0",
+  "package_hash": "6a066fdf9ec8401f9a17206d0f1f9f33",
+  "archive_sha256": "c17d310129f3f6f3abce18bc6efcd8b234be51d5e277048663de3f16a47bca03",
+  "rust_toolchain": "1.98.1",
+  "rust_commit": "48a229ceaefd4985c50990b14116b6d856af0985",
+  "archive_name": "slint-mingw-x86_64-v1.17.0-rust-1.98.1.tar.gz"
+}
