@@ -189,6 +189,7 @@ pub struct AttemptMachine {
     next_ms: u64,
     attempts: u32,
     in_flight: bool,
+    retry_allowed: bool,
 }
 
 impl AttemptMachine {
@@ -208,6 +209,7 @@ impl AttemptMachine {
             next_ms: 0,
             attempts: 0,
             in_flight: false,
+            retry_allowed: false,
         }
     }
 
@@ -225,6 +227,21 @@ impl AttemptMachine {
 
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub fn deadline_ms(&self) -> u64 {
+        self.deadline_ms
+    }
+
+    /// Expire every live phase, including a password awaiting serialization.
+    pub fn expire(&mut self, now_ms: u64) -> bool {
+        if self.is_active() && now_ms >= self.deadline_ms {
+            self.phase = Phase::Stopped;
+            self.in_flight = false;
+            true
+        } else {
+            false
+        }
     }
 
     /// SID of the attempt currently in progress, if any.
@@ -259,6 +276,36 @@ impl AttemptMachine {
         if !self.settings.is_automatic() {
             return (self.generation, false);
         }
+        self.start(
+            now_ms,
+            sid,
+            session_id,
+            request_id,
+            self.settings.auto_delay_ms(),
+            true,
+        )
+    }
+
+    /// A click in manual mode runs one capture on the same background worker.
+    pub fn begin_on_demand(
+        &mut self,
+        now_ms: u64,
+        sid: &str,
+        session_id: u32,
+        request_id: u64,
+    ) -> (u64, bool) {
+        self.start(now_ms, sid, session_id, request_id, 0, false)
+    }
+
+    fn start(
+        &mut self,
+        now_ms: u64,
+        sid: &str,
+        session_id: u32,
+        request_id: u64,
+        delay_ms: u64,
+        retry_allowed: bool,
+    ) -> (u64, bool) {
         if self.is_active() && self.sid.as_deref() == Some(sid) {
             return (self.generation, false);
         }
@@ -268,9 +315,10 @@ impl AttemptMachine {
         self.session_id = session_id;
         self.request_id = request_id;
         self.deadline_ms = now_ms.saturating_add(self.settings.timeout_ms());
-        self.next_ms = now_ms.saturating_add(self.settings.auto_delay_ms());
+        self.next_ms = now_ms.saturating_add(delay_ms);
         self.attempts = 0;
         self.in_flight = false;
+        self.retry_allowed = retry_allowed;
         (self.generation, true)
     }
 
@@ -306,6 +354,9 @@ impl AttemptMachine {
 
     /// Ask what to do next. Must be called with the current monotonic time.
     pub fn poll(&mut self, now_ms: u64) -> Poll {
+        if self.expire(now_ms) {
+            return Poll::Finished;
+        }
         match self.phase {
             Phase::Idle | Phase::Submitted | Phase::Stopped => Poll::Idle,
             Phase::Ready => Poll::Ready,
@@ -316,7 +367,7 @@ impl AttemptMachine {
                     return Poll::Finished;
                 }
                 if now_ms < self.next_ms {
-                    return Poll::WaitUntil(self.next_ms);
+                    return Poll::WaitUntil(self.next_ms.min(self.deadline_ms));
                 }
                 if self.attempts >= MAX_ATTEMPTS {
                     self.phase = Phase::Stopped;
@@ -342,15 +393,18 @@ impl AttemptMachine {
 
     /// Record the outcome of the capture identified by `generation`.
     pub fn complete(&mut self, generation: u64, now_ms: u64, outcome: Outcome) -> Completion {
-        if generation != self.generation {
+        if generation != self.generation || self.phase != Phase::Recognizing || !self.in_flight {
             return Completion::Stale;
+        }
+        if self.expire(now_ms) {
+            return Completion::Exhausted;
         }
         self.in_flight = false;
         match outcome {
             Outcome::Success => {
                 // A grant that arrives after the attempt deadline is not
                 // published: the user may have stopped waiting or reselected.
-                if now_ms > self.deadline_ms {
+                if now_ms >= self.deadline_ms {
                     self.phase = Phase::Stopped;
                     return Completion::Exhausted;
                 }
@@ -363,7 +417,8 @@ impl AttemptMachine {
             }
             Outcome::Transient => {
                 let next = now_ms.saturating_add(self.settings.retry_delay_ms());
-                if self.attempts >= MAX_ATTEMPTS || next > self.deadline_ms {
+                if !self.retry_allowed || self.attempts >= MAX_ATTEMPTS || next >= self.deadline_ms
+                {
                     self.phase = Phase::Stopped;
                     Completion::Exhausted
                 } else {
@@ -378,7 +433,8 @@ impl AttemptMachine {
     /// Consume the published grant exactly once. Returns false for a stale
     /// generation or when no grant is ready, so `GetSerialization` can never
     /// serialize the same face grant twice.
-    pub fn take_ready(&mut self, generation: u64) -> bool {
+    pub fn take_ready(&mut self, generation: u64, now_ms: u64) -> bool {
+        self.expire(now_ms);
         if generation == self.generation && self.phase == Phase::Ready {
             self.phase = Phase::Submitted;
             true
@@ -521,9 +577,12 @@ mod tests {
         );
         assert_eq!(machine.phase(), Phase::Ready);
         assert_eq!(machine.poll(4_000), Poll::Ready);
-        assert!(machine.take_ready(generation));
+        assert!(machine.take_ready(generation, 4_000));
         assert_eq!(machine.phase(), Phase::Submitted);
-        assert!(!machine.take_ready(generation), "grant must be single-use");
+        assert!(
+            !machine.take_ready(generation, 4_000),
+            "grant must be single-use"
+        );
         assert_eq!(machine.poll(5_000), Poll::Idle);
     }
 
@@ -616,7 +675,7 @@ mod tests {
                 machine.complete(generation, advance + 1_000, Outcome::Success),
                 Completion::Stale
             );
-            assert!(!machine.take_ready(generation));
+            assert!(!machine.take_ready(generation, 4_000));
             assert_eq!(machine.poll(advance + 2_000), Poll::Idle);
         }
     }
@@ -635,8 +694,8 @@ mod tests {
             Completion::Stale
         );
         assert_eq!(machine.phase(), Phase::InitialDelay);
-        assert!(!machine.take_ready(first));
-        assert!(!machine.take_ready(second));
+        assert!(!machine.take_ready(first, 11_000));
+        assert!(!machine.take_ready(second, 11_000));
     }
 
     #[test]
@@ -651,5 +710,75 @@ mod tests {
         let (next, started) = machine.begin(4_000, "S-1-5-21-1", 1, 2);
         assert!(started);
         assert_ne!(generation, next);
+    }
+
+    #[test]
+    fn long_initial_delay_wakes_at_overall_deadline() {
+        let mut machine = AttemptMachine::with_settings(TriggerSettings::from_values(
+            Some(1),
+            Some(60),
+            Some(1),
+            Some(5),
+        ));
+        machine.begin(0, "S-1-5-21-1", 1, 7);
+        assert_eq!(machine.poll(0), Poll::WaitUntil(5_000));
+        assert_eq!(machine.poll(5_000), Poll::Finished);
+    }
+
+    #[test]
+    fn ready_grant_expires_at_exact_deadline_without_serialization() {
+        let mut machine = machine();
+        let (generation, _) = machine.begin(0, "S-1-5-21-1", 1, 7);
+        let _ = machine.poll(3_000);
+        assert_eq!(
+            machine.complete(generation, 4_000, Outcome::Success),
+            Completion::Accepted
+        );
+        assert_eq!(machine.poll(30_000), Poll::Finished);
+        assert!(!machine.take_ready(generation, 30_000));
+    }
+
+    #[test]
+    fn consuming_ready_checks_time_without_an_intervening_poll() {
+        let mut machine = machine();
+        let (generation, _) = machine.begin(0, "S-1-5-21-1", 1, 7);
+        let _ = machine.poll(3_000);
+        assert_eq!(
+            machine.complete(generation, 4_000, Outcome::Success),
+            Completion::Accepted
+        );
+        assert!(!machine.take_ready(generation, 30_000));
+        assert_eq!(machine.phase(), Phase::Stopped);
+    }
+
+    #[test]
+    fn completion_at_exact_deadline_does_not_publish() {
+        let mut machine = machine();
+        let (generation, _) = machine.begin(0, "S-1-5-21-1", 1, 7);
+        let _ = machine.poll(3_000);
+        assert_eq!(
+            machine.complete(generation, 30_000, Outcome::Success),
+            Completion::Exhausted
+        );
+    }
+
+    #[test]
+    fn on_demand_capture_is_immediate_single_attempt_and_keeps_automatic_budget() {
+        let mut manual = AttemptMachine::new();
+        let (generation, started) = manual.begin_on_demand(0, "S-1-5-21-1", 1, 7);
+        assert!(started);
+        assert!(matches!(manual.poll(0), Poll::Recognize(_)));
+        assert_eq!(
+            manual.complete(generation, 1_000, Outcome::Transient),
+            Completion::Exhausted
+        );
+        let mut automatic = machine();
+        let (generation, _) = automatic.begin(0, "S-1-5-21-1", 1, 7);
+        assert_eq!(
+            automatic.begin_on_demand(500, "S-1-5-21-1", 1, 8),
+            (generation, false)
+        );
+        assert_eq!(automatic.deadline_ms(), 30_000);
+        assert_eq!(automatic.poll(500), Poll::WaitUntil(3_000));
     }
 }

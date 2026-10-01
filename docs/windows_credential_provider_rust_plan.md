@@ -8,7 +8,7 @@
 
 ## 当前状态
 
-- 自动识别触发、延迟和超时尚未接入 CP；相关 UI 控件暂不展示。具体缺口、状态机、COM 通知与取消方案见 [自动识别设计](windows_automatic_recognition.md)。下述已完成阶段不代表自动模式已实现。
+- 自动识别触发、延迟、重试和超时已接入 CP、认证服务与 GUI；手动人脸提交也通过后台工作线程执行。凭据过期、用户切换、稳定 COM 身份和服务错误分类已有回归测试，真实 Windows 安全桌面验收仍待完成，见 [自动识别设计](windows_automatic_recognition.md)。
 - Phase 0-3 已完成，纯 Rust `Smile2UnlockCredentialProvider.dll` 已替代旧 C++ Provider 并进入 Xmake/Windows 打包主线。
 - LocalSystem 服务统一持有 Windows password store 和 per-SID face profile store；主密钥使用 TPM CNG，无法使用 TPM 时回退 machine DPAPI。
 - Credential Provider 通过命名管道请求一次认证。服务在请求指定的 Windows 会话启动 `Smile2UnlockRecognitionAgent.exe`，取得活体与 embedding 后在服务端比对档案；GUI UDP 识别路径已删除。

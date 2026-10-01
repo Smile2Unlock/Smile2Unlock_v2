@@ -3,6 +3,7 @@
 #include "client_disconnect_watcher.h"
 #include "logon_secret_protocol.h"
 #include "recognition_agent_protocol.h"
+#include "recognition_result.h"
 #include "sid_rate_limiter.h"
 
 #include <aclapi.h>
@@ -926,24 +927,17 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
 
     auto exit_code = DWORD{STILL_ACTIVE};
     if (WaitForSingleObject(process.hProcess, 3000) != WAIT_OBJECT_0
-        || !GetExitCodeProcess(process.hProcess, &exit_code)
-        || exit_code != ERROR_SUCCESS) {
+        || !GetExitCodeProcess(process.hProcess, &exit_code)) {
         terminate_agent(ERROR_GEN_FAILURE);
         SecureZeroMemory(&request, sizeof(request));
         SecureZeroMemory(&response, sizeof(response));
         return std::unexpected(ERROR_GEN_FAILURE);
     }
-    if (response.magic != kResponseMagic
-        || response.version != kVersion
-        || response.nonce != request.nonce
-        || response.status != AgentStatus::kOk
-        || response.feature_count == 0
-        || response.feature_count > response.feature.size()
-        || !std::isfinite(response.liveness_score)
-        || response.liveness_score < request.liveness_threshold) {
+    if (const auto error = validate_agent_result(request, response, exit_code);
+        error != ERROR_SUCCESS) {
         SecureZeroMemory(&request, sizeof(request));
         SecureZeroMemory(&response, sizeof(response));
-        return std::unexpected(ERROR_ACCESS_DENIED);
+        return std::unexpected(error);
     }
     auto feature = std::vector<float>(
         response.feature.begin(), response.feature.begin() + response.feature_count);
@@ -1076,7 +1070,7 @@ Status process_request(
         const auto feature = run_recognition_agent(
             stop_event, client_gone, request.logon_session_id, settings);
         if (!feature) {
-            return Status::kAuthenticationFailed;
+            return recognition_error_status(feature.error());
         }
         const auto source = embedding_source(*feature);
         const auto lock = std::lock_guard{state_mutex};

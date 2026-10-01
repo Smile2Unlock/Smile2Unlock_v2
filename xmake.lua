@@ -767,8 +767,19 @@ target("su_windows_request_worker_pool_test")
     add_tests("default")
     on_test(wine_on_test)
 
--- Windows-only: the watcher exercises Win32 overlapped named pipes.
+-- Windows-only broker result validation and overlapped pipe tests.
 if is_plat("windows", "mingw") then
+target("su_windows_recognition_result_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/windows/recognition_result.cpp")
+    add_includedirs("src/platform/windows/auth_service")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
 target("su_windows_client_disconnect_watcher_test")
     set_default(false)
     apply_cpp_target("binary")
