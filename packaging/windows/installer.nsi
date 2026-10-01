@@ -43,24 +43,48 @@ RequestExecutionLevel admin
 ; The product LICENSE (MIT) is shown as-is; THIRD-PARTY-NOTICES.md and the
 ; full license texts are installed next to the binaries and shown in the
 ; details log.
-!define MUI_LICENSEPAGE_BUTTON "$(^InstallBtn)"
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_FUNCTION LaunchApp
-!define MUI_FINISHPAGE_RUN_TEXT "启动 Smile2Unlock / Start Smile2Unlock"
-
 !insertmacro MUI_PAGE_LICENSE "${STAGE_DIR}\Smile2Unlock\LICENSE"
+!define MUI_PAGE_HEADER_TEXT "$(ShortcutsTitle)"
+!define MUI_PAGE_HEADER_SUBTEXT "$(ShortcutsSubtitle)"
+!define MUI_COMPONENTSPAGE_TEXT_TOP "$(ShortcutsDescription)"
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN
+!define MUI_FINISHPAGE_RUN_FUNCTION LaunchApp
+!define MUI_FINISHPAGE_RUN_TEXT "$(LaunchAppText)"
+!insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
+LangString ShortcutsTitle ${LANG_SIMPCHINESE} "快捷方式"
+LangString ShortcutsTitle ${LANG_ENGLISH} "Shortcuts"
+LangString ShortcutsSubtitle ${LANG_SIMPCHINESE} "选择要创建的快捷方式。"
+LangString ShortcutsSubtitle ${LANG_ENGLISH} "Choose which shortcuts to create."
+LangString ShortcutsDescription ${LANG_SIMPCHINESE} "桌面和开始菜单快捷方式均为可选。Smile2Unlock 主程序必须安装。"
+LangString ShortcutsDescription ${LANG_ENGLISH} "Desktop and Start Menu shortcuts are optional. Smile2Unlock is required."
+LangString DesktopShortcutText ${LANG_SIMPCHINESE} "桌面快捷方式"
+LangString DesktopShortcutText ${LANG_ENGLISH} "Desktop shortcut"
+LangString StartMenuShortcutText ${LANG_SIMPCHINESE} "开始菜单快捷方式"
+LangString StartMenuShortcutText ${LANG_ENGLISH} "Start Menu shortcuts"
+LangString MainDescription ${LANG_SIMPCHINESE} "安装 Smile2Unlock 主程序与身份认证组件。"
+LangString MainDescription ${LANG_ENGLISH} "Install Smile2Unlock and its authentication components."
+LangString DesktopDescription ${LANG_SIMPCHINESE} "在所有用户的桌面上创建 Smile2Unlock 快捷方式。"
+LangString DesktopDescription ${LANG_ENGLISH} "Create a Smile2Unlock shortcut on the desktop for all users."
+LangString StartMenuDescription ${LANG_SIMPCHINESE} "在所有用户的开始菜单中添加 Smile2Unlock 和卸载快捷方式。"
+LangString StartMenuDescription ${LANG_ENGLISH} "Add Smile2Unlock and uninstall shortcuts to the Start Menu for all users."
+LangString LaunchAppText ${LANG_SIMPCHINESE} "打开 Smile2Unlock"
+LangString LaunchAppText ${LANG_ENGLISH} "Open Smile2Unlock"
+
 Function LaunchApp
+    SetOutPath "$INSTDIR\bin"
     Exec '"$INSTDIR\bin\Smile2Unlock.exe"'
 FunctionEnd
 
 Section "Smile2Unlock" SecMain
+    SectionIn RO
     ; Per-machine install: shortcuts and the uninstall entry go to the
     ; all-users locations, not the installing account's profile.
     SetShellVarContext all
@@ -126,13 +150,12 @@ Section "Smile2Unlock" SecMain
         Abort
     ${EndIf}
 
-    CreateDirectory "$SMPROGRAMS\Smile2Unlock"
-    CreateShortcut "$SMPROGRAMS\Smile2Unlock\Smile2Unlock.lnk" \
-        "$INSTDIR\bin\Smile2Unlock.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
-    CreateShortcut "$SMPROGRAMS\Smile2Unlock\Uninstall Smile2Unlock.lnk" \
-        "$INSTDIR\Uninstall.exe"
-    CreateShortcut "$DESKTOP\Smile2Unlock.lnk" \
-        "$INSTDIR\bin\Smile2Unlock.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
+    ; Remove only our known shortcuts before optional sections recreate the
+    ; selected ones. This also applies deselections during an upgrade.
+    Delete "$DESKTOP\Smile2Unlock.lnk"
+    Delete "$SMPROGRAMS\Smile2Unlock\Smile2Unlock.lnk"
+    Delete "$SMPROGRAMS\Smile2Unlock\Uninstall Smile2Unlock.lnk"
+    RMDir "$SMPROGRAMS\Smile2Unlock"
 
     SetRegView 64
     WriteRegStr HKLM "Software\Smile2Unlock" "InstallLocation" "$INSTDIR"
@@ -149,8 +172,34 @@ Section "Smile2Unlock" SecMain
     WriteUninstaller "$INSTDIR\Uninstall.exe"
 SectionEnd
 
+; NSIS preserves optional section choices when navigating Back/Next.
+; Desktop is opt-in; the Start Menu remains selected by default.
+Section /o "$(DesktopShortcutText)" SecDesktop
+    SetShellVarContext all
+    SetOutPath "$INSTDIR\bin"
+    CreateShortcut "$DESKTOP\Smile2Unlock.lnk" \
+        "$INSTDIR\bin\Smile2Unlock.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
+SectionEnd
+
+Section "$(StartMenuShortcutText)" SecStartMenu
+    SetShellVarContext all
+    SetOutPath "$INSTDIR\bin"
+    CreateDirectory "$SMPROGRAMS\Smile2Unlock"
+    CreateShortcut "$SMPROGRAMS\Smile2Unlock\Smile2Unlock.lnk" \
+        "$INSTDIR\bin\Smile2Unlock.exe" "" "$INSTDIR\bin\Smile2Unlock.ico"
+    CreateShortcut "$SMPROGRAMS\Smile2Unlock\Uninstall Smile2Unlock.lnk" \
+        "$INSTDIR\Uninstall.exe"
+SectionEnd
+
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+    !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "$(MainDescription)"
+    !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "$(DesktopDescription)"
+    !insertmacro MUI_DESCRIPTION_TEXT ${SecStartMenu} "$(StartMenuDescription)"
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
+
 Section "Uninstall"
     SetShellVarContext all
+    SetOutPath "$TEMP"
     ; Order matters: the helper must still exist when we unregister the
     ; credential provider, and the service must be stopped before its
     ; files are deleted.

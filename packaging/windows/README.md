@@ -66,6 +66,16 @@ Use `--stage-only` to inspect `build/package-stage/windows/Smile2Unlock`
 without creating an archive. Packaging does not modify tracked repository
 files; release metadata is embedded in the archive as `release-info.json`.
 
+## Installer options
+
+The NSIS installer verifies the signed package and deploys the required
+authentication components. Its Shortcuts page offers independent desktop
+(off by default) and Start Menu (on by default) choices for all users. Upgrades
+apply the current choices and remove only this application's old shortcuts.
+The successful completion page offers **Open Smile2Unlock**, checked by default;
+unchecking it finishes without opening the application. Silent installs do not
+show this page or launch the GUI.
+
 ## Unicode TEMP regression
 
 The helper and GUI use UTF-16 paths for `su_deploy_result.json`. The helper's
