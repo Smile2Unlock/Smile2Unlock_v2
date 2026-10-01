@@ -6,6 +6,19 @@ Build and verify the Windows zip from existing MinGW release artifacts:
 packaging/windows/package.sh
 ```
 
+The Windows product build stages SeetaFace DLLs from the SDK package it
+actually links, including TenniS CPU variants. Packaging prefers these files.
+When packaging an older build without staged runtimes, `SEETAFACE_PACKAGE_ROOT`
+can select one installed SDK package; only its installed `bin/x64` and
+`lib/x64` DLLs are searched. Source/build-tree copies are excluded, and
+multiple eligible cached versions still require an explicit selection.
+
+CI seeds the MinGW Slint SDK with `bash packaging/slint/seed-slint-mingw.sh`
+before configuration. The script checks the pinned archive digest and exact
+Xmake package directory, library, headers and host compiler. Update the
+prebuilt release, digest and package identity together when changing its
+version or build configuration.
+
 Release packages are fail-closed: provide a PEM code-signing certificate and
 private key with `--sign-certificate` / `--sign-key` (or the matching
 `WINDOWS_SIGN_CERTIFICATE` / `WINDOWS_SIGN_KEY` variables). Every PE payload
@@ -93,9 +106,9 @@ xmake test su_windows_deploy_helper_result_test/default -v
 
 It launches the real helper with ASCII and Chinese TEMP/TMP directories,
 checks its success/error JSON, and blocks result-file creation to check that
-operation exit codes are preserved. Release CI also runs this executable with
-the freshly signed package's helper and `--signed-package`, exercising a
-successful `--verify` in both directories and with blocked JSON output.
+operation exit codes are preserved. The manual package CI job runs the freshly
+signed package's helper with `--verify`; the focused Unicode regression remains
+available for local runs with `--signed-package`.
 
 For existing 2.3.0 installers affected by this bug, redirect TEMP and TMP to an
 existing, writable ASCII-only directory in the shell launching the installer.

@@ -85,8 +85,6 @@ done
 
 xmake_home="${XMAKE_GLOBALDIR:-${HOME}/.xmake}"
 seeta_package_root="${SEETAFACE_PACKAGE_ROOT:-${xmake_home}/packages/s/seetaface6open}"
-find "$seeta_package_root" -type f -iname 'libSeetaFaceDetector600.dll' -print -quit \
-    | grep -q . || package_die "cannot locate the MinGW SeetaFace package"
 
 mingw_bin="${MINGW_BIN:-/usr/x86_64-w64-mingw32/bin}"
 package_require_directory "$mingw_bin"
@@ -125,7 +123,12 @@ find_runtime_dll() {
     fi
     if [[ -z "$candidate" ]]; then
         local candidates=()
-        mapfile -t candidates < <(find "$seeta_package_root" -type f -iname "$name")
+        # Only installed x64 runtimes are eligible. SDK source/build trees
+        # also contain copies, even with a single installed package.
+        if [[ -d "$seeta_package_root" ]]; then
+            mapfile -t candidates < <(find "$seeta_package_root" -type d -name src -prune -o \
+                -type f \( -path '*/bin/x64/*' -o -path '*/lib/x64/*' \) -iname "$name" -print)
+        fi
         if ((${#candidates[@]} > 1)); then
             package_die "ambiguous SDK DLL $name; stage the exact build DLLs or set SEETAFACE_PACKAGE_ROOT"
         fi
