@@ -401,6 +401,31 @@ target("su_recognizer")
             -- native window (title bar / taskbar) at startup via WM_SETICON.
             if is_plat("windows", "mingw") then
                 os.cp(path.join(os.projectdir(), "assets", "icons", "Smile2Unlock.ico"), target:targetdir())
+                if has_config("with_seetaface") then
+                    -- Stage runtime DLLs from the exact package used to link
+                    -- this build. Source trees and older cache entries can
+                    -- contain different DLLs with the same filenames.
+                    local package = assert(target:dep("su_recognizer"):pkg("seetaface6open"))
+                    local archdir = is_arch("x86", "i386") and "x86" or "x64"
+                    local root = package:installdir()
+                    local runtime_dlls = {}
+                    -- Upstream installs most runtimes in bin, but the face
+                    -- detector DLL is installed alongside its import library.
+                    for _, directory in ipairs({"bin", "lib"}) do
+                        for _, dll in ipairs(os.files(path.join(root, directory, archdir, "*.dll"))) do
+                            local key = path.filename(dll):lower()
+                            local previous = runtime_dlls[key]
+                            assert(not previous or hash.sha256(previous) == hash.sha256(dll),
+                                "conflicting installed SeetaFace DLL: " .. key)
+                            runtime_dlls[key] = dll
+                        end
+                    end
+                    assert(runtime_dlls["libseetafacedetector600.dll"] or runtime_dlls["seetafacedetector600.dll"],
+                        "SeetaFace runtime DLLs not found in " .. root)
+                    for _, dll in pairs(runtime_dlls) do
+                        os.cp(dll, target:targetdir())
+                    end
+                end
             end
         end)
     else
