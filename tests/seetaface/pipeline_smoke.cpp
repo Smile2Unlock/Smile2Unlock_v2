@@ -7,12 +7,16 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 #include <limits>
 #include "recognizer/liveness_window.h"
+#include <seeta/FaceAntiSpoofing.h>
+#include <seeta/FaceLandmarker.h>
+#include <seeta/FaceRecognizer.h>
 
 import su.core.types;
 import su.recognizer.types;
@@ -137,6 +141,53 @@ int main() {
     const auto first = extract_required(backend, image_a, /*liveness_enabled=*/true);
     const auto second = extract_required(backend, image_a, /*liveness_enabled=*/true);
 
+    // Compare our RGB boundary with the SDK's documented BGR input, using
+    // the same face box. Self-comparison alone cannot catch swapped channels.
+    const auto sdk_reference = [&](const TestImage& reference_image,
+                                   const su::recognizer::RecognitionResult& reference_result) {
+        auto bgr = std::vector<unsigned char>(reference_image.bytes.size());
+        for (std::size_t i = 0; i < bgr.size(); i += 3) {
+            bgr[i] = std::to_integer<unsigned char>(reference_image.bytes[i + 2]);
+            bgr[i + 1] = std::to_integer<unsigned char>(reference_image.bytes[i + 1]);
+            bgr[i + 2] = std::to_integer<unsigned char>(reference_image.bytes[i]);
+        }
+        const auto sdk_image = SeetaImageData{reference_image.width, reference_image.height, 3, bgr.data()};
+        const auto box = *reference_result.face_box;
+        const auto sdk_face = SeetaRect{box.x, box.y, box.width, box.height};
+        auto landmark_setting = seeta::ModelSetting{};
+        landmark_setting.append(model_paths->landmarker.string());
+        auto sdk_landmarker = seeta::FaceLandmarker(landmark_setting);
+        const auto sdk_points = sdk_landmarker.mark(sdk_image, sdk_face);
+        auto feature_setting = seeta::ModelSetting{};
+        feature_setting.append(model_paths->recognizer.string());
+        auto sdk_recognizer = seeta::FaceRecognizer(feature_setting);
+        auto sdk_feature = std::vector<float>(sdk_recognizer.GetExtractFeatureSize());
+        assert(sdk_recognizer.Extract(sdk_image, sdk_points.data(), sdk_feature.data()));
+        auto sdk_fas_setting = seeta::ModelSetting{};
+        sdk_fas_setting.append(model_paths->anti_spoofing_first.string());
+        sdk_fas_setting.append(model_paths->anti_spoofing_second.string());
+        auto sdk_fas = seeta::FaceAntiSpoofing(sdk_fas_setting);
+        sdk_fas.SetThreshold(0.3F, 0.8F);
+        (void)sdk_fas.Predict(sdk_image, sdk_face, sdk_points.data());
+        float sdk_clarity = 0.0F, sdk_reality = 0.0F;
+        sdk_fas.GetPreFrameScore(&sdk_clarity, &sdk_reality);
+        auto expected_window = su::recognizer::detail::LivenessWindow{};
+        auto final_score = 0.0F;
+        backend.reset_liveness();
+        for (auto i = 0; i < 10; ++i) {
+            const auto predicted = backend.predict_liveness(su::recognizer::ImageView{
+                reference_image.width, reference_image.height, 3, reference_image.bytes}, true);
+            assert(predicted && predicted->has_face);
+            final_score = predicted->liveness_score;
+            assert(std::abs(predicted->liveness_score
+                - expected_window.push(sdk_clarity, sdk_reality)) < 1e-4F);
+        }
+        std::cout << "PASS: SDK BGR anti-spoofing agreement clarity=" << sdk_clarity
+                  << " reality=" << sdk_reality << " ten-frame score=" << final_score << '\n';
+        return sdk_feature;
+    };
+    const auto sdk_feature = sdk_reference(image_a, first);
+
     // Verify that extract with liveness_enabled=false skips the anti-spoofing
     // Predict and returns liveness_score=1.0 (passing) with a valid face box.
     const auto no_liveness = backend.extract(su::recognizer::ImageView{
@@ -151,6 +202,9 @@ int main() {
     assert(std::isfinite(no_liveness->liveness_score));
 
     auto recognizer = su::recognizer::RecognizerService{};
+    const auto sdk_agreement = recognizer.compare_features(first.feature, sdk_feature);
+    assert(sdk_agreement && *sdk_agreement > 0.9999F);
+    std::cout << "PASS: SDK BGR embedding agreement cosine=" << *sdk_agreement << '\n';
     const auto self_score = recognizer.compare_features(first.feature, second.feature);
     assert(self_score.has_value());
     assert(*self_score > 0.99F);
@@ -245,6 +299,9 @@ int main() {
         if (other.has_value() && other->has_face) {
             assert(!other->feature.empty());
             assert(std::isfinite(other->liveness_score));
+            const auto other_sdk = sdk_reference(image_b, *other);
+            const auto agreement = recognizer.compare_features(other->feature, other_sdk);
+            assert(agreement && *agreement > 0.9999F);
         }
     }
 

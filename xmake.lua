@@ -233,6 +233,18 @@ if has_config("with_zig") then
         end)
 end
 
+target("su_capture_pipeline_test")
+    set_version(_su_version)
+    apply_cpp_target("binary")
+    add_files("tests/recognizer/capture_pipeline.cpp")
+    if not is_plat("linux") then
+        -- Compile the actual MF backend even in the SDK-free Windows PR job.
+        add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
 target("su_recognizer")
     set_version(_su_version)
     apply_cpp_target("static")

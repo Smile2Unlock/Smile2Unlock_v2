@@ -40,7 +40,8 @@ struct RecognitionResult {
 };
 
 // Non-owning view over decoded image pixels. Channels must be 1, 3, or 4 to be
-// accepted by the SeetaFace backend.
+// accepted by the SeetaFace backend. Color pixels are interleaved RGB/RGBA;
+// the backend converts to the SDK's BGR order internally.
 struct ImageView {
     int width = 0;
     int height = 0;

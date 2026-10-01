@@ -12,6 +12,7 @@ module;
 #endif
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -214,22 +215,18 @@ public:
             reset_liveness_locked();
         }
 
-        // The SDK requires three channels even though ImageView also accepts
-        // grayscale and RGBA. Keep the public RGB channel ordering.
+        // ImageView is RGB/RGBA, but every SeetaFace model expects BGR.
+        // Swap red and blue only at the SDK boundary; preview stays RGB.
         const auto pixels = static_cast<std::size_t>(image.width) * image.height;
         if (pixels > std::numeric_limits<std::size_t>::max() / 3) {
             reset_liveness_locked();
             return std::unexpected(RecognizerError::kInvalidImage);
         }
         auto owned_bytes = std::vector<unsigned char>(pixels * 3);
-        if (image.channels == 3) {
-            std::memcpy(owned_bytes.data(), image.bytes.data(), owned_bytes.size());
-        } else {
-            for (auto i = std::size_t{}; i < pixels; ++i) {
-                for (auto channel = 0; channel < 3; ++channel) {
-                    owned_bytes[i * 3 + channel] = std::to_integer<unsigned char>(
-                        image.bytes[i * image.channels + (image.channels == 1 ? 0 : channel)]);
-                }
+        for (auto i = std::size_t{}; i < pixels; ++i) {
+            for (auto channel = 0; channel < 3; ++channel) {
+                owned_bytes[i * 3 + channel] = std::to_integer<unsigned char>(
+                    image.bytes[i * image.channels + (image.channels == 1 ? 0 : 2 - channel)]);
             }
         }
         auto seeta_image = SeetaImageData{
@@ -328,12 +325,18 @@ public:
             auto reality = 0.0F;
             anti_spoofing_->GetPreFrameScore(&clarity, &reality);
             liveness_score = liveness_window_.push(clarity, reality);
-            // Log only on status transitions to keep stderr quiet during
-            // stable REAL/SPOOF stretches (which may last hundreds of frames).
-            if (liveness_status != prev_liveness_status_) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto passes = liveness_score > 0.0F;
+            // Include the local window's verdict and progress, not only the
+            // SDK's single-frame status (REAL can still be warming up).
+            if (liveness_status != prev_liveness_status_
+                || passes != prev_liveness_passes_ || now >= next_liveness_log_) {
                 prev_liveness_status_ = liveness_status;
-                std::println(stderr, "[seeta] liveness status={} clarity={:.3f} reality={:.3f} score={:.3f}",
-                             liveness_status_name(liveness_status), clarity, reality, liveness_score);
+                prev_liveness_passes_ = passes;
+                next_liveness_log_ = now + std::chrono::seconds{3};
+                std::println(stderr, "[seeta] liveness status={} clarity={:.3f} reality={:.3f} score={:.3f} frames={}/10",
+                    liveness_status_name(liveness_status), clarity, reality, liveness_score,
+                    liveness_window_.sample_count());
             }
         }
 
@@ -389,6 +392,8 @@ private:
             anti_spoofing_->ResetVideo();
         }
         prev_liveness_status_ = seeta::FaceAntiSpoofing::DETECTING;
+        prev_liveness_passes_ = false;
+        next_liveness_log_ = {};
     }
 
     static seeta::ModelSetting setting_for(const std::filesystem::path& path) {
@@ -412,6 +417,8 @@ private:
     mutable std::mutex mutex_;
     mutable detail::LivenessWindow liveness_window_;
     mutable seeta::FaceAntiSpoofing::Status prev_liveness_status_ = seeta::FaceAntiSpoofing::DETECTING;
+    mutable bool prev_liveness_passes_ = false;
+    mutable std::chrono::steady_clock::time_point next_liveness_log_{};
 };
 
 #else
