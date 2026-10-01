@@ -10,6 +10,7 @@
 
 use core::cell::{Cell, RefCell};
 use core::ptr;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use windows::Win32::System::Com::{CoTaskMemAlloc, CoTaskMemFree};
@@ -37,6 +38,7 @@ pub struct Provider {
     /// valid SID from ICredentialProviderCredential2::GetUserSid for every
     /// tile or LogonUI discards it.
     user_sids: RefCell<Vec<String>>,
+    credentials: RefCell<HashMap<String, ICredentialProviderCredential>>,
     /// Process-wide automatic-recognition worker shared by every tile.
     runtime: Arc<AutoRuntime<PipeRecognitionTransport>>,
 }
@@ -47,6 +49,7 @@ impl Provider {
             usage_scenario: Cell::new(None),
             advised_context: Cell::new(0),
             user_sids: RefCell::new(Vec::new()),
+            credentials: RefCell::new(HashMap::new()),
             runtime: AutoRuntime::new(PipeRecognitionTransport, Box::new(MonotonicClock)),
         }
     }
@@ -81,6 +84,13 @@ impl Provider {
     }
 }
 
+impl Drop for Provider {
+    fn drop(&mut self) {
+        self.runtime.shutdown();
+        self.runtime.clear_notifier();
+    }
+}
+
 impl ICredentialProvider_Impl for Provider_Impl {
     fn SetUsageScenario(
         &self,
@@ -92,6 +102,10 @@ impl ICredentialProvider_Impl for Provider_Impl {
             // CREDUI/change-password/remote flows are out of scope for v1.
             crate::log::cp_log("Provider::SetUsageScenario: unsupported -> E_NOTIMPL");
             return Err(Error::from_hresult(crate::E_NOTIMPL));
+        }
+        if self.usage_scenario.get() != Some(cpus.0) {
+            self.runtime.cancel();
+            self.credentials.borrow_mut().clear();
         }
         self.usage_scenario.set(Some(cpus.0));
         Ok(())
@@ -218,12 +232,19 @@ impl ICredentialProvider_Impl for Provider_Impl {
         // once, and a manual password tile is unaffected.
         let user_sids = self.user_sids.borrow();
         let ready_sid = self.runtime.ready_sid();
-        let default_index = ready_sid
+        let ready_index = ready_sid
             .as_ref()
-            .and_then(|sid| user_sids.iter().position(|candidate| candidate == sid))
+            .and_then(|sid| user_sids.iter().position(|candidate| candidate == sid));
+        let selected_sid = self.runtime.selected_sid();
+        let default_index = ready_index
+            .or_else(|| {
+                selected_sid
+                    .as_ref()
+                    .and_then(|sid| user_sids.iter().position(|candidate| candidate == sid))
+            })
             .map(|index| index as u32)
             .unwrap_or(0);
-        let autologon = ready_sid.is_some();
+        let autologon = ready_index.is_some();
         let user_count = user_sids.len();
         drop(user_sids);
         if !pdwcount.is_null() {
@@ -244,19 +265,26 @@ impl ICredentialProvider_Impl for Provider_Impl {
 
     fn GetCredentialAt(&self, dwindex: u32) -> windows_core::Result<ICredentialProviderCredential> {
         crate::log::cp_log(&format!("Provider::GetCredentialAt({})", dwindex));
-        let user_sid = self.user_sids.borrow().get(dwindex as usize).cloned();
-        if user_sid.is_none() {
-            return Err(Error::from_hresult(crate::E_INVALIDARG));
+        let sid = self
+            .user_sids
+            .borrow()
+            .get(dwindex as usize)
+            .cloned()
+            .ok_or_else(|| Error::from_hresult(crate::E_INVALIDARG))?;
+        if let Some(credential) = self.credentials.borrow().get(&sid) {
+            return Ok(credential.clone());
         }
-        // No diagnostic method calls here: invoking SetSelected during
-        // enumeration would start an automatic recognition attempt before
-        // LogonUI has actually selected the tile.
+        // Preserve COM identity, typed password and broker rejection state
+        // across CredentialsChanged within this user-array generation.
         let credential: ICredentialProviderCredential = Credential::new(
             self.usage_scenario.get().unwrap_or(0),
-            user_sid,
+            Some(sid.clone()),
             Arc::clone(&self.runtime),
         )
         .into();
+        self.credentials
+            .borrow_mut()
+            .insert(sid, credential.clone());
         Ok(credential)
     }
 }
@@ -266,6 +294,7 @@ impl ICredentialProviderSetUserArray_Impl for Provider_Impl {
         crate::log::cp_log("Provider::SetUserArray");
         // A new user array invalidates every tile that referenced the old one.
         self.runtime.cancel();
+        self.credentials.borrow_mut().clear();
         // V2 credential providers must associate each tile with a valid user
         // SID. Capture every enumerated user so multi-user logon screens get
         // one tile per account.
@@ -334,5 +363,68 @@ mod tests {
         let object = object_with_users(&["S-1-5-21-1"]);
         let provider = object.to_interface::<ICredentialProvider>();
         assert!(unsafe { provider.GetCredentialAt(1) }.is_err());
+    }
+
+    #[test]
+    fn reenumeration_reuses_com_identity_and_typed_password() {
+        use windows_core::{IUnknown, Interface, PCWSTR};
+        let object = object_with_users(&["S-1-5-21-1"]);
+        let provider = object.to_interface::<ICredentialProvider>();
+        let first = unsafe { provider.GetCredentialAt(0) }.unwrap();
+        let password: Vec<u16> = "audit-password".encode_utf16().chain(Some(0)).collect();
+        unsafe { first.SetStringValue(3, PCWSTR(password.as_ptr())) }.unwrap();
+        let second = unsafe { provider.GetCredentialAt(0) }.unwrap();
+        assert_eq!(
+            first.cast::<IUnknown>().unwrap().as_raw(),
+            second.cast::<IUnknown>().unwrap().as_raw()
+        );
+        // Re-enumeration does not start work or clear the cached instance.
+        assert_eq!(object.credentials.borrow().len(), 1);
+        assert_eq!(object.runtime.phase(), Phase::Idle);
+    }
+
+    #[test]
+    fn old_tile_unadvise_does_not_cancel_another_user() {
+        let object = object_with_users(&["S-1-5-21-1", "S-1-5-21-2"]);
+        let provider = object.to_interface::<ICredentialProvider>();
+        let old = unsafe { provider.GetCredentialAt(0) }.unwrap();
+        object.runtime.select_owned(
+            u64::MAX,
+            "S-1-5-21-2",
+            1,
+            7,
+            crate::TriggerSettings::from_values(Some(1), Some(60), Some(1), Some(600)),
+        );
+        unsafe { old.UnAdvise() }.unwrap();
+        unsafe { old.SetDeselected() }.unwrap();
+        assert_eq!(object.runtime.phase(), Phase::InitialDelay);
+        object.runtime.shutdown();
+    }
+
+    #[test]
+    fn user_array_replacement_invalidates_cache_and_old_callbacks() {
+        use windows_core::{IUnknown, Interface};
+        let object = object_with_users(&["S-1-5-21-1"]);
+        let provider = object.to_interface::<ICredentialProvider>();
+        let first = unsafe { provider.GetCredentialAt(0) }.unwrap();
+        let user_provider = object.to_interface::<ICredentialProviderSetUserArray>();
+        unsafe { user_provider.SetUserArray(None) }.unwrap();
+        assert!(object.credentials.borrow().is_empty());
+        object.user_sids.borrow_mut().push("S-1-5-21-1".to_owned());
+        let second = unsafe { provider.GetCredentialAt(0) }.unwrap();
+        assert_ne!(
+            first.cast::<IUnknown>().unwrap().as_raw(),
+            second.cast::<IUnknown>().unwrap().as_raw()
+        );
+        object.runtime.select_owned(
+            u64::MAX,
+            "S-1-5-21-1",
+            1,
+            7,
+            crate::TriggerSettings::from_values(Some(1), Some(60), Some(1), Some(600)),
+        );
+        unsafe { first.UnAdvise() }.unwrap();
+        assert_eq!(object.runtime.phase(), Phase::InitialDelay);
+        object.runtime.shutdown();
     }
 }

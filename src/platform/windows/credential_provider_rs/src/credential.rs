@@ -7,6 +7,9 @@
 
 use core::cell::{Cell, RefCell};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Graphics::Gdi::HBITMAP;
@@ -31,6 +34,8 @@ use crate::fields::{self, FieldId};
     ICredentialProviderCredentialWithFieldOptions
 )]
 pub struct Credential {
+    /// Unique even when a replaced user array contains the same SID.
+    owner: u64,
     /// upadvisecontext from Advise; kept so Phase 3 can push events.
     advised: Cell<bool>,
     /// usage scenario captured at creation (CPUS_LOGON/CPUS_UNLOCK_WORKSTATION).
@@ -42,6 +47,7 @@ pub struct Credential {
     serialized: Cell<bool>,
     broker_request: Cell<Option<(u64, u32)>>,
     broker_password_invalid: Cell<bool>,
+    auto_suppressed: Cell<bool>,
     /// SID of the user this tile is associated with (V2 CP requirement).
     user_sid: RefCell<Option<String>>,
     /// Password entered into the tile. A non-empty value uses the normal
@@ -62,12 +68,14 @@ impl Credential {
             scenario, user_sid
         ));
         Self {
+            owner: NEXT_OWNER.fetch_add(1, Ordering::Relaxed),
             advised: Cell::new(false),
             scenario: Cell::new(scenario),
             stale: Cell::new(false),
             serialized: Cell::new(false),
             broker_request: Cell::new(None),
             broker_password_invalid: Cell::new(false),
+            auto_suppressed: Cell::new(false),
             user_sid: RefCell::new(user_sid),
             password: RefCell::new(Vec::new()),
             runtime,
@@ -77,7 +85,7 @@ impl Credential {
     /// Invalidate any in-flight automatic attempt for this tile. A late result
     /// is discarded by the runtime and never reaches LogonUI.
     fn cancel_auto(&self) {
-        self.runtime.cancel();
+        self.runtime.cancel_owned(self.owner);
     }
 
     /// Convert a raw field id to a FieldId, returning E_INVALIDARG if out of range.
@@ -109,6 +117,7 @@ impl Credential {
 
 impl Drop for Credential {
     fn drop(&mut self) {
+        self.runtime.deselect_owned(self.owner);
         let mut password = self.password.borrow_mut();
         crate::pipe_client::secure_clear(&mut password);
         password.clear();
@@ -142,28 +151,32 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     fn UnAdvise(&self) -> windows_core::Result<()> {
         crate::log::cp_log("Credential::UnAdvise");
         self.advised.set(false);
-        self.cancel_auto();
+        self.runtime.deselect_owned(self.owner);
         Ok(())
     }
 
     fn SetSelected(&self) -> windows_core::Result<BOOL> {
         crate::log::cp_log("Credential::SetSelected");
-        // Automatic mode starts one face attempt per selection. Manual mode
-        // does nothing here; the user clicks submit or types a password.
         if let Some(sid) = self.user_sid.borrow().as_ref().cloned() {
-            let settings = crate::auto_runtime::read_trigger_settings(&sid);
-            self.runtime.set_settings(settings);
-            if settings.is_automatic() {
-                let session_id = crate::pipe_client::current_session_id();
-                let request_id = crate::pipe_client::next_request_id();
-                let generation = self.runtime.select(&sid, session_id, request_id);
-                crate::log::cp_log(&format!(
-                    "Credential::SetSelected auto attempt generation={} delay_ms={} timeout_ms={}",
-                    generation,
-                    settings.auto_delay_ms(),
-                    settings.timeout_ms()
-                ));
+            let mut settings = crate::auto_runtime::read_trigger_settings(&sid);
+            // Enumeration/reselection must not override a typed password or
+            // retry a broker password that Windows already rejected.
+            if !self.password.borrow().is_empty()
+                || self.broker_password_invalid.get()
+                || self.stale.get()
+                || self.serialized.get()
+                || self.auto_suppressed.get()
+            {
+                settings.mode = crate::auto_recognition::TriggerMode::Manual;
             }
+            let generation = self.runtime.select_owned(
+                self.owner,
+                &sid,
+                crate::pipe_client::current_session_id(),
+                crate::pipe_client::next_request_id(),
+                settings,
+            );
+            crate::log::cp_log(&format!("Credential::SetSelected generation={generation}"));
         }
         // Do not auto-submit: the credential is only submitted after the
         // auth-service pipe has produced a password and LogonUI re-queries
@@ -175,7 +188,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
 
     fn SetDeselected(&self) -> windows_core::Result<()> {
         crate::log::cp_log("Credential::SetDeselected");
-        self.cancel_auto();
+        self.runtime.deselect_owned(self.owner);
+        self.auto_suppressed.set(false);
         Ok(())
     }
 
@@ -209,7 +223,22 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let id = Credential::field_id(dwfieldid)?;
         // LogonUI renders SMALL_TEXT/LARGE_TEXT fields from this value;
         // an error here aborts tile creation, so always hand back a string.
-        let text = crate::fields::display_text(id);
+        let text = if id == FieldId::LargeText {
+            match self.runtime.phase_owned(self.owner) {
+                Some(crate::Phase::InitialDelay) => {
+                    "Face recognition will start shortly. You can enter your Windows password."
+                }
+                Some(crate::Phase::Recognizing | crate::Phase::RetryDelay) => {
+                    "Recognizing your face. You can enter your Windows password."
+                }
+                Some(crate::Phase::Stopped) => {
+                    "Face recognition stopped. Use your Windows password or select this option again."
+                }
+                _ => crate::fields::display_text(id),
+            }
+        } else {
+            crate::fields::display_text(id)
+        };
         Credential::alloc_string(text)
     }
 
@@ -437,6 +466,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             return Err(crate::pipe_client::win32_error(1323));
         }
 
+        unsafe { *pcpcs = CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION::default() };
         let scenario = self.scenario.get();
 
         // The pipe service looks up the secret store by the REQUESTED sid
@@ -447,15 +477,16 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             Some(sid) => sid.clone(),
             None => return Err(Error::from_hresult(crate::E_NOTIMPL)),
         };
-        let sid = sid_text.encode_utf16().collect::<Vec<u16>>();
         let mut broker_request = None;
         let mut protected = if has_manual_password {
+            self.cancel_auto();
             let mut entered = self.password.borrow_mut();
             let result = crate::serialization::protect_password(&entered);
             crate::pipe_client::secure_clear(&mut entered);
             entered.clear();
             result?
-        } else if let Some((mut grant, request_id, session_id)) = self.runtime.take_ready(&sid_text)
+        } else if let Some((mut grant, request_id, session_id)) =
+            self.runtime.take_ready_owned(self.owner, &sid_text)
         {
             // Automatic recognition already authenticated this face and the
             // service released the one-time secret. Consume it exactly once;
@@ -468,30 +499,24 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                 Err(_) => return Err(Error::from_hresult(crate::E_NOTIMPL)),
             }
         } else {
-            // Manual submit without a password, or an automatic attempt that
-            // has not produced a grant yet: authenticate on demand.
-            let session_id = crate::pipe_client::current_session_id();
-            let request_id = crate::pipe_client::next_request_id();
-            let mut password =
-                match crate::pipe_client::PipeClient.prepare(&sid, request_id, session_id) {
-                    Ok(pw) => {
-                        crate::log::cp_log("GetSerialization: broker authenticate-and-prepare OK");
-                        pw
-                    }
-                    Err(err) => {
-                        crate::log::cp_log(&format!(
-                            "GetSerialization: broker authenticate-and-prepare FAILED {:08x}",
-                            err.code().0
-                        ));
-                        return Err(err);
-                    }
+            let pending = self.runtime.submit_owned(
+                self.owner,
+                &sid_text,
+                crate::pipe_client::current_session_id(),
+                crate::pipe_client::next_request_id(),
+            );
+            if !ppszoptionalstatustext.is_null() {
+                unsafe {
+                    *ppszoptionalstatustext = Credential::alloc_string(if pending {
+                        "Recognizing your face. You can enter your Windows password."
+                    } else {
+                        "Face recognition is not ready. Use your Windows password or select this option again."
+                    })?
                 };
-            broker_request = Some((request_id, session_id));
-            match password.with_password(crate::serialization::protect_password) {
-                Ok(Ok(p)) => p,
-                Ok(Err(err)) => return Err(err),
-                Err(_) => return Err(Error::from_hresult(crate::E_NOTIMPL)),
             }
+            // CPGSR_NO_CREDENTIAL_NOT_FINISHED: the same worker will notify
+            // LogonUI and publish an autologon tile when the result is ready.
+            return Ok(());
         };
         let (domain, username) = match crate::serialization::qualified_username_from_sid(&sid_text)
         {
@@ -571,6 +596,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         // state instead of permanently disabling it.
         self.serialized.set(false);
         self.stale.set(ntsstatus.0 == 0);
+        self.auto_suppressed.set(ntsstatus.0 < 0);
         // A failed Windows logon stops automatic retries: repeatedly submitting
         // the same stale secret would lock the account. The user can reselect
         // the tile to start a fresh attempt.
@@ -742,5 +768,38 @@ mod password_result_tests {
                 .unwrap_err()
         };
         assert_eq!(error.code(), crate::pipe_client::win32_error(1323).code());
+    }
+
+    #[test]
+    fn early_submit_returns_pending_without_a_synchronous_pipe_call() {
+        let object =
+            windows_core::ComObject::new(Credential::new_test(1, Some("S-1-5-21-1".to_owned())));
+        let generation = object.runtime.select_owned(
+            object.owner,
+            "S-1-5-21-1",
+            1,
+            7,
+            crate::TriggerSettings::from_values(Some(1), Some(60), Some(1), Some(600)),
+        );
+        let credential = object.to_interface::<ICredentialProviderCredential>();
+        let mut response = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(99);
+        let mut serialization = CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION::default();
+        let started = std::time::Instant::now();
+        unsafe {
+            credential.GetSerialization(
+                &mut response,
+                &mut serialization,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        }
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        assert_eq!(response.0, 0);
+        assert!(serialization.rgbSerialization.is_null());
+        assert!(!object.serialized.get());
+        assert_eq!(object.runtime.generation(), generation);
+        assert_eq!(object.runtime.phase(), crate::Phase::InitialDelay);
+        object.runtime.shutdown();
     }
 }
