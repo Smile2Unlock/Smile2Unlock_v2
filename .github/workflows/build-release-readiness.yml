@@ -69,7 +69,7 @@ jobs:
 
       - name: Install Rust toolchain
         run: >-
-          rustup toolchain install stable --profile minimal
+          bash packaging/slint/setup-rust.sh
           --component rustfmt --component clippy --target x86_64-pc-windows-gnu
 
       - name: Check Rust formatting and tests
@@ -97,7 +97,7 @@ jobs:
       - name: Install cross-test dependencies
         run: >-
           pacman -Syu --noconfirm --needed git git-lfs curl rustup mingw-w64-gcc
-          wine xorg-server-xvfb nodejs
+          wine xorg-server-xvfb nodejs python
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -129,7 +129,7 @@ jobs:
 
       - name: Install Rust toolchain
         run: >-
-          rustup toolchain install stable --profile minimal
+          bash packaging/slint/setup-rust.sh
           --component rustfmt --component clippy --target x86_64-pc-windows-gnu
 
       - name: Build Windows privileged components
@@ -199,10 +199,8 @@ jobs:
           key: cargo-registry-${{ hashFiles('**/Cargo.lock', 'xmake.lua') }}
           restore-keys: cargo-registry-
 
-      - name: Install Rust toolchain
-        run: >-
-          rustup toolchain install stable --profile minimal
-          --target x86_64-pc-windows-gnu
+      - name: Install Rust toolchain for prebuilt Slint
+        run: bash packaging/slint/setup-rust.sh --target x86_64-pc-windows-gnu
 
       - name: Seed prebuilt Slint package
         run: bash packaging/slint/seed-slint-mingw.sh

@@ -13,11 +13,17 @@ can select one installed SDK package; only its installed `bin/x64` and
 `lib/x64` DLLs are searched. Source/build-tree copies are excluded, and
 multiple eligible cached versions still require an explicit selection.
 
-CI seeds the MinGW Slint SDK with `bash packaging/slint/seed-slint-mingw.sh`
-before configuration. The script checks the pinned archive digest and exact
-Xmake package directory, library, headers and host compiler. Update the
-prebuilt release, digest and package identity together when changing its
-version or build configuration.
+CI installs Rust 1.98.1, declared in `packaging/slint/prebuilt-mingw.json`,
+with `setup-rust.sh`, then seeds the MinGW Slint SDK with
+`seed-slint-mingw.sh` before configuration. The scripts check the Rust compiler
+commit, pinned archive digest and exact Xmake package directory, library,
+headers and host compiler. A digest marker invalidates packages from older
+prebuilt archives even when the Xmake package hash is unchanged.
+Slint and the core Rust staticlib must use the
+same Rust compiler; mixing releases can cause duplicate standard-library
+symbols. Update the prebuilt release, digest, package identity and Rust
+toolchain together. For local builds, select its `rust_toolchain` with
+`RUSTUP_TOOLCHAIN` before running Xmake.
 
 Release packages are fail-closed: provide a PEM code-signing certificate and
 private key with `--sign-certificate` / `--sign-key` (or the matching
