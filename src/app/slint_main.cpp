@@ -1,5 +1,6 @@
 #include "app_window.h"
 #include "username_initial.h"
+#include "web_link.h"
 #include "common/utf8_path.h"
 #ifdef _WIN32
 #include "platform/windows/paths.h"
@@ -8,6 +9,7 @@
 import std;
 import su.app.controller;
 import su.app.i18n;
+import su.app.about;
 import su.app.user;
 import su.core.types;
 import su.app.preview;
@@ -42,6 +44,59 @@ using WindowHandle = slint::ComponentHandle<ui::AppWindow>;
 using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
 
 constexpr std::string_view xdg_app_id = "smile2unlock";
+
+void setup_about(const WindowHandle& window,
+    const std::shared_ptr<const su::app::LanguageCatalog>& catalog) {
+    const auto info = std::make_shared<const su::app::AboutInfo>(su::app::about_info());
+    auto contributors = std::vector<ui::ContributorRow>{};
+    for (const auto& contributor : info->contributors) {
+        contributors.push_back({.name = slint::SharedString(contributor.name),
+            .role = slint::SharedString(contributor.role)});
+    }
+    window->set_contributors(std::make_shared<slint::VectorModel<ui::ContributorRow>>(
+        std::move(contributors)));
+    auto components = std::vector<ui::LicenseSummaryRow>{};
+    for (const auto& component : info->components) {
+        components.push_back({.name = slint::SharedString(component.name),
+            .license = slint::SharedString(component.license)});
+    }
+    window->set_open_source_components(std::make_shared<slint::VectorModel<ui::LicenseSummaryRow>>(
+        std::move(components)));
+    auto documents = std::vector<slint::SharedString>{};
+    for (const auto& document : info->documents) {
+        documents.emplace_back(document.name);
+    }
+    window->set_license_names(std::make_shared<slint::VectorModel<slint::SharedString>>(
+        std::move(documents)));
+    window->set_license_text(slint::SharedString(info->documents.at(0).text));
+    const auto weak = WeakWindowHandle(window);
+    window->on_license_selected([weak, info](int index) {
+        if (index < 0 || static_cast<std::size_t>(index) >= info->documents.size()) return;
+        if (const auto window = weak.lock()) {
+            (*window)->set_license_text(slint::SharedString(info->documents[index].text));
+        }
+    });
+    const auto open_link = [weak, catalog](std::string_view url) {
+        const auto opened = su::app::open_web_link(url);
+        if (const auto window = weak.lock()) {
+            (*window)->set_about_link_status(slint::SharedString(opened ? std::string{}
+                : catalog->translate_value(
+                    static_cast<std::size_t>(std::max((*window)->get_language_index(), 0)),
+                    "about.link_failed", url)));
+        }
+    };
+    window->on_project_link_requested([open_link](int index) {
+        constexpr auto links = std::array{
+            "https://github.com/Smile2Unlock/Smile2Unlock_v2",
+            "https://github.com/Smile2Unlock/Smile2Unlock_v2/issues"};
+        if (index >= 0 && static_cast<std::size_t>(index) < links.size()) open_link(links[index]);
+    });
+    window->on_contributor_link_requested([open_link, info](int index) {
+        if (index >= 0 && static_cast<std::size_t>(index) < info->contributors.size()) {
+            open_link(info->contributors[index].url);
+        }
+    });
+}
 
 void update_camera_controls(
     const WindowHandle& window,
@@ -693,6 +748,7 @@ int main(int argc, char** argv) try {
     window->set_language_names(
         std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(language_names)));
     window->set_language_index(static_cast<int>(selected_language));
+    setup_about(window, catalog);
     window->set_theme_mode_index(theme_preference_index(preferences->theme));
     window->set_window_controls_index(
         window_controls_preference_index(preferences->window_controls));
@@ -749,6 +805,13 @@ int main(int argc, char** argv) try {
     window->set_title_text(slint::SharedString("Smile2Unlock"));
     window->set_username(slint::SharedString(username));
     window->set_username_initial(slint::SharedString(su::app::username_initial(username)));
+    window->set_app_version(slint::SharedString(
+#ifdef SU_VERSION_STR
+        SU_VERSION_STR
+#else
+        std::format("{}", su::app::core_version_major())
+#endif
+        ));
     window->set_core_version(slint::SharedString(catalog->translate_value(
         selected_language,
         "diagnostics.core_version",

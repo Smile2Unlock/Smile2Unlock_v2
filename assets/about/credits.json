@@ -1,0 +1,17 @@
+{
+    "contributors": [
+        {"name": "ation_ciger", "role": "about.code", "url": "https://github.com/aurorae114514"},
+        {"name": "dullspear", "role": "about.code", "url": "https://github.com/dullspear"},
+        {"name": "YAUE", "role": "about.logo", "url": "https://space.bilibili.com/1258455455"}
+    ],
+    "components": [
+        {"name": "Slint", "license": "GPL-3.0-only / Royalty-free 2.0 / Slint Software 3.0"},
+        {"name": "SeetaFace6 · models", "license": "BSD-2-Clause"},
+        {"name": "CImg", "license": "CeCILL-C / CeCILL v2"},
+        {"name": "libpng", "license": "PNG Reference Library License v2"},
+        {"name": "libjpeg-turbo", "license": "IJG / BSD-3-Clause"},
+        {"name": "libyuv", "license": "BSD-3-Clause"},
+        {"name": "nlohmann_json · memsafe", "license": "MIT"},
+        {"name": "Rust crates", "license": "MIT / Apache-2.0 / BSD-3-Clause / Unicode-3.0 / LLVM exception"}
+    ]
+}

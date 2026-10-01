@@ -203,6 +203,11 @@ Linux 原生格式可用 `--linux-format pacman`、`deb`、`rpm` 或 `all`。安
 
 ## 贡献者
 
+主程序侧边栏的**关于**页显示构建版本、下列贡献者和第三方组件的许可摘要。
+文档阅读区内置项目许可证、第三方声明及 `licenses/` 中的全部文本，可离线查看。
+新增贡献者或组件摘要时更新 `assets/about/credits.json`；许可证文档在 Xmake
+构建时自动嵌入。
+
 **代码贡献**
 
 - [ation_ciger](https://github.com/aurorae114514)

@@ -1,0 +1,107 @@
+import { ComboBox, ScrollView, TextEdit } from "std-widgets.slint";
+import { UiTheme } from "theme.slint";
+import { ActionButton, PageHeader, SectionTitle, StatusPill } from "components.slint";
+
+export struct ContributorRow { name: string, role: string, }
+export struct LicenseSummaryRow { name: string, license: string, }
+
+export component AboutPanel inherits ScrollView {
+    in property <string> app-version;
+    in property <int> language-index;
+    in property <[ContributorRow]> contributors;
+    in property <[LicenseSummaryRow]> components;
+    in property <[string]> license-names;
+    in-out property <int> license-index: 0;
+    in property <string> license-text;
+    in property <string> link-status;
+    pure callback translate(string, int) -> string;
+    callback license-selected(int);
+    callback project-link-requested(int);
+    callback contributor-link-requested(int);
+
+    viewport-width: self.width;
+    VerticalLayout {
+        width: parent.width;
+        padding: 18px;
+        spacing: 20px;
+        PageHeader {
+            title: root.translate("nav.about", root.language-index);
+            detail: root.translate("about.subtitle", root.language-index);
+        }
+        Rectangle {
+            background: UiTheme.surface;
+            border-width: 1px;
+            border-color: UiTheme.border;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text { text: "Smile2Unlock"; color: UiTheme.text-primary; font-size: 24px; font-weight: 800; horizontal-stretch: 1; }
+                    StatusPill { width: 140px; label: root.translate("about.version", root.language-index) + " " + root.app-version; }
+                }
+                Text { text: root.translate("about.description", root.language-index); color: UiTheme.text-secondary; font-size: 14px; wrap: word-wrap; }
+                Text { text: root.translate("about.project_license", root.language-index); color: UiTheme.text-tertiary; font-size: 12px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    ActionButton { label: root.translate("about.source", root.language-index); activated => { root.project-link-requested(0); } }
+                    ActionButton { label: root.translate("about.issues", root.language-index); activated => { root.project-link-requested(1); } }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                }
+                if root.link-status != "": Text { text: root.link-status; color: UiTheme.warning-text; wrap: word-wrap; }
+            }
+        }
+        Rectangle {
+            background: UiTheme.surface;
+            border-width: 1px;
+            border-color: UiTheme.border;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                SectionTitle { title: root.translate("about.contributors", root.language-index); detail: root.translate("about.thanks", root.language-index); }
+                for contributor[index] in root.contributors: HorizontalLayout {
+                    height: 40px;
+                    spacing: 12px;
+                    Text { text: contributor.name; color: UiTheme.text-primary; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: root.translate(contributor.role, root.language-index); color: UiTheme.text-secondary; font-size: 13px; vertical-alignment: center; min-width: 100px; }
+                    ActionButton { label: root.translate("about.profile", root.language-index); activated => { root.contributor-link-requested(index); } }
+                }
+            }
+        }
+        Rectangle {
+            background: UiTheme.surface;
+            border-width: 1px;
+            border-color: UiTheme.border;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                SectionTitle { title: root.translate("about.open_source", root.language-index); detail: root.translate("about.license_detail", root.language-index); }
+                for component in root.components: VerticalLayout {
+                    spacing: 4px;
+                    Text { text: component.name; color: UiTheme.text-primary; font-size: 14px; font-weight: 600; }
+                    Text { text: component.license; color: UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                }
+            }
+        }
+        Rectangle {
+            background: UiTheme.surface;
+            border-width: 1px;
+            border-color: UiTheme.border;
+            border-radius: 6px;
+            VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                SectionTitle { title: root.translate("about.license_texts", root.language-index); detail: root.translate("about.offline", root.language-index); }
+                license-selector := ComboBox {
+                    model: root.license-names;
+                    current-index <=> root.license-index;
+                    selected(_) => { root.license-selected(license-selector.current-index); }
+                }
+                TextEdit { text: root.license-text; read-only: true; height: 340px; font-size: 12px; }
+            }
+        }
+    }
+}

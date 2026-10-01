@@ -155,7 +155,7 @@ jobs:
       - name: Build Windows privileged components
         run: |
           xmake f -y -p mingw -a x86_64 -m release --with_slint=n --with_seetaface=n
-          xmake build -v su_deploy_helper su_auth_service su_password_tool su_windows_sid_rate_limiter_test su_windows_request_worker_pool_test su_windows_client_disconnect_watcher_test su_windows_deploy_helper_result_test su_username_initial_test su_windows_username_utf8_test su_windows_unicode_paths_test
+          xmake build -v su_deploy_helper su_auth_service su_password_tool su_windows_sid_rate_limiter_test su_windows_request_worker_pool_test su_windows_client_disconnect_watcher_test su_windows_deploy_helper_result_test su_username_initial_test su_windows_username_utf8_test su_windows_unicode_paths_test su_about_test
 
       - name: Run Windows tests under Wine
         run: |
@@ -167,6 +167,7 @@ jobs:
           export WINEPATH
           xvfb-run -a xmake test su_deploy_helper/version -v
           xvfb-run -a xmake test su_windows_deploy_helper_result_test/default -v
+          xvfb-run -a xmake test su_about_test/default -v
           xvfb-run -a xmake test su_username_initial_test/default -v
           xvfb-run -a xmake test su_windows_username_utf8_test/default -v
           xvfb-run -a xmake test su_windows_unicode_paths_test/default -v
@@ -263,6 +264,7 @@ jobs:
           mkdir -p "$WINEPREFIX"
           WINEPATH="$(find /usr -type f \( -iname 'libstdc++-6.dll' -o -iname 'libgcc_s_seh-1.dll' -o -iname 'libwinpthread-1.dll' -o -iname 'libgomp-1.dll' \) -printf '%h\n' 2>/dev/null | sort -u | paste -sd ';' -)"
           export WINEPATH
+          xvfb-run -a xmake test su_about_test/default -v
           xvfb-run -a xmake test su_username_initial_test/default -v
           xvfb-run -a xmake test su_windows_username_utf8_test/default -v
           xvfb-run -a xmake test su_windows_unicode_paths_test/default -v
