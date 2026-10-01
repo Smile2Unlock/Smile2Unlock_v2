@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # Bump the Smile2Unlock version and create a git tag.
 #
-#   packaging/version/bump-version.sh 2.3.0 [--no-tag]
+#   packaging/version/bump-version.sh 2.3.1 [--no-tag]
 #
-# - Writes version.txt and synchronizes xmake.lua's standalone fallback
+# - Writes version.txt; build and packaging read this single source
 # - Runs `git tag v<version>` (unless --no-tag)
 # - Prints the next packaging command
 #
-# version.txt remains the release source of truth; this script synchronizes
-# xmake's top-level fallback and packaging reads the file for artifact naming.
+# Xmake generates target versions, C++ defines and Windows resources from
+# version.txt. No other tracked product-version literals need updating.
 
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 version_file="${project_dir}/version.txt"
-xmake_file="${project_dir}/xmake.lua"
 
 usage() {
     echo "Usage: packaging/version/bump-version.sh <version> [--no-tag]"
@@ -39,26 +38,6 @@ while (($# > 0)); do
 done
 
 printf '%s\n' "${new_version}" > "${version_file}"
-# Keep the standalone xmake fallback synchronized for callers that do not
-# export SU_VERSION.
-sed -i -E 's/_su_version = "[0-9]+\.[0-9]+\.[0-9]+"/_su_version = "'"${new_version}"'"/' "${xmake_file}"
-# Keep the VERSIONINFO macros embedded in the Windows resource files in
-# sync with version.txt (they carry the same dotted version).
-for rc in \
-    src/platform/windows/deploy_helper/helper.rc \
-    src/app/su_app.rc \
-    src/platform/windows/auth_service/service.rc \
-    src/platform/windows/recognition_agent/agent.rc \
-    src/platform/windows/password_tool/password_tool.rc; do
-    [[ -f "${project_dir}/${rc}" ]] || continue
-    IFS='.' read -r ma mi pa <<< "$new_version"
-    sed -i \
-        -e "s/^#define SU_VER_A .*/#define SU_VER_A ${ma}/" \
-        -e "s/^#define SU_VER_B .*/#define SU_VER_B ${mi}/" \
-        -e "s/^#define SU_VER_C .*/#define SU_VER_C ${pa}/" \
-        -e "s/^#define SU_VERSION_STR .*/#define SU_VERSION_STR \"${new_version}\"/" \
-        "${project_dir}/${rc}"
-done
 
 echo "version: ${old_version:-<empty>} -> ${new_version}"
 
@@ -67,7 +46,7 @@ if [[ "$tag" == true ]]; then
     if git -C "$project_dir" rev-parse "v${new_version}" >/dev/null 2>&1; then
         echo "note: tag v${new_version} already exists (skipped)"
     else
-        git -C "$project_dir" add version.txt xmake.lua src/platform/windows/deploy_helper/helper.rc src/app/su_app.rc src/platform/windows/auth_service/service.rc src/platform/windows/recognition_agent/agent.rc src/platform/windows/password_tool/password_tool.rc
+        git -C "$project_dir" add version.txt
         git -C "$project_dir" commit -m "chore: bump version to ${new_version}" >/dev/null
         git -C "$project_dir" tag "v${new_version}"
         echo "tagged: v${new_version}"

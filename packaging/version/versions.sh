@@ -4,13 +4,12 @@
 # This script is sourced by the packaging scripts (packaging/windows/package.sh
 # and packaging/linux/package.sh). It provides:
 #
-#   version_read()          -> print the current version from version.txt (2.3.0)
+#   version_read()          -> print the current version from version.txt
 #   inject_release_info(ROOT PLATFORM) -> write release-info.json into a staged tree
 #
 # Layout:
 #   packaging/version/
 #     versions.sh                 this file (sourced)
-#     template-release-info.json  schema template
 
 set -euo pipefail
 
@@ -22,7 +21,6 @@ fi
 project_dir="$(cd "${version_dir}/../.." && pwd)"
 
 version_file="${project_dir}/version.txt"
-template_file="${version_dir}/template-release-info.json"
 
 version_read() {
     tr -d '[:space:]' < "${version_file}"
@@ -38,10 +36,10 @@ inject_release_info() {
     local output="${3:-${staged_root}/release-info.json}"
     local architecture="${PACKAGE_ARCH:-$(uname -m)}"
     mkdir -p "${staged_root}" "$(dirname "${output}")"
-    python3 - "$template_file" "$(version_read)" "$(date -u +%Y-%m-%d)" \
+    python3 - "$(version_read)" "$(date -u +%Y-%m-%d)" \
         "$platform" "$architecture" "${staged_root}" "$output" <<'PY'
 import hashlib, json, os, sys
-template, version, day, platform, arch, root, out = sys.argv[1:8]
+version, day, platform, arch, root, out = sys.argv[1:7]
 info = {
     "schema": 1,
     "version": version,

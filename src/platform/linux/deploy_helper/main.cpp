@@ -514,7 +514,7 @@ int run_service() {
 
 int main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
-        std::cout << "su_deploy_helper 1\n";
+        std::cout << "su_deploy_helper " << SU_VERSION_STR << "\n";
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--rollback-all") {
