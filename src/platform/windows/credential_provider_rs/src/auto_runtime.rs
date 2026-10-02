@@ -133,6 +133,7 @@ struct Inner<G> {
     notified: bool,
     shutdown: bool,
     owner: Option<(u64, String)>,
+    initial_hint: bool,
     password_entry: bool,
     login_failed: bool,
     login_complete: bool,
@@ -161,6 +162,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 notified: false,
                 shutdown: false,
                 owner: None,
+                initial_hint: true,
                 password_entry: false,
                 login_failed: false,
                 login_complete: false,
@@ -201,6 +203,12 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
     /// finishes on its own; the next selection starts a fresh one.
     pub fn arm(&self) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.shutdown {
+            inner.initial_hint = true;
+            inner.password_entry = false;
+            inner.login_failed = false;
+            inner.login_complete = false;
+        }
         inner.shutdown = false;
     }
 
@@ -262,6 +270,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             if inner.shutdown {
                 return inner.machine.generation();
             }
+            inner.initial_hint = false;
             let same_owner =
                 inner.owner.as_ref().map(|(id, s)| (*id, s.as_str())) == Some((owner, sid));
             if !same_owner {
@@ -404,8 +413,11 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         crate::status::snapshot(
             &inner.machine,
             self.clock.now_ms(),
+            // Keep the display alive on the initial LogonUI clock surface.
+            // The selected user owner is established only after the tile is
+            // opened; before that point the state machine renders Waiting.
             !inner.shutdown
-                && inner.owner.is_some()
+                && (inner.owner.is_some() || inner.initial_hint)
                 && !inner.password_entry
                 && !inner.login_complete,
             inner.login_failed,
@@ -1094,7 +1106,7 @@ mod tests {
             Box::new(FakeClock::new(0)),
         );
         let phase = || runtime.display_snapshot() & 15;
-        assert_eq!(phase(), 0);
+        assert_eq!(phase(), 1, "the initial clock surface has a waiting hint");
         runtime.select_owned(10, "S-1-5-21-1", 1, 7, TriggerSettings::manual());
         assert_eq!(phase(), 1);
         runtime.password_entry_owned(10, true);
@@ -1113,10 +1125,13 @@ mod tests {
         runtime.logon_result_owned(20, true);
         assert_eq!(phase(), 0, "Windows success hides the hint");
         runtime.deselect_owned(20);
+        assert_eq!(phase(), 0, "switching sign-in methods hides the hint");
         runtime.select_owned(20, "S-1-5-21-2", 1, 10, TriggerSettings::manual());
         assert_eq!(phase(), 1, "a fresh selection clears completed state");
         runtime.shutdown();
         assert_eq!(phase(), 0);
+        runtime.arm();
+        assert_eq!(phase(), 1, "a new LogonUI advice restores the initial hint");
     }
 
     #[test]

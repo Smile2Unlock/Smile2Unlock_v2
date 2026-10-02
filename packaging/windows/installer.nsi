@@ -88,6 +88,9 @@ Section "Smile2Unlock" SecMain
     ; Per-machine install: shortcuts and the uninstall entry go to the
     ; all-users locations, not the installing account's profile.
     SetShellVarContext all
+    ; Verify a separate package before the helper stops/replaces the service.
+    ; Extracting over the running service first would mix old payload bytes
+    ; with the new signed manifest during an upgrade.
     SetOutPath "$INSTDIR\package"
     File /r "${STAGE_DIR}\Smile2Unlock\*.*"
 
@@ -150,6 +153,11 @@ Section "Smile2Unlock" SecMain
         Abort
     ${EndIf}
 
+    ; Publish the ZIP layout after deployment; security payloads now match
+    ; the package, including files held open by the restarted service.
+    SetOutPath "$INSTDIR"
+    File /r "${STAGE_DIR}\Smile2Unlock\*.*"
+
     ; Remove only our known shortcuts before optional sections recreate the
     ; selected ones. This also applies deselections during an upgrade.
     Delete "$DESKTOP\Smile2Unlock.lnk"
@@ -206,7 +214,7 @@ Section "Uninstall"
     nsExec::ExecToLog 'taskkill /IM Smile2Unlock.exe /F'
     Pop $0
 
-    nsExec::ExecToLog '"$INSTDIR\package\bin\Smile2UnlockDeployHelper.exe" --unregister-cp'
+    nsExec::ExecToLog '"$INSTDIR\bin\Smile2UnlockDeployHelper.exe" --unregister-cp'
     Pop $0
 
     nsExec::ExecToLog 'sc stop Smile2UnlockAuthService'
@@ -220,8 +228,9 @@ Section "Uninstall"
     RMDir "$SMPROGRAMS\Smile2Unlock"
     Delete "$DESKTOP\Smile2Unlock.lnk"
 
-    RMDir /r "$INSTDIR\package"
     RMDir /r "$INSTDIR\bin"
+    ; Remove the nested tree left by installers before the package-layout fix.
+    RMDir /r "$INSTDIR\package"
     RMDir /r "$INSTDIR\assets"
     RMDir /r "$INSTDIR\licenses"
     Delete "$INSTDIR\LICENSE"

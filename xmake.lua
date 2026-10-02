@@ -594,7 +594,7 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/status_host/main.cpp")
         add_files("src/platform/windows/status_host/status.rc")
         add_ldflags("-municode", "-mwindows", "-static", {force = true})
-        add_syslinks("gdiplus", "gdi32", "user32", "advapi32")
+        add_syslinks("gdiplus", "gdi32", "user32", "advapi32", "wtsapi32")
 
     target("su_windows_storage")
         apply_cpp_target("static")
