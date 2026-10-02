@@ -138,6 +138,15 @@ impl Credential {
             ),
         )
     }
+
+    pub(crate) fn prepare_test_grant(&self) {
+        let sid = self.user_sid.borrow();
+        self.runtime.publish_test_grant(
+            self.owner,
+            sid.as_ref().unwrap(),
+            crate::pipe_client::PreparedPipePassword::test_grant(),
+        );
+    }
 }
 
 impl ICredentialProviderCredential_Impl for Credential_Impl {
@@ -151,22 +160,27 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     fn UnAdvise(&self) -> windows_core::Result<()> {
         crate::log::cp_log("Credential::UnAdvise");
         self.advised.set(false);
-        self.runtime.deselect_owned(self.owner);
+        // LogonUI unadvises tiles before re-enumerating CredentialsChanged.
+        // This only disconnects field events; invalidating the grant here
+        // would turn the subsequent GetCredentialCount autologon flag off.
+        // SetDeselected, tile destruction, user-array replacement and the
+        // provider's UnAdvise own cancellation of the authentication attempt.
         Ok(())
     }
 
     fn SetSelected(&self) -> windows_core::Result<BOOL> {
         crate::log::cp_log("Credential::SetSelected");
+        let mut autologon = false;
         if let Some(sid) = self.user_sid.borrow().as_ref().cloned() {
             let mut settings = crate::auto_runtime::read_trigger_settings(&sid);
             // Enumeration/reselection must not override a typed password or
             // retry a broker password that Windows already rejected.
-            if !self.password.borrow().is_empty()
+            let manual_only = !self.password.borrow().is_empty()
                 || self.broker_password_invalid.get()
                 || self.stale.get()
                 || self.serialized.get()
-                || self.auto_suppressed.get()
-            {
+                || self.auto_suppressed.get();
+            if manual_only {
                 settings.mode = crate::auto_recognition::TriggerMode::Manual;
             }
             let generation = self.runtime.select_owned(
@@ -177,13 +191,14 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                 settings,
             );
             crate::log::cp_log(&format!("Credential::SetSelected generation={generation}"));
+            autologon = !manual_only && self.runtime.has_ready_owned(self.owner, &sid);
         }
-        // Do not auto-submit: the credential is only submitted after the
-        // auth-service pipe has produced a password and LogonUI re-queries
-        // GetCredentialCount (autologon) or the user clicks submit. Returning
-        // TRUE here would make LogonUI call GetSerialization before the
-        // credential is ready.
-        Ok(BOOL(0))
+        // A refresh can select the tile again after CredentialsChanged. Both
+        // provider enumeration and tile selection must request submission of
+        // an unexpired grant; selection before recognition finishes stays FALSE.
+        // Readiness is only inspected here, never consumed before serialization.
+        crate::log::cp_log(&format!("Credential::SetSelected autologon={autologon}"));
+        Ok(BOOL(autologon as i32))
     }
 
     fn SetDeselected(&self) -> windows_core::Result<()> {
@@ -380,27 +395,28 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         crate::log::cp_log(&format!("Credential::SetStringValue({})", dwfieldid));
         let field = Credential::field_id(dwfieldid)?;
         if field == FieldId::PasswordText {
-            // Typing a Windows password overrides automatic recognition; stop
-            // any in-flight attempt so a late face grant cannot submit.
-            self.cancel_auto();
-            if psz.0.is_null() {
-                let mut password = self.password.borrow_mut();
-                crate::pipe_client::secure_clear(&mut password);
-                password.clear();
-                return Ok(());
-            }
             let mut length = 0usize;
-            while length < 512 && unsafe { *psz.0.add(length) } != 0 {
+            while !psz.0.is_null() && length < 512 && unsafe { *psz.0.add(length) } != 0 {
                 length += 1;
             }
             if length == 512 {
                 return Err(Error::from_hresult(crate::E_INVALIDARG));
             }
-            let value = unsafe { core::slice::from_raw_parts(psz.0, length) };
             let mut password = self.password.borrow_mut();
+            // LogonUI can initialize/refresh an already empty edit field.
+            // This is not password typing and must not erase a pending grant.
+            if length == 0 && password.is_empty() {
+                return Ok(());
+            }
+            // A real edit, including clearing a previously typed password,
+            // overrides recognition and invalidates any prepared credential.
+            self.cancel_auto();
             crate::pipe_client::secure_clear(&mut password);
             password.clear();
-            password.extend_from_slice(value);
+            if length != 0 {
+                let value = unsafe { core::slice::from_raw_parts(psz.0, length) };
+                password.extend_from_slice(value);
+            }
         }
         Ok(())
     }
@@ -689,6 +705,45 @@ impl ICredentialProviderCredentialWithFieldOptions_Impl for Credential_Impl {
 #[cfg(test)]
 mod password_result_tests {
     use super::*;
+
+    #[test]
+    fn empty_password_refresh_preserves_recognition_but_real_edits_cancel() {
+        let object = windows_core::ComObject::new(Credential::new_test(
+            1,
+            Some("S-1-5-21-198101-198102-198103-1001".to_owned()),
+        ));
+        let credential = object.to_interface::<ICredentialProviderCredential>();
+        let empty = [0u16];
+        // An empty edit-field initialization must not cancel a pending worker.
+        object.runtime.select_owned(
+            object.owner,
+            object.user_sid.borrow().as_ref().unwrap(),
+            1,
+            7,
+            crate::TriggerSettings::from_values(Some(1), Some(60), Some(1), Some(600)),
+        );
+        let generation = object.runtime.generation();
+        unsafe { credential.SetStringValue(3, PCWSTR(empty.as_ptr())) }.unwrap();
+        unsafe { credential.SetStringValue(3, PCWSTR::null()) }.unwrap();
+        assert_eq!(object.runtime.generation(), generation);
+        assert_eq!(object.runtime.phase(), crate::Phase::InitialDelay);
+        object.runtime.cancel();
+
+        object.prepare_test_grant();
+        unsafe { credential.SetStringValue(3, PCWSTR(empty.as_ptr())) }.unwrap();
+        unsafe { credential.SetStringValue(3, PCWSTR::null()) }.unwrap();
+        assert_eq!(object.runtime.phase(), crate::Phase::Ready);
+        let typed = [b'x' as u16, 0];
+        unsafe { credential.SetStringValue(3, PCWSTR(typed.as_ptr())) }.unwrap();
+        assert!(object.runtime.ready_sid().is_none());
+        assert_eq!(object.runtime.phase(), crate::Phase::Idle);
+        // Clearing a previously typed password is a real edit too.
+        object.prepare_test_grant();
+        unsafe { credential.SetStringValue(3, PCWSTR::null()) }.unwrap();
+        assert!(object.runtime.ready_sid().is_none());
+        assert!(object.password.borrow().is_empty());
+        object.runtime.shutdown();
+    }
 
     #[test]
     fn invalid_or_expired_broker_password_requires_refresh() {

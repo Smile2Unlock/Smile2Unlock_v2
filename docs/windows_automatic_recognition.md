@@ -20,6 +20,8 @@ fallback whenever automatic recognition is disabled or cannot complete.
   `Send`/`Sync` bypass is used.
 - `Provider::GetCredentialCount` returns the ready tile index and enables
   autologon only while an unexpired grant is published for an enumerated SID.
+  `Credential::SetSelected` also requests autologon when that tile owns a ready
+  grant, including reselection during a LogonUI refresh; neither query consumes it.
   `Credential::GetSerialization` checks the deadline again and consumes the
   prepared password exactly once. The worker also erases ready grants at the
   deadline when LogonUI makes no further calls.
@@ -27,11 +29,13 @@ fallback whenever automatic recognition is disabled or cannot complete.
   COM identity, typed passwords and failed-password state across refreshes.
   Each credential has a distinct runtime owner; callbacks from an old tile
   cannot cancel another tile or consume its grant, even after same-SID replacement.
+  Tile `UnAdvise` disconnects field events during re-enumeration and preserves
+  the attempt. An already empty password-field reset does the same.
 - Empty-password submission starts one capture on the same background worker
   in manual mode, or waits for the existing automatic attempt. It returns
   `CPGSR_NO_CREDENTIAL_NOT_FINISHED` immediately instead of making a synchronous
   pipe call. Refresh-driven reselection does not restart stopped/submitted attempts.
-- Deselection, password editing, user-array replacement, `UnAdvise`, hard
+- Deselection, actual password editing, user-array replacement, provider `UnAdvise`, hard
   failures, a failed Windows logon and deadline expiry invalidate the attempt
   and erase the prepared secret. The pipe transaction is overlapped I/O:
   each write/read waits on `(io completion, abort event, attempt deadline)`,
@@ -91,15 +95,18 @@ idle, initial delay, recognizing, retry delay, ready, submitted and stopped.
 3. On success, publish the protected password only if selection, generation and
    deadline still match. Invoke `CredentialsChanged` through the marshaled proxy.
    `GetCredentialCount` supplies the unexpired ready credential index and enables
-   autologon; `GetSerialization` checks expiry and atomically consumes the prepared
+   autologon; reselection of that ready tile returns `TRUE` from `SetSelected`.
+   `GetSerialization` checks expiry and atomically consumes the prepared
    result exactly once. Ready grants retain the original overall deadline.
 4. Retry transient camera/no-face/no-match outcomes after the retry delay, within
    one overall deadline. Stale password, access denied, absent profiles and model
    failure stop the attempt and preserve manual password entry.
-5. Deselection, password editing, user-array replacement and UnAdvise increment
+5. Deselection, password editing, user-array replacement and provider UnAdvise increment
    the generation, cancel outstanding I/O and erase prepared secrets. Timeout
    stops the attempt and erases its grant. Tile callbacks act only on their owner.
    A late result is erased without notifying LogonUI or submitting credentials.
+   Tile UnAdvise during a refresh only disconnects field events, and an empty
+   initialization/reset of an already empty password field leaves recognition intact.
 6. Failed Windows logon stops automatic retries. In particular, a stale stored
    password must not repeatedly attempt logon and lock the Windows account.
 
@@ -153,6 +160,9 @@ shutdown drains accepted transactions because each task closes its own pipe.
   covered by `provider.rs` tests, including cached COM identity/password state,
   old-tile callbacks and same-SID user-array replacement. Early empty-password
   submission is checked for a prompt pending return in `credential.rs`.
+  The Windows 10 tile-unadvise/re-enumeration/reselection sequence now has a
+  positive ready-grant test, run under both Wine and native Windows 10; see
+  [refresh regression verification](windows_auto_submit_20261002.md).
   The GIT notification path and serialization of
   a real grant still need a real LogonUI run.
 - Real Windows secure desktop: cold boot, lock/unlock, switching users, RDP,

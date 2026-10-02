@@ -245,6 +245,13 @@ pub struct PreparedPipePassword {
 }
 
 impl PreparedPipePassword {
+    #[cfg(test)]
+    pub(crate) fn test_grant() -> Self {
+        let mut buf = crate::secret_buffer::WindowsSecret::new().unwrap();
+        buf.write_utf16le("fixture").unwrap();
+        Self { buf, len: 7 }
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
