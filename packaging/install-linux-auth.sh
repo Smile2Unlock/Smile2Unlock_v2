@@ -55,6 +55,8 @@ install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" \
     "$(destination /usr/libexec/smile2unlock/setup-storage-key)"
 install -m 0755 "${project_dir}/packaging/linux/selinux/manage-policy.sh" \
     "$(destination /usr/libexec/smile2unlock/manage-selinux-policy)"
+install -m 0755 "${project_dir}/packaging/linux/post-install.sh" \
+    "$(destination /usr/libexec/smile2unlock/post-install)"
 install -d -m 0755 "$(destination /usr/share/smile2unlock/selinux)"
 install -m 0644 "${project_dir}/packaging/linux/selinux/smile2unlock.cil" \
     "$(destination /usr/share/smile2unlock/selinux/smile2unlock.cil)"
@@ -123,13 +125,7 @@ install -m 0644 "${project_dir}/packaging/polkit/io.github.smile2unlock.deployme
     "$(destination "${polkit_action_dir}/io.github.smile2unlock.deployment.policy")"
 
 if [[ -z "${destination_root}" ]]; then
-    /usr/libexec/smile2unlock/manage-selinux-policy install
-    systemctl daemon-reload
-    busctl --system call \
-        org.freedesktop.DBus \
-        /org/freedesktop/DBus \
-        org.freedesktop.DBus \
-        ReloadConfig >/dev/null
+    /usr/libexec/smile2unlock/post-install
     echo "Smile2Unlock system components installed. Open the GUI to initialize and configure authentication."
 else
     echo "su-authd staged under ${destination_root}."

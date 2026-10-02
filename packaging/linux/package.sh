@@ -152,6 +152,7 @@ install -m 0755 "${build_dir}/su_deploy_helper" "${root_dir}/usr/libexec/smile2u
 install -m 0755 "${project_dir}/packaging/install-dms-lock.sh" "${root_dir}/usr/libexec/smile2unlock/install-dms-lock"
 install -m 0755 "${project_dir}/packaging/setup-storage-key.sh" "${root_dir}/usr/libexec/smile2unlock/setup-storage-key"
 install -m 0755 "${script_dir}/selinux/manage-policy.sh" "${root_dir}/usr/libexec/smile2unlock/manage-selinux-policy"
+install -m 0755 "${script_dir}/post-install.sh" "${root_dir}/usr/libexec/smile2unlock/post-install"
 install -d -m 0755 "${root_dir}/usr/share/smile2unlock/selinux"
 install -m 0644 "${script_dir}/selinux/smile2unlock.cil" "${root_dir}/usr/share/smile2unlock/selinux/"
 install -m 0755 "${build_dir}/pam_smile2unlock.so" "${root_dir}${pam_module_dir}/pam_smile2unlock.so"
@@ -235,7 +236,7 @@ pre_upgrade() {
     fi
 }
 post_install() {
-    /usr/libexec/smile2unlock/manage-selinux-policy install
+    /usr/libexec/smile2unlock/post-install
 }
 post_upgrade() {
     post_install
