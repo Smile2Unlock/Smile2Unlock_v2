@@ -183,6 +183,52 @@ std::string hex_digest(const BYTE* bytes, std::size_t size) {
     return result;
 }
 
+std::expected<std::string, std::string> sha256_file(HANDLE file) {
+    LARGE_INTEGER zero{};
+    if (!::SetFilePointerEx(file, zero, nullptr, FILE_BEGIN)) {
+        return std::unexpected(win32_error("failed to rewind deployment input"));
+    }
+    HCRYPTPROV provider = 0;
+    HCRYPTHASH hash = 0;
+    if (!::CryptAcquireContextW(
+            &provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)
+        || !::CryptCreateHash(provider, CALG_SHA_256, 0, 0, &hash)) {
+        if (hash != 0) {
+            ::CryptDestroyHash(hash);
+        }
+        if (provider != 0) {
+            ::CryptReleaseContext(provider, 0);
+        }
+        return std::unexpected(win32_error("failed to initialize SHA-256"));
+    }
+    auto buffer = std::array<BYTE, 64 * 1024>{};
+    for (;;) {
+        DWORD read = 0;
+        if (!::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr)) {
+            ::CryptDestroyHash(hash);
+            ::CryptReleaseContext(provider, 0);
+            return std::unexpected(win32_error("failed to hash deployment input"));
+        }
+        if (read == 0) {
+            break;
+        }
+        if (!::CryptHashData(hash, buffer.data(), read, 0)) {
+            ::CryptDestroyHash(hash);
+            ::CryptReleaseContext(provider, 0);
+            return std::unexpected(win32_error("failed to hash deployment input"));
+        }
+    }
+    auto digest = std::array<BYTE, 32>{};
+    DWORD digest_size = static_cast<DWORD>(digest.size());
+    const auto finished = ::CryptGetHashParam(hash, HP_HASHVAL, digest.data(), &digest_size, 0);
+    ::CryptDestroyHash(hash);
+    ::CryptReleaseContext(provider, 0);
+    if (!finished) {
+        return std::unexpected(win32_error("failed to finish deployment SHA-256"));
+    }
+    return hex_digest(digest.data(), digest_size);
+}
+
 std::string certificate_sha256_hex(PCCERT_CONTEXT certificate) {
     HCRYPTPROV provider = 0;
     HCRYPTHASH hash = 0;
@@ -479,6 +525,20 @@ std::expected<void, std::string> copy_required_file(
         (void)::DeleteFileW(temp.c_str());
         return std::unexpected("signed release-info hash mismatch for " + std::string(relative));
     }
+    // A helper launched from the installed tree can have the same source and
+    // destination. Never replace a verified file with identical bytes (also
+    // avoids replacing a loaded provider or the running helper itself).
+    {
+        auto existing = open_plain_file(destination);
+        if (existing) {
+            const auto actual = sha256_file(existing->get());
+            if (actual && *actual == expected_digest) {
+                output = UniqueHandle{};
+                (void)::DeleteFileW(temp.c_str());
+                return {};
+            }
+        }
+    }
     if (!::FlushFileBuffers(output.get())) {
         output = UniqueHandle{};
         (void)::DeleteFileW(temp.c_str());
@@ -618,6 +678,28 @@ std::expected<std::filesystem::path, std::string> stage_credential_provider(
     for (const auto& directory : {install_root, install_bin}) {
         if (const auto checked = ensure_plain_directory(directory); !checked) {
             return std::unexpected(checked.error());
+        }
+    }
+    // LogonUI keeps the provider DLL open. Avoid trying to replace it when the
+    // installed bytes already match the signed package; MoveFileEx would
+    // otherwise return ERROR_ACCESS_DENIED even though no update is needed.
+    if (const auto expected = package->hashes.find("bin/Smile2UnlockCredentialProvider.dll");
+        expected != package->hashes.end()) {
+        auto existing = open_plain_file(destination);
+        if (existing) {
+            if (const auto digest = sha256_file(existing->get()); digest) {
+                auto actual = *digest;
+                auto expected_digest = expected->second;
+                std::ranges::transform(actual, actual.begin(), [](unsigned char ch) {
+                    return static_cast<char>(std::tolower(ch));
+                });
+                std::ranges::transform(expected_digest, expected_digest.begin(), [](unsigned char ch) {
+                    return static_cast<char>(std::tolower(ch));
+                });
+                if (actual == expected_digest) {
+                    return destination;
+                }
+            }
         }
     }
     if (const auto copied = copy_required_file(
@@ -941,7 +1023,8 @@ std::expected<void, std::string> register_credential_provider() {
 
     HKEY clsid_key = nullptr;
     if (::RegCreateKeyExW(HKEY_LOCAL_MACHINE, kClsidKeyPath, 0, nullptr, 0,
-            KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &clsid_key, nullptr) != ERROR_SUCCESS) {
+            KEY_CREATE_SUB_KEY | KEY_SET_VALUE | KEY_WOW64_64KEY,
+            nullptr, &clsid_key, nullptr) != ERROR_SUCCESS) {
         return std::unexpected("failed to open the CLSID registry key");
     }
     const auto clsid_name_status = ::RegSetValueExW(clsid_key, L"", 0, REG_SZ,
@@ -954,7 +1037,8 @@ std::expected<void, std::string> register_credential_provider() {
     const auto inproc_path = std::wstring(kClsidKeyPath) + L"\\InprocServer32";
     HKEY inproc_key = nullptr;
     if (::RegCreateKeyExW(HKEY_LOCAL_MACHINE, inproc_path.c_str(), 0, nullptr, 0,
-            KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &inproc_key, nullptr) != ERROR_SUCCESS) {
+            KEY_CREATE_SUB_KEY | KEY_SET_VALUE | KEY_WOW64_64KEY,
+            nullptr, &inproc_key, nullptr) != ERROR_SUCCESS) {
         return std::unexpected("failed to open the InprocServer32 registry key");
     }
     const auto dll_bytes = (wide_dll.size() + 1) * sizeof(wchar_t);
@@ -971,7 +1055,8 @@ std::expected<void, std::string> register_credential_provider() {
     // LogonUI discovers credential providers by CLSID-named subkeys.
     HKEY cp_key = nullptr;
     if (::RegCreateKeyExW(HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath, 0, nullptr, 0,
-            KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &cp_key, nullptr) != ERROR_SUCCESS) {
+            KEY_CREATE_SUB_KEY | KEY_SET_VALUE | KEY_WOW64_64KEY,
+            nullptr, &cp_key, nullptr) != ERROR_SUCCESS) {
         return std::unexpected("failed to open the CredentialProviders registry key");
     }
     constexpr wchar_t kProviderName[] = L"Smile2Unlock Credential Provider";
@@ -983,6 +1068,14 @@ std::expected<void, std::string> register_credential_provider() {
         || (enabled_status != ERROR_SUCCESS && enabled_status != ERROR_FILE_NOT_FOUND)) {
         return std::unexpected("failed to enroll the credential provider");
     }
+    HKEY enrolled_key = nullptr;
+    const auto enrolled_check = ::RegOpenKeyExW(
+        HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath, 0,
+        KEY_QUERY_VALUE | KEY_WOW64_64KEY, &enrolled_key);
+    if (enrolled_check != ERROR_SUCCESS) {
+        return std::unexpected("credential provider enrollment was not persisted");
+    }
+    ::RegCloseKey(enrolled_key);
     return {};
 }
 
