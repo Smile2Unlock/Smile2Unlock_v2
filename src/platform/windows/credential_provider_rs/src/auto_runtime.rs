@@ -172,6 +172,25 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         *self.notifier.lock().unwrap_or_else(|e| e.into_inner()) = Some(notifier);
     }
 
+    #[cfg(test)]
+    pub(crate) fn publish_test_grant(&self, owner: u64, sid: &str, grant: T::Grant) {
+        // Complete the real state-machine transitions without starting a
+        // camera worker. Manual capture uses the same ready/submission path.
+        let mut inner = self.inner.lock().unwrap();
+        let now = self.clock.now_ms();
+        inner.machine.set_settings(TriggerSettings::manual());
+        let (generation, _) = inner.machine.begin_on_demand(now, sid, 1, 7);
+        assert!(matches!(inner.machine.poll(now), Poll::Recognize(_)));
+        assert_eq!(
+            inner.machine.complete(generation, now, Outcome::Success),
+            Completion::Accepted
+        );
+        inner.owner = Some((owner, sid.to_owned()));
+        inner.grant = Some(grant);
+        inner.grant_request = Some((7, 1));
+        inner.ready_sid = Some(sid.to_owned());
+    }
+
     /// Re-arm a runtime after `UnAdvise`. A worker that is still exiting
     /// finishes on its own; the next selection starts a fresh one.
     pub fn arm(&self) {
@@ -400,6 +419,15 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         } else {
             None
         }
+    }
+
+    pub(crate) fn has_ready_owned(&self, owner: u64, sid: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        self.expire_locked(&mut inner);
+        inner.machine.phase() == Phase::Ready
+            && inner.owner.as_ref().map(|(id, _)| *id) == Some(owner)
+            && inner.ready_sid.as_deref() == Some(sid)
+            && inner.grant.is_some()
     }
 
     /// Consume the published grant exactly once for `generation`/`sid`.
@@ -1083,7 +1111,11 @@ mod tests {
             ));
             runtime.select("S-1-5-21-1", 1, 7);
             wait_for(|| runtime.phase() == Phase::Ready);
+            assert!(runtime.has_ready_owned(0, "S-1-5-21-1"));
+            assert!(!runtime.has_ready_owned(99, "S-1-5-21-1"));
+            assert!(!runtime.has_ready_owned(0, "S-1-5-21-other"));
             tick.store(5_000, Ordering::Release);
+            assert!(!runtime.has_ready_owned(0, "S-1-5-21-1"));
             if use_publication {
                 assert!(runtime.ready_sid().is_none());
             }

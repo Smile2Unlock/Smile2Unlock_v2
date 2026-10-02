@@ -345,6 +345,59 @@ mod tests {
     }
 
     #[test]
+    fn logonui_refresh_keeps_ready_grant_and_requests_submission_without_enter() {
+        use windows_core::{IUnknown, Interface};
+        let sid = "S-1-5-21-198101-198102-198103-1002";
+        let object = object_with_users(&[sid]);
+        let tile = windows_core::ComObject::new(Credential::new(
+            CPUS_LOGON.0,
+            Some(sid.to_owned()),
+            Arc::clone(&object.runtime),
+        ));
+        let first = tile.to_interface::<ICredentialProviderCredential>();
+        object
+            .credentials
+            .borrow_mut()
+            .insert(sid.to_owned(), first.clone());
+        let provider = object.to_interface::<ICredentialProvider>();
+        assert_eq!(unsafe { first.SetSelected() }.unwrap(), BOOL(0));
+        tile.prepare_test_grant();
+
+        // Real Windows 10 sequence after CredentialsChanged: unadvise the
+        // selected tile, enumerate the provider, advise/select the cached tile.
+        unsafe { first.UnAdvise() }.unwrap();
+        let mut count = 0;
+        let mut default = 99;
+        let mut autologon = BOOL(0);
+        unsafe { provider.GetCredentialCount(&mut count, &mut default, &mut autologon) }.unwrap();
+        assert_eq!((count, default, autologon), (1, 0, BOOL(1)));
+        let refreshed = unsafe { provider.GetCredentialAt(0) }.unwrap();
+        assert_eq!(
+            first.cast::<IUnknown>().unwrap().as_raw(),
+            refreshed.cast::<IUnknown>().unwrap().as_raw()
+        );
+        unsafe { refreshed.Advise(None) }.unwrap();
+        assert_eq!(unsafe { refreshed.SetSelected() }.unwrap(), BOOL(1));
+        assert_eq!(unsafe { refreshed.SetSelected() }.unwrap(), BOOL(1));
+        assert_eq!(object.runtime.phase(), Phase::Ready);
+        assert!(object.runtime.take_ready(sid).is_some());
+        assert!(object.runtime.take_ready(sid).is_none());
+        assert_eq!(unsafe { refreshed.SetSelected() }.unwrap(), BOOL(0));
+
+        // A true user deselection still invalidates a newly prepared result.
+        object.runtime.cancel();
+        tile.prepare_test_grant();
+        unsafe { refreshed.SetDeselected() }.unwrap();
+        assert!(object.runtime.ready_sid().is_none());
+        // Provider teardown owns global cancellation even if a tile has been
+        // unadvised as part of a previous UI refresh.
+        tile.prepare_test_grant();
+        unsafe { refreshed.UnAdvise() }.unwrap();
+        unsafe { provider.UnAdvise() }.unwrap();
+        assert!(object.runtime.ready_sid().is_none());
+    }
+
+    #[test]
     fn credential_count_reports_no_autologon_without_grant() {
         let object = object_with_users(&["S-1-5-21-1", "S-1-5-21-2"]);
         let provider = object.to_interface::<ICredentialProvider>();
