@@ -86,6 +86,22 @@ initialize storage and configure a detected login or lock-screen target. The
 GUI requests administrator authorization through the restricted deployment
 helper and shows password fallback before applying a PAM change.
 
+After native installation, upgrade or reinstallation, the shared
+`/usr/libexec/smile2unlock/post-install` hook installs SELinux policy, reloads
+systemd units and a running system D-Bus, then uses `systemctl try-restart` for
+`su-authd.service` and `su-deploy-helper.service`. Only running services restart;
+inactive services stay inactive, and enablement and PAM configuration are
+preserved. The source installer uses the same hook. Image/chroot installation
+without a running systemd manager and `DESTDIR` staging do not restart services.
+Restart failures propagate to the package manager. After manually installing
+the portable archive's files, run this hook as root as well.
+
+Linux packages install exactly one application launcher,
+`/usr/share/applications/smile2unlock.desktop`. When testing the Windows
+installer under Wine on a Linux desktop, disable Wine's menu exporter with
+`WINEDLLOVERRIDES=winemenubuilder.exe=d` to prevent its Windows shortcuts from
+appearing as additional Linux launchers.
+
 Native package upgrades refuse to install a version older than the one that
 last managed PAM. Final package removal first transactionally rolls back every
 managed PAM target and stops the daemon; if an administrator changed a managed
@@ -102,7 +118,7 @@ is required. A source installation does the same; `DESTDIR` staging has no
 policy side effects. Portable archive installation requires running:
 
 ```bash
-sudo /usr/libexec/smile2unlock/manage-selinux-policy install
+sudo /usr/libexec/smile2unlock/post-install
 ```
 
 The policy labels only `/run/smile2unlock` and its `control.sock` with

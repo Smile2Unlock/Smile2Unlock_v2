@@ -1,3 +1,3 @@
 #!/bin/sh
 set -eu
-/usr/libexec/smile2unlock/manage-selinux-policy install
+exec /usr/libexec/smile2unlock/post-install

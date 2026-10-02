@@ -21,6 +21,7 @@ required_paths=(
     usr/libexec/smile2unlock/install-dms-lock
     usr/libexec/smile2unlock/setup-storage-key
     usr/libexec/smile2unlock/manage-selinux-policy
+    usr/libexec/smile2unlock/post-install
     usr/share/smile2unlock/selinux/smile2unlock.cil
     usr/lib/systemd/system/su-authd.service
     usr/lib/systemd/system/su-deploy-helper.service
@@ -56,6 +57,9 @@ verify_tree() {
         package_require_file "${root}/${path}"
     done
 
+    mapfile -t desktop_entries < <(find "${root}/usr/share/applications" -type f -name '*.desktop' -print)
+    (( ${#desktop_entries[@]} == 1 )) || package_die "expected exactly one application launcher"
+
     mapfile -t pam_modules < <(find "$root" -type f -path '*/security/pam_smile2unlock.so' -print)
     (( ${#pam_modules[@]} == 1 )) || package_die "expected exactly one PAM module"
 
@@ -63,7 +67,8 @@ verify_tree() {
         usr/libexec/smile2unlock/su_deploy_helper \
         usr/libexec/smile2unlock/install-dms-lock \
         usr/libexec/smile2unlock/setup-storage-key \
-        usr/libexec/smile2unlock/manage-selinux-policy; do
+        usr/libexec/smile2unlock/manage-selinux-policy \
+        usr/libexec/smile2unlock/post-install; do
         require_mode "$root" 755 "$path"
     done
     [[ "$(stat -c '%a' "${pam_modules[0]}")" == 755 ]] \
