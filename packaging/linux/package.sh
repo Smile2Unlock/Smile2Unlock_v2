@@ -24,7 +24,7 @@ Options:
   --build-dir DIR       Linux release build directory
   --output-dir DIR      Package output directory (default: build/packages)
   --pam-module-dir DIR  Absolute PAM module directory (RPM 64-bit default: /usr/lib64/security;
-                        other formats: /usr/lib/security)
+                        DEB: multiarch security directory; archives/Arch: /usr/lib/security)
   --arch ARCH           Package architecture (default: x86_64)
   --stage-only          Create the common filesystem tree without an archive
   --no-verify           Do not verify completed packages
@@ -59,15 +59,27 @@ rpm_pam_module_dir=/usr/lib/security
 case "$architecture" in
     x86_64|aarch64|ppc64le|s390x) rpm_pam_module_dir=/usr/lib64/security ;;
 esac
+deb_pam_module_dir=/usr/lib/security
+case "$architecture" in
+    x86_64|amd64) deb_pam_module_dir=/usr/lib/x86_64-linux-gnu/security ;;
+    aarch64|arm64) deb_pam_module_dir=/usr/lib/aarch64-linux-gnu/security ;;
+    ppc64le) deb_pam_module_dir=/usr/lib/powerpc64le-linux-gnu/security ;;
+    s390x) deb_pam_module_dir=/usr/lib/s390x-linux-gnu/security ;;
+esac
 if [[ -z "$pam_module_dir" ]]; then
     pam_module_dir=/usr/lib/security
     [[ "$format" != rpm ]] || pam_module_dir="$rpm_pam_module_dir"
+    [[ "$format" != deb ]] || pam_module_dir="$deb_pam_module_dir"
 fi
 [[ "$pam_module_dir" == /* ]] || package_die "PAM module directory must be absolute"
 [[ "$architecture" =~ ^[A-Za-z0-9_.-]+$ ]] || package_die "invalid architecture: $architecture"
 
 package_require_command patchelf
 package_require_command python3
+package_require_command ldd
+package_require_command readelf
+package_require_command flock
+package_require_command nm
 for name in su_app su_authd su_deploy_helper pam_smile2unlock.so; do
     package_require_file "${build_dir}/${name}"
 done
@@ -113,6 +125,9 @@ fi
 
 stage_root="${project_dir}/build/package-stage/linux"
 root_dir="${stage_root}/root"
+mkdir -p "${project_dir}/build/package-stage"
+exec 9>"${stage_root}.lock"
+flock -n 9 || package_die "another Linux packaging task is using the shared staging tree"
 package_reset_stage "$stage_root"
 mkdir -p \
     "${root_dir}/usr/bin" \
@@ -186,11 +201,9 @@ shopt -u nullglob
 (( ${#runtime_libraries[@]} > 0 )) || package_die "no private runtime libraries found"
 cp -a "${runtime_libraries[@]}" "${root_dir}/usr/lib/smile2unlock/"
 find "${root_dir}/usr/lib/smile2unlock" -type f -name '*.so*' -exec chmod 0755 {} +
-while IFS= read -r -d '' library; do
-    patchelf --set-rpath '$ORIGIN' "$library"
-done < <(find "${root_dir}/usr/lib/smile2unlock" -type f -name '*.so*' -print0)
-patchelf --set-rpath '$ORIGIN/../lib/smile2unlock' "${root_dir}/usr/bin/su_app"
-patchelf --set-rpath '$ORIGIN/../../lib/smile2unlock' "${root_dir}/usr/libexec/smile2unlock/su_authd"
+python3 "${script_dir}/bundle-runtime.py" "$root_dir"
+pam_glibc_minimum="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pam_glibc_minimum"])' \
+    "${root_dir}/usr/share/doc/smile2unlock/runtime-libraries.json")"
 
 PACKAGE_ARCH="$architecture" inject_release_info "$root_dir" linux \
     "${root_dir}/usr/share/smile2unlock/release-info.json"
@@ -242,7 +255,7 @@ arch=('${architecture}')
 license=('MIT')
 options=('!debug' '!strip')
 install=smile2unlock.install
-depends=('pam' 'systemd-libs' 'dbus' 'polkit' 'gcc-libs')
+depends=('glibc>=${pam_glibc_minimum}' 'pam' 'systemd-libs' 'dbus' 'polkit')
 _stage_root="\$startdir/root"
 
 package() {
@@ -288,22 +301,23 @@ EOF
 build_fpm() {
     local target="$1"
     local native_root="$root_dir"
-    # --format all shares inputs, but RPM uses a different PAM lookup directory.
+    # --format all shares inputs, but native formats use their own PAM directory.
     # An explicit user override continues to apply to every output format.
-    if [[ "$target" == rpm && "$explicit_pam_module_dir" == false \
-        && "$pam_module_dir" != "$rpm_pam_module_dir" ]]; then
-        native_root="${stage_root}/rpm-root"
+    local target_pam_module_dir="$deb_pam_module_dir"
+    [[ "$target" != rpm ]] || target_pam_module_dir="$rpm_pam_module_dir"
+    if [[ "$explicit_pam_module_dir" == false && "$pam_module_dir" != "$target_pam_module_dir" ]]; then
+        native_root="${stage_root}/${target}-root"
         cp -a "$root_dir" "$native_root"
-        mkdir -p "${native_root}${rpm_pam_module_dir}"
+        mkdir -p "${native_root}${target_pam_module_dir}"
         mv "${native_root}${pam_module_dir}/pam_smile2unlock.so" \
-            "${native_root}${rpm_pam_module_dir}/pam_smile2unlock.so"
+            "${native_root}${target_pam_module_dir}/pam_smile2unlock.so"
         PACKAGE_ARCH="$architecture" inject_release_info "$native_root" linux \
             "${native_root}/usr/share/smile2unlock/release-info.json"
     fi
     local default_depends
     case "$target" in
-        deb) default_depends="libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd" ;;
-        rpm) default_depends="glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit,policycoreutils,selinux-policy-targeted" ;;
+        deb) default_depends="libc6 (>= ${pam_glibc_minimum}),libpam0g,libsystemd0,dbus,polkitd" ;;
+        rpm) default_depends="glibc >= ${pam_glibc_minimum},pam,systemd-libs,dbus,polkit,policycoreutils,selinux-policy-targeted" ;;
     esac
     local -a dependency_args=()
     local dependency

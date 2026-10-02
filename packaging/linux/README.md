@@ -21,7 +21,7 @@ packaging/linux/package.sh --format tar.gz
 ```
 
 The archive contains `su_app`, `su_authd`, the restricted deployment helper,
-the PAM module, bundled Slint and SeetaFace libraries, models, language packs,
+the PAM module, bundled Slint, SeetaFace and C/C++ runtime dependencies, models, language packs,
 systemd, D-Bus and Polkit integration, the desktop entry, DMS PAM resources,
 and license files.
 
@@ -48,24 +48,30 @@ packaging/linux/package.sh --format rpm
 ```
 
 DEB dependencies default to
-`libc6,libstdc++6,libpam0g,libgomp1,libsystemd0,dbus,polkitd`;
+`libc6 (>= PAM's ELF requirement),libpam0g,libsystemd0,dbus,polkitd`;
 RPM dependencies default to
-`glibc,libstdc++,pam,libgomp,systemd-libs,dbus,polkit,policycoreutils,selinux-policy-targeted`
+`glibc >= PAM's ELF requirement,pam,systemd-libs,dbus,polkit,policycoreutils,selinux-policy-targeted`
 (Fedora targeted policy). Override
 `PACKAGE_DEPENDS` when a target distribution uses different package names:
 
 ```bash
-PACKAGE_DEPENDS='libc6,libstdc++6,libpam0g,libgomp1,libsystemd0' \
+PACKAGE_DEPENDS='libc6 (>= 2.38),libpam0g,libsystemd0,dbus,polkitd' \
   packaging/linux/package.sh --format deb
 ```
 
-Build each native package on the oldest release in its supported distribution
-family. The packaged executables still use the build environment's glibc ABI;
-an Arch-built binary is not expected to run on an older Debian or Fedora
-release merely because it was wrapped in a DEB or RPM.
+All four Linux formats use the same recursive runtime collection. Standalone
+executables use a private, matching glibc/ELF loader and their bundled C/C++
+dependencies. PAM uses the target system's libc/libpam, with a static, hidden
+C++ runtime: loading the module must never inject a private libc into GDM/SDDM.
+Its minimum host glibc is derived from the actual ELF and declared in native
+package dependencies. Build PAM on the oldest supported glibc baseline;
+bundling cannot remove that requirement or the target kernel/driver ABI.
 
 64-bit RPMs default to `/usr/lib64/security`, including RPM output from
-`--format all`. Other formats default to `/usr/lib/security`. If the target
+`--format all`. DEBs use the architecture's multiarch security directory
+(x86-64: `/usr/lib/x86_64-linux-gnu/security`); archives and Arch packages use
+`/usr/lib/security`. `--format all` selects each native format's own default.
+If the target
 distribution uses another PAM directory, override it while
 building the package:
 
@@ -162,15 +168,35 @@ package documentation for verification and rollback commands.
 
 ## Runtime dependencies
 
-The package bundles Slint and SeetaFace libraries; libyuv and JPEG support are
-linked statically. It intentionally uses the distribution's system libraries
-for PAM, OpenMP, the C++ runtime, libsystemd, V4L2 and the Wayland / X11
-platform stack. The exact
-package names are distribution-specific, which is why DEB/RPM dependency names
-are configurable.
+The package collects the complete linked dependency closure of all three
+executables and the Slint/SeetaFace libraries, including libstdc++, libgcc,
+OpenMP and image/compression/font/input dependencies. libyuv and JPEG support
+are already linked statically. glibc (including its loader, libm and available
+NSS compatibility libraries) is isolated under `/usr/lib/smile2unlock/glibc`;
+other private libraries live under `/usr/lib/smile2unlock`. No global ldconfig
+entry or system library replacement is used.
 
-The script patches application RPATHs to package-relative locations and fails
-if a binary still references the build user's Xmake cache.
+Driver-facing GL/EGL/GLX/GBM/DRM/Vulkan dispatchers, vendor driver plugins,
+PAM, kernel interfaces, display services and system commands remain supplied
+by the target distribution. Libraries loaded dynamically by such plugins are
+not guaranteed by the linked dependency scan; validate each supported target.
+The archive uses the same `/usr` installation prefix as native packages and
+must be installed there before directly executing its ELF files. For inspecting
+an extracted tree, the verifier invokes its private loader explicitly.
+
+`/usr/share/doc/smile2unlock/runtime-libraries.json` records original library
+hashes, available source package names/versions, external libraries and PAM's
+glibc minimum. Available distribution copyright/license files and common
+GNU license texts are copied to `licenses/runtime` beside the existing project
+notices. Release distributors must provide the matching corresponding sources
+and distribution patches for bundled copyleft runtimes; the inventory identifies
+the build's exact package versions. Runtime security updates require rebuilding
+the bundle.
+
+The script patches executable interpreters and package-relative RPATHs, checks
+the private loader's full resolution, and rejects a PAM build that still needs
+a shared C++ runtime. PAM has no private RPATH. It fails on unresolved or
+conflicting dependency sources instead of using an arbitrary cache copy.
 
 ## Verify packages
 

@@ -26,6 +26,10 @@ Credential Provider
 
 在已合并 #98 的 `053a1c4` 上重新构建实际 Release 包，使用外置磁盘的 Fedora 44 KVM + 最小 Plasma 环境以及 Debian 12/13 容器验收，详见 [跨发行版报告](linux_distro_acceptance_20261002.md)。本次发现并修复了 64 位 RPM 的 PAM 目录和 Fedora 的 SELinux socket 访问问题，新增版本化 CIL 策略及包安装/卸载集成。SDDM 与新的 Plasma Login Manager 6.7.5 均在 Enforcing 下通过实际界面的受控成功分支、失败密码回退，以及真实服务未录入档案时的密码回退；KDE 锁屏链路也已验证。最终卸载移除策略与 PAM 覆盖，9 个配置文件哈希恢复或保持原样。没有新增 CI。当前 Arch 构建的 DEB 在 Debian 12/13 可安装但因运行库 ABI 需求无法启动，不能视为正式兼容；本次没有物理摄像头/真人识别验收。
 
+## 2026-10-02 Debian GNOME/GDM 验证
+
+在独立 Debian 13.7 KVM 中安装最小 GNOME 48/GDM，详见 [Debian 验收报告](debian_gnome_acceptance_20261002.md)。发现并修复 D-Bus 服务文件缺少 `Exec` 导致 `ServiceUnknown` 的问题。初轮依赖临时运行库；后续统一为四种 Linux 包收集运行库和配套 glibc/加载器，PAM 静态链接隐藏的 C++ 运行库、继续使用系统 libc/libpam。删除临时运行库后，新 DEB 可直接运行 helper、真实 daemon 和 GUI；实际 GDM 登录、GNOME 锁屏的受控成功及密码回退、真实服务未录入档案时的密码回退通过。该 PAM 构建要求宿主 glibc >= 2.38，Debian 12 仍不满足。没有新增 CI job/check，也没有验收真人识别或 Keyring 解锁。
+
 ## 2026-09-23 验证快照
 
 - Windows 锁屏自动识别合入主线（#67）：`auto_recognition.rs` 状态机、`auto_runtime.rs` worker、机器级策略存储与 GUI 开关；Wine 下 69 个凭据提供者测试通过。

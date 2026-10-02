@@ -8,6 +8,9 @@ source "${script_dir}/../lib/common.sh"
 [[ $# -gt 0 ]] || package_die \
     "usage: packaging/linux/verify-package.sh PACKAGE.tar.gz|PACKAGE.deb|PACKAGE.rpm|PACKAGE.pkg.tar.zst [...]"
 package_require_command patchelf
+package_require_command python3
+package_require_command readelf
+package_require_command nm
 
 required_paths=(
     usr/bin/su_app
@@ -35,6 +38,7 @@ required_paths=(
     usr/share/smile2unlock/models/fas_second.csta
     usr/share/smile2unlock/pam/dankshell-smile2unlock
     usr/share/smile2unlock/release-info.json
+    usr/share/doc/smile2unlock/runtime-libraries.json
 )
 
 require_mode() {
@@ -74,28 +78,7 @@ verify_tree() {
         require_mode "$root" 644 "$path"
     done
 
-    local app_rpath authd_rpath helper_rpath
-    app_rpath="$(patchelf --print-rpath "${root}/usr/bin/su_app")"
-    authd_rpath="$(patchelf --print-rpath "${root}/usr/libexec/smile2unlock/su_authd")"
-    helper_rpath="$(patchelf --print-rpath "${root}/usr/libexec/smile2unlock/su_deploy_helper")"
-    [[ "$app_rpath" == '$ORIGIN/../lib/smile2unlock' ]] \
-        || package_die "unexpected su_app RPATH: ${app_rpath}"
-    [[ "$authd_rpath" == '$ORIGIN/../../lib/smile2unlock' ]] \
-        || package_die "unexpected su_authd RPATH: ${authd_rpath}"
-    [[ -z "$helper_rpath" ]] || package_die "unexpected su_deploy_helper RPATH: ${helper_rpath}"
-
-    if [[ "$app_rpath$authd_rpath$helper_rpath" == *'/home/'* \
-        || "$app_rpath$authd_rpath$helper_rpath" == *'.xmake'* ]]; then
-        package_die "package contains a development-machine RPATH"
-    fi
-
-    local binary unresolved
-    for binary in "${root}/usr/bin/su_app" "${root}/usr/libexec/smile2unlock/su_authd"; do
-        unresolved="$(LD_LIBRARY_PATH="${root}/usr/lib/smile2unlock" ldd "$binary" \
-            | sed -n 's/^[[:space:]]*\([^[:space:]]*\) => not found.*/\1/p')"
-        [[ -z "$unresolved" ]] || package_die \
-            "unresolved runtime dependencies for ${binary#$root}: ${unresolved//$'\n'/, }"
-    done
+    python3 "${script_dir}/bundle-runtime.py" --verify "$root"
 
     package_verify_release_info "$root" \
         "${root}/usr/share/smile2unlock/release-info.json"

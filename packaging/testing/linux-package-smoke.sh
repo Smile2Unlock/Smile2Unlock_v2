@@ -22,12 +22,13 @@ printf 'int fixture(void) { return 0; }\n' | \
 ln -s libslint_cpp.so.1 "$runtime_dir/libslint_cpp.so"
 printf 'int detector(void) { return 0; }\n' | \
     cc -x c -shared -fPIC -o "$runtime_dir/libSeetaFaceDetector600.so" -
-printf 'int fixture(void); int detector(void); int main(void) { return fixture() + detector(); }\n' | \
-    cc -x c - -L"$runtime_dir" -Wl,-rpath,"$runtime_dir" \
+printf '#include <iostream>\nextern "C" int fixture(void); extern "C" int detector(void); int main() { std::cout << "runtime fixture"; return fixture() + detector(); }\n' | \
+    c++ -x c++ - -L"$runtime_dir" -Wl,-rpath,"$runtime_dir" \
         -lslint_cpp -lSeetaFaceDetector600 -o "$build_dir/su_app"
 cp "$build_dir/su_app" "$build_dir/su_authd"
 printf 'int main(void) { return 0; }\n' | cc -x c - -o "$build_dir/su_deploy_helper"
-cp "$runtime_dir/libSeetaFaceDetector600.so" "$build_dir/pam_smile2unlock.so"
+printf 'int pam_sm_authenticate(void) { return 0; } int pam_sm_setcred(void) { return 0; }\n' | \
+    cc -x c -shared -fPIC -o "$build_dir/pam_smile2unlock.so" -
 for language in en zh-CN; do
     printf '{}\n' > "$build_dir/assets/i18n/${language}.json"
 done

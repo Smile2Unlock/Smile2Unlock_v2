@@ -496,6 +496,11 @@ if is_plat("linux") then
         add_packages("nlohmann_json")
         add_headerfiles("src/platform/linux/pam/*.h")
         add_syslinks("pam")
+        -- PAM is loaded into GDM/SDDM processes: keep the C++ runtime private
+        -- to this module rather than binding to an older, already loaded one.
+        set_runtimes("stdc++_static")
+        add_shflags("-static-libgcc", "-Wl,--exclude-libs,ALL", {force = true})
+        add_rules("utils.symbols.export_list", {symbols = {"pam_sm_authenticate", "pam_sm_setcred"}})
 
     target("su_authd")
         apply_cpp_target("binary")
