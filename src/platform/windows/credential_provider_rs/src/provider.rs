@@ -30,6 +30,7 @@ use crate::fields::{self, FieldId};
 
 #[implement(ICredentialProvider, ICredentialProviderSetUserArray)]
 pub struct Provider {
+    status_bridge: RefCell<Option<crate::status_bridge::StatusBridge>>,
     /// CPUS_* value accepted by SetUsageScenario; None until set.
     usage_scenario: Cell<Option<i32>>,
     /// upadvisecontext from the last Advise call.
@@ -46,6 +47,7 @@ pub struct Provider {
 impl Provider {
     pub fn new() -> Self {
         Self {
+            status_bridge: RefCell::new(None),
             usage_scenario: Cell::new(None),
             advised_context: Cell::new(0),
             user_sids: RefCell::new(Vec::new()),
@@ -129,6 +131,10 @@ impl ICredentialProvider_Impl for Provider_Impl {
         self.advised_context.set(upadvisecontext);
         // Allow a provider instance that was UnAdvise'd to be re-armed.
         self.runtime.arm();
+        if self.status_bridge.borrow().is_none() {
+            *self.status_bridge.borrow_mut() =
+                crate::status_bridge::StatusBridge::start(&self.runtime);
+        }
         // Marshal the events interface through the Global Interface Table so
         // the recognition worker (a different apartment) can call
         // CredentialsChanged. Storing the raw pointer across threads is
@@ -156,6 +162,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         // exits on its own; the UI thread never joins it.
         self.runtime.shutdown();
         self.runtime.clear_notifier();
+        self.status_bridge.borrow_mut().take();
         Ok(())
     }
 

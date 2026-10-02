@@ -2,8 +2,9 @@
 //!
 //! Scope discipline (docs/windows_credential_provider_rust_plan.md):
 //! - The DLL is a thin COM adapter: credential serialization, field plumbing,
-//!   and an auth-service pipe client only.
+//!   an auth-service pipe client, and a non-secret status publisher.
 //! - No GUI, no camera, no recognizer, no async runtime inside LogonUI.
+//!   The optional status window runs in a separate process.
 //!
 //! Phase 0: buildable cdylib with the four canonical exports, pure-memory
 //! COM tests (GUID/HRESULT/field layout), and the WindowsSecret prototype.
@@ -13,6 +14,10 @@
 mod auto_recognition;
 mod fields;
 mod secret_buffer;
+mod status;
+
+#[cfg(windows)]
+mod status_bridge;
 
 #[cfg(windows)]
 mod auto_runtime;

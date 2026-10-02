@@ -120,6 +120,13 @@ pub enum Phase {
     Stopped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopReason {
+    NoMatch,
+    TimedOut,
+    Unavailable,
+}
+
 /// Work item handed to the transport. `deadline_ms` is the absolute
 /// monotonic deadline of the whole attempt, not of this single capture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +197,7 @@ pub struct AttemptMachine {
     attempts: u32,
     in_flight: bool,
     retry_allowed: bool,
+    stop_reason: Option<StopReason>,
 }
 
 impl AttemptMachine {
@@ -210,6 +218,7 @@ impl AttemptMachine {
             attempts: 0,
             in_flight: false,
             retry_allowed: false,
+            stop_reason: None,
         }
     }
 
@@ -233,10 +242,19 @@ impl AttemptMachine {
         self.deadline_ms
     }
 
+    pub fn delay_remaining_ms(&self, now_ms: u64) -> u64 {
+        self.next_ms.min(self.deadline_ms).saturating_sub(now_ms)
+    }
+
+    pub fn stop_reason(&self) -> Option<StopReason> {
+        self.stop_reason
+    }
+
     /// Expire every live phase, including a password awaiting serialization.
     pub fn expire(&mut self, now_ms: u64) -> bool {
         if self.is_active() && now_ms >= self.deadline_ms {
             self.phase = Phase::Stopped;
+            self.stop_reason = Some(StopReason::TimedOut);
             self.in_flight = false;
             true
         } else {
@@ -319,6 +337,7 @@ impl AttemptMachine {
         self.attempts = 0;
         self.in_flight = false;
         self.retry_allowed = retry_allowed;
+        self.stop_reason = None;
         (self.generation, true)
     }
 
@@ -334,6 +353,7 @@ impl AttemptMachine {
         self.next_ms = 0;
         self.attempts = 0;
         self.in_flight = false;
+        self.stop_reason = None;
         self.generation
     }
 
@@ -371,6 +391,7 @@ impl AttemptMachine {
                 }
                 if self.attempts >= MAX_ATTEMPTS {
                     self.phase = Phase::Stopped;
+                    self.stop_reason = Some(StopReason::NoMatch);
                     self.in_flight = false;
                     return Poll::Finished;
                 }
@@ -413,6 +434,7 @@ impl AttemptMachine {
             }
             Outcome::Fatal => {
                 self.phase = Phase::Stopped;
+                self.stop_reason = Some(StopReason::Unavailable);
                 Completion::Aborted
             }
             Outcome::Transient => {
@@ -420,6 +442,7 @@ impl AttemptMachine {
                 if !self.retry_allowed || self.attempts >= MAX_ATTEMPTS || next >= self.deadline_ms
                 {
                     self.phase = Phase::Stopped;
+                    self.stop_reason = Some(StopReason::NoMatch);
                     Completion::Exhausted
                 } else {
                     self.phase = Phase::RetryDelay;

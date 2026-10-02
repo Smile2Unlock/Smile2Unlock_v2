@@ -135,7 +135,7 @@ jobs:
       - name: Build Windows privileged components
         run: |
           xmake f -y -p mingw -a x86_64 -m release --with_slint=n --with_seetaface=n
-          xmake build -v su_deploy_helper su_auth_service su_password_tool su_credential_provider su_credential_provider_rust_tests su_windows_recognition_result_test
+          xmake build -v su_deploy_helper su_auth_service su_password_tool su_credential_provider su_status_host su_credential_provider_rust_tests su_windows_recognition_result_test su_windows_status_display_test
 
       - name: Run Windows tests under Wine
         run: |
@@ -148,6 +148,7 @@ jobs:
           xvfb-run -a xmake test su_deploy_helper/version -v
           xvfb-run -a xmake test su_credential_provider_rust_tests/default -v
           xvfb-run -a xmake test su_windows_recognition_result_test/default -v
+          xvfb-run -a xmake test su_windows_status_display_test/default -v
 
   windows-package:
     name: Windows release package verification

@@ -70,6 +70,7 @@ primary_files=(
     Smile2UnlockAuthService.exe
     Smile2UnlockPasswordTool.exe
     Smile2UnlockRecognitionAgent.exe
+    Smile2UnlockStatus.exe
     Smile2Unlock.ico
 )
 for name in "${primary_files[@]}"; do
@@ -101,6 +102,7 @@ install -m 0755 "${build_dir}/Smile2UnlockCredentialProvider.dll" "${package_roo
 install -m 0755 "${build_dir}/Smile2UnlockAuthService.exe" "${package_root}/bin/Smile2UnlockAuthService.exe"
 install -m 0755 "${build_dir}/Smile2UnlockPasswordTool.exe" "${package_root}/bin/Smile2UnlockPasswordTool.exe"
 install -m 0755 "${build_dir}/Smile2UnlockRecognitionAgent.exe" "${package_root}/bin/Smile2UnlockRecognitionAgent.exe"
+install -m 0755 "${build_dir}/Smile2UnlockStatus.exe" "${package_root}/bin/Smile2UnlockStatus.exe"
 install -m 0644 "${build_dir}/Smile2Unlock.ico" "${package_root}/bin/Smile2Unlock.ico"
 install -m 0644 "${build_dir}/assets/i18n/"*.json "${package_root}/assets/i18n/"
 install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${package_root}/assets/models/seeta/"

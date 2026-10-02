@@ -33,6 +33,7 @@ required=(
     bin/Smile2UnlockDeployHelper.exe
     bin/Smile2UnlockPasswordTool.exe
     bin/Smile2UnlockRecognitionAgent.exe
+    bin/Smile2UnlockStatus.exe
     bin/Smile2UnlockCredentialProvider.dll
     bin/Smile2UnlockAuthService.exe
     bin/Smile2Unlock.ico

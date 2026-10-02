@@ -133,6 +133,9 @@ struct Inner<G> {
     notified: bool,
     shutdown: bool,
     owner: Option<(u64, String)>,
+    password_entry: bool,
+    login_failed: bool,
+    login_complete: bool,
 }
 
 /// Shared automatic-recognition runtime. One instance per provider process;
@@ -158,6 +161,9 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 notified: false,
                 shutdown: false,
                 owner: None,
+                password_entry: false,
+                login_failed: false,
+                login_complete: false,
             }),
             wake: Condvar::new(),
             transport: Mutex::new(transport),
@@ -258,6 +264,11 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             }
             let same_owner =
                 inner.owner.as_ref().map(|(id, s)| (*id, s.as_str())) == Some((owner, sid));
+            if !same_owner {
+                inner.password_entry = false;
+                inner.login_failed = false;
+                inner.login_complete = false;
+            }
             if !same_owner
                 || (inner.machine.is_active()
                     && inner.machine.settings().is_automatic()
@@ -314,6 +325,8 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 return false;
             }
             Self::clear_grant(&mut inner);
+            inner.login_failed = false;
+            inner.login_complete = false;
             inner
                 .machine
                 .begin_on_demand(self.clock.now_ms(), sid, session_id, request_id)
@@ -382,6 +395,37 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_locked(&mut inner);
         (inner.owner.as_ref().map(|(id, _)| *id) == Some(owner)).then(|| inner.machine.phase())
+    }
+
+    /// A display-only snapshot: no identity, camera data or credential leaves
+    /// this runtime. Reading the display never advances authentication.
+    pub(crate) fn display_snapshot(&self) -> u32 {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        crate::status::snapshot(
+            &inner.machine,
+            self.clock.now_ms(),
+            !inner.shutdown
+                && inner.owner.is_some()
+                && !inner.password_entry
+                && !inner.login_complete,
+            inner.login_failed,
+        )
+    }
+
+    pub(crate) fn password_entry_owned(&self, owner: u64, entered: bool) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.owner.as_ref().map(|(id, _)| *id) == Some(owner) {
+            inner.password_entry = entered;
+            inner.login_failed = false;
+        }
+    }
+
+    pub(crate) fn logon_result_owned(&self, owner: u64, success: bool) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.owner.as_ref().map(|(id, _)| *id) == Some(owner) {
+            inner.login_complete = success;
+            inner.login_failed = !success;
+        }
     }
 
     pub fn phase(&self) -> Phase {
@@ -973,7 +1017,12 @@ mod tests {
             Ok(sid) => sid,
             Err(_) => return,
         };
-        let path = user_settings_path(&sid);
+        // Never overwrite/delete the logged-in user's real recognition policy.
+        let path = format!(
+            "{}\\RuntimeTest-{}",
+            user_settings_path(&sid),
+            std::process::id()
+        );
         let wide: Vec<u16> = path.encode_utf16().chain(core::iter::once(0)).collect();
         let mut key = HKEY::default();
         // SAFETY: all pointers are valid out-params for the duration of the
@@ -1036,6 +1085,38 @@ mod tests {
         fn now_ms(&self) -> u64 {
             self.0.load(Ordering::Acquire)
         }
+    }
+
+    #[test]
+    fn display_visibility_and_results_belong_to_the_selected_owner() {
+        let runtime = AutoRuntime::new(
+            FakeTransport::new(vec![Outcome::Success]),
+            Box::new(FakeClock::new(0)),
+        );
+        let phase = || runtime.display_snapshot() & 15;
+        assert_eq!(phase(), 0);
+        runtime.select_owned(10, "S-1-5-21-1", 1, 7, TriggerSettings::manual());
+        assert_eq!(phase(), 1);
+        runtime.password_entry_owned(10, true);
+        assert_eq!(phase(), 0);
+        runtime.select_owned(20, "S-1-5-21-2", 1, 8, TriggerSettings::manual());
+        runtime.password_entry_owned(10, true);
+        runtime.logon_result_owned(10, true);
+        assert_eq!(phase(), 1, "old tile cannot hide the new user's hint");
+        runtime.logon_result_owned(20, false);
+        assert_eq!(phase(), 10);
+        assert!(runtime.submit_owned(20, "S-1-5-21-2", 1, 9));
+        wait_for(|| runtime.phase() == Phase::Ready);
+        assert_eq!(phase(), 5, "a new manual attempt clears the old error");
+        assert!(runtime.take_ready_owned(20, "S-1-5-21-2").is_some());
+        assert_eq!(phase(), 6);
+        runtime.logon_result_owned(20, true);
+        assert_eq!(phase(), 0, "Windows success hides the hint");
+        runtime.deselect_owned(20);
+        runtime.select_owned(20, "S-1-5-21-2", 1, 10, TriggerSettings::manual());
+        assert_eq!(phase(), 1, "a fresh selection clears completed state");
+        runtime.shutdown();
+        assert_eq!(phase(), 0);
     }
 
     #[test]

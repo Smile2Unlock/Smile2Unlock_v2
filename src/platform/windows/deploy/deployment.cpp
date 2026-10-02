@@ -541,6 +541,7 @@ std::expected<InstalledComponents, std::string> stage_security_components(
     for (const auto& item : {
              std::tuple{"bin/Smile2UnlockAuthService.exe", installed.auth_service, true},
              std::tuple{"bin/Smile2UnlockRecognitionAgent.exe", installed.recognition_agent, true},
+             std::tuple{"bin/Smile2UnlockStatus.exe", install_bin / "Smile2UnlockStatus.exe", true},
              std::tuple{"bin/Smile2Unlock.exe", install_bin / "Smile2Unlock.exe", true},
              std::tuple{"bin/Smile2UnlockDeployHelper.exe", install_bin / "Smile2UnlockDeployHelper.exe", true},
              std::tuple{"bin/Smile2UnlockPasswordTool.exe", install_bin / "Smile2UnlockPasswordTool.exe", true},
