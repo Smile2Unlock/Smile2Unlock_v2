@@ -14,7 +14,6 @@ StateDirectory=smile2unlock
 StateDirectoryMode=0700
 LoadCredentialEncrypted=smile2unlock-master.key
 Environment=SU_SEETAFACE_MODEL_DIR=/usr/share/smile2unlock/models
-Environment=LD_LIBRARY_PATH=/usr/lib/smile2unlock
 UMask=0077
 LimitMEMLOCK=64K
 NoNewPrivileges=yes

@@ -82,7 +82,13 @@
 
 ## 运行环境依赖
 
-Linux 发行物动态链接发行版提供的系统库（glibc、wayland/compositor 相关库、
-libstdc++ 等），其许可由发行版提供，不在本文件范围内。Windows 发行物仅依赖
+Linux 原生包与归档随包分发独立可执行程序所需的 C/C++ 运行库，包括配套的
+glibc/加载器（LGPL-2.1-or-later 等）、GCC 运行库（GPL-3.0-or-later WITH
+GCC-exception-3.1）以及解析出的其他依赖。打包时生成的
+`usr/share/doc/smile2unlock/runtime-libraries.json` 记录原始哈希和可用的来源包版本；
+对应发行版版权/许可文件及 GNU 通用许可文本置于同目录的 `licenses/runtime/`。
+PAM 模块静态链接私有的 GCC C++ 运行库，但仍使用目标系统的 libc/libpam。
+发布者需提供所分发 copyleft 运行库的对应源码及发行版补丁。
+显示服务、GPU 驱动及其插件、系统 PAM 等仍由目标发行版提供。Windows 发行物仅依赖
 操作系统组件（DirectShow/Media Foundation、NCrypt/BCrypt、LSA 等），随 Windows
 授权提供。

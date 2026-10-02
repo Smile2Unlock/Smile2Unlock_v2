@@ -1,5 +1,7 @@
 # Linux 跨发行版验收（2026-10-02）
 
+后续 Debian GNOME/GDM 和统一运行库打包的结果见 [Debian 报告](debian_gnome_acceptance_20261002.md)：新包已能直接在 Debian 13 运行。本文保留初轮产物与 Fedora SELinux 验收的具体快照，不代表新 bundle 已在所有桌面复测。
+
 被测源码：`053a1c44aabc4552a0df46423a7ae7c34f530d49`（main，已合并 #98）。
 从该提交在 Arch 主机重新构建 Linux Release，启用 Slint 和 SeetaFace，生成版本 2.3.1 的 RPM/DEB。
 本次只做本地验收，没有增加或修改 CI。结论适用于下面的具体产物，不代表其他发布标签或发行版原生构建已经通过。
