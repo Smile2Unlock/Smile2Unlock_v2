@@ -68,6 +68,12 @@ The archive contains a stable `Smile2Unlock/` directory with sibling `bin/`
 and `assets/` directories. `bin/Smile2UnlockCredentialProvider.dll` is the only CP DLL
 name accepted by the verifier; suffixed copies are rejected.
 
+`bin/Smile2UnlockStatus.exe` is the signed, optional-at-runtime recognition
+status display launched by the credential provider on the Windows secure
+desktop. It is a required package payload and is verified/staged with the
+other executables. Its failure cannot authorize or block authentication. See
+[status display design and acceptance](../../docs/windows_hello_status.md).
+
 After extraction, run `bin/Smile2Unlock.exe` and use its deployment action. The UAC
 helper installs security components under:
 

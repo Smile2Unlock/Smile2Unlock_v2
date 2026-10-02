@@ -588,6 +588,14 @@ if is_plat("linux") then
 end
 
 if is_plat("windows", "mingw") then
+    target("su_status_host")
+        apply_cpp_target("binary")
+        set_basename("Smile2UnlockStatus")
+        add_files("src/platform/windows/status_host/main.cpp")
+        add_files("src/platform/windows/status_host/status.rc")
+        add_ldflags("-municode", "-mwindows", "-static", {force = true})
+        add_syslinks("gdiplus", "gdi32", "user32", "advapi32")
+
     target("su_windows_storage")
         apply_cpp_target("static")
         set_default(false)
@@ -755,6 +763,16 @@ target("su_windows_sid_rate_limiter_test")
     apply_cpp_target("binary")
     add_files("tests/windows/sid_rate_limiter.cpp")
     add_includedirs("src/platform/windows/auth_service")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
+target("su_windows_status_display_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/windows/status_display.cpp")
     if is_plat("mingw") then
         add_ldflags("-static", {force = true})
     end

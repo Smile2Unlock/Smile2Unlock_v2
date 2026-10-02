@@ -411,6 +411,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             // A real edit, including clearing a previously typed password,
             // overrides recognition and invalidates any prepared credential.
             self.cancel_auto();
+            self.runtime.password_entry_owned(self.owner, length != 0);
             crate::pipe_client::secure_clear(&mut password);
             password.clear();
             if length != 0 {
@@ -617,6 +618,8 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         // the same stale secret would lock the account. The user can reselect
         // the tile to start a fresh attempt.
         self.cancel_auto();
+        self.runtime
+            .logon_result_owned(self.owner, ntsstatus.0 == 0);
         if !ppszoptionalstatustext.is_null() {
             unsafe { *ppszoptionalstatustext = PWSTR::null() };
         }
@@ -737,9 +740,19 @@ mod password_result_tests {
         unsafe { credential.SetStringValue(3, PCWSTR(typed.as_ptr())) }.unwrap();
         assert!(object.runtime.ready_sid().is_none());
         assert_eq!(object.runtime.phase(), crate::Phase::Idle);
+        assert_eq!(
+            object.runtime.display_snapshot(),
+            0,
+            "typing hides the face hint"
+        );
         // Clearing a previously typed password is a real edit too.
         object.prepare_test_grant();
         unsafe { credential.SetStringValue(3, PCWSTR::null()) }.unwrap();
+        assert_eq!(
+            object.runtime.display_snapshot() & 15,
+            1,
+            "clearing returns to manual standby"
+        );
         assert!(object.runtime.ready_sid().is_none());
         assert!(object.password.borrow().is_empty());
         object.runtime.shutdown();
