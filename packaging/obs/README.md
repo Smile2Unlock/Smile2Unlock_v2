@@ -40,13 +40,13 @@ requires acceptance testing on other SELinux distributions.
 
 `Sync Linux release to OBS` runs after the existing release artifact workflow
 succeeds, or manually for a published stable tag. It verifies the upstream
-checksum and publishes build inputs to the dedicated `codex/obs-releases`
+checksum and publishes build inputs to the dedicated `obs-releases`
 branch, without adding the 200 MB binary archive to Git.
 
 Set the OBS package SCM Sync URL to:
 
 ```text
-https://github.com/Smile2Unlock/Smile2Unlock_v2.git#codex/obs-releases
+https://github.com/Smile2Unlock/Smile2Unlock_v2.git#obs-releases
 ```
 
 Create an OBS **service** token restricted to project

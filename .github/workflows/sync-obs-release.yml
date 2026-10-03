@@ -71,18 +71,18 @@ jobs:
           git -C "$publication" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git -C "$publication" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
           gh auth setup-git
-          if git -C "$publication" ls-remote --exit-code origin refs/heads/codex/obs-releases; then
-            git -C "$publication" fetch --depth=1 origin codex/obs-releases
-            git -C "$publication" checkout -B codex/obs-releases FETCH_HEAD
+          if git -C "$publication" ls-remote --exit-code origin refs/heads/obs-releases; then
+            git -C "$publication" fetch --depth=1 origin obs-releases
+            git -C "$publication" checkout -B obs-releases FETCH_HEAD
             git -C "$publication" rm -r --ignore-unmatch .
           else
-            git -C "$publication" checkout --orphan codex/obs-releases
+            git -C "$publication" checkout --orphan obs-releases
           fi
           cp -a "$RUNNER_TEMP/obs-inputs/." "$publication/"
           git -C "$publication" add --all
           if ! git -C "$publication" diff --cached --quiet; then
             git -C "$publication" commit -m "Package Smile2Unlock $OBS_RELEASE_VERSION for OBS"
-            git -C "$publication" push origin HEAD:refs/heads/codex/obs-releases
+            git -C "$publication" push origin HEAD:refs/heads/obs-releases
           fi
 
       - name: Refresh OBS package sources
