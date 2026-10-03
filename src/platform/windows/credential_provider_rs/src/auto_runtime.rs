@@ -35,6 +35,7 @@ use windows_core::PCWSTR;
 use crate::auto_recognition::{AttemptMachine, Completion, Outcome, Phase, Poll, TriggerSettings};
 
 use crate::event_sink::ReadyNotifier;
+use crate::wake_policy::{PowerEvent, WakePolicy};
 
 /// Source of monotonic milliseconds. Injected so the worker can be exercised
 /// with a deterministic clock.
@@ -137,6 +138,17 @@ struct Inner<G> {
     password_entry: bool,
     login_failed: bool,
     login_complete: bool,
+    manual_takeover: bool,
+    selection_suppressed: bool,
+    submitting: bool,
+    session_id: u32,
+    power: WakePolicy,
+    last_power_event: Option<PowerEvent>,
+    power_epoch: u64,
+    power_initializing: bool,
+    power_paused: bool,
+    deferred_selection: bool,
+    wake_attempt: bool,
 }
 
 /// Shared automatic-recognition runtime. One instance per provider process;
@@ -166,6 +178,17 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 password_entry: false,
                 login_failed: false,
                 login_complete: false,
+                manual_takeover: false,
+                selection_suppressed: false,
+                submitting: false,
+                session_id: 0,
+                power: WakePolicy::default(),
+                last_power_event: None,
+                power_epoch: 0,
+                power_initializing: false,
+                power_paused: false,
+                deferred_selection: false,
+                wake_attempt: false,
             }),
             wake: Condvar::new(),
             transport: Mutex::new(transport),
@@ -208,6 +231,14 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             inner.password_entry = false;
             inner.login_failed = false;
             inner.login_complete = false;
+            inner.manual_takeover = false;
+            inner.submitting = false;
+            inner.selection_suppressed = false;
+            inner.power = WakePolicy::default();
+            inner.power_initializing = false;
+            inner.power_paused = false;
+            inner.deferred_selection = false;
+            inner.wake_attempt = false;
         }
         inner.shutdown = false;
     }
@@ -265,6 +296,19 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         request_id: u64,
         settings: TriggerSettings,
     ) -> u64 {
+        self.select_owned_policy(owner, sid, session_id, request_id, settings, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn select_owned_policy(
+        self: &Arc<Self>,
+        owner: u64,
+        sid: &str,
+        session_id: u32,
+        request_id: u64,
+        settings: TriggerSettings,
+        suppressed: bool,
+    ) -> u64 {
         let (generation, started) = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if inner.shutdown {
@@ -277,6 +321,10 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 inner.password_entry = false;
                 inner.login_failed = false;
                 inner.login_complete = false;
+                inner.manual_takeover = false;
+                inner.submitting = false;
+                inner.wake_attempt = false;
+                inner.deferred_selection = true;
             }
             if !same_owner
                 || (inner.machine.is_active()
@@ -288,7 +336,23 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 self.cancel_event.set();
             }
             inner.owner = Some((owner, sid.to_owned()));
+            inner.session_id = session_id;
+            inner.selection_suppressed = suppressed;
             inner.machine.set_settings(settings);
+            if inner.power_initializing
+                || inner.power.blocked()
+                || inner.power_paused
+                || inner.power.pending().is_some()
+                || inner.manual_takeover
+                || inner.selection_suppressed
+                || inner.submitting
+                || inner.login_failed
+                || inner.login_complete
+            {
+                self.wake.notify_all();
+                return inner.machine.generation();
+            }
+            inner.deferred_selection = false;
             if same_owner && matches!(inner.machine.phase(), Phase::Stopped | Phase::Submitted) {
                 // CredentialsChanged can cause another SetSelected without a
                 // real user deselection. It must not re-arm a failed/expired
@@ -319,6 +383,10 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         let started = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if inner.shutdown
+                || inner.power_initializing
+                || inner.power.blocked()
+                || inner.power_paused
+                || inner.submitting
                 || inner.owner.as_ref().map(|(id, s)| (*id, s.as_str())) != Some((owner, sid))
             {
                 return false;
@@ -384,11 +452,193 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
     pub fn shutdown(self: &Arc<Self>) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.shutdown = true;
+        inner.power_epoch = inner.power_epoch.wrapping_add(1);
+        inner.deferred_selection = false;
         inner.machine.cancel();
         Self::clear_grant(&mut inner);
         inner.owner = None;
         self.cancel_event.set();
         self.wake.notify_all();
+    }
+
+    pub(crate) fn submission_owned(&self, owner: u64) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.owner.as_ref().map(|(id, _)| *id) == Some(owner) {
+            inner.submitting = true;
+        }
+    }
+
+    /// Epochs isolate callbacks from a previous Advise, even if unregister is
+    /// still running in the background. Registration gates first selection.
+    pub(crate) fn begin_power_subscription(self: &Arc<Self>) -> u64 {
+        let epoch = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.power_epoch = inner.power_epoch.wrapping_add(1);
+            inner.power_initializing = true;
+            inner.power_epoch
+        };
+        self.ensure_worker();
+        epoch
+    }
+
+    pub(crate) fn finish_power_subscription(&self, epoch: u64) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !inner.shutdown && inner.power_epoch == epoch {
+            inner.power_initializing = false;
+            self.wake.notify_all();
+        }
+    }
+
+    /// Called on the OS notification thread. No COM, registry, session query,
+    /// transport call or join is allowed here. Cancellation is synchronous.
+    pub(crate) fn power_event(&self, epoch: u64, event: PowerEvent) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.shutdown || epoch != inner.power_epoch {
+            return;
+        }
+        inner.last_power_event = Some(event);
+        if inner.power.observe(event) {
+            inner.power_paused = true;
+            if inner.machine.phase() != Phase::Submitted && !inner.submitting {
+                inner.machine.cancel();
+                Self::clear_grant(&mut inner);
+                self.cancel_event.set();
+            }
+        }
+        self.wake.notify_all();
+    }
+
+    fn process_power_return(&self) {
+        // Potentially blocking OS queries run without the state lock. Recheck
+        // the epoch, owner, generation and cycle before committing the result.
+        let snapshot = {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if inner.shutdown || inner.power_initializing || inner.power.blocked() {
+                return;
+            }
+            let pending = inner.power.pending();
+            if pending.is_none() && (!inner.deferred_selection || inner.power_paused) {
+                return;
+            }
+            let Some(owner) = inner.owner.clone() else {
+                return;
+            };
+            (
+                inner.power_epoch,
+                inner.machine.generation(),
+                pending,
+                owner,
+                inner.session_id,
+                inner.machine.settings(),
+            )
+        };
+        let (epoch, generation, cycle, owner, session, old_settings) = snapshot;
+        #[cfg(not(test))]
+        let settings = read_trigger_settings(&owner.1);
+        #[cfg(test)]
+        let settings = old_settings;
+        #[cfg(not(test))]
+        let _ = old_settings;
+        let eligible = cycle.is_none() || crate::power_events::locked_console_session(session);
+        self.commit_power_return(epoch, generation, cycle, owner, session, settings, eligible);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_power_return(
+        &self,
+        epoch: u64,
+        generation: u64,
+        cycle: Option<u64>,
+        owner: (u64, String),
+        session: u32,
+        settings: TriggerSettings,
+        eligible: bool,
+    ) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.shutdown
+            || inner.power_initializing
+            || inner.power.blocked()
+            || inner.power_epoch != epoch
+            || inner.machine.generation() != generation
+            || inner.owner.as_ref() != Some(&owner)
+            || inner.power.pending() != cycle
+        {
+            return;
+        }
+        if cycle.is_some() {
+            inner.power.consume();
+        }
+        inner.power_paused = false;
+        inner.deferred_selection = false;
+        if !settings.is_automatic()
+            && inner.machine.settings().is_automatic()
+            && inner.machine.is_active()
+        {
+            inner.machine.cancel();
+            Self::clear_grant(&mut inner);
+            self.cancel_event.set();
+        }
+        inner.machine.set_settings(settings);
+        let suppression = if !eligible {
+            Some("session unavailable")
+        } else if inner.selection_suppressed {
+            Some("credential suppressed")
+        } else if !settings.is_automatic() {
+            Some("manual mode")
+        } else if inner.manual_takeover {
+            Some("password takeover")
+        } else if inner.login_failed {
+            Some("Windows rejected credential")
+        } else if inner.login_complete {
+            Some("login complete")
+        } else if inner.submitting || inner.machine.phase() == Phase::Submitted {
+            Some("submission pending")
+        } else {
+            None
+        };
+        if suppression.is_none() && !inner.machine.is_active() {
+            inner.machine.cancel();
+            Self::clear_grant(&mut inner);
+            inner.machine.set_settings(settings);
+            inner.machine.begin(
+                self.clock.now_ms(),
+                &owner.1,
+                session,
+                crate::pipe_client::next_request_id(),
+            );
+            inner.wake_attempt = cycle.is_some();
+        }
+        let phase = inner.machine.phase();
+        let event = inner.last_power_event;
+        let generation = inner.machine.generation();
+        drop(inner);
+        crate::log::cp_log(&format!(
+            "power return event={event:?} cycle={cycle:?} generation={generation} suppression={suppression:?} phase={phase:?}"
+        ));
+    }
+
+    /// Recovered grants are checked again before advertising or consuming
+    /// them. Initial login keeps its existing selection policy.
+    fn validate_wake_session(&self) {
+        let session = {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            (inner.wake_attempt && inner.machine.is_active()).then_some((
+                inner.power_epoch,
+                inner.machine.generation(),
+                inner.session_id,
+            ))
+        };
+        if let Some((epoch, generation, session)) = session {
+            if crate::power_events::locked_console_session(session) {
+                return;
+            }
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if inner.power_epoch == epoch && inner.machine.generation() == generation {
+                inner.machine.cancel();
+                Self::clear_grant(&mut inner);
+                self.cancel_event.set();
+            }
+        }
     }
 
     pub(crate) fn selected_sid(&self) -> Option<String> {
@@ -418,6 +668,8 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             // opened; before that point the state machine renders Waiting.
             !inner.shutdown
                 && (inner.owner.is_some() || inner.initial_hint)
+                && !inner.power.blocked()
+                && !inner.power_paused
                 && !inner.password_entry
                 && !inner.login_complete,
             inner.login_failed,
@@ -428,15 +680,25 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.owner.as_ref().map(|(id, _)| *id) == Some(owner) {
             inner.password_entry = entered;
+            inner.manual_takeover = true;
             inner.login_failed = false;
+            inner.machine.cancel();
+            Self::clear_grant(&mut inner);
+            self.cancel_event.set();
+            self.wake.notify_all();
         }
     }
 
     pub(crate) fn logon_result_owned(&self, owner: u64, success: bool) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.owner.as_ref().map(|(id, _)| *id) == Some(owner) {
+            inner.submitting = false;
             inner.login_complete = success;
             inner.login_failed = !success;
+            inner.machine.cancel();
+            Self::clear_grant(&mut inner);
+            self.cancel_event.set();
+            self.wake.notify_all();
         }
     }
 
@@ -468,6 +730,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
     /// SID whose grant is currently published, if any. `GetCredentialCount`
     /// uses this to pick the default tile and enable autologon.
     pub fn ready_sid(&self) -> Option<String> {
+        self.validate_wake_session();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_locked(&mut inner);
         if inner.machine.phase() == Phase::Ready {
@@ -478,6 +741,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
     }
 
     pub(crate) fn has_ready_owned(&self, owner: u64, sid: &str) -> bool {
+        self.validate_wake_session();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_locked(&mut inner);
         inner.machine.phase() == Phase::Ready
@@ -498,6 +762,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
     }
 
     fn take_ready_for(&self, sid: &str, owner: Option<u64>) -> Option<(T::Grant, u64, u32)> {
+        self.validate_wake_session();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_locked(&mut inner);
         if owner.is_some() && inner.owner.as_ref().map(|(id, _)| *id) != owner {
@@ -513,6 +778,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             return None;
         }
         inner.ready_sid = None;
+        inner.submitting = true;
         self.wake.notify_all();
         let (request_id, session_id) = inner.grant_request.take()?;
         inner
@@ -555,11 +821,25 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
         // its own apartment, so this thread must join a different one.
         let _apartment = ComApartment::enter_mta();
         loop {
+            self.process_power_return();
+            self.validate_wake_session();
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             if inner.shutdown {
                 // Keep the transition atomic with a concurrent arm/select.
                 self.worker_running.store(false, Ordering::Release);
                 break;
+            }
+            if inner.power_initializing {
+                drop(self.wake.wait(inner));
+                continue;
+            }
+            if !inner.power.blocked()
+                && inner.owner.is_some()
+                && (inner.power.pending().is_some()
+                    || (inner.deferred_selection && !inner.power_paused))
+            {
+                drop(inner);
+                continue;
             }
             let now = self.clock.now_ms();
             match inner.machine.poll(now) {
@@ -611,6 +891,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                             request.deadline_ms,
                         )
                     };
+                    self.validate_wake_session();
                     let completed_at = self.clock.now_ms();
                     let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
                     match outcome {
@@ -897,6 +1178,278 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         panic!("condition was not reached");
+    }
+
+    // Seed a selected, exhausted automatic tile without starting a worker.
+    // These tests control both time and delivery order, including queued OS
+    // queries racing a new selection or provider lifetime.
+    fn sleeping_tile() -> Arc<AutoRuntime<FakeTransport>> {
+        let runtime = AutoRuntime::new(
+            FakeTransport::new(vec![]),
+            Box::new(FakeClock::new(100_000)),
+        );
+        {
+            let mut inner = runtime.inner.lock().unwrap();
+            inner.owner = Some((10, "S-1-5-21-1".into()));
+            inner.session_id = 1;
+            inner.machine.set_settings(TriggerSettings::from_values(
+                Some(1),
+                Some(3),
+                Some(2),
+                Some(30),
+            ));
+            inner.machine.begin(0, "S-1-5-21-1", 1, 7);
+            inner.machine.expire(30_000);
+        }
+        runtime
+    }
+
+    fn return_to_tile(runtime: &Arc<AutoRuntime<FakeTransport>>) {
+        runtime.power_event(0, PowerEvent::Suspend);
+        runtime.power_event(0, PowerEvent::ResumeAutomatic);
+        runtime.process_power_return();
+        assert!(!runtime.inner.lock().unwrap().machine.is_active());
+        runtime.power_event(0, PowerEvent::ResumeInteractive);
+        runtime.process_power_return();
+    }
+
+    #[test]
+    fn wake_rearms_exhausted_tile_with_fresh_request_deadline_and_original_delays() {
+        let runtime = sleeping_tile();
+        return_to_tile(&runtime);
+        let generation = runtime.generation();
+        {
+            let mut inner = runtime.inner.lock().unwrap();
+            assert_eq!(inner.machine.phase(), Phase::InitialDelay);
+            assert_eq!(inner.machine.deadline_ms(), 130_000);
+            assert_eq!(inner.machine.poll(100_000), Poll::WaitUntil(103_000));
+            let Poll::Recognize(request) = inner.machine.poll(103_000) else {
+                panic!("capture expected")
+            };
+            assert_ne!(request.request_id, 7);
+            assert_eq!(request.session_id, 1);
+            assert_eq!(
+                inner
+                    .machine
+                    .complete(request.generation, 103_001, Outcome::Transient),
+                Completion::Retry
+            );
+            assert_eq!(inner.machine.poll(103_001), Poll::WaitUntil(105_001));
+        }
+        runtime.power_event(0, PowerEvent::ResumeInteractive);
+        runtime.process_power_return();
+        assert_eq!(runtime.generation(), generation);
+    }
+
+    #[test]
+    fn current_settings_override_old_automatic_mode_on_return() {
+        let runtime = sleeping_tile();
+        runtime.power_event(0, PowerEvent::Suspend);
+        runtime.power_event(0, PowerEvent::ResumeInteractive);
+        let (generation, cycle) = {
+            let inner = runtime.inner.lock().unwrap();
+            (inner.machine.generation(), inner.power.pending())
+        };
+        runtime.commit_power_return(
+            0,
+            generation,
+            cycle,
+            (10, "S-1-5-21-1".into()),
+            1,
+            TriggerSettings::manual(),
+            true,
+        );
+        assert_eq!(runtime.phase(), Phase::Idle);
+        assert!(runtime.inner.lock().unwrap().power.pending().is_none());
+        assert!(!runtime.is_automatic());
+    }
+
+    #[test]
+    fn wake_preserves_all_manual_and_submission_suppression() {
+        for reason in 0..6 {
+            let runtime = sleeping_tile();
+            match reason {
+                0 => runtime.set_settings(TriggerSettings::manual()),
+                1 => {
+                    runtime.password_entry_owned(10, true);
+                    runtime.password_entry_owned(10, false);
+                }
+                2 => runtime.logon_result_owned(10, false),
+                3 => runtime.logon_result_owned(10, true),
+                4 => runtime.submission_owned(10),
+                _ => runtime.inner.lock().unwrap().selection_suppressed = true,
+            }
+            return_to_tile(&runtime);
+            assert_eq!(
+                runtime.phase(),
+                if reason == 4 {
+                    Phase::Stopped
+                } else {
+                    Phase::Idle
+                },
+                "suppression {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn pause_erases_ready_grant_but_never_reverts_submitted() {
+        for submitted in [false, true] {
+            let runtime = sleeping_tile();
+            runtime.inner.lock().unwrap().machine.cancel();
+            runtime.publish_test_grant(10, "S-1-5-21-1", "old-grant");
+            if submitted {
+                assert!(runtime.take_ready_owned(10, "S-1-5-21-1").is_some());
+            }
+            runtime.power_event(0, PowerEvent::Suspend);
+            assert!(runtime.take_ready_owned(10, "S-1-5-21-1").is_none());
+            runtime.power_event(0, PowerEvent::ResumeInteractive);
+            runtime.process_power_return();
+            assert_eq!(
+                runtime.phase(),
+                if submitted {
+                    Phase::Submitted
+                } else {
+                    Phase::Idle
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn return_queries_cannot_cross_owner_generation_or_provider_lifetime() {
+        for invalidation in 0..4 {
+            let runtime = sleeping_tile();
+            runtime.power_event(0, PowerEvent::Suspend);
+            runtime.power_event(0, PowerEvent::ResumeInteractive);
+            let (generation, cycle, settings) = {
+                let inner = runtime.inner.lock().unwrap();
+                (
+                    inner.machine.generation(),
+                    inner.power.pending(),
+                    inner.machine.settings(),
+                )
+            };
+            match invalidation {
+                0 => runtime.deselect_owned(10),
+                1 => {
+                    runtime.shutdown();
+                    runtime.arm();
+                }
+                2 => runtime.password_entry_owned(10, true),
+                _ => (), // Inactive/unlocked/remote session: failed eligibility.
+            }
+            runtime.commit_power_return(
+                0,
+                generation,
+                cycle,
+                (10, "S-1-5-21-1".into()),
+                1,
+                settings,
+                invalidation != 3,
+            );
+            assert_eq!(runtime.phase(), Phase::Idle);
+            if invalidation == 1 {
+                runtime.power_event(0, PowerEvent::Display(0));
+                assert!(!runtime.inner.lock().unwrap().power.blocked());
+            }
+        }
+    }
+
+    #[test]
+    fn first_selection_and_resume_share_one_attempt_and_initial_off_is_respected() {
+        let runtime = sleeping_tile();
+        {
+            let mut inner = runtime.inner.lock().unwrap();
+            inner.machine.cancel();
+            inner.deferred_selection = true;
+            inner.power_initializing = true;
+        }
+        runtime.power_event(0, PowerEvent::Display(0));
+        runtime.finish_power_subscription(0);
+        runtime.process_power_return();
+        assert_eq!(runtime.phase(), Phase::Idle);
+        runtime.power_event(0, PowerEvent::Display(1));
+        runtime.process_power_return();
+        assert_eq!(runtime.phase(), Phase::InitialDelay);
+        let generation = runtime.generation();
+        runtime.power_event(0, PowerEvent::ResumeInteractive);
+        runtime.process_power_return();
+        assert_eq!(runtime.generation(), generation);
+    }
+
+    #[test]
+    fn suspend_cancels_blocking_io_and_discards_late_success_before_new_capture() {
+        use std::sync::mpsc;
+        use windows::Win32::Foundation::WAIT_OBJECT_0;
+        use windows::Win32::System::Threading::WaitForSingleObject;
+        struct LateGrant {
+            calls: Arc<AtomicUsize>,
+            cancelled: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+            requests: Arc<Mutex<Vec<(u64, u64)>>>,
+        }
+        impl RecognitionTransport for LateGrant {
+            type Grant = &'static str;
+            fn recognize(
+                &mut self,
+                _: &str,
+                request: u64,
+                _: u32,
+                abort: HANDLE,
+                deadline: u64,
+            ) -> TransportResult<Self::Grant> {
+                self.requests.lock().unwrap().push((request, deadline));
+                if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                    assert_eq!(unsafe { WaitForSingleObject(abort, 2_000) }, WAIT_OBJECT_0);
+                    self.cancelled.send(()).unwrap();
+                    self.release.recv_timeout(Duration::from_secs(2)).unwrap();
+                    TransportResult::Grant("stale-before-suspend")
+                } else {
+                    TransportResult::Grant("fresh-after-wake")
+                }
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (cancelled, cancellation) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let runtime = AutoRuntime::new(
+            LateGrant {
+                calls: calls.clone(),
+                cancelled,
+                release: released,
+                requests: requests.clone(),
+            },
+            Box::new(AdjustableClock(ticks.clone())),
+        );
+        runtime.select_owned(
+            10,
+            "S-1-5-21-1",
+            1,
+            7,
+            TriggerSettings::from_values(Some(1), Some(0), Some(1), Some(30)),
+        );
+        wait_for(|| calls.load(Ordering::Acquire) == 1);
+        runtime.power_event(0, PowerEvent::Suspend);
+        cancellation.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(runtime.phase(), Phase::Idle);
+        assert!(runtime.ready_sid().is_none());
+        ticks.store(60_000, Ordering::Release);
+        runtime.power_event(0, PowerEvent::ResumeAutomatic);
+        runtime.power_event(0, PowerEvent::ResumeInteractive);
+        // Worker cannot process return until old transport exits; generation
+        // was already invalidated synchronously by the callback.
+        release.send(()).unwrap();
+        wait_for(|| runtime.phase() == Phase::Ready);
+        let grant = runtime.take_ready_owned(10, "S-1-5-21-1").unwrap();
+        assert_eq!(grant.0, "fresh-after-wake");
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_ne!(requests[0].0, requests[1].0);
+        assert_eq!((requests[0].1, requests[1].1), (30_000, 90_000));
+        runtime.shutdown();
     }
 
     #[test]

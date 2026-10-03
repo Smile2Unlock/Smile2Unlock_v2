@@ -183,12 +183,13 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             if manual_only {
                 settings.mode = crate::auto_recognition::TriggerMode::Manual;
             }
-            let generation = self.runtime.select_owned(
+            let generation = self.runtime.select_owned_policy(
                 self.owner,
                 &sid,
                 crate::pipe_client::current_session_id(),
                 crate::pipe_client::next_request_id(),
                 settings,
+                manual_only,
             );
             crate::log::cp_log(&format!("Credential::SetSelected generation={generation}"));
             autologon = !manual_only && self.runtime.has_ready_owned(self.owner, &sid);
@@ -410,6 +411,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             }
             // A real edit, including clearing a previously typed password,
             // overrides recognition and invalidates any prepared credential.
+            self.auto_suppressed.set(true);
             self.cancel_auto();
             self.runtime.password_entry_owned(self.owner, length != 0);
             crate::pipe_client::secure_clear(&mut password);
@@ -593,6 +595,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         ));
         crate::pipe_client::secure_clear(&mut protected);
         self.serialized.set(true);
+        self.runtime.submission_owned(self.owner);
         self.broker_request.set(broker_request);
         Ok(())
     }
