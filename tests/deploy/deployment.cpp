@@ -435,6 +435,84 @@ void upstream_variant_layouts_are_supported(const std::filesystem::path& root) {
           "postlogin session policy stays in the parent service");
 }
 
+void administrator_targets_round_trip(const std::filesystem::path& root) {
+    for (const auto target : {su::deploy::TargetKind::kSudo,
+             su::deploy::TargetKind::kSudoLogin, su::deploy::TargetKind::kPolkit}) {
+        const auto id = std::string(su::deploy::target_id(target));
+        check(su::deploy::target_from_id(id) == target, "administrator target ID round trips");
+        for (const auto stack : {"system-auth", "password-auth", "common-auth"}) {
+            const auto fixture_root = root / id / stack;
+            const auto fixture = std::string("#%PAM-1.0\nauth required pam_env.so\n")
+                + "auth include " + stack + "\n"
+                + "account include " + stack + "\n"
+                + "session required pam_limits.so\n";
+            write_fixture(fixture_root, su::deploy::target_service(target), fixture);
+            const auto snapshot = su::deploy::inspect_deployment(fixture_root);
+            check(snapshot.has_value(), "administrator service is inspected");
+            if (snapshot) {
+                for (const auto& status : snapshot->targets) {
+                    if (status.kind == target) {
+                        check(status.state == su::deploy::TargetState::kSupported
+                                  && status.password_fallback,
+                              "distribution administrator password stack is supported");
+                        check(su::deploy::target_role_id(status.role) == "privilege",
+                              "administrator service has its own role");
+                    }
+                }
+            }
+            const auto plan = su::deploy::plan_pam_integration(fixture_root, target, false);
+            check(plan.has_value(), "administrator integration plan is generated");
+            if (!plan) {
+                continue;
+            }
+            check(plan->child_content.find(std::string("auth substack ") + stack)
+                      != std::string::npos,
+                  "administrator substack retains the distribution password fallback");
+            check(plan->destination_content.find("auth required pam_env.so")
+                      != std::string::npos
+                      && plan->destination_content.find("session required pam_limits.so")
+                          != std::string::npos,
+                  "administrator integration preserves existing authentication and session policy");
+            check(su::deploy::apply_pam_plan(fixture_root, *plan).has_value(),
+                  "administrator integration applies in an isolated root");
+            check(su::deploy::rollback_all_pam_integrations(fixture_root).has_value(),
+                  "package removal rolls back administrator integration");
+            check(!std::filesystem::exists(plan->destination_path)
+                      && !std::filesystem::exists(plan->child_path)
+                      && read_file(plan->source_path) == fixture,
+                  "rollback restores the untouched vendor administrator stack");
+        }
+        const auto custom_root = root / id / "custom";
+        constexpr auto custom = "auth include system-auth\naccount required pam_permit.so\n";
+        write_fixture(custom_root, su::deploy::target_service(target), custom, "etc/pam.d");
+        const auto custom_plan = su::deploy::plan_pam_integration(custom_root, target, false);
+        check(custom_plan && su::deploy::apply_pam_plan(custom_root, *custom_plan).has_value()
+                  && su::deploy::rollback_pam_integration(custom_root, target).has_value(),
+              "administrator override applies and rolls back");
+        check(read_file(custom_root / "etc/pam.d" / su::deploy::target_service(target)) == custom,
+              "rollback restores the exact administrator-authored PAM configuration");
+        check(!su::deploy::plan_pam_integration(custom_root, target, true),
+              "administrator services reject wallet token options");
+
+        const auto missing_root = root / id / "missing-auth";
+        write_fixture(missing_root, su::deploy::target_service(target),
+                      "account include system-auth\npassword include system-auth\n");
+        check(!su::deploy::plan_pam_integration(missing_root, target, false),
+              "administrator service without a password auth anchor is not modified");
+    }
+
+    const auto inherited_root = root / "sudo-i-inherits-sudo";
+    write_fixture(inherited_root, "sudo-i", "auth include sudo\naccount include sudo\n");
+    const auto inherited = su::deploy::plan_pam_integration(
+        inherited_root, su::deploy::TargetKind::kSudoLogin, false);
+    check(inherited && inherited->child_content.find("auth substack sudo\n") != std::string::npos,
+          "sudo -i preserves inherited sudo authentication");
+    write_fixture(inherited_root, "kde", "auth include sudo\n");
+    check(!su::deploy::plan_pam_integration(
+              inherited_root, su::deploy::TargetKind::kKscreenlocker, false),
+          "sudo inheritance is only recognized for sudo -i");
+}
+
 } // namespace
 
 int main() {
@@ -457,6 +535,7 @@ int main() {
     opensuse_common_stack_round_trip(root / "opensuse");
     comments_and_control_expressions_are_preserved(root / "comments");
     upstream_variant_layouts_are_supported(root / "upstream-variants");
+    administrator_targets_round_trip(root / "administrator");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {

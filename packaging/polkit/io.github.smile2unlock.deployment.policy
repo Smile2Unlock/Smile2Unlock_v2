@@ -19,10 +19,10 @@
   </action>
 
   <action id="io.github.smile2unlock.deployment.configure-pam">
-    <description>Configure Smile2Unlock desktop authentication</description>
-    <description xml:lang="zh_CN">配置 Smile2Unlock 桌面认证</description>
-    <message>Authentication is required to change the system login configuration</message>
-    <message xml:lang="zh_CN">更改系统登录配置需要管理员认证</message>
+    <description>Configure Smile2Unlock system authentication</description>
+    <description xml:lang="zh_CN">配置 Smile2Unlock 系统认证</description>
+    <message>Authentication is required to change the system authentication configuration</message>
+    <message xml:lang="zh_CN">更改系统认证配置需要管理员认证</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -31,10 +31,10 @@
   </action>
 
   <action id="io.github.smile2unlock.deployment.rollback-pam">
-    <description>Restore the previous desktop authentication configuration</description>
-    <description xml:lang="zh_CN">恢复之前的 Smile2Unlock 桌面认证配置</description>
-    <message>Authentication is required to restore the system login configuration</message>
-    <message xml:lang="zh_CN">恢复系统登录配置需要管理员认证</message>
+    <description>Restore the previous system authentication configuration</description>
+    <description xml:lang="zh_CN">恢复之前的 Smile2Unlock 系统认证配置</description>
+    <message>Authentication is required to restore the system authentication configuration</message>
+    <message xml:lang="zh_CN">恢复系统认证配置需要管理员认证</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

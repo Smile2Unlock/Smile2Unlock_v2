@@ -125,6 +125,52 @@ An alternate socket can be supplied for diagnostics:
 auth sufficient pam_smile2unlock.so socket=/run/smile2unlock/control.sock
 ```
 
+## sudo and desktop administrator authorization
+
+The GUI's **Desktop integration** section also detects the `sudo`, `sudo-i`
+and `polkit-1` PAM services. Each installed service has its own review, apply
+and restore action. These entries are labelled **Administrator authorization**
+and do not change the reported login or screen-lock integration state.
+
+The helper replaces only the recognized password authentication include with
+a dedicated Smile2Unlock substack. Face success skips the password verifier;
+face rejection, a busy camera or an unavailable daemon continues to the
+original password stack. Existing authentication restrictions, account checks,
+sudoers rules, Polkit authorization policies and session setup remain in force.
+Restore uses the recorded original files; do not manually delete the substack
+reference, since that would also remove its password fallback.
+
+`sudo-i` may include `sudo` rather than a distribution password stack directly;
+that reference is preserved. Enabling `sudo` also covers login-shell
+authentication when `sudo-i` inherits it. A missing `sudo-i` service is not
+created: check the distribution's sudo configuration and `pam_login_service` setting if a
+separate login-shell entry is needed. Custom PAM service names are not detected.
+
+Polkit supplies administrator authorization dialogs used by many desktop
+applications (including KDE's Polkit agent). It authenticates the administrator
+identity chosen by the existing policy, which needs its own enrolled face
+profile. sudo likewise authenticates its configured PAM user; `rootpw`,
+`targetpw` and `runaspw` can select a different account. This integration does
+not decrypt KWallet/GNOME Keyring, SSH private keys or application-specific
+secrets, since those require the actual password or a separate mechanism.
+
+After applying an entry, test without sudo's cached credentials:
+
+```bash
+sudo -k
+sudo true
+sudo -k
+sudo -i true
+pkexec /usr/bin/true
+```
+
+Check face success, rejected recognition with correct/incorrect password, and
+password fallback while `su-authd.service` is stopped. Validate the actual
+Polkit dialog too; GUI agent timing and Fedora SELinux enforcement require
+testing on the installed desktop. Fedora packages install socket permissions
+for the confined sudo domains and Polkit PAM helper with the existing runtime
+policy. These permissions grant no administrator action by themselves.
+
 ## Enable DMS lock-screen authentication
 
 DMS runs its PAM subprocess as the desktop user, so the control socket is

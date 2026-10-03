@@ -599,9 +599,7 @@ SystemStatus AppController::load_system_status() {
                 .id = std::string(su::deploy::target_id(target.kind)),
                 .service = target.service,
                 .effective_path = target.effective_path.string(),
-                .role = target.role == su::deploy::TargetRole::kLogin ? "login"
-                    : target.role == su::deploy::TargetRole::kLock ? "lock"
-                    : "login-and-lock",
+                .role = std::string(su::deploy::target_role_id(target.role)),
                 .state = std::string(su::deploy::target_state_id(target.state)),
                 .detail = target.detail,
                 .password_fallback = target.password_fallback,

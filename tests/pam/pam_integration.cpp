@@ -1,5 +1,6 @@
 #include <security/pam_appl.h>
 #include <unistd.h>
+#include "platform/linux/deploy/deployment.h"
 
 import std;
 import su.control.socket;
@@ -73,14 +74,16 @@ std::optional<std::uint64_t> request_id_from(std::string_view request) {
         : std::nullopt;
 }
 
-std::expected<pam_handle_t*, int> start_pam(const std::filesystem::path& config_directory) {
+std::expected<pam_handle_t*, int> start_pam(
+    const std::filesystem::path& config_directory,
+    std::string_view service = kServiceName) {
     static const auto conversation = pam_conv{
         .conv = reject_conversation,
         .appdata_ptr = nullptr,
     };
     auto* handle = static_cast<pam_handle_t*>(nullptr);
     const auto status = ::pam_start_confdir(
-        kServiceName.data(),
+        service.data(),
         "test-user",
         &conversation,
         config_directory.c_str(),
@@ -154,6 +157,101 @@ bool run_unavailable_case() {
     return status == PAM_AUTHINFO_UNAVAIL;
 }
 
+bool run_administrator_case(
+    su::deploy::TargetKind target,
+    std::optional<su::control::ControlResult> face_result,
+    bool password_accepts,
+    bool deny_parent = false) {
+    const auto name = std::format("admin-{}-{}-{}-{}", su::deploy::target_id(target),
+        face_result ? static_cast<int>(*face_result) : -1, password_accepts, deny_parent);
+    const auto root = case_directory(name);
+    const auto config_directory = root / "etc/pam.d";
+    const auto socket_path = root / "control.sock";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(config_directory);
+    {
+        auto parent = std::ofstream(config_directory / su::deploy::target_service(target));
+        parent << "auth required " << (deny_parent ? "pam_deny.so" : "pam_permit.so")
+               << "\nauth include system-auth\naccount required pam_permit.so\n";
+        auto password = std::ofstream(config_directory / "system-auth");
+        // Stand-ins for a password verifier let us prove that the generated
+        // stack reaches (or skips) the original fallback without host accounts.
+        password << "auth required " << (password_accepts ? "pam_permit.so" : "pam_deny.so")
+                 << '\n';
+    }
+    auto plan = su::deploy::plan_pam_integration(root, target, false);
+    if (!plan) {
+        return false;
+    }
+    const auto default_socket = plan->child_content.find(su::control::kDefaultSocketPath);
+    if (default_socket == std::string::npos) {
+        return false;
+    }
+    plan->child_content.replace(default_socket, su::control::kDefaultSocketPath.size(),
+                                socket_path.string());
+    if (!su::deploy::apply_pam_plan(root, *plan)) {
+        return false;
+    }
+    auto pam = start_pam(config_directory, su::deploy::target_service(target));
+    if (!pam) {
+        return false;
+    }
+    const auto end_pam = PamGuard{*pam};
+    auto status = PAM_AUTHINFO_UNAVAIL;
+    if (!face_result) {
+        status = ::pam_authenticate(*pam, 0);
+    } else {
+        auto listener = su::control::Listener::bind_to(socket_path.string());
+        if (!listener) {
+            return false;
+        }
+        auto server_ok = std::atomic<bool>{false};
+        auto server = std::jthread([&] {
+            auto connection = listener->accept_one();
+            if (!connection) {
+                return;
+            }
+            const auto request = connection->receive_frame();
+            if (!request || !request->contains(R"("username":"test-user")")) {
+                return;
+            }
+            const auto request_id = request_id_from(*request);
+            if (request_id) {
+                server_ok.store(connection->send_frame(su::control::make_response(
+                    *request_id, *face_result, "administrator PAM test")).has_value());
+            }
+        });
+        status = ::pam_authenticate(*pam, 0);
+        server.join();
+        if (!server_ok.load()) {
+            return false;
+        }
+    }
+    const auto accepted = !deny_parent
+        && (face_result == su::control::ControlResult::kAccepted || password_accepts);
+    const auto expected = accepted ? PAM_SUCCESS : PAM_AUTH_ERR;
+    if (status != expected) {
+        std::cerr << name << ": expected " << expected << ", got " << status << '\n';
+    }
+    return status == expected;
+}
+
+bool administrator_stacks_preserve_fallback() {
+    for (const auto target : {su::deploy::TargetKind::kSudo,
+             su::deploy::TargetKind::kSudoLogin, su::deploy::TargetKind::kPolkit}) {
+        if (!run_administrator_case(target, su::control::ControlResult::kAccepted, false)
+            || !run_administrator_case(target, su::control::ControlResult::kRejected, true)
+            || !run_administrator_case(target, su::control::ControlResult::kRejected, false)
+            || !run_administrator_case(target, std::nullopt, true)
+            || !run_administrator_case(target, std::nullopt, false)
+            || !run_administrator_case(target, su::control::ControlResult::kBusy, true)
+            || !run_administrator_case(target, su::control::ControlResult::kAccepted, false, true)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
@@ -167,6 +265,7 @@ int main() {
                 PAM_AUTHINFO_UNAVAIL,
                 false)
             && run_unavailable_case()
+            && administrator_stacks_preserve_fallback()
         ? 0
         : 1;
 }

@@ -16,12 +16,16 @@ enum class TargetKind {
     kGdm,
     kSddm,
     kGreetd,
+    kSudo,
+    kSudoLogin,
+    kPolkit,
 };
 
 enum class TargetRole {
     kLogin,
     kLock,
     kLoginAndLock,
+    kPrivilege,
 };
 
 enum class TargetState {
@@ -70,6 +74,7 @@ struct PamPlan {
 
 [[nodiscard]] std::string_view target_id(TargetKind target);
 [[nodiscard]] std::string_view target_service(TargetKind target);
+[[nodiscard]] std::string_view target_role_id(TargetRole role);
 [[nodiscard]] std::string_view target_state_id(TargetState state);
 [[nodiscard]] std::optional<TargetKind> target_from_id(std::string_view id);
 
