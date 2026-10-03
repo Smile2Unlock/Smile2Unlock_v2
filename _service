@@ -1,0 +1,13 @@
+<services>
+  <service name="download_url">
+    <param name="protocol">https</param>
+    <param name="host">github.com</param>
+    <param name="path">/Smile2Unlock/Smile2Unlock_v2/releases/download/v2.3.3/smile2unlock-2.3.3-linux-x86_64.tar.gz</param>
+    <param name="filename">smile2unlock_2.3.3.orig.tar.gz</param>
+  </service>
+  <service name="verify_file">
+    <param name="file">smile2unlock_2.3.3.orig.tar.gz</param>
+    <param name="verifier">sha256</param>
+    <param name="checksum">86f0ea244dfe50c8b2290a085d878a4165a546399e7bba32394f21b8559d1777</param>
+  </service>
+</services>

@@ -1,0 +1,16 @@
+pre_upgrade() {
+    if [[ -x /usr/libexec/smile2unlock/su_deploy_helper ]]; then
+        /usr/libexec/smile2unlock/su_deploy_helper --check-package-version '2.3.3'
+    fi
+}
+post_install() {
+    /usr/libexec/smile2unlock/post-install
+}
+post_upgrade() {
+    post_install
+}
+post_remove() {
+    if [[ -d /run/systemd/system ]]; then
+        systemctl daemon-reload
+    fi
+}
