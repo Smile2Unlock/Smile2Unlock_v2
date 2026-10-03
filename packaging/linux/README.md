@@ -123,12 +123,16 @@ sudo /usr/libexec/smile2unlock/post-install
 
 The policy labels only `/run/smile2unlock` and its `control.sock` with
 `smile2unlock_runtime_t`. It permits `xdm_t` (SDDM and Plasma Login Manager on
-Fedora) to search that directory and write to that socket, and permits systemd
+Fedora), confined sudo domains and `policykit_auth_t` (the Polkit PAM helper)
+to search that directory and write to that socket, and permits systemd
 to mount the directory for the existing service sandbox. Newly created runtime
 directories/sockets retain the label through named type transitions.
 It adds no generic `var_run_t` socket access, network access, password access,
-or permissive domains. It relies on Fedora's existing connection permission to
-`unconfined_service_t`; it does not introduce a confined daemon domain. The
+or permissive domains. For sudo and the Polkit PAM helper it also permits
+connecting to the daemon's `unconfined_service_t` Unix stream endpoint;
+the directory/socket label limits which endpoint they can open. The optional
+rules are omitted when the corresponding policy types are unavailable.
+It does not introduce a confined daemon domain. The
 daemon's systemd sandbox and `SO_PEERCRED` authorization remain in force.
 
 Final package removal first rolls back PAM and stops the daemon, then removes

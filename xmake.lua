@@ -556,7 +556,7 @@ if is_plat("linux") then
         set_default(false)
         apply_cpp_target("binary")
         add_files("tests/pam/*.cpp", "src/modules/su.control.socket.cppm")
-        add_deps("pam_smile2unlock")
+        add_deps("pam_smile2unlock", "su_deploy")
         add_packages("nlohmann_json")
         add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
             os.projectdir(), "build", get_config("plat"), get_config("arch"),

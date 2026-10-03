@@ -49,6 +49,9 @@ constexpr auto kTargets = std::array{
     TargetDefinition{TargetKind::kGdm, TargetRole::kLoginAndLock, "gdm", "gdm-password"},
     TargetDefinition{TargetKind::kSddm, TargetRole::kLogin, "sddm", "sddm"},
     TargetDefinition{TargetKind::kGreetd, TargetRole::kLogin, "greetd", "greetd"},
+    TargetDefinition{TargetKind::kSudo, TargetRole::kPrivilege, "sudo", "sudo"},
+    TargetDefinition{TargetKind::kSudoLogin, TargetRole::kPrivilege, "sudo-i", "sudo-i"},
+    TargetDefinition{TargetKind::kPolkit, TargetRole::kPrivilege, "polkit", "polkit-1"},
 };
 
 struct ParsedLine {
@@ -149,26 +152,28 @@ std::vector<ParsedLine> parse_lines(std::string_view content) {
     return lines;
 }
 
-bool password_service(std::string_view service) {
+bool password_service(std::string_view service, TargetKind target) {
     constexpr auto services = std::array{
         std::string_view{"system-login"},
         std::string_view{"system-local-login"},
         std::string_view{"password-auth"},
         std::string_view{"common-auth"},
         std::string_view{"common-auth-pc"},
+        std::string_view{"system-auth"},
     };
-    return std::ranges::find(services, service) != services.end();
+    return std::ranges::find(services, service) != services.end()
+        || (target == TargetKind::kSudoLogin && service == "sudo");
 }
 
-std::optional<AuthAnchor> auth_anchor(std::span<const ParsedLine> lines) {
+std::optional<AuthAnchor> auth_anchor(std::span<const ParsedLine> lines, TargetKind target) {
     for (auto index = std::size_t{0}; index < lines.size(); ++index) {
         const auto& fields = lines[index].fields;
-        if (fields.size() == 2 && fields[0] == "@include" && password_service(fields[1])) {
+        if (fields.size() == 2 && fields[0] == "@include" && password_service(fields[1], target)) {
             return AuthAnchor{.line = index, .service = fields[1]};
         }
         if (fields.size() >= 3 && fields[0] == "auth"
             && (fields[1] == "include" || fields[1] == "substack")
-            && password_service(fields[2])) {
+            && password_service(fields[2], target)) {
             return AuthAnchor{.line = index, .service = fields[2]};
         }
     }
@@ -465,7 +470,7 @@ TargetStatus inspect_target(
     const auto lines = parse_lines(*content);
     status.wallet_modules = contains_wallet_module(lines);
     status.wallet_token_enabled = contains_module(lines, "pam_systemd_loadkey.so");
-    status.password_fallback = auth_anchor(lines).has_value();
+    status.password_fallback = auth_anchor(lines, target.kind).has_value();
     const auto child_service = child_service_name(target.kind);
     if (references_substack(lines, child_service)) {
         const auto child_path = effective_service_path(root, child_service);
@@ -482,7 +487,7 @@ TargetStatus inspect_target(
         }
         const auto child_lines = parse_lines(*child);
         status.state = TargetState::kManaged;
-        status.password_fallback = auth_anchor(child_lines).has_value();
+        status.password_fallback = auth_anchor(child_lines, target.kind).has_value();
         status.wallet_token_enabled = contains_module(child_lines, "pam_systemd_loadkey.so");
         status.detail = "managed by Smile2Unlock";
         return status;
@@ -524,6 +529,16 @@ std::string_view target_service(TargetKind target) {
     return definition(target).service;
 }
 
+std::string_view target_role_id(TargetRole role) {
+    switch (role) {
+    case TargetRole::kLogin: return "login";
+    case TargetRole::kLock: return "lock";
+    case TargetRole::kLoginAndLock: return "login-and-lock";
+    case TargetRole::kPrivilege: return "privilege";
+    }
+    std::unreachable();
+}
+
 std::string_view target_state_id(TargetState state) {
     switch (state) {
     case TargetState::kAbsent: return "absent";
@@ -555,6 +570,9 @@ std::expected<PamPlan, std::string> plan_pam_integration(
     const std::filesystem::path& root,
     TargetKind target,
     bool wallet_token) {
+    if (definition(target).role == TargetRole::kPrivilege && wallet_token) {
+        return std::unexpected("administrator authentication does not support wallet tokens");
+    }
     if (target == TargetKind::kDms) {
         return std::unexpected("DMS uses its dedicated PAM service installer");
     }
@@ -577,7 +595,7 @@ std::expected<PamPlan, std::string> plan_pam_integration(
             return std::unexpected("managed PAM substack is missing or modified");
         }
         const auto child_lines = parse_lines(*child);
-        const auto password_anchor = auth_anchor(child_lines);
+        const auto password_anchor = auth_anchor(child_lines, target);
         if (!password_anchor) {
             return std::unexpected("managed PAM substack has no password fallback");
         }
@@ -622,7 +640,7 @@ std::expected<PamPlan, std::string> plan_pam_integration(
     if (contains_module(lines, kPamModule)) {
         return std::unexpected("PAM service is configured outside the deployment helper");
     }
-    const auto anchor = auth_anchor(lines);
+    const auto anchor = auth_anchor(lines, target);
     if (!anchor) {
         return std::unexpected("unsupported PAM authentication layout");
     }
@@ -1034,8 +1052,7 @@ std::string snapshot_json(const DeploymentSnapshot& snapshot) {
         targets.push_back({
             {"id", target_id(target.kind)},
             {"service", target.service},
-            {"role", target.role == TargetRole::kLogin ? "login"
-                : target.role == TargetRole::kLock ? "lock" : "login-and-lock"},
+            {"role", target_role_id(target.role)},
             {"state", target_state_id(target.state)},
             {"path", target.effective_path.string()},
             {"password_fallback", target.password_fallback},

@@ -209,7 +209,11 @@ export component DeploymentPanel inherits Rectangle {
                                 ? root.translate("deployment.target_credential_provider", root.language_index)
                                 : target.id == "auth-service"
                                     ? root.translate("deployment.target_auth_service", root.language_index)
-                                    : target.service;
+                                    : target.id == "sudo-i"
+                                        ? "sudo -i"
+                                        : target.id == "polkit"
+                                            ? root.translate("deployment.target_polkit", root.language_index)
+                                            : target.service;
                             color: UiTheme.text-primary;
                             font-size: 14px;
                             font-weight: 700;
@@ -221,7 +225,9 @@ export component DeploymentPanel inherits Rectangle {
                                 ? root.translate("deployment.role_login", root.language_index)
                                 : target.role == "lock"
                                     ? root.translate("deployment.role_lock", root.language_index)
-                                    : root.translate("deployment.role_both", root.language_index);
+                                    : target.role == "privilege"
+                                        ? root.translate("deployment.role_privilege", root.language_index)
+                                        : root.translate("deployment.role_both", root.language_index);
                             color: UiTheme.text-tertiary;
                             font-size: 11px;
                             horizontal-alignment: right;
@@ -347,7 +353,7 @@ export component DeploymentPanel inherits Rectangle {
                         checked <=> wallet_selected;
                         enabled: target.wallet_available && !target.managed && !root.busy;
                     }
-                    if !root.platform_windows && !target.wallet_available: Text {
+                    if !root.platform_windows && target.role != "privilege" && !target.wallet_available: Text {
                         height: 28px;
                         text: target.wallet_enabled
                             ? root.translate("status.configured", root.language_index)

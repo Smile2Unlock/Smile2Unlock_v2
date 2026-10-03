@@ -1,4 +1,4 @@
-; Smile2Unlock runtime socket policy, version 1.0.
+; Smile2Unlock runtime socket policy, version 1.1.
 ; Fedora's xdm_t covers both SDDM and Plasma Login Manager. Its existing
 ; policy permits connecting to the daemon's unconfined_service_t domain;
 ; only access to our specifically labelled runtime directory/socket is added.
@@ -15,3 +15,16 @@
 (allow init_t smile2unlock_runtime_t (dir (mounton)))
 (allow xdm_t smile2unlock_runtime_t (dir (search)))
 (allow xdm_t smile2unlock_runtime_t (sock_file (write)))
+
+; Confined sudo domains and the Polkit PAM helper use the same labelled
+; endpoint. Keep these optional for policy stores without sudo/Polkit modules.
+(optional smile2unlock_sudo
+    (allow sudodomain smile2unlock_runtime_t (dir (search)))
+    (allow sudodomain smile2unlock_runtime_t (sock_file (write)))
+    (allow sudodomain unconfined_service_t (unix_stream_socket (connectto)))
+)
+(optional smile2unlock_polkit
+    (allow policykit_auth_t smile2unlock_runtime_t (dir (search)))
+    (allow policykit_auth_t smile2unlock_runtime_t (sock_file (write)))
+    (allow policykit_auth_t unconfined_service_t (unix_stream_socket (connectto)))
+)
