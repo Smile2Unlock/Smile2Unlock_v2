@@ -135,7 +135,7 @@ and do not change the reported login or screen-lock integration state.
 The helper replaces only the recognized password authentication include with
 a dedicated Smile2Unlock substack. Face success skips the password verifier;
 face rejection, a busy camera or an unavailable daemon continues to the
-original password stack. Existing authentication restrictions, account checks,
+original password stack. Existing parent authentication restrictions, account checks,
 sudoers rules, Polkit authorization policies and session setup remain in force.
 Restore uses the recorded original files; do not manually delete the substack
 reference, since that would also remove its password fallback.
