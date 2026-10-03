@@ -20,6 +20,7 @@ Requires:       pam
 Requires:       systemd
 Requires:       dbus
 Requires:       polkit
+Requires:       bash
 %if 0%{?fedora}
 Requires:       systemd-libs
 Requires:       policycoreutils
@@ -76,6 +77,8 @@ fi
 %dir /usr/share/dbus-1/system.d
 /usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
 /usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf
+%dir /usr/share/polkit-1
+%dir /usr/share/polkit-1/actions
 /usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy
 /usr/share/applications/smile2unlock.desktop
 %dir /usr/share/icons/hicolor
