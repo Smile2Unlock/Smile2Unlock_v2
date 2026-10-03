@@ -622,6 +622,9 @@ std::expected<InstalledComponents, std::string> stage_security_components(
         L"libgomp-1.dll", L"libSeetaFaceAntiSpoofingX600.dll",
         L"libSeetaFaceDetector600.dll", L"libSeetaFaceLandmarker600.dll",
         L"libSeetaFaceRecognizer610.dll", L"libSeetaAuthorize.dll", L"libtennis.dll",
+        // TenniS selects these CPU-specific backends at runtime; they are not
+        // listed in the PE imports but are required in every release package.
+        L"libtennis_haswell.dll", L"libtennis_sandy_bridge.dll", L"libtennis_pentium.dll",
     };
     for (const auto* name : runtime_names) {
         const auto relative = "bin/" + wide_to_utf8(name);

@@ -153,10 +153,11 @@ Section "Smile2Unlock" SecMain
         Abort
     ${EndIf}
 
-    ; Publish the ZIP layout after deployment; security payloads now match
-    ; the package, including files held open by the restarted service.
+    ; The helper has installed bin/ and assets/ and restarted the service.
+    ; Publish only the remaining package metadata and license files: writing
+    ; the payload again would try to overwrite the running service and DLLs.
     SetOutPath "$INSTDIR"
-    File /r "${STAGE_DIR}\Smile2Unlock\*.*"
+    File /r /x bin /x assets "${STAGE_DIR}\Smile2Unlock\*.*"
 
     ; Remove only our known shortcuts before optional sections recreate the
     ; selected ones. This also applies deselections during an upgrade.

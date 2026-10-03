@@ -101,6 +101,13 @@ The successful completion page offers **Open Smile2Unlock**, checked by default;
 unchecking it finishes without opening the application. Silent installs do not
 show this page or launch the GUI.
 
+The installer extracts and verifies a separate package before deployment. The
+helper stops the existing authentication service, installs the executables,
+runtime DLLs (including the TenniS CPU backends), models and translations, then
+starts the service. After deployment, NSIS copies only the remaining package
+metadata and license files; it never re-extracts `bin/` or `assets/` over the
+running payload.
+
 ## Unicode TEMP regression
 
 The helper and GUI use UTF-16 paths for `su_deploy_result.json`. The helper's
