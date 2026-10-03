@@ -1,0 +1,17 @@
+Source: smile2unlock
+Section: admin
+Priority: optional
+Maintainer: Smile2Unlock maintainers <ation_ciger@sgxi.cn>
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.7.0
+Homepage: https://github.com/Smile2Unlock/Smile2Unlock_v2
+Rules-Requires-Root: no
+
+Package: smile2unlock
+Architecture: amd64
+Depends: libc6 (>= @GLIBC@), libpam0g, libsystemd0, dbus, polkitd, ${misc:Depends}
+Suggests: sudo
+Description: Local face authentication with desktop, sudo and Polkit integration
+ Local face authentication with a desktop interface and PAM integration.
+ This package uses checksum-verified upstream release binaries, private
+ runtime libraries and recognition models. Configure authentication in the GUI.

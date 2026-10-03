@@ -1,0 +1,26 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+
+override_dh_auto_install:
+	python3 debian/prepare-payload.py . debian/smile2unlock /usr/lib/$(shell dpkg-architecture -qDEB_HOST_MULTIARCH)/security
+
+# Preserve upstream ELF bytes, private loader/RPATH and manifest checksums.
+override_dh_strip:
+override_dh_dwz:
+override_dh_shlibdeps:
+override_dh_makeshlibs:
+override_dh_compress:
+override_dh_installdocs:
+override_dh_installchangelogs:
+
+# Upstream hooks only restart active services, and never enable authentication.
+override_dh_installsystemd:
+
+override_dh_fixperms:
+	chmod -R a+rX debian/smile2unlock
+	chmod 755 debian/smile2unlock/usr/bin/su_app debian/smile2unlock/usr/libexec/smile2unlock/* debian/smile2unlock/usr/lib/*/security/pam_smile2unlock.so

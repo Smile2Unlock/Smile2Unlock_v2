@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Remove
+Type = Package
+Target = smile2unlock
+
+[Action]
+Description = Roll back Smile2Unlock authentication integration
+When = PreTransaction
+Exec = /bin/sh -ec '/usr/libexec/smile2unlock/su_deploy_helper --rollback-all; systemctl disable --now su-authd.service >/dev/null 2>&1 || true; /usr/libexec/smile2unlock/manage-selinux-policy remove'
+AbortOnFail

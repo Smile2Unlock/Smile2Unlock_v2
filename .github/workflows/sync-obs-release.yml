@@ -1,0 +1,98 @@
+name: Sync Linux release to OBS
+
+on:
+  workflow_run:
+    workflows: [Publish GitHub Release Artifacts]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published stable release tag (empty selects latest)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: obs-release-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      OBS_SERVICE_TOKEN: ${{ secrets.OBS_SERVICE_TOKEN }}
+      RELEASE_TAG_INPUT: ${{ inputs.tag }}
+    steps:
+      - name: Check out trusted packaging scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Select and verify a published upstream archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG_INPUT"
+          if [[ -z "$tag" ]]; then
+            tag="$(gh release view --json tagName --jq .tagName)"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a stable vX.Y.Z release'; exit 1; }
+          gh release view "$tag" --json isDraft,isPrerelease > "$RUNNER_TEMP/obs-release.json"
+          python3 - "$RUNNER_TEMP/obs-release.json" <<'PY'
+          import json, sys
+          release = json.load(open(sys.argv[1]))
+          assert not release['isDraft'] and not release['isPrerelease'], 'Expected a published stable release'
+          PY
+          version="${tag#v}"
+          name="smile2unlock-${version}-linux-x86_64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/obs-upstream"
+          gh release download "$tag" --pattern "$name" --pattern SHA256SUMS --dir "$RUNNER_TEMP/obs-upstream"
+          cd "$RUNNER_TEMP/obs-upstream"
+          sha="$(awk -v name="$name" '$2 == name {print $1}' SHA256SUMS)"
+          [[ "$sha" =~ ^[a-f0-9]{64}$ ]] || { echo 'Missing archive SHA256'; exit 1; }
+          printf '%s  %s\n' "$sha" "$name" | sha256sum --check -
+          python3 "$GITHUB_WORKSPACE/packaging/obs/generate.py" \
+            --archive "$name" --sha256 "$sha" --version "$version" --output "$RUNNER_TEMP/obs-inputs"
+          echo "OBS_RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Update dedicated OBS build-input branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          publication="$RUNNER_TEMP/obs-publication"
+          mkdir -p "$publication"
+          git -C "$publication" init
+          git -C "$publication" config user.name 'github-actions[bot]'
+          git -C "$publication" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C "$publication" remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
+          gh auth setup-git
+          if git -C "$publication" ls-remote --exit-code origin refs/heads/codex/obs-releases; then
+            git -C "$publication" fetch --depth=1 origin codex/obs-releases
+            git -C "$publication" checkout -B codex/obs-releases FETCH_HEAD
+            git -C "$publication" rm -r --ignore-unmatch .
+          else
+            git -C "$publication" checkout --orphan codex/obs-releases
+          fi
+          cp -a "$RUNNER_TEMP/obs-inputs/." "$publication/"
+          git -C "$publication" add --all
+          if ! git -C "$publication" diff --cached --quiet; then
+            git -C "$publication" commit -m "Package Smile2Unlock $OBS_RELEASE_VERSION for OBS"
+            git -C "$publication" push origin HEAD:refs/heads/codex/obs-releases
+          fi
+
+      - name: Refresh OBS package sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$OBS_SERVICE_TOKEN" ]]; then
+            echo '::error::Configure OBS_SERVICE_TOKEN with a service token restricted to home:ation_ciger:Smile2Unlock/smile2unlock.'
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --request POST \
+            --header "Authorization: Token $OBS_SERVICE_TOKEN" \
+            https://api.opensuse.org/trigger/runservice
