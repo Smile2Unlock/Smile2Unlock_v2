@@ -31,6 +31,7 @@ use crate::fields::{self, FieldId};
 #[implement(ICredentialProvider, ICredentialProviderSetUserArray)]
 pub struct Provider {
     status_bridge: RefCell<Option<crate::status_bridge::StatusBridge>>,
+    power_events: RefCell<Option<crate::power_events::PowerEvents>>,
     /// CPUS_* value accepted by SetUsageScenario; None until set.
     usage_scenario: Cell<Option<i32>>,
     /// upadvisecontext from the last Advise call.
@@ -48,6 +49,7 @@ impl Provider {
     pub fn new() -> Self {
         Self {
             status_bridge: RefCell::new(None),
+            power_events: RefCell::new(None),
             usage_scenario: Cell::new(None),
             advised_context: Cell::new(0),
             user_sids: RefCell::new(Vec::new()),
@@ -90,6 +92,7 @@ impl Drop for Provider {
     fn drop(&mut self) {
         self.runtime.shutdown();
         self.runtime.clear_notifier();
+        self.power_events.borrow_mut().take();
     }
 }
 
@@ -152,6 +155,10 @@ impl ICredentialProvider_Impl for Provider_Impl {
             },
             None => crate::log::cp_log("Provider::Advise: events pointer missing"),
         }
+        if self.power_events.borrow().is_none() {
+            *self.power_events.borrow_mut() =
+                crate::power_events::PowerEvents::start(&self.runtime);
+        }
         Ok(())
     }
 
@@ -162,6 +169,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         // exits on its own; the UI thread never joins it.
         self.runtime.shutdown();
         self.runtime.clear_notifier();
+        self.power_events.borrow_mut().take();
         self.status_bridge.borrow_mut().take();
         Ok(())
     }

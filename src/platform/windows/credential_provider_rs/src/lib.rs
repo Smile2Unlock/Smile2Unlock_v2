@@ -13,8 +13,11 @@
 
 mod auto_recognition;
 mod fields;
+#[cfg(windows)]
+mod power_events;
 mod secret_buffer;
 mod status;
+mod wake_policy;
 
 #[cfg(windows)]
 mod status_bridge;
