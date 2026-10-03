@@ -71,10 +71,16 @@ fi
 %{_libdir}/security/pam_smile2unlock.so
 /usr/lib/systemd/system/su-authd.service
 /usr/lib/systemd/system/su-deploy-helper.service
+%dir /usr/share/dbus-1
+%dir /usr/share/dbus-1/system-services
+%dir /usr/share/dbus-1/system.d
 /usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
 /usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf
 /usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy
 /usr/share/applications/smile2unlock.desktop
+%dir /usr/share/icons/hicolor
+%dir /usr/share/icons/hicolor/128x128
+%dir /usr/share/icons/hicolor/128x128/apps
 /usr/share/icons/hicolor/128x128/apps/smile2unlock.png
 /usr/share/smile2unlock
 %doc /usr/share/doc/smile2unlock
