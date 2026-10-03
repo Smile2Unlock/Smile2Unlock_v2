@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    remove|deconfigure)
+        /usr/libexec/smile2unlock/su_deploy_helper --rollback-all
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable --now su-authd.service >/dev/null 2>&1 || true
+        fi
+        /usr/libexec/smile2unlock/manage-selinux-policy remove
+        ;;
+esac
+#DEBHELPER#

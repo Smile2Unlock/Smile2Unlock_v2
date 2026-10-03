@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+case "${1:-}" in
+    install|upgrade)
+        if [ -x /usr/libexec/smile2unlock/su_deploy_helper ]; then
+            /usr/libexec/smile2unlock/su_deploy_helper --check-package-version '@VERSION@'
+        fi
+        ;;
+esac
+#DEBHELPER#

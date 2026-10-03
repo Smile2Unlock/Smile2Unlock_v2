@@ -1,5 +1,9 @@
 # Packaging
 
+[Open Build Service integration](obs/README.md) publishes native Linux packages
+from verified GitHub release binaries across supported distributions, with a
+dedicated packaging branch and an optional package-scoped refresh token.
+
 `packaging/package.sh` is the supported entry point for release packages. It
 uses one version, output directory, release metadata format, and verification
 policy for Linux and Windows.

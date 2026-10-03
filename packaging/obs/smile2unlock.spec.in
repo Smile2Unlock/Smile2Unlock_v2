@@ -1,0 +1,80 @@
+# Repackages upstream release binaries; does not compile application sources.
+# Preserve the private ELF loader/RPATH and prevent bundled libraries from
+# advertising global soname provides or requiring distro copies of the bundle.
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+%global _build_id_links none
+Name:           smile2unlock
+Version:        @VERSION@
+Release:        1
+Summary:        Local face authentication with desktop, sudo and Polkit integration
+License:        MIT AND GPL-3.0-only AND LGPL-2.1-or-later
+URL:            https://github.com/Smile2Unlock/Smile2Unlock_v2
+Source0:        smile2unlock_@VERSION@.orig.tar.gz
+Source1:        prepare-payload.py
+ExclusiveArch:  x86_64
+AutoReqProv:    no
+BuildRequires:  python3
+Requires:       glibc >= @GLIBC@
+Requires:       pam
+Requires:       systemd
+Requires:       dbus
+Requires:       polkit
+%if 0%{?fedora}
+Requires:       systemd-libs
+Requires:       policycoreutils
+Requires:       selinux-policy-targeted
+%endif
+
+%description
+Smile2Unlock provides local face authentication with a desktop interface,
+PAM login integration, sudo and Polkit support. This package uses the
+checksum-verified upstream x86_64 release, including its private runtime
+and recognition models. Configure authentication explicitly in the GUI.
+
+%prep
+echo '@SHA256@  %{SOURCE0}' | sha256sum -c -
+%setup -q -n smile2unlock-%{version}
+
+%build
+# Application binaries are produced by upstream release CI.
+
+%install
+python3 %{SOURCE1} . %{buildroot} %{_libdir}/security
+
+%pretrans -p /bin/sh
+if [ -x /usr/libexec/smile2unlock/su_deploy_helper ]; then
+    /usr/libexec/smile2unlock/su_deploy_helper --check-package-version '%{version}' || exit 1
+fi
+
+%post
+/usr/libexec/smile2unlock/post-install
+
+%preun
+if [ "$1" -eq 0 ]; then
+    /usr/libexec/smile2unlock/su_deploy_helper --rollback-all || exit 1
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now su-authd.service >/dev/null 2>&1 || :
+    fi
+    /usr/libexec/smile2unlock/manage-selinux-policy remove || exit 1
+fi
+
+%postun
+if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || :
+fi
+
+%files
+/usr/bin/su_app
+/usr/libexec/smile2unlock
+/usr/lib/smile2unlock
+%{_libdir}/security/pam_smile2unlock.so
+/usr/lib/systemd/system/su-authd.service
+/usr/lib/systemd/system/su-deploy-helper.service
+/usr/share/dbus-1/system-services/io.github.smile2unlock.Deployment1.service
+/usr/share/dbus-1/system.d/io.github.smile2unlock.Deployment1.conf
+/usr/share/polkit-1/actions/io.github.smile2unlock.deployment.policy
+/usr/share/applications/smile2unlock.desktop
+/usr/share/icons/hicolor/128x128/apps/smile2unlock.png
+/usr/share/smile2unlock
+%doc /usr/share/doc/smile2unlock

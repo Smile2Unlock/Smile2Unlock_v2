@@ -1,0 +1,19 @@
+pkgname=smile2unlock
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Local face authentication (upstream release binaries)'
+arch=('x86_64')
+url='https://github.com/Smile2Unlock/Smile2Unlock_v2'
+license=('MIT')
+depends=('glibc>=@GLIBC@' 'pam' 'systemd-libs' 'dbus' 'polkit')
+makedepends=('python')
+optdepends=('sudo: command-line administrator authentication')
+conflicts=('smile2unlock-bin' 'smile2unlock-git')
+options=('!strip' '!debug' '!lto')
+install=smile2unlock.install
+source=('smile2unlock_@VERSION@.orig.tar.gz' 'prepare-payload.py' 'smile2unlock-remove.hook')
+sha256sums=('@SHA256@' '@HELPER_SHA256@' '@HOOK_SHA256@')
+
+package() {
+    python "$srcdir/prepare-payload.py" "$srcdir/smile2unlock-$pkgver" "$pkgdir" /usr/lib/security --remove-hook "$srcdir/smile2unlock-remove.hook"
+}

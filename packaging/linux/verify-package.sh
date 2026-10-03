@@ -113,7 +113,10 @@ verify_deb() {
     package_require_command dpkg-deb
     [[ "$(dpkg-deb -f "$archive" Package)" == "$package_name" ]] \
         || package_die "unexpected DEB package name"
-    [[ "$(dpkg-deb -f "$archive" Version)" == "$package_version" ]] \
+    local deb_version
+    deb_version="$(dpkg-deb -f "$archive" Version)"
+    # OBS/dpkg-built packages carry a Debian packaging revision, such as -1.
+    [[ "$deb_version" == "$package_version" || "$deb_version" == "$package_version"-* ]] \
         || package_die "unexpected DEB version"
     local root="${verify_root}/deb"
     mkdir -p "$root"
