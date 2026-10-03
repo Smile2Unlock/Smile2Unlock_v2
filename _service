@@ -6,7 +6,7 @@
     <param name="filename">smile2unlock_2.3.3.orig.tar.gz</param>
   </service>
   <service name="verify_file">
-    <param name="file">smile2unlock_2.3.3.orig.tar.gz</param>
+    <param name="file">_service:download_url:smile2unlock_2.3.3.orig.tar.gz</param>
     <param name="verifier">sha256</param>
     <param name="checksum">86f0ea244dfe50c8b2290a085d878a4165a546399e7bba32394f21b8559d1777</param>
   </service>
