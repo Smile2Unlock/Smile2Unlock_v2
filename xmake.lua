@@ -71,7 +71,7 @@ option_end()
 option("seetaface_prebuilt")
     set_default(true)
     set_showmenu(true)
-    set_description("Use the local-repo SeetaFace MinGW SDK (disable to rebuild from source)")
+    set_description("Use a compatible local-repo SeetaFace SDK (disable to rebuild from source)")
 option_end()
 
 if has_config("with_seetaface") then
