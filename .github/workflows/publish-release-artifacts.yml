@@ -113,12 +113,11 @@ jobs:
             echo
             echo "## 🧠 人脸模型 / Face models"
             echo
-            models_page="https://github.com/${repo}/releases/tag/models-seetaface6-v1"
-            models_url="$(gh api "repos/${repo}/releases/tags/models-seetaface6-v1" --jq '.assets[0].browser_download_url' 2>/dev/null || true)"
-            models_badge_link="${models_url:-${models_page}}"
+            models_page="https://github.com/Smile2Unlock/local-repo/releases/tag/models-seetaface6-v1"
+            models_badge_link="https://github.com/Smile2Unlock/local-repo/releases/download/models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip"
             echo "[![models](https://img.shields.io/badge/models-SeetaFace6-8A2BE2?style=flat-square)](${models_badge_link})"
             echo
-            echo "所有发行包均已内嵌模型;独立的模型包([models-seetaface6-v1](${models_page}))用于离线安装与单独更新,按来源分类(当前:SeetaFace6,BSD-2-Clause)。"
+            echo "所有发行包均已内嵌模型;独立的模型包([models-seetaface6-v1](${models_page}))由 local-repo 托管，用于离线安装与单独更新,按来源分类(当前:SeetaFace6,BSD-2-Clause)。"
           } > /tmp/release-notes.md
 
           gh release create "$RELEASE_TAG" \

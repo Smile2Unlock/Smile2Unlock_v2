@@ -42,7 +42,7 @@ option("with_slint")
 option_end()
 
 if has_config("with_slint") then
-    add_requires("slint v1.17.0", { system = false })
+    add_requires("slint v1.18.1", { system = false })
 end
 
 option("with_zig")
@@ -68,8 +68,15 @@ option("with_seetaface")
     set_description("Enable the SeetaFace recognizer backend")
 option_end()
 
+option("seetaface_prebuilt")
+    set_default(true)
+    set_showmenu(true)
+    set_description("Use the local-repo SeetaFace MinGW SDK (disable to rebuild from source)")
+option_end()
+
 if has_config("with_seetaface") then
-    add_requires("seetaface6open", { system = false, configs = {unicode_paths = true} })
+    add_requires("seetaface6open", { system = false,
+        configs = {unicode_paths = true, prebuilt = has_config("seetaface_prebuilt")} })
 end
 
 local function seetaface_libdir(root)
@@ -338,7 +345,7 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "uxtheme", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })

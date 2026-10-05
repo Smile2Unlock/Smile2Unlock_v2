@@ -165,19 +165,25 @@ Secrets are wiped with `zeroize` on both platforms. The Linux `su_authd` master 
 
 ## Building
 
+The build uses Slint 1.18.1 and Rust 1.99.0. Third-party SDKs and the unchanged
+SeetaFace6 model bundle are hosted in
+[local-repo Releases](https://github.com/Smile2Unlock/local-repo/releases).
+The [model download](https://github.com/Smile2Unlock/local-repo/releases/download/models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip)
+and its `.sha256` sidecar are also available for offline installation.
+
 ### Windows (cross-compiled or native)
 
 ```bash
-xmake f -y -c -p mingw -a x86_64
-xmake require --build -f -y seetaface6open
+bash packaging/slint/setup-rust.sh --target x86_64-pc-windows-gnu
+bash packaging/slint/seed-slint-mingw.sh
+xmake f -y -p mingw -a x86_64 -m release
 xmake build
 ```
 
 The Windows Credential Provider is built from Rust:
 
 ```bash
-cargo build --release --target x86_64-pc-windows-gnu \
-    --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
+xmake build su_credential_provider
 ```
 
 The main outputs under `build/mingw/x86_64/release/` are `Smile2Unlock.exe`,
@@ -187,10 +193,15 @@ The main outputs under `build/mingw/x86_64/release/` are `Smile2Unlock.exe`,
 ### Linux
 
 ```bash
-xmake f -y -p linux
-xmake require --build -f -y seetaface6open
+bash packaging/slint/setup-rust.sh
+xmake f -y -p linux -a x86_64 -m release
 xmake build
 ```
+
+The release MinGW SeetaFace SDK includes the Unicode model/DLL path fixes.
+Use `--seetaface_prebuilt=n` when configuring to rebuild that SDK from its
+pinned upstream source. Linux continues to build SeetaFace from source for
+the host ABI.
 
 Package both supported platforms from existing release builds:
 

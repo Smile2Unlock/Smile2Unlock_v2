@@ -7,7 +7,7 @@
 
 ## C/C++ 组件
 
-   **Slint** v1.17.0 (https://github.com/slint-ui/slint)
+   **Slint** v1.18.1 (https://github.com/slint-ui/slint)
    - 许可证: 三重许可 — GPL-3.0-only / Slint Royalty-free Desktop, Mobile, and
      Web Applications License 2.0 / Slint Software License 3.0（发行方按自身适用
      条件择一履行）

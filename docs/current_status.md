@@ -1,6 +1,6 @@
 # Smile2Unlock 当前状态与剩余工作
 
-更新日期：2026-10-02。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
+更新日期：2026-10-05。本文是当前实现状态的入口；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
 
 ## 已实现主线
 
@@ -21,6 +21,13 @@ Credential Provider
 ```
 
 `Smile2Unlock.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
+
+## 2026-10-05 依赖与模型托管迁移
+
+- Slint 更新到正式版 1.18.1，Rust 固定为 1.99.0；MinGW 静态 Slint 运行时和项目 Rust 库使用同一编译器。Linux 官方 SDK 镜像、MinGW 预编译 SDK 和未变更的模型 v1 归档统一托管于 [local-repo Releases](https://github.com/Smile2Unlock/local-repo/releases)。项目版本保持 2.3.3。
+- SeetaFace 上游仍固定为 `a32e2faa0694c0f841ace4df9ead0407b78363c6`，新增含 Unicode 模型/DLL 路径修复的 MinGW x86_64 SDK；Linux 继续从源码构建。`--seetaface_prebuilt=n` 可关闭 MinGW 预编译包。
+- 代码、文档、发布工作流和已有 Release 说明更新模型地址；Windows 下载器剥离原归档的外层目录，使 `seeta/*.csta` 安装到预期位置，模型文件和归档校验和不变。
+- 全部构建和测试经 Xmake：Linux GUI、daemon、helper、PAM 构建及三组测试通过（Rust core 44 项）；Windows GUI、服务、agent、helper、状态程序和 CP 构建、开发包暂存通过，四组 Wine 测试通过（Rust CP 113 项通过，1 项因 Wine 缺少 `CredIsProtectedW` 跳过）。Unicode 路径测试覆盖五个模型和 CPU 专用 DLL。此轮未重新执行原生 Windows 摄像头/锁屏验收。
 
 ## 2026-10-02 Linux 跨发行版验证
 
