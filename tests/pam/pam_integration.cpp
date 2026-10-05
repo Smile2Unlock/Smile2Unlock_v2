@@ -187,6 +187,13 @@ bool run_administrator_case(
     if (!plan) {
         return false;
     }
+    constexpr auto module_name = std::string_view{"pam_smile2unlock.so"};
+    const auto module_position = plan->child_content.find(module_name);
+    if (module_position == std::string::npos) {
+        return false;
+    }
+    // Exercise this build's module, even on hosts with an older installed copy.
+    plan->child_content.replace(module_position, module_name.size(), SU_PAM_MODULE_PATH);
     const auto default_socket = plan->child_content.find(su::control::kDefaultSocketPath);
     if (default_socket == std::string::npos) {
         return false;

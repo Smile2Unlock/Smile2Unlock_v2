@@ -576,7 +576,7 @@ if is_plat("linux") then
             os.projectdir(), "build", get_config("plat"), get_config("arch"),
             get_config("mode"), "pam_smile2unlock.so")) .. "\"")
         add_syslinks("pam")
-        add_tests("default")
+        add_tests("default", {run_timeout = 60000})
 
     target("su_key_provider_test")
         set_default(false)
