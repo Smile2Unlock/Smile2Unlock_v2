@@ -12,6 +12,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -378,7 +379,47 @@ std::expected<void, std::string> atomic_write(
     return {};
 }
 
-std::expected<json, std::string> load_journal(const std::filesystem::path& root) {
+// Validate the complete boundary before any .value<T>() conversions. Old
+// journals may omit optional fields, but present fields must have their
+// declared types so recovery and rollback never throw on corrupt records.
+bool journal_has_valid_types(const json& document) {
+    if (!document.is_object() || !document.contains("version")
+        || !document["version"].is_number_integer()
+        || (document["version"] != 1 && document["version"] != kJournalVersion)
+        || !document.contains("targets") || !document["targets"].is_object()) {
+        return false;
+    }
+    const auto strings_valid = [](const json& object, const auto& fields) {
+        return std::ranges::all_of(fields, [&object](const auto* name) {
+            return !object.contains(name) || object[name].is_string();
+        });
+    };
+    const auto transformation_valid = [](const json& object) {
+        return !object.contains("transformation_version")
+            || (object["transformation_version"].is_number_integer()
+                && object["transformation_version"] >= 0
+                && object["transformation_version"] <= std::numeric_limits<int>::max());
+    };
+    if (!strings_valid(document, std::array{"package_version"})
+        || !transformation_valid(document)) {
+        return false;
+    }
+    return std::ranges::all_of(document["targets"], [&](const json& record) {
+        return record.is_object()
+            && strings_valid(record, std::array{
+                "state", "destination", "child", "parent_backup", "child_backup",
+                "source_fingerprint", "child_source_fingerprint", "result_fingerprint",
+                "child_result_fingerprint", "package_version", "upgrade_child_backup",
+                "pending_child_result_fingerprint"})
+            && transformation_valid(record)
+            && std::ranges::all_of(std::array{"destination_existed", "child_existed"},
+                [&record](const auto* name) {
+                    return !record.contains(name) || record[name].is_boolean();
+                });
+    });
+}
+
+std::expected<json, std::string> load_journal(const std::filesystem::path& root) try {
     const auto path = journal_path(root);
     auto error = std::error_code{};
     if (!std::filesystem::exists(path, error)) {
@@ -394,11 +435,7 @@ std::expected<json, std::string> load_journal(const std::filesystem::path& root)
         return std::unexpected(content.error());
     }
     auto parsed = json::parse(*content, nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object()
-        || (parsed.value("version", 0) != 1
-            && parsed.value("version", 0) != kJournalVersion)
-        || !parsed.contains("targets")
-        || !parsed["targets"].is_object()) {
+    if (!journal_has_valid_types(parsed)) {
         return std::unexpected("invalid deployment journal");
     }
     if (parsed.value("version", 0) == 1) {
@@ -418,6 +455,8 @@ std::expected<json, std::string> load_journal(const std::filesystem::path& root)
         }
     }
     return parsed;
+} catch (const json::exception&) {
+    return std::unexpected("invalid deployment journal");
 }
 
 std::expected<void, std::string> save_journal(

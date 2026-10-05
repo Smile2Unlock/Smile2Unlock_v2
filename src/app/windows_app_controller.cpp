@@ -9,6 +9,7 @@ module;
 #include "../platform/windows/deploy/deployment.h"
 #include "../platform/windows/deploy/result_file.h"
 #include "common/utf8_path.h"
+#include "download_progress.h"
 #include "platform/windows/paths.h"
 
 module su.app.controller;
@@ -952,8 +953,8 @@ void AppController::download_models(
         // few percent so the progress bar keeps moving to the end.
         const auto archive_progress =
             [&progress](std::uint64_t done, std::uint64_t total) {
-                if (progress && total != 0) {
-                    progress(done * 95 / total, total);
+                if (const auto scaled = archive_download_progress(done, total); progress && scaled) {
+                    progress(scaled->done, scaled->total);
                 }
             };
         if (const auto downloaded = http_download_to_file(archive_url, archive, archive_progress); !downloaded) {
@@ -996,7 +997,7 @@ void AppController::download_models(
             return;
         }
         std::error_code ignored{};
-            std::filesystem::remove(archive, ignored);
+        std::filesystem::remove(archive, ignored);
         std::filesystem::remove(archive_hash_file, ignored);
         // The archive nests seeta/*.csta, so extracting into the models
         // parent lands the files directly in the expected directory.

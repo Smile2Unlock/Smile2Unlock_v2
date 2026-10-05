@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 #include <unistd.h>
 
 namespace {
@@ -513,6 +514,50 @@ void administrator_targets_round_trip(const std::filesystem::path& root) {
           "sudo inheritance is only recognized for sudo -i");
 }
 
+void malformed_journals_are_rejected(const std::filesystem::path& root) {
+    using nlohmann::json;
+    const auto path = root / "var/lib/smile2unlock/deployment.json";
+    std::filesystem::create_directories(path.parent_path());
+    constexpr auto original = "auth include system-auth\n";
+    write_fixture(root, "sudo", original, "etc/pam.d");
+    const auto valid = json{{"version", 2}, {"targets", json::object()}};
+    auto cases = std::vector<json>{};
+    for (const auto& version : {json("2"), json(2.0), json(4294967298ULL), json(nullptr)}) {
+        auto document = valid;
+        document["version"] = version;
+        cases.push_back(std::move(document));
+    }
+    for (const auto* field : {"state", "destination", "parent_backup", "result_fingerprint",
+             "destination_existed", "transformation_version"}) {
+        auto document = valid;
+        document["targets"]["sudo"] = json{{field, json::array()}};
+        cases.push_back(std::move(document));
+    }
+    auto invalid_record = valid;
+    invalid_record["targets"]["sudo"] = nullptr;
+    cases.push_back(std::move(invalid_record));
+    auto invalid_package = valid;
+    invalid_package["package_version"] = 2;
+    cases.push_back(std::move(invalid_package));
+    for (const auto& document : cases) {
+        const auto text = document.dump();
+        { auto output = std::ofstream(path); output << text; }
+        try {
+            check(!su::deploy::recover_interrupted_pam_transactions(root),
+                  "corrupt journal recovery returns an error");
+            check(!su::deploy::rollback_all_pam_integrations(root),
+                  "corrupt journal rollback returns an error");
+            check(!su::deploy::check_package_upgrade(root, "2.3.4"),
+                  "corrupt journal upgrade returns an error");
+        } catch (...) {
+            check(false, "corrupt journal does not throw across the deployment boundary");
+        }
+        check(read_file(path) == text, "corrupt journal remains intact for diagnosis");
+        check(read_file(root / "etc/pam.d/sudo") == original,
+              "corrupt journal never modifies the existing PAM stack");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -536,6 +581,7 @@ int main() {
     comments_and_control_expressions_are_preserved(root / "comments");
     upstream_variant_layouts_are_supported(root / "upstream-variants");
     administrator_targets_round_trip(root / "administrator");
+    malformed_journals_are_rejected(root / "malformed-journal");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {

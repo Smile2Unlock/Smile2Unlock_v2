@@ -2,6 +2,7 @@
 
 #include "client_disconnect_watcher.h"
 #include "logon_secret_protocol.h"
+#include "pipe_response.h"
 #include "recognition_agent_protocol.h"
 #include "recognition_result.h"
 #include "sid_rate_limiter.h"
@@ -267,26 +268,6 @@ std::expected<bool, DWORD> read_request(
         return std::unexpected(GetLastError());
     }
     return true;
-}
-
-bool write_response(HANDLE pipe, const Response& response) {
-    const auto write_event = ScopedHandle{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
-    if (!write_event) {
-        return false;
-    }
-    auto overlapped = OVERLAPPED{};
-    overlapped.hEvent = write_event.get();
-    auto bytes_written = DWORD{0};
-    if (!WriteFile(pipe, &response, sizeof(response), &bytes_written, &overlapped)) {
-        if (GetLastError() != ERROR_IO_PENDING
-            || WaitForSingleObject(write_event.get(), 3000) != WAIT_OBJECT_0
-            || !GetOverlappedResult(pipe, &overlapped, &bytes_written, FALSE)) {
-            (void)CancelIoEx(pipe, &overlapped);
-            (void)WaitForSingleObject(write_event.get(), INFINITE);
-            return false;
-        }
-    }
-    return bytes_written == sizeof(response);
 }
 
 class RevertGuard {
@@ -1346,8 +1327,8 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
                             state_mutex_, sid, caller_pid);
                         watcher.finish();
                         smile2unlock::logon_secret_ipc::clear_request(request);
-                        (void)write_response(pipe_handle, response);
-                        (void)FlushFileBuffers(pipe_handle);
+                        (void)write_pipe_response(
+                            pipe_handle, stop_event, std::as_bytes(std::span{&response, 1}));
                         smile2unlock::logon_secret_ipc::clear_response(response);
                         (void)DisconnectNamedPipe(pipe_handle);
                         (void)CloseHandle(pipe_handle);
@@ -1364,8 +1345,8 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             response.status = Status::kInvalidRequest;
         }
         smile2unlock::logon_secret_ipc::clear_request(request);
-        (void)write_response(raw_pipe, response);
-        (void)FlushFileBuffers(raw_pipe);
+        (void)write_pipe_response(
+            raw_pipe, stop_event, std::as_bytes(std::span{&response, 1}));
         smile2unlock::logon_secret_ipc::clear_response(response);
         (void)DisconnectNamedPipe(raw_pipe);
     }

@@ -36,6 +36,7 @@ release-signing/
 *.pfx
 
 .*
+!.clang-format
 !.github/
 !.github/workflows/
 !.github/workflows/*.yml

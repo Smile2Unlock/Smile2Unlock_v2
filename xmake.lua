@@ -521,7 +521,14 @@ if is_plat("linux") then
     target("su_control_socket_smoke_test")
         set_default(false)
         apply_cpp_target("binary")
-        add_files("tests/control/*.cpp", "src/modules/su.control.socket.cppm")
+        add_files("tests/control/socket_smoke.cpp", "src/modules/su.control.socket.cppm")
+        add_packages("nlohmann_json")
+        add_tests("default")
+
+    target("su_control_socket_deadline_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/control/socket_deadline.cpp", "src/modules/su.control.socket.cppm")
         add_packages("nlohmann_json")
         add_tests("default")
 
@@ -779,6 +786,16 @@ target("su_windows_status_display_test")
     add_tests("default")
     on_test(wine_on_test)
 
+target("su_download_progress_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/app/download_progress.cpp")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
 target("su_windows_request_worker_pool_test")
     set_default(false)
     apply_cpp_target("binary")
@@ -807,6 +824,17 @@ target("su_windows_client_disconnect_watcher_test")
     set_default(false)
     apply_cpp_target("binary")
     add_files("tests/windows/client_disconnect_watcher.cpp")
+    add_includedirs("src/platform/windows/auth_service")
+    if is_plat("mingw") then
+        add_ldflags("-static", {force = true})
+    end
+    add_tests("default")
+    on_test(wine_on_test)
+
+target("su_windows_pipe_response_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/windows/pipe_response.cpp")
     add_includedirs("src/platform/windows/auth_service")
     if is_plat("mingw") then
         add_ldflags("-static", {force = true})
