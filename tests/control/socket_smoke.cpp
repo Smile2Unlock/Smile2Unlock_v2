@@ -4,7 +4,36 @@
 import std;
 import su.control.socket;
 
+namespace {
+
+bool malformed_responses_are_rejected() {
+    constexpr auto responses = std::array{
+        R"({"version":"2","msg_type":"auth_result","request_id":1,"result":"accepted","reason":""})",
+        R"({"version":2,"msg_type":9,"request_id":1,"result":"accepted","reason":""})",
+        R"({"version":4294967298,"msg_type":"auth_result","request_id":1,"result":"accepted","reason":""})",
+        R"({"version":2.0,"msg_type":"auth_result","request_id":1,"result":"accepted","reason":""})",
+        R"({"version":2,"msg_type":"auth_result","request_id":-1,"result":"accepted","reason":""})",
+        R"({"version":2,"msg_type":"auth_result","request_id":1,"result":null,"reason":""})",
+        R"({"version":2,"msg_type":"auth_result","request_id":1,"result":"accepted","reason":false})",
+        R"({"version":2,"msg_type":"auth_result","request_id":1,"result":"unknown","reason":""})",
+        "{}", "[]", "{",
+    };
+    try {
+        return std::ranges::all_of(responses, [](std::string_view response) {
+            const auto parsed = su::control::parse_response(response);
+            return !parsed && parsed.error() == su::control::SocketError::kProtocolError;
+        });
+    } catch (...) {
+        return false;
+    }
+}
+
+} // namespace
+
 int main() {
+    if (!malformed_responses_are_rejected()) {
+        return 1;
+    }
     const auto socket_path = std::filesystem::path("build/test-data/control")
         / std::format("socket-smoke-{}.sock", ::getpid());
     std::filesystem::create_directories(socket_path.parent_path());

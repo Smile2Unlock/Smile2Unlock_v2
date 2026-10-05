@@ -47,7 +47,7 @@ PAM_EXTERN int pam_sm_authenticate(
     pam_handle_t* pamh,
     int flags,
     int argc,
-    const char** argv) {
+    const char** argv) try {
     (void)flags;
 
     const char* username = nullptr;
@@ -76,6 +76,9 @@ PAM_EXTERN int pam_sm_authenticate(
     return result && result->request_id == request_id
         ? pam_result(result->result)
         : PAM_AUTHINFO_UNAVAIL;
+} catch (...) {
+    // No C++ exception may cross the PAM C ABI or prevent password fallback.
+    return PAM_AUTHINFO_UNAVAIL;
 }
 
 PAM_EXTERN int pam_sm_setcred(

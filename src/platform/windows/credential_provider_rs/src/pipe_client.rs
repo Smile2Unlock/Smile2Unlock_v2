@@ -36,6 +36,7 @@ use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForMultipleObjects, WaitForSingleObject,
 };
 use windows_core::{Error, HRESULT, PCWSTR, PWSTR};
+use zeroize::Zeroizing;
 
 /// HRESULT_FROM_WIN32(code): error codes with the FACILITY_WIN32 severity bit.
 /// windows-core 0.62 split `Error` into windows-result 0.4.1, which exposes
@@ -84,6 +85,8 @@ const kWin32ErrorTimeout: u32 = 1460;
 /// service clamps one recognition transaction to roughly 33 s worst case;
 /// 60 s bounds a hung service without changing interactive behavior.
 const kManualDeadlineMs: u64 = 60_000;
+/// Stale notifications do no recognition work and must not linger in LogonUI.
+const kStaleDeadlineMs: u64 = 3_000;
 /// Slice used while waiting for a free pipe instance, so abort and the
 /// deadline stay responsive during connection contention.
 const kConnectWaitSliceMs: u32 = 250;
@@ -139,14 +142,99 @@ impl Request {
         }
     }
 
-    pub fn request_bytes(&self) -> &[u8] {
-        // Safety: #[repr(C)] with only plain integer/array fields.
-        unsafe {
-            core::slice::from_raw_parts(
-                (self as *const Self).cast::<u8>(),
-                core::mem::size_of::<Self>(),
-            )
+    pub fn request_bytes(&self) -> Zeroizing<Vec<u8>> {
+        // Encode fields into initialized bytes; never read repr(C) padding.
+        let mut bytes = Zeroizing::new(vec![0; core::mem::size_of::<Self>()]);
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, magic),
+            &self.magic.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, version),
+            &self.version.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, operation),
+            &self.operation.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, request_id),
+            &self.request_id.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, logon_session_id),
+            &self.logon_session_id.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, account_kind),
+            &self.account_kind.to_le_bytes(),
+        );
+        write_words(&mut bytes, core::mem::offset_of!(Request, sid), &self.sid);
+        write_words(
+            &mut bytes,
+            core::mem::offset_of!(Request, canonical_username),
+            &self.canonical_username,
+        );
+        write_words(
+            &mut bytes,
+            core::mem::offset_of!(Request, password),
+            &self.password,
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, payload_length),
+            &self.payload_length.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Request, payload),
+            &self.payload,
+        );
+        bytes
+    }
+
+    #[cfg(test)]
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != core::mem::size_of::<Self>() {
+            return Err(win32_error(kWin32ErrorInvalidData));
         }
+        Ok(Self {
+            magic: u32::from_le_bytes(read_bytes(bytes, core::mem::offset_of!(Request, magic))),
+            version: u16::from_le_bytes(read_bytes(bytes, core::mem::offset_of!(Request, version))),
+            operation: u16::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Request, operation),
+            )),
+            request_id: u64::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Request, request_id),
+            )),
+            logon_session_id: u32::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Request, logon_session_id),
+            )),
+            account_kind: u32::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Request, account_kind),
+            )),
+            sid: read_words(bytes, core::mem::offset_of!(Request, sid)),
+            canonical_username: read_words(
+                bytes,
+                core::mem::offset_of!(Request, canonical_username),
+            ),
+            password: read_words(bytes, core::mem::offset_of!(Request, password)),
+            payload_length: u32::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Request, payload_length),
+            )),
+            payload: read_bytes(bytes, core::mem::offset_of!(Request, payload)),
+        })
     }
 
     pub fn clear_password(&mut self) {
@@ -157,14 +245,97 @@ impl Request {
 }
 
 impl Response {
-    pub fn response_bytes_mut(&mut self) -> &mut [u8] {
-        // Safety: #[repr(C)] with only plain integer/array fields.
-        unsafe {
-            core::slice::from_raw_parts_mut(
-                (self as *mut Self).cast::<u8>(),
-                core::mem::size_of::<Self>(),
-            )
+    #[cfg(test)]
+    pub fn response_bytes(&self) -> Zeroizing<Vec<u8>> {
+        // Encode fields into initialized bytes; never read repr(C) padding.
+        let mut bytes = Zeroizing::new(vec![0; core::mem::size_of::<Self>()]);
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, magic),
+            &self.magic.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, version),
+            &self.version.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, reserved),
+            &self.reserved.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, request_id),
+            &self.request_id.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, logon_session_id),
+            &self.logon_session_id.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, status),
+            &self.status.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, password_length),
+            &self.password_length.to_le_bytes(),
+        );
+        write_words(
+            &mut bytes,
+            core::mem::offset_of!(Response, password),
+            &self.password,
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, payload_length),
+            &self.payload_length.to_le_bytes(),
+        );
+        write_bytes(
+            &mut bytes,
+            core::mem::offset_of!(Response, payload),
+            &self.payload,
+        );
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() != core::mem::size_of::<Self>() {
+            return Err(win32_error(kWin32ErrorInvalidData));
         }
+        Ok(Self {
+            magic: u32::from_le_bytes(read_bytes(bytes, core::mem::offset_of!(Response, magic))),
+            version: u16::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Response, version),
+            )),
+            reserved: u16::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Response, reserved),
+            )),
+            request_id: u64::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Response, request_id),
+            )),
+            logon_session_id: u32::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Response, logon_session_id),
+            )),
+            status: u32::from_le_bytes(read_bytes(bytes, core::mem::offset_of!(Response, status))),
+            password_length: u32::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Response, password_length),
+            )),
+            password: read_words(bytes, core::mem::offset_of!(Response, password)),
+            payload_length: u32::from_le_bytes(read_bytes(
+                bytes,
+                core::mem::offset_of!(Response, payload_length),
+            )),
+            payload: read_bytes(bytes, core::mem::offset_of!(Response, payload)),
+        })
     }
 
     pub fn clear_password(&mut self) {
@@ -173,6 +344,31 @@ impl Response {
         self.password_length = 0;
         self.payload_length = 0;
     }
+}
+
+// These offsets match the existing C++ ABI, including its zeroed padding.
+const _: () = assert!(core::mem::size_of::<Request>() == 51608);
+const _: () = assert!(core::mem::size_of::<Response>() == 50216);
+
+fn write_bytes(bytes: &mut [u8], offset: usize, value: &[u8]) {
+    bytes[offset..offset + value.len()].copy_from_slice(value);
+}
+
+fn write_words(bytes: &mut [u8], offset: usize, words: &[u16]) {
+    for (output, word) in bytes[offset..offset + words.len() * 2]
+        .chunks_exact_mut(2)
+        .zip(words)
+    {
+        output.copy_from_slice(&word.to_le_bytes());
+    }
+}
+
+fn read_bytes<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+    core::array::from_fn(|index| bytes[offset + index])
+}
+
+fn read_words<const N: usize>(bytes: &[u8], offset: usize) -> [u16; N] {
+    core::array::from_fn(|index| u16::from_le_bytes(read_bytes(bytes, offset + index * 2)))
 }
 
 /// Wipe a fixed-capacity buffer with volatile stores so the optimizer cannot
@@ -442,6 +638,21 @@ impl PipeClient {
         Ok(out)
     }
 
+    /// ReportResult must return to LogonUI immediately. This detached job
+    /// owns only its request identity, never a COM interface or credential.
+    pub(crate) fn mark_stale_async(
+        sid: String,
+        request_id: u64,
+        logon_session_id: u32,
+    ) -> std::io::Result<std::thread::JoinHandle<()>> {
+        spawn_stale_notification(
+            sid,
+            request_id,
+            logon_session_id,
+            |sid, request_id, session_id| PipeClient.mark_stale(sid, request_id, session_id),
+        )
+    }
+
     /// Tell the service a prepared secret must no longer be used
     /// (e.g. after a failed logon attempt).
     pub fn mark_stale(
@@ -472,7 +683,7 @@ impl PipeClient {
             &mut request,
             &mut response,
             None,
-            now_tick() + kManualDeadlineMs,
+            now_tick() + kStaleDeadlineMs,
         );
         request.clear_password();
         response.clear_password();
@@ -482,6 +693,22 @@ impl PipeClient {
         }
         Ok(())
     }
+}
+
+fn spawn_stale_notification(
+    sid: String,
+    request_id: u64,
+    session_id: u32,
+    notify: impl FnOnce(&[u16], u64, u32) -> Result<(), Error> + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("su-mark-stale".to_owned())
+        .spawn(move || {
+            let sid = sid.encode_utf16().collect::<Vec<_>>();
+            if let Err(error) = notify(&sid, request_id, session_id) {
+                crate::log::cp_log(&format!("mark_stale failed: {:08x}", error.code().0));
+            }
+        })
 }
 
 /// Monotonic milliseconds in the same domain as the runtime clock.
@@ -516,13 +743,7 @@ fn connect_pipe(
             )
         };
         match handle {
-            Ok(handle) => {
-                let mode = PIPE_READMODE_MESSAGE;
-                // SAFETY: handle is a connected pipe; mode points to a valid
-                // NAMED_PIPE_MODE value; the optional out-params are null.
-                unsafe { SetNamedPipeHandleState(handle, Some(&mode), None, None) }?;
-                return Ok(PipeGuard(handle));
-            }
+            Ok(handle) => return configure_pipe(PipeGuard(handle)),
             Err(error) => {
                 let code = error.code().0 as u32 & 0xffff;
                 if code != kWin32ErrorPipeBusy {
@@ -547,6 +768,14 @@ fn connect_pipe(
             return Err(win32_error(kWin32ErrorSemTimeout));
         }
     }
+}
+
+fn configure_pipe(pipe: PipeGuard) -> Result<PipeGuard, Error> {
+    // Own the handle before this fallible step, so errors also close it.
+    let mode = PIPE_READMODE_MESSAGE;
+    // SAFETY: the guard owns a connected pipe and mode is valid for this call.
+    unsafe { SetNamedPipeHandleState(pipe.0, Some(&mode), None, None) }?;
+    Ok(pipe)
 }
 
 /// Wait for a pending overlapped operation on `(io completion, abort,
@@ -684,24 +913,29 @@ fn transact_on(
     deadline_ms: u64,
 ) -> Result<(), Error> {
     let pipe = connect_pipe(pipe_name, abort, deadline_ms)?;
-    if let Err(error) = overlapped_write(pipe.0, request.request_bytes(), abort, deadline_ms) {
+    let request_bytes = request.request_bytes();
+    if let Err(error) = overlapped_write(pipe.0, &request_bytes, abort, deadline_ms) {
         crate::log::cp_log(&format!(
             "pipe write FAILED code={:#x}",
             error.code().0 as u32 & 0xffff
         ));
         return Err(error);
     }
-    let bytes_read =
-        match overlapped_read(pipe.0, response.response_bytes_mut(), abort, deadline_ms) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                crate::log::cp_log(&format!(
-                    "pipe read FAILED code={:#x}",
-                    error.code().0 as u32 & 0xffff
-                ));
-                return Err(error);
-            }
-        };
+    let mut response_bytes = Zeroizing::new(vec![0; core::mem::size_of::<Response>()]);
+    let bytes_read = match overlapped_read(pipe.0, &mut response_bytes, abort, deadline_ms) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            crate::log::cp_log(&format!(
+                "pipe read FAILED code={:#x}",
+                error.code().0 as u32 & 0xffff
+            ));
+            return Err(error);
+        }
+    };
+    if bytes_read as usize != response_bytes.len() {
+        return Err(win32_error(kWin32ErrorInvalidData));
+    }
+    *response = Response::from_bytes(&response_bytes)?;
     crate::log::cp_log(&format!(
         "pipe transact OK bytes_read={} status={}",
         bytes_read, response.status
@@ -800,6 +1034,117 @@ mod tests {
 
     fn request_fixture() -> Request {
         Request::new(kOperationPrepare, 42, 7)
+    }
+
+    #[test]
+    fn wire_encoding_matches_cpp_offsets_and_initializes_padding() {
+        let mut request = Request::new(
+            kOperationAuthenticateAndPrepare,
+            0x0102030405060708,
+            0x11223344,
+        );
+        request.account_kind = 2;
+        request.sid[0] = 0x4f60;
+        request.canonical_username[0] = 65;
+        request.password[0] = 0x1234;
+        request.password[kPasswordCapacity - 1] = 0x4321;
+        request.payload_length = 3;
+        request.payload[..3].copy_from_slice(&[9, 8, 7]);
+        let wire = request.request_bytes();
+        assert_eq!(wire.len(), 51608);
+        assert_eq!(&wire[..8], &[0x50, 0x53, 0x32, 0x53, 2, 0, 5, 0]);
+        assert_eq!(&wire[8..16], &[8, 7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(&wire[16..24], &[0x44, 0x33, 0x22, 0x11, 2, 0, 0, 0]);
+        assert_eq!(&wire[24..26], &[0x60, 0x4f]);
+        assert_eq!(&wire[394..396], &[65, 0]);
+        assert_eq!(&wire[1420..1422], &[0x34, 0x12]);
+        assert_eq!(&wire[2444..2446], &[0x21, 0x43]);
+        assert_eq!(&wire[2446..2452], &[0, 0, 3, 0, 0, 0]);
+        assert_eq!(&wire[2452..2455], &[9, 8, 7]);
+        assert_eq!(&wire[51604..], &[0; 4]);
+
+        let mut response_wire = vec![0; 50216];
+        response_wire[..4].copy_from_slice(&kMagic.to_le_bytes());
+        response_wire[4..6].copy_from_slice(&kVersion.to_le_bytes());
+        response_wire[8..16].copy_from_slice(&request.request_id.to_le_bytes());
+        response_wire[16..20].copy_from_slice(&request.logon_session_id.to_le_bytes());
+        response_wire[24..28].copy_from_slice(&2u32.to_le_bytes());
+        response_wire[28..32].copy_from_slice(&[b'p', 0, b'w', 0]);
+        response_wire[1056..1060].copy_from_slice(&3u32.to_le_bytes());
+        response_wire[1060..1063].copy_from_slice(&[6, 5, 4]);
+        let response = Response::from_bytes(&response_wire).unwrap();
+        validate_response(&response, &request, 50216).unwrap();
+        assert_eq!(&response.password[..3], &[112, 119, 0]);
+        assert_eq!(response.payload_length, 3);
+        assert_eq!(&response.payload[..3], &[6, 5, 4]);
+        let encoded = response.response_bytes();
+        assert_eq!(&encoded[1054..1056], &[0; 2]);
+        assert_eq!(&encoded[50212..], &[0; 4]);
+        assert!(Response::from_bytes(&response_wire[..50215]).is_err());
+        assert!(Request::from_bytes(&wire[..51607]).is_err());
+    }
+
+    #[test]
+    fn stale_notification_returns_while_transport_is_blocked() {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let start = std::time::Instant::now();
+        let job =
+            spawn_stale_notification("S-1-5-21-123".to_owned(), 42, 7, move |sid, id, session| {
+                assert_eq!(sid, "S-1-5-21-123".encode_utf16().collect::<Vec<_>>());
+                assert_eq!((id, session), (42, 7));
+                started_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        assert!(start.elapsed() < Duration::from_millis(200));
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            !job.is_finished(),
+            "caller returned before the blocked notification completed"
+        );
+        release_tx.send(()).unwrap();
+        job.join().unwrap();
+    }
+
+    #[test]
+    fn pipe_mode_failure_closes_the_connected_handle() {
+        use windows::Win32::Foundation::GetHandleInformation;
+        use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+        use windows::Win32::System::Pipes::{
+            CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+        };
+        let (_storage, name) = wide_name("byte-mode");
+        let server = PipeGuard(unsafe {
+            CreateNamedPipeW(
+                name,
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        });
+        assert!(!server.0.is_invalid());
+        let client = unsafe {
+            CreateFileW(
+                name,
+                (GENERIC_READ | GENERIC_WRITE).0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                None,
+            )
+        }
+        .unwrap();
+        assert!(configure_pipe(PipeGuard(client)).is_err());
+        let mut flags = Default::default();
+        let error = unsafe { GetHandleInformation(client, &mut flags) }.unwrap_err();
+        assert_eq!(win32_code(&error), 6); // ERROR_INVALID_HANDLE
     }
 
     #[test]
@@ -1002,7 +1347,7 @@ mod tests {
     use std::time::Duration;
 
     fn wide_name(tag: &str) -> (Vec<u16>, PCWSTR) {
-        let text = format!(r"\\.\pipe\Smile2UnlockTest.{tag}");
+        let text = format!(r"\\.\pipe\Smile2UnlockTest.{}.{tag}", std::process::id());
         let mut wide: Vec<u16> = text.encode_utf16().collect();
         wide.push(0);
         let ptr = PCWSTR(wide.as_ptr());
@@ -1018,18 +1363,18 @@ mod tests {
         delay_ms: u64,
         seen_request_ids: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
     ) -> thread::JoinHandle<()> {
-        use windows::Win32::Storage::FileSystem::{PIPE_ACCESS_DUPLEX, ReadFile, WriteFile};
+        use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows::Win32::System::Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
             PIPE_TYPE_MESSAGE, PIPE_WAIT,
         };
         thread::spawn(move || {
             let pipe_name = PCWSTR(pipe_name_wide.as_ptr());
-            // SAFETY: name is NUL-terminated; one synchronous server instance.
+            // SAFETY: name is NUL-terminated; one overlapped server instance.
             let server = unsafe {
                 CreateNamedPipeW(
                     pipe_name,
-                    PIPE_ACCESS_DUPLEX,
+                    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                     PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
                     1,
                     core::mem::size_of::<Response>() as u32,
@@ -1039,36 +1384,30 @@ mod tests {
                 )
             };
             assert!(!server.is_invalid(), "CreateNamedPipeW failed");
-            // SAFETY: server handle is valid and listening. A client that
-            // aborts during connect surfaces on the client side; the server
-            // thread simply finishes without serving.
-            let _ = unsafe { ConnectNamedPipe(server, None) };
-            let mut request = Request {
-                magic: 0,
-                version: 0,
-                operation: 0,
-                request_id: 0,
-                logon_session_id: 0,
-                account_kind: 0,
-                sid: [0; kSidCapacity],
-                canonical_username: [0; kUsernameCapacity],
-                password: [0; kPasswordCapacity],
-                payload_length: 0,
-                payload: [0; kPayloadCapacity],
+            let connect_event = EventGuard::new().unwrap();
+            let mut connection = OVERLAPPED {
+                hEvent: connect_event.0,
+                ..Default::default()
             };
-            let mut read_bytes = 0u32;
-            // SAFETY: the byte view of a properly aligned Request is valid
-            // for the full read; casting the struct (not a u8 array) keeps
-            // the u64 fields aligned.
-            let request_bytes = unsafe {
-                core::slice::from_raw_parts_mut(
-                    (&mut request as *mut Request).cast::<u8>(),
-                    core::mem::size_of::<Request>(),
-                )
-            };
-            let read =
-                unsafe { ReadFile(server, Some(request_bytes), Some(&mut read_bytes), None) };
-            if read.is_ok() && read_bytes as usize == core::mem::size_of::<Request>() {
+            if let Err(error) = unsafe { ConnectNamedPipe(server, Some(&mut connection)) } {
+                let code = win32_code(&error);
+                if code == kWin32ErrorIoPending {
+                    wait_io(
+                        server,
+                        &mut connection,
+                        connect_event.0,
+                        None,
+                        now_tick() + 5_000,
+                    )
+                    .expect("test client connects");
+                } else {
+                    assert_eq!(code, 535, "ConnectNamedPipe failed"); // ERROR_PIPE_CONNECTED
+                }
+            }
+            let mut request_bytes = Zeroizing::new(vec![0; core::mem::size_of::<Request>()]);
+            let read = overlapped_read(server, &mut request_bytes, None, now_tick() + 2_000);
+            if read.is_ok_and(|size| size as usize == request_bytes.len()) {
+                let request = Request::from_bytes(&request_bytes).unwrap();
                 seen_request_ids.lock().unwrap().push(request.request_id);
                 if delay_ms > 0 {
                     thread::sleep(Duration::from_millis(delay_ms));
@@ -1080,7 +1419,7 @@ mod tests {
                     request_id: request.request_id,
                     logon_session_id: request.logon_session_id,
                     status: kStatusOk,
-                    password_length: 3,
+                    password_length: 2,
                     password: [0; kPasswordCapacity],
                     payload_length: 0,
                     payload: [0; kPayloadCapacity],
@@ -1088,19 +1427,15 @@ mod tests {
                 response.password[0] = b'p' as u16;
                 response.password[1] = b'w' as u16;
                 response.password[2] = 0;
-                // SAFETY: response buffer is valid for the full write.
-                let response_bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        (&response as *const Response).cast::<u8>(),
-                        core::mem::size_of::<Response>(),
-                    )
-                };
-                let mut written = 0u32;
-                let write =
-                    unsafe { WriteFile(server, Some(response_bytes), Some(&mut written), None) };
-                // A client that aborted or hit its deadline has closed its
-                // end; the delayed echo failing to deliver is expected.
-                let _ = write;
+                let response_bytes = response.response_bytes();
+                // Aborted/deadline clients have already closed their end.
+                // Successful writes must wait for the client to read and close,
+                // because DisconnectNamedPipe discards unread buffered data.
+                if overlapped_write(server, &response_bytes, None, now_tick() + 2_000).is_ok() {
+                    let mut acknowledgement = [0u8; 1];
+                    let _ = overlapped_read(server, &mut acknowledgement, None, now_tick() + 2_000);
+                }
+                response.clear_password();
             }
             // SAFETY: server handle is valid.
             unsafe {
@@ -1190,10 +1525,31 @@ mod tests {
         assert_eq!(response.request_id, 4242);
         assert_eq!(response.logon_session_id, 5);
         assert_eq!(response.status, kStatusOk);
-        assert_eq!(response.password_length, 3);
+        assert_eq!(response.password_length, 2);
         server.join().unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![4242]);
         drop(name_storage);
+    }
+
+    #[test]
+    fn overlapped_response_survives_a_delayed_reader() {
+        let (storage, name) = wide_name("delayed-reader");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server = spawn_echo_server(storage.clone(), 0, std::sync::Arc::clone(&seen));
+        wait_pipe_ready(name);
+        let pipe = connect_pipe(name, None, now_tick() + 2_000).unwrap();
+        let request = Request::new(kOperationAuthenticateAndPrepare, 4243, 5);
+        let wire = request.request_bytes();
+        overlapped_write(pipe.0, &wire, None, now_tick() + 2_000).unwrap();
+        thread::sleep(Duration::from_millis(150));
+        let mut response_wire = Zeroizing::new(vec![0; core::mem::size_of::<Response>()]);
+        let read = overlapped_read(pipe.0, &mut response_wire, None, now_tick() + 2_000).unwrap();
+        let response = Response::from_bytes(&response_wire).unwrap();
+        validate_response(&response, &request, read).unwrap();
+        assert_eq!(&response.password[..3], &[112, 119, 0]);
+        drop(pipe);
+        server.join().unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![4243]);
     }
 
     #[test]

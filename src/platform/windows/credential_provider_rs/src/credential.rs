@@ -636,11 +636,12 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             // submissions from this tile. Manual Windows passwords remain usable.
             self.broker_password_invalid.set(true);
             if let Some(sid) = self.user_sid.borrow().as_ref() {
-                let sid = sid.encode_utf16().collect::<Vec<_>>();
-                if let Err(error) =
-                    crate::pipe_client::PipeClient.mark_stale(&sid, request_id, session_id)
-                {
-                    crate::log::cp_log(&format!("mark_stale failed: {:08x}", error.code().0));
+                if let Err(error) = crate::pipe_client::PipeClient::mark_stale_async(
+                    sid.clone(),
+                    request_id,
+                    session_id,
+                ) {
+                    crate::log::cp_log(&format!("mark_stale worker failed: {error}"));
                 }
             }
             if !ppszoptionalstatustext.is_null() {

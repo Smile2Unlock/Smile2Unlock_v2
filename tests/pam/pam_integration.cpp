@@ -98,7 +98,8 @@ bool run_socket_case(
     std::string_view name,
     su::control::ControlResult result,
     int expected_pam_status,
-    bool matching_request_id = true) {
+    bool matching_request_id = true,
+    bool malformed_response = false) {
     const auto directory = case_directory(name);
     const auto socket_path = directory / "control.sock";
     if (!write_service_config(directory, socket_path)) {
@@ -129,10 +130,13 @@ bool run_socket_case(
             return;
         }
         const auto response_id = matching_request_id ? *request_id : *request_id + 1;
+        const auto response = malformed_response
+            ? std::format(
+                R"({{"version":"2","msg_type":"auth_result","request_id":{},"result":"accepted","reason":""}})",
+                response_id)
+            : su::control::make_response(response_id, result, "PAM integration test");
         server_ok.store(
-            connection->send_frame(su::control::make_response(
-                response_id, result, "PAM integration test"))
-                .has_value(),
+            connection->send_frame(response).has_value(),
             std::memory_order_release);
     });
 
@@ -264,6 +268,12 @@ int main() {
                 su::control::ControlResult::kAccepted,
                 PAM_AUTHINFO_UNAVAIL,
                 false)
+            && run_socket_case(
+                "malformed-response",
+                su::control::ControlResult::kAccepted,
+                PAM_AUTHINFO_UNAVAIL,
+                true,
+                true)
             && run_unavailable_case()
             && administrator_stacks_preserve_fallback()
         ? 0

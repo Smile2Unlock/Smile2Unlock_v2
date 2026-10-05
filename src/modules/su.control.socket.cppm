@@ -4,6 +4,7 @@ module;
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -35,6 +36,7 @@ enum class SocketError {
     kReadFailed,
     kWriteFailed,
     kProtocolError,
+    kTimeout,
 };
 
 enum class ControlResult {
@@ -71,7 +73,7 @@ public:
 
     static std::expected<Connection, SocketError> connect_to(
         std::string_view path,
-        std::chrono::seconds timeout = std::chrono::seconds{15});
+        std::chrono::milliseconds timeout = std::chrono::seconds{15});
 
     std::expected<void, SocketError> send_frame(std::string_view payload) const;
     std::expected<std::string, SocketError> receive_frame() const;
@@ -80,10 +82,11 @@ public:
     [[nodiscard]] bool valid() const { return fd_ >= 0; }
 
 private:
-    explicit Connection(int fd) : fd_(fd) {}
+    Connection(int fd, std::chrono::milliseconds timeout) : fd_(fd), timeout_(timeout) {}
     void reset();
 
     int fd_ = -1;
+    std::chrono::milliseconds timeout_{std::chrono::seconds{15}};
     friend class Listener;
 };
 
@@ -97,7 +100,8 @@ public:
     Listener& operator=(Listener&& other) noexcept;
 
     static std::expected<Listener, SocketError> bind_to(std::string_view path);
-    std::expected<Connection, SocketError> accept_one() const;
+    std::expected<Connection, SocketError> accept_one(
+        std::chrono::milliseconds timeout = std::chrono::seconds{15}) const;
 
 private:
     Listener(int fd, std::string path) : fd_(fd), path_(std::move(path)) {}
@@ -164,18 +168,59 @@ std::expected<sockaddr_un, SocketError> socket_address(std::string_view path) {
     return address;
 }
 
-bool set_timeout(int fd, std::chrono::seconds timeout) {
-    const auto value = timeval{.tv_sec = timeout.count(), .tv_usec = 0};
+bool set_timeout(int fd, std::chrono::milliseconds timeout) {
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(timeout);
+    const auto value = timeval{
+        .tv_sec = seconds.count(),
+        .tv_usec = std::chrono::duration_cast<std::chrono::microseconds>(timeout - seconds).count(),
+    };
     return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) == 0
         && ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, sizeof(value)) == 0;
 }
 
-std::expected<void, SocketError> write_all(int fd, const void* data, std::size_t size) {
+std::expected<void, SocketError> wait_for_socket(
+    int fd, short events, std::chrono::steady_clock::time_point deadline, SocketError error) {
+    while (true) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+            return std::unexpected(SocketError::kTimeout);
+        }
+        const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(deadline - now);
+        const auto timeout = static_cast<int>(std::min<std::int64_t>(
+            remaining.count(), std::numeric_limits<int>::max()));
+        auto descriptor = pollfd{.fd = fd, .events = events, .revents = 0};
+        const auto result = ::poll(&descriptor, 1, timeout);
+        if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        if (result == 0) {
+            continue;
+        }
+        if (result < 0 || (descriptor.revents & POLLNVAL) != 0) {
+            return std::unexpected(error);
+        }
+        // Let recv/send observe EOF or a socket error, including when HUP
+        // accompanies readable buffered data.
+        return {};
+    }
+}
+
+std::expected<void, SocketError> write_all(
+    int fd, const void* data, std::size_t size, std::chrono::steady_clock::time_point deadline) {
     const auto* bytes = static_cast<const std::byte*>(data);
     auto written = std::size_t{0};
     while (written < size) {
-        const auto result = ::send(fd, bytes + written, size - written, MSG_NOSIGNAL);
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return std::unexpected(SocketError::kTimeout);
+        }
+        const auto result = ::send(fd, bytes + written, size - written, MSG_NOSIGNAL | MSG_DONTWAIT);
         if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (auto ready = wait_for_socket(fd, POLLOUT, deadline, SocketError::kWriteFailed); !ready) {
+                return ready;
+            }
             continue;
         }
         if (result <= 0) {
@@ -186,12 +231,22 @@ std::expected<void, SocketError> write_all(int fd, const void* data, std::size_t
     return {};
 }
 
-std::expected<void, SocketError> read_all(int fd, void* data, std::size_t size) {
+std::expected<void, SocketError> read_all(
+    int fd, void* data, std::size_t size, std::chrono::steady_clock::time_point deadline) {
     auto* bytes = static_cast<std::byte*>(data);
     auto consumed = std::size_t{0};
     while (consumed < size) {
-        const auto result = ::recv(fd, bytes + consumed, size - consumed, 0);
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return std::unexpected(SocketError::kTimeout);
+        }
+        const auto result = ::recv(fd, bytes + consumed, size - consumed, MSG_DONTWAIT);
         if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (auto ready = wait_for_socket(fd, POLLIN, deadline, SocketError::kReadFailed); !ready) {
+                return ready;
+            }
             continue;
         }
         if (result <= 0) {
@@ -245,12 +300,13 @@ Connection::~Connection() {
 }
 
 Connection::Connection(Connection&& other) noexcept
-    : fd_(std::exchange(other.fd_, -1)) {}
+    : fd_(std::exchange(other.fd_, -1)), timeout_(other.timeout_) {}
 
 Connection& Connection::operator=(Connection&& other) noexcept {
     if (this != &other) {
         reset();
         fd_ = std::exchange(other.fd_, -1);
+        timeout_ = other.timeout_;
     }
     return *this;
 }
@@ -264,7 +320,10 @@ void Connection::reset() {
 
 std::expected<Connection, SocketError> Connection::connect_to(
     std::string_view path,
-    std::chrono::seconds timeout) {
+    std::chrono::milliseconds timeout) {
+    if (timeout <= std::chrono::milliseconds::zero()) {
+        return std::unexpected(SocketError::kInvalidArgument);
+    }
     const auto address = socket_address(path);
     if (!address) {
         return std::unexpected(address.error());
@@ -273,7 +332,7 @@ std::expected<Connection, SocketError> Connection::connect_to(
     if (fd < 0) {
         return std::unexpected(SocketError::kCreateFailed);
     }
-    auto connection = Connection{fd};
+    auto connection = Connection{fd, timeout};
     if (!set_timeout(fd, timeout)
         || ::connect(fd, reinterpret_cast<const sockaddr*>(&*address), sizeof(*address)) != 0) {
         return std::unexpected(SocketError::kConnectFailed);
@@ -287,10 +346,11 @@ std::expected<void, SocketError> Connection::send_frame(std::string_view payload
         return std::unexpected(SocketError::kInvalidArgument);
     }
     const auto length = ::htonl(static_cast<std::uint32_t>(payload.size()));
-    if (auto header = write_all(fd_, &length, sizeof(length)); !header) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout_;
+    if (auto header = write_all(fd_, &length, sizeof(length), deadline); !header) {
         return header;
     }
-    return write_all(fd_, payload.data(), payload.size());
+    return write_all(fd_, payload.data(), payload.size(), deadline);
 }
 
 std::expected<std::string, SocketError> Connection::receive_frame() const {
@@ -298,7 +358,9 @@ std::expected<std::string, SocketError> Connection::receive_frame() const {
         return std::unexpected(SocketError::kInvalidArgument);
     }
     auto network_length = std::uint32_t{0};
-    if (auto header = read_all(fd_, &network_length, sizeof(network_length)); !header) {
+    // Header and body share a deadline: trickled bytes cannot reset it.
+    const auto deadline = std::chrono::steady_clock::now() + timeout_;
+    if (auto header = read_all(fd_, &network_length, sizeof(network_length), deadline); !header) {
         return std::unexpected(header.error());
     }
     const auto length = static_cast<std::size_t>(::ntohl(network_length));
@@ -306,7 +368,7 @@ std::expected<std::string, SocketError> Connection::receive_frame() const {
         return std::unexpected(SocketError::kProtocolError);
     }
     auto payload = std::string(length, '\0');
-    if (auto body = read_all(fd_, payload.data(), payload.size()); !body) {
+    if (auto body = read_all(fd_, payload.data(), payload.size(), deadline); !body) {
         return std::unexpected(body.error());
     }
     return payload;
@@ -384,13 +446,16 @@ std::expected<Listener, SocketError> Listener::bind_to(std::string_view path) {
     return listener;
 }
 
-std::expected<Connection, SocketError> Listener::accept_one() const {
+std::expected<Connection, SocketError> Listener::accept_one(std::chrono::milliseconds timeout) const {
+    if (timeout <= std::chrono::milliseconds::zero()) {
+        return std::unexpected(SocketError::kInvalidArgument);
+    }
     const auto fd = ::accept4(fd_, nullptr, nullptr, SOCK_CLOEXEC);
     if (fd < 0) {
         return std::unexpected(SocketError::kAcceptFailed);
     }
-    auto connection = Connection{fd};
-    if (!set_timeout(fd, std::chrono::seconds{15})) {
+    auto connection = Connection{fd, timeout};
+    if (!set_timeout(fd, timeout)) {
         return std::unexpected(SocketError::kAcceptFailed);
     }
     return connection;
@@ -502,12 +567,16 @@ std::string make_response(
     }.dump();
 }
 
-std::expected<ControlResponse, SocketError> parse_response(std::string_view response) {
+std::expected<ControlResponse, SocketError> parse_response(std::string_view response) try {
     const auto parsed = nlohmann::json::parse(response, nullptr, false);
     if (parsed.is_discarded()
         || !parsed.is_object()
-        || parsed.value("version", 0U) != kProtocolVersion
-        || parsed.value("msg_type", std::string{}) != "auth_result"
+        || !parsed.contains("version")
+        || !parsed["version"].is_number_unsigned()
+        || parsed["version"] != kProtocolVersion
+        || !parsed.contains("msg_type")
+        || !parsed["msg_type"].is_string()
+        || parsed["msg_type"] != "auth_result"
         || !parsed.contains("request_id")
         || !parsed["request_id"].is_number_unsigned()
         || !parsed.contains("result")
@@ -527,6 +596,8 @@ std::expected<ControlResponse, SocketError> parse_response(std::string_view resp
         .reason = parsed["reason"].get<std::string>(),
         .payload_json = parsed.contains("payload") ? parsed["payload"].dump() : "null",
     };
+} catch (const nlohmann::json::exception&) {
+    return std::unexpected(SocketError::kProtocolError);
 }
 
 } // namespace su::control
