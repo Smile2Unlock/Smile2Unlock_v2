@@ -180,7 +180,7 @@ jobs:
 
       - name: Build Linux release
         run: |
-          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y --seetaface_prebuilt=y
           xmake build -v
 
       - name: Build and verify Linux packages
