@@ -761,7 +761,7 @@ Slint 是唯一计划内 GUI。
 
 ### Phase 0: Plan and build skeleton ✅
 
-- ✅ 固定 Slint 版本和包来源 — Slint v1.17.0 pinned in xmake.lua
+- ✅ 固定 Slint 版本和包来源 — Slint v1.18.1 pinned in xmake.lua
 - ✅ 建立 xmake target skeleton — 共 8 个 target（su_core / su_recognizer / su_app / pam_smile2unlock / su_platform_zig / su_face_auth_smoke_test / su_core_rust_tests / su_seetaface_pipeline_smoke_test）
 - ✅ 建立 Rust `su_core` skeleton — config/profile/auth/embedding/pipeline/ffi 完整模块，25 个单元测试
 - ✅ 建立 C++ `AppController` skeleton — AppController + core_bridge + console_main + slint_main
@@ -821,7 +821,7 @@ Slint 是唯一计划内 GUI。
 
 | 决策 | 状态 | 当前选择 |
 |------|------|----------|
-| Slint 版本 pin | ✅ 已决定 | v1.17.0 |
+| Slint 版本 pin | ✅ 已决定 | v1.18.1 |
 | Rust/C++ 边界 | ✅ 已决定 | 纯 C ABI（core_bridge.h） |
 | 凭据存储 | ✅ 已决定 | system-owned XChaCha20-Poly1305 envelope；SQLite 暂不引入，详见加密存储计划 |
 | Windows profile 访问 | ✅ 已决定 (2026-08-18) | GUI 与 CP 均不直接打开 profile；统一通过 LocalSystem 认证服务，服务持有 per-SID ProgramData 加密 store |

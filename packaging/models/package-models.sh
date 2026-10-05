@@ -64,6 +64,8 @@ installation:
 - Windows (installer/ZIP layout): \`<install-root>\assets\models\seeta\`
 - Linux (tar/deb/rpm/pacman layout): \`/usr/share/smile2unlock/models/\`
 
+Download page: https://github.com/Smile2Unlock/local-repo/releases/tag/models-seetaface6-${suffix}
+
 The release assets already bundle these models; this archive exists for
 offline installs, model-only updates, and redistribution audits.
 

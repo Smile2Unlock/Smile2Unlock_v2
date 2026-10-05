@@ -716,7 +716,7 @@ constexpr auto kRequiredModels = std::array{
 };
 
 constexpr char kModelsAssetUrl[] =
-    "https://github.com/Smile2Unlock/Smile2Unlock_v2/releases/download/"
+    "https://github.com/Smile2Unlock/local-repo/releases/download/"
     "models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip";
 
 std::filesystem::path expected_model_dir() {
@@ -881,7 +881,7 @@ std::expected<std::string, std::string> extract_archive_with_tar(
     std::error_code ignored{};
     std::filesystem::create_directories(destination, ignored);
     auto command = std::format(
-        L"tar -xf \"{}\" -C \"{}\"", archive.wstring(), destination.wstring());
+        L"tar -xf \"{}\" --strip-components=1 -C \"{}\"", archive.wstring(), destination.wstring());
     auto startup = STARTUPINFOW{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -999,8 +999,8 @@ void AppController::download_models(
         std::error_code ignored{};
         std::filesystem::remove(archive, ignored);
         std::filesystem::remove(archive_hash_file, ignored);
-        // The archive nests seeta/*.csta, so extracting into the models
-        // parent lands the files directly in the expected directory.
+        // Strip the bundle's outer directory so its seeta/*.csta entries
+        // land directly in the expected model directory.
         for (const auto* name : kRequiredModels) {
             std::error_code ignored{};
             if (!std::filesystem::exists(model_dir / name, ignored)) {

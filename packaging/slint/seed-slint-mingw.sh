@@ -4,11 +4,11 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Archive identity and Rust version must be regenerated together.
-read -r version package_hash archive_sha256 rust_commit archive_name < <(
+read -r version package_hash archive_sha256 rust_commit archive_name repository < <(
     python3 - "${script_dir}/prebuilt-mingw.json" <<'PY'
 import json, sys
 info = json.load(open(sys.argv[1]))
-print(info['version'], info['package_hash'], info['archive_sha256'], info['rust_commit'], info['archive_name'])
+print(info['version'], info['package_hash'], info['archive_sha256'], info['rust_commit'], info['archive_name'], info['repository'])
 PY
 )
 actual_rust_commit="$(rustc -Vv | sed -n 's/^commit-hash: //p')"
@@ -49,7 +49,7 @@ trap 'rm -rf -- "$temporary"' EXIT
 if [[ -z "$archive" ]]; then
     archive="${temporary}/slint.tar.gz"
     curl -fsSL --retry 3 -o "$archive" \
-        "https://github.com/${GITHUB_REPOSITORY:-Smile2Unlock/Smile2Unlock_v2}/releases/download/slint-prebuilt-${version}/${archive_name}"
+        "https://github.com/${repository}/releases/download/slint-prebuilt-${version}/${archive_name}"
 fi
 actual="$(sha256sum "$archive" | cut -d' ' -f1)"
 [[ "$actual" == "$archive_sha256" ]] || {
