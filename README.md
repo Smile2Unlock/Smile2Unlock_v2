@@ -198,10 +198,13 @@ xmake f -y -p linux -a x86_64 -m release
 xmake build
 ```
 
-The release MinGW SeetaFace SDK includes the Unicode model/DLL path fixes.
-Use `--seetaface_prebuilt=n` when configuring to rebuild that SDK from its
-pinned upstream source. Linux continues to build SeetaFace from source for
-the host ABI.
+Release x86_64 builds use the SeetaFace SDKs from
+[local-repo](https://github.com/Smile2Unlock/local-repo/releases/tag/seetaface6-prebuilt-a32e2fa).
+The MinGW SDK includes the Unicode model/DLL path fixes. The Linux SDK was
+built on Ubuntu 24.04 with GCC 13.3.0 and requires glibc >= 2.38 plus GNU
+libstdc++ with `GLIBCXX_3.4.32` and `CXXABI_1.3.8`; incompatible runtimes or
+other C++ toolchains fall back to source builds. Use `--seetaface_prebuilt=n`
+to rebuild SeetaFace from its pinned upstream source on either platform.
 
 Package both supported platforms from existing release builds:
 

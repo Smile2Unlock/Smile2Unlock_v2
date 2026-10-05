@@ -72,21 +72,20 @@ jobs:
           bash packaging/slint/setup-rust.sh
           --component rustfmt --component clippy --target x86_64-pc-windows-gnu
 
-      - name: Check Rust formatting and tests
+      - name: Check Rust formatting
         run: |
           cargo fmt --manifest-path src/core-rs/Cargo.toml -- --check
-          cargo test --locked --manifest-path src/core-rs/Cargo.toml
 
       - name: Build Linux
         timeout-minutes: 30
         run: |
-          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y
-          xmake build -v su_app su_authd su_deploy_helper pam_smile2unlock su_face_auth_smoke_test su_deploy_test su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test su_download_progress_test su_core_rust_tests
+          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y --seetaface_prebuilt=y
+          xmake build -v su_app su_authd su_deploy_helper pam_smile2unlock su_face_auth_smoke_test su_deploy_test su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test su_download_progress_test su_core_rust_tests su_seetaface_pipeline_smoke_test
 
       - name: Test Linux
         timeout-minutes: 5
         run: |
-          xmake test -v su_face_auth_smoke_test/default su_deploy_test/default su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default su_download_progress_test/default su_core_rust_tests/default
+          xmake test -v su_face_auth_smoke_test/default su_deploy_test/default su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default su_download_progress_test/default su_core_rust_tests/default su_seetaface_pipeline_smoke_test/default
 
       - name: Build and verify Linux tarball
         run: packaging/linux/package.sh --format tar.gz
