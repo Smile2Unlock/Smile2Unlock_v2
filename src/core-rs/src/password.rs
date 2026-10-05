@@ -5,7 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::encrypted_store::{
     AccountId, DataKind, EnvelopeError, decrypt_payload, encrypt_payload,
@@ -24,16 +24,66 @@ static USED_REQUESTS: LazyLock<Mutex<RequestReplayCache>> =
     LazyLock::new(|| Mutex::new(RequestReplayCache::new()));
 static PASSWORD_STORE_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct LogonSecret {
     version: u32,
     sid: String,
     account_kind: u8,
     canonical_username: String,
-    password_utf16le: Vec<u8>,
+    #[serde(
+        serialize_with = "serialize_password",
+        deserialize_with = "deserialize_password"
+    )]
+    password_utf16le: Zeroizing<Vec<u8>>,
     created_at_unix: u64,
     credential_generation: u64,
     stale: bool,
+}
+
+// Keep the serialized byte-array format unchanged, but own the plaintext
+// through a zeroizing guard even if a later JSON field fails to deserialize.
+fn serialize_password<S: serde::Serializer>(
+    password: &Zeroizing<Vec<u8>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    password.as_slice().serialize(serializer)
+}
+
+fn deserialize_password<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Zeroizing<Vec<u8>>, D::Error> {
+    struct PasswordVisitor;
+    impl<'de> serde::de::Visitor<'de> for PasswordVisitor {
+        type Value = Zeroizing<Vec<u8>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a bounded UTF-16LE password byte array")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            // Fixed capacity prevents reallocation from leaving old plaintext
+            // allocations behind. The guard also covers partial JSON errors.
+            let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_PASSWORD_UNITS * 2));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                if bytes.len() == MAX_PASSWORD_UNITS * 2 {
+                    return Err(serde::de::Error::custom("password byte array is too long"));
+                }
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
+    deserializer.deserialize_seq(PasswordVisitor)
+}
+
+fn valid_password(password: &[u16]) -> bool {
+    !password.is_empty()
+        && password.len() <= MAX_PASSWORD_UNITS
+        && !password.contains(&0)
+        && std::char::decode_utf16(password.iter().copied()).all(|unit| unit.is_ok())
 }
 
 struct RequestReplayCache {
@@ -92,11 +142,7 @@ fn windows_sid<'a>(context: &'a EncryptedProfileContext<'_>) -> Result<&'a str, 
 }
 
 fn password_to_bytes(password: &[u16]) -> Result<Zeroizing<Vec<u8>>, SuStatus> {
-    if password.is_empty()
-        || password.len() > MAX_PASSWORD_UNITS
-        || password.contains(&0)
-        || String::from_utf16(password).is_err()
-    {
+    if !valid_password(password) {
         return Err(SuStatus::InvalidArgument);
     }
     let mut bytes = Zeroizing::new(Vec::with_capacity(password.len() * 2));
@@ -110,14 +156,16 @@ fn bytes_to_password(bytes: &[u8]) -> Result<Zeroizing<Vec<u16>>, SuStatus> {
     if bytes.is_empty() || !bytes.len().is_multiple_of(2) || bytes.len() / 2 > MAX_PASSWORD_UNITS {
         return Err(SuStatus::ParseError);
     }
-    let password = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect::<Vec<_>>();
-    if password.contains(&0) || String::from_utf16(&password).is_err() {
+    let password = Zeroizing::new(
+        bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>(),
+    );
+    if !valid_password(&password) {
         return Err(SuStatus::ParseError);
     }
-    Ok(Zeroizing::new(password))
+    Ok(password)
 }
 
 fn load_secret(
@@ -161,7 +209,14 @@ fn save_secret(
     context: &EncryptedProfileContext<'_>,
     secret: &LogonSecret,
 ) -> Result<(), SuStatus> {
-    let payload = Zeroizing::new(serde_json::to_vec(secret).map_err(|_| SuStatus::WriteError)?);
+    // Each JSON byte value uses at most three digits plus a comma; strings
+    // use at most six output bytes per input byte. Reserve the full bound so
+    // encoding never reallocates a buffer that already contains plaintext.
+    let capacity = secret.password_utf16le.len() * 4
+        + (secret.sid.len() + secret.canonical_username.len()) * 6
+        + 512;
+    let mut payload = Zeroizing::new(Vec::with_capacity(capacity));
+    serde_json::to_writer(&mut *payload, secret).map_err(|_| SuStatus::WriteError)?;
     let envelope = encrypt_payload(
         context.master_key,
         context.key_version,
@@ -199,12 +254,12 @@ pub(crate) fn store_logon_secret(
     let generation = previous_generation
         .checked_add(1)
         .ok_or(SuStatus::InvalidArgument)?;
-    let mut secret = LogonSecret {
+    let secret = LogonSecret {
         version: PASSWORD_PAYLOAD_VERSION,
         sid,
         account_kind: account_kind as u8,
         canonical_username: canonical_username.to_owned(),
-        password_utf16le: password_utf16le.to_vec(),
+        password_utf16le,
         created_at_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_secs())
@@ -213,7 +268,6 @@ pub(crate) fn store_logon_secret(
         stale: false,
     };
     let result = save_secret(path, context, &secret);
-    secret.password_utf16le.zeroize();
     result.map(|_| generation)
 }
 
@@ -239,13 +293,11 @@ pub(crate) fn prepare_logon_secret(
             return Err(SuStatus::UserDenied);
         }
     }
-    let mut secret = load_secret(path, context)?;
+    let secret = load_secret(path, context)?;
     if secret.stale {
-        secret.password_utf16le.zeroize();
         return Err(SuStatus::UserDenied);
     }
     let password = bytes_to_password(&secret.password_utf16le)?;
-    secret.password_utf16le.zeroize();
     Ok(password)
 }
 
@@ -257,7 +309,6 @@ pub(crate) fn mark_logon_secret_stale(
     let mut secret = load_secret(path, context)?;
     secret.stale = true;
     let result = save_secret(path, context, &secret);
-    secret.password_utf16le.zeroize();
     result
 }
 
@@ -269,8 +320,7 @@ pub(crate) fn clear_logon_secret(
     if !path.exists() {
         return Ok(false);
     }
-    let mut secret = load_secret(path, context)?;
-    secret.password_utf16le.zeroize();
+    let _secret = load_secret(path, context)?;
     fs::remove_file(path).map_err(|_| SuStatus::WriteError)?;
     #[cfg(unix)]
     if let Some(parent) = path.parent() {
@@ -303,6 +353,50 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn utf16_password_validation_preserves_unicode_and_rejects_invalid_units() {
+        let unicode = "密碼😀".encode_utf16().collect::<Vec<_>>();
+        let bytes = password_to_bytes(&unicode).unwrap();
+        assert_eq!(bytes_to_password(&bytes).unwrap().as_slice(), unicode);
+        for invalid in [vec![0xd800], vec![0xdc00], vec![0], vec![0xd800, 65]] {
+            assert!(matches!(
+                password_to_bytes(&invalid),
+                Err(SuStatus::InvalidArgument)
+            ));
+            let bytes = invalid
+                .iter()
+                .flat_map(|unit| unit.to_le_bytes())
+                .collect::<Vec<_>>();
+            assert!(matches!(
+                bytes_to_password(&bytes),
+                Err(SuStatus::ParseError)
+            ));
+        }
+        assert!(bytes_to_password(&[1]).is_err());
+        assert!(password_to_bytes(&vec![65; MAX_PASSWORD_UNITS]).is_ok());
+        assert!(password_to_bytes(&vec![65; MAX_PASSWORD_UNITS + 1]).is_err());
+    }
+
+    #[test]
+    fn password_json_keeps_legacy_format_and_bounds_partial_deserialization() {
+        let password =
+            deserialize_password(&mut serde_json::Deserializer::from_str("[65,0,66,0]")).unwrap();
+        assert_eq!(password.as_slice(), [65, 0, 66, 0]);
+        let mut encoded = Zeroizing::new(Vec::with_capacity(32));
+        serialize_password(&password, &mut serde_json::Serializer::new(&mut *encoded)).unwrap();
+        assert_eq!(encoded.as_slice(), b"[65,0,66,0]");
+        // The guard remains active while other fields are decoded and on errors.
+        fn assert_zeroizes_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+        assert_zeroizes_on_drop(&password);
+        for invalid in ["[65,0,999]", "[65,0,\"bad\"]", "[65,0,", "null"] {
+            assert!(
+                deserialize_password(&mut serde_json::Deserializer::from_str(invalid)).is_err()
+            );
+        }
+        let oversized = serde_json::to_string(&vec![65u8; MAX_PASSWORD_UNITS * 2 + 1]).unwrap();
+        assert!(deserialize_password(&mut serde_json::Deserializer::from_str(&oversized)).is_err());
     }
 
     #[test]

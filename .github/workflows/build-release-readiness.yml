@@ -80,8 +80,8 @@ jobs:
       - name: Build and test Linux
         run: |
           xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y
-          xmake build -v su_app su_authd su_deploy_helper pam_smile2unlock su_face_auth_smoke_test su_deploy_test su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test su_download_progress_test
-          xmake test -v su_face_auth_smoke_test/default su_deploy_test/default su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default su_download_progress_test/default
+          xmake build -v su_app su_authd su_deploy_helper pam_smile2unlock su_face_auth_smoke_test su_deploy_test su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test su_download_progress_test su_core_rust_tests
+          xmake test -v su_face_auth_smoke_test/default su_deploy_test/default su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default su_download_progress_test/default su_core_rust_tests/default
 
       - name: Build and verify Linux tarball
         run: packaging/linux/package.sh --format tar.gz
