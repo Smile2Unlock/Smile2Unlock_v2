@@ -86,6 +86,32 @@ bool blocked_writer() {
     });
 }
 
+bool shared_exchange_deadline() {
+    return with_peer("exchange", [](Connection& connection, int) {
+        const auto started = std::chrono::steady_clock::now();
+        const auto deadline = started + kBudget;
+        std::this_thread::sleep_for(std::chrono::milliseconds{120});
+        if (!connection.send_frame("request", deadline)) {
+            return false;
+        }
+        const auto result = connection.receive_frame(deadline);
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        // Receiving must use the remaining budget, not start another 200 ms.
+        return !result && result.error() == SocketError::kTimeout
+            && elapsed >= kBudget && elapsed < std::chrono::milliseconds{300};
+    });
+}
+
+bool expired_exchange_deadline() {
+    return with_peer("expired-exchange", [](Connection& connection, int) {
+        const auto deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds{1};
+        const auto sent = connection.send_frame("request", deadline);
+        const auto received = connection.receive_frame(deadline);
+        return !sent && sent.error() == SocketError::kTimeout
+            && !received && received.error() == SocketError::kTimeout;
+    });
+}
+
 bool healthy_peer() {
     return with_peer("healthy", [](Connection& connection, int peer) {
         const auto length = ::htonl(2);
@@ -112,7 +138,8 @@ bool disconnected_peer() {
 int main() {
     if (!trickled_frame("header", true, false) || !trickled_frame("body", false, false) ||
         !trickled_frame("shared-budget", false, true) || !blocked_writer() || !healthy_peer() ||
-        !disconnected_peer() || Connection::connect_to("unused", std::chrono::milliseconds{0}) ||
+        !disconnected_peer() || !shared_exchange_deadline() || !expired_exchange_deadline() ||
+        Connection::connect_to("unused", std::chrono::milliseconds{0}) ||
         Connection::connect_to("unused", std::chrono::milliseconds{-1})) {
         std::println(stderr, "socket frame deadline, backpressure or recovery check failed");
         return 1;

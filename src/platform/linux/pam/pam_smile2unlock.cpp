@@ -7,6 +7,11 @@ import su.control.socket;
 
 namespace {
 
+// Leave time for the original password stack before a greeter's 10-second
+// conversation timeout. This bounds the whole PAM exchange, including a
+// stalled daemon; other control clients keep their existing frame timeouts.
+constexpr auto kPamAuthenticationTimeout = std::chrono::seconds{8};
+
 std::string_view socket_path_from_args(int argc, const char** argv) {
     constexpr auto prefix = std::string_view{"socket="};
     for (auto index = 0; index < argc; ++index) {
@@ -57,18 +62,19 @@ PAM_EXTERN int pam_sm_authenticate(
         return PAM_USER_UNKNOWN;
     }
 
+    const auto deadline = std::chrono::steady_clock::now() + kPamAuthenticationTimeout;
     auto connection = su::control::Connection::connect_to(
-        socket_path_from_args(argc, argv));
+        socket_path_from_args(argc, argv), kPamAuthenticationTimeout);
     if (!connection) {
         return PAM_AUTHINFO_UNAVAIL;
     }
 
     const auto request_id = next_request_id();
     const auto request = su::control::make_authenticate_request(request_id, username);
-    if (auto sent = connection->send_frame(request); !sent) {
+    if (auto sent = connection->send_frame(request, deadline); !sent) {
         return PAM_AUTHINFO_UNAVAIL;
     }
-    const auto response = connection->receive_frame();
+    const auto response = connection->receive_frame(deadline);
     if (!response) {
         return PAM_AUTHINFO_UNAVAIL;
     }

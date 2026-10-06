@@ -158,6 +158,7 @@ Linux 第一版不要求：
 - 真实 DMS 锁屏 UI 中的人脸成功和密码回退仍需在用户可配合锁屏时完成现场验收。
 - GUI 通过标准 logind `Lock` 信号停止 preview、取消录入 / 测试认证并释放 V4L2，不依赖 DMS 私有 IPC；解锁后不自动重启 preview。
 - daemon 为摄像头释放竞态保留最多 1.2 秒的有界重试；普通认证总时限为 6 秒，启用活体检测时为 12 秒，失败后返回 unavailable 并进入密码回退。
+- PAM 客户端的连接、发送和接收共用 8 秒截止时间；即使 daemon 活体检测尚未结束或不响应，也及时返回 `PAM_AUTHINFO_UNAVAIL`，让原有密码栈在登录界面 10 秒计时结束前继续认证。超过 8 秒的人脸尝试会回退到密码，不改变 PAM 栈顺序。
 - logind 会话解析和 `Lock` 信号订阅已由独立 Xmake smoke test 覆盖；GUI preview 开启后的真实 DMS 锁屏仍需现场验收。
 
 ## Phase 4: Linux GUI Installation And Packaging

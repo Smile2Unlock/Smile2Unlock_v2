@@ -161,6 +161,67 @@ bool run_unavailable_case() {
     return status == PAM_AUTHINFO_UNAVAIL;
 }
 
+bool run_timeout_case(std::string_view name, std::optional<bool> password_accepts) {
+    const auto directory = case_directory(name);
+    const auto socket_path = directory / "control.sock";
+    std::filesystem::remove_all(directory);
+    if (!write_service_config(directory, socket_path)) {
+        return false;
+    }
+    if (password_accepts) {
+        auto config = std::ofstream(directory / std::string(kServiceName));
+        config << "auth sufficient " << SU_PAM_MODULE_PATH
+               << " socket=" << socket_path.string() << '\n'
+               << "auth required " << (*password_accepts ? "pam_permit.so" : "pam_deny.so")
+               << '\n';
+        if (!config.good()) {
+            return false;
+        }
+    }
+    auto pam = start_pam(directory);
+    if (!pam) {
+        return false;
+    }
+    const auto end_pam = PamGuard{*pam};
+    auto listener = su::control::Listener::bind_to(socket_path.string());
+    if (!listener) {
+        return false;
+    }
+    auto peer_closed = std::atomic<bool>{false};
+    auto server = std::jthread([&] {
+        // Stay silent after receiving the request. Bound the fixture itself,
+        // so a broken client fails the test rather than hanging the suite.
+        auto connection = listener->accept_one(std::chrono::seconds{12});
+        if (!connection || !connection->receive_frame()) {
+            return;
+        }
+        const auto response = connection->receive_frame();
+        peer_closed.store(
+            !response && response.error() == su::control::SocketError::kReadFailed);
+    });
+    const auto started = std::chrono::steady_clock::now();
+    const auto status = ::pam_authenticate(*pam, 0);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    // Unblock accept even if PAM failed before opening its connection.
+    // The temporary immediately closes, so a waiting fixture also sees EOF.
+    (void)su::control::Connection::connect_to(socket_path.string(), std::chrono::milliseconds{100});
+    server.join();
+    const auto expected = password_accepts
+        ? (*password_accepts ? PAM_SUCCESS : PAM_AUTH_ERR)
+        : PAM_AUTHINFO_UNAVAIL;
+    const auto passed = status == expected
+        && elapsed >= std::chrono::seconds{7}
+        && elapsed < std::chrono::seconds{9}
+        && peer_closed.load();
+    if (!passed) {
+        std::cerr << name << ": expected " << expected << ", got " << status
+                  << ", elapsed "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+                  << " ms, peer closed " << peer_closed.load() << '\n';
+    }
+    return passed;
+}
+
 bool run_administrator_case(
     su::deploy::TargetKind target,
     std::optional<su::control::ControlResult> face_result,
@@ -282,6 +343,9 @@ int main() {
                 true,
                 true)
             && run_unavailable_case()
+            && run_timeout_case("timeout", std::nullopt)
+            && run_timeout_case("timeout-password-accepted", true)
+            && run_timeout_case("timeout-password-rejected", false)
             && administrator_stacks_preserve_fallback()
         ? 0
         : 1;
