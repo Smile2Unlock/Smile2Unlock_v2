@@ -76,7 +76,11 @@ public:
         std::chrono::milliseconds timeout = std::chrono::seconds{15});
 
     std::expected<void, SocketError> send_frame(std::string_view payload) const;
+    std::expected<void, SocketError> send_frame(
+        std::string_view payload, std::chrono::steady_clock::time_point deadline) const;
     std::expected<std::string, SocketError> receive_frame() const;
+    std::expected<std::string, SocketError> receive_frame(
+        std::chrono::steady_clock::time_point deadline) const;
     std::expected<PeerCredentials, SocketError> peer_credentials() const;
     std::expected<std::uint32_t, SocketError> peer_uid() const;
     [[nodiscard]] bool valid() const { return fd_ >= 0; }
@@ -341,12 +345,16 @@ std::expected<Connection, SocketError> Connection::connect_to(
 }
 
 std::expected<void, SocketError> Connection::send_frame(std::string_view payload) const {
+    return send_frame(payload, std::chrono::steady_clock::now() + timeout_);
+}
+
+std::expected<void, SocketError> Connection::send_frame(
+    std::string_view payload, std::chrono::steady_clock::time_point deadline) const {
     if (!valid() || payload.empty() || payload.size() > kMaximumFrameSize
         || !std::in_range<std::uint32_t>(payload.size())) {
         return std::unexpected(SocketError::kInvalidArgument);
     }
     const auto length = ::htonl(static_cast<std::uint32_t>(payload.size()));
-    const auto deadline = std::chrono::steady_clock::now() + timeout_;
     if (auto header = write_all(fd_, &length, sizeof(length), deadline); !header) {
         return header;
     }
@@ -354,12 +362,16 @@ std::expected<void, SocketError> Connection::send_frame(std::string_view payload
 }
 
 std::expected<std::string, SocketError> Connection::receive_frame() const {
+    return receive_frame(std::chrono::steady_clock::now() + timeout_);
+}
+
+std::expected<std::string, SocketError> Connection::receive_frame(
+    std::chrono::steady_clock::time_point deadline) const {
     if (!valid()) {
         return std::unexpected(SocketError::kInvalidArgument);
     }
     auto network_length = std::uint32_t{0};
     // Header and body share a deadline: trickled bytes cannot reset it.
-    const auto deadline = std::chrono::steady_clock::now() + timeout_;
     if (auto header = read_all(fd_, &network_length, sizeof(network_length), deadline); !header) {
         return std::unexpected(header.error());
     }

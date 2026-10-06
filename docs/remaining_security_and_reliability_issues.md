@@ -44,7 +44,7 @@ CP tile 原先在一次 serialization 失败后永久进入 stale 状态，用�
 
 Linux daemon 原先为每个连接创建一个无上限的 detached thread。
 
-状态：已完成。socket 读写超时仍为 15 秒，并通过 semaphore 将并发连接 worker 限制为 16 个。
+状态：已完成。通用 socket 每帧读写超时为 15 秒，并通过 semaphore 将并发连接 worker 限制为 16 个。PAM 客户端另用连接、发送和接收共用的 8 秒截止时间，保证 daemon 不响应时能及时进入原有密码栈。
 
 ## 工程覆盖
 
