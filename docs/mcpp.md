@@ -98,13 +98,13 @@ xmake 3.1.2+20261016，mcpp 2026.10.21.1。主比较双方都使用宿主 GCC 16
 
 ```bash
 python -m unittest discover -s tests/tooling -p test_mcpp_benchmark.py -v
-python scripts/benchmark-mcpp.py --runs 3 --output /tmp/s2u-work/mcpp-benchmark
+python scripts/benchmark-mcpp.py --runs 3 --output build/mcpp-benchmark
 ```
 
 脚本会临时追加宿主工具链配置，结束或异常时恢复根清单、原有 `.xmake` 和源文件
 mtime。受影响的单个 std 全局缓存条目也会先保存并在测量后恢复；不会清空机器上
 其他项目的缓存。不要与其他构建并发运行脚本。详细命令、退出状态、逐次时钟读数、
-日志与编译数据库保存在输出目录，精简的原始数据随 `mcpp-benchmark.json` 保存。
+日志、编译数据库和原始采样数据都保存在输出目录（默认 `build/mcpp-benchmark`，不纳入版本控制）。
 
 xmake 使用现有七个目标 `su_log su_diagnostics su_log_test su_log_sinks_test
 su_diagnostics_test su_control_socket_smoke_test su_control_socket_deadline_test`，
