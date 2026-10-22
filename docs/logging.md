@@ -21,7 +21,7 @@
 | Linux 身份验证守护进程与部署助手 | stderr，由 systemd/journald 保存 |
 | Linux PAM 模块 | `pam_syslog`，`LOG_AUTHPRIV` |
 
-文件达到 1 MiB 前轮转，依次保留 `.1`、`.2`、`.3` 三个历史文件；单条记录不跨文件切割。每个进程的同一文件 sink 共享互斥锁和延迟打开的句柄。凭据提供程序使用自己的 Rust 实现，不链接 C++。
+文件达到 1 MiB 前尝试轮转，依次保留 `.1`、`.2`、`.3` 三个历史文件；单条记录不跨文件切割。每个进程的同一文件 sink 共享互斥锁和延迟打开的句柄。Windows C++ 与 Rust 文件句柄允许其他进程读、写、删除共享，并保留追加权限；轮转失败时仍通过已校验的句柄追加本条记录，下次再尝试。达到轮转阈值时比较当前路径与句柄的文件 ID，发现其他进程已经轮转则重新打开；多进程下大小上限近似。目录链只在打开/重新打开或轮转时验证，并保留目录句柄，不逐行重复检查。凭据提供程序使用自己的 Rust 实现，不链接 C++。
 
 Windows 系统日志目录仅由身份验证服务启动、部署助手安装/修复（`--register-cp`、`--ensure-service`）创建。识别代理和凭据提供程序从不创建目录。目录不存在或安全校验失败时，仅向 `OutputDebugStringW` 回退；文件日志失败不影响认证结果。
 
@@ -57,6 +57,8 @@ password passwd secret token nonce feature embedding key credential
 
 Windows 使用管理员终端复制上述系统日志及 `.1` 至 `.3`，并收集当前用户的 `app.log*`。若目录被拒绝，先检查所有者、ACL 和重解析属性，并通过调试输出查看 `log.directory_rejected`。不要删除或改写不可信路径指向的目标，也不要让普通用户拥有系统日志目录。
 
+受保护的密码/档案数据目录也拒绝不可信所有者。这是单独的安全修复：旧代码仅重设 DACL，原普通用户所有者仍拥有隐式 `WRITE_DAC`；现在这类安装会拒绝启动相关存储，而不会自动接管目录。管理员修复时应先停止身份验证服务、核对被拒绝的具体路径并排除重解析点。对确认是真实目录的路径，可在管理员终端逐个执行 `takeown /F "<被拒绝的目录>" /A`，将所有者设为 Administrators，再启动服务，由安全创建逻辑重设所需 DACL；不要递归穿越链接。若确认只是预建的空目录，也可删除该目录后让安装器/服务重新创建。删除真实数据目录会丢失已保存凭据和人脸档案，应先妥善备份，并准备重新绑定/录入。
+
 Linux 使用：
 
 ```sh
@@ -67,11 +69,11 @@ journalctl --since '30 minutes ago' | rg 'pam_smile2unlock|event='
 
 实际 PAM syslog 的落盘位置由发行版决定，也可能在 `/var/log/auth.log` 或 `/var/log/secure`。发送前检查日志中的 SID、路径和设备信息是否需要人工脱敏。
 
-身份验证服务对每个完整请求记录一条 `request.completed`（包括无效请求与容量拒绝），携带 `op`、`status`、`duration_ms`、`request_id`，以及可取得的底层 Win32 错误、识别代理状态/退出码、存储或档案错误；日志不改变 IPC 协议及状态映射。
+身份验证服务在原有处理调用处记录 `request.completed`（包括无效请求与容量拒绝），携带 `op`、`status`、`duration_ms`、`request_id`、`sid`。底层 Win32 错误、识别代理状态/退出码、存储或档案错误在原失败点记录，按请求 ID 或进程/线程及时间关联；日志不改变 IPC 协议及状态映射。原有认证服务文件保持原始布局，仅做局部日志修改。
 
 ## 开发接口
 
-`src/common/log/core.*` 仅包含值与纯变换，不读时钟、不做 I/O、不持有全局状态。`Logger` 保存不可变配置，`with({...})` 返回绑定请求上下文的新值。sink 是返回 `std::expected<void, SinkError>` 的函数；`fallback` 只在失败后调用后备 sink，`tee` 始终调用两个 sink。Logger 捕获日志内部异常并回退到 stderr/Windows 调试输出，失败不传播到业务分支。
+`src/common/log/core.*` 仅包含值与纯变换，不读时钟、不做 I/O、不持有全局状态。`Record` 使用普通值成员以支持移动，格式化器通过 `const Record&` 只读消费。`Logger` 保存不可变配置，`with({...})` 返回绑定请求上下文的新值。sink 是返回 `std::expected<void, SinkError>` 的函数；`fallback` 只在失败后调用后备 sink，`tee` 始终调用两个 sink。Logger 捕获日志内部异常并回退到 stderr/Windows 调试输出，失败不传播到业务分支。
 
 `log_error<T>(logger, "event")` 可用于 `std::expected<T, E>::or_else`；领域类型通过 ADL 的 `to_fields(error)` 定义诊断字段并原样传播错误。`su_log` 是静态 xmake 目标，PAM 保持静态 C++ runtime 与 `--exclude-libs,ALL`。
 
