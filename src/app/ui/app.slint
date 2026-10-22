@@ -8,7 +8,7 @@ import { UiTheme } from "theme.slint";
 import { DeploymentPanel, DeploymentTargetRow } from "deployment.slint";
 import {
     ActionButton, CenteredActionButton, CenteredStatusPill, DiagnosticRow,
-    MetricBlock, NavButton, PageHeader, ProfileRow, SectionTitle,
+    MetricBlock, NavButton, PageHeader, ProfileRow, RowLabelMeasure, SectionTitle,
     SegmentedSelector, SetupStep, StatusPill,
 } from "components.slint";
 
@@ -28,11 +28,6 @@ export component AppWindow inherits Window {
     in property <string> diagnostics_archive: "";
     in property <string> diagnostics_error: "";
     in property <string> diagnostics_system_unavailable: "";
-    private property <string> diagnostics_status: root.diagnostics_error != "" ? root.diagnostics_error
-        : root.diagnostics_archive == "" ? ""
-        : root.diagnostics_system_unavailable == "" ? root.diagnostics_archive
-        : root.diagnostics_archive + " · " + root.translate("diagnostics.system_unavailable", root.language_index)
-            + root.diagnostics_system_unavailable;
     in property <string> config_path_text: "";
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "";
@@ -202,7 +197,6 @@ export component AppWindow inherits Window {
                 Rectangle { vertical-stretch: 1; background: transparent; }
 
                 Rectangle {
-                    height: 66px;
                     border-radius: 6px;
                     background: UiTheme.surface-subtle;
 
@@ -216,6 +210,7 @@ export component AppWindow inherits Window {
                                 : root.translate("account.enabled", root.language_index);
                             color: root.profiles.length == 0 ? UiTheme.warning-text : UiTheme.success-text;
                             font-size: 11px;
+                            wrap: word-wrap;
                         }
                     }
                 }
@@ -1029,11 +1024,24 @@ export component AppWindow inherits Window {
 
                     // Runtime card: auto-sized so the PAM rows (Linux only)
                     // do not leave blank space on Windows.
-                    Rectangle {
+                    runtime-card := Rectangle {
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
                         background: UiTheme.surface;
+                        // Rows share the widest label so their status columns line up.
+                        property <length> row-label-width: max(
+                            label-auth.preferred-width, label-storage.preferred-width,
+                            label-recognizer.preferred-width, label-camera.preferred-width,
+                            label-samples.preferred-width,
+                            root.platform_windows ? 0px : max(label-login-pam.preferred-width, label-lock-pam.preferred-width));
+                        label-auth := RowLabelMeasure { text: root.translate("diagnostics.auth_service", root.language_index); }
+                        label-storage := RowLabelMeasure { text: root.translate("diagnostics.storage", root.language_index); }
+                        label-recognizer := RowLabelMeasure { text: root.translate("diagnostics.recognizer", root.language_index); }
+                        label-camera := RowLabelMeasure { text: root.translate("settings.camera", root.language_index); }
+                        label-samples := RowLabelMeasure { text: root.translate("overview.face_samples", root.language_index); }
+                        label-login-pam := RowLabelMeasure { text: root.translate("diagnostics.login_pam", root.language_index); }
+                        label-lock-pam := RowLabelMeasure { text: root.translate("diagnostics.lock_pam", root.language_index); }
                         VerticalLayout {
                             padding: 20px;
                             spacing: 6px;
@@ -1047,12 +1055,14 @@ export component AppWindow inherits Window {
                                 }
                             }
                             DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("diagnostics.auth_service", root.language_index);
                                 status: root.service_available ? root.translate("status.online", root.language_index) : root.translate("status.offline", root.language_index);
                                 detail: root.service_available ? root.translate("diagnostics.service_ready_detail", root.language_index) : root.translate("diagnostics.service_action", root.language_index);
                                 tone: root.service_available ? "good" : "bad";
                             }
                             DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("diagnostics.storage", root.language_index);
                                 status: root.storage_protection_index == 2
                                     ? root.translate("diagnostics.storage_tpm", root.language_index)
@@ -1065,12 +1075,14 @@ export component AppWindow inherits Window {
                                 tone: root.storage-ready ? "good" : "bad";
                             }
                             DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("diagnostics.recognizer", root.language_index);
                                 status: root.seetaface_available ? root.translate("status.available", root.language_index) : root.translate("status.unavailable", root.language_index);
                                 detail: root.seetaface_available ? root.translate("diagnostics.recognizer_ready_detail", root.language_index) : root.translate("diagnostics.recognizer_action", root.language_index);
                                 tone: root.seetaface_available ? "good" : "bad";
                             }
                             DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("settings.camera", root.language_index);
                                 status: root.camera_count == 0 ? root.translate("camera.none", root.language_index)
                                     : root.camera_text != "" ? root.camera_text
@@ -1079,12 +1091,14 @@ export component AppWindow inherits Window {
                                 tone: root.camera_count > 0 ? "good" : "bad";
                             }
                             DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("overview.face_samples", root.language_index);
                                 status: root.profiles.length == 0 ? root.translate("enrollment.no_samples", root.language_index) : root.translate_value("enrollment.sample_count", root.language_index, root.profiles.length);
                                 detail: root.profiles.length == 0 ? root.translate("diagnostics.profiles_action", root.language_index) : root.translate("diagnostics.profiles_ready_detail", root.language_index);
                                 tone: root.profiles.length > 0 ? "good" : "warn";
                             }
                             if !root.platform_windows : DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("diagnostics.login_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
@@ -1097,6 +1111,7 @@ export component AppWindow inherits Window {
                                 tone: root.login_pam_configured ? "good" : "warn";
                             }
                             if !root.platform_windows : DiagnosticRow {
+                                label-width: runtime-card.row-label-width;
                                 label: root.translate("diagnostics.lock_pam", root.language_index);
                                 status: !root.pam_status_known
                                     ? root.translate("status.unknown", root.language_index)
@@ -1151,11 +1166,25 @@ export component AppWindow inherits Window {
                                 spacing: 3px;
                                 Text { text: root.translate("diagnostics.bundle_title", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
                                 Text { text: root.translate("diagnostics.bundle_detail", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
-                                if root.diagnostics_status != "" : Text {
-                                    text: root.diagnostics_status;
-                                    color: root.diagnostics_error != "" ? UiTheme.danger-text : UiTheme.text-secondary;
+                                // Path on one line; reasons wrap so they are never elided away.
+                                if root.diagnostics_error == "" && root.diagnostics_archive != "" : Text {
+                                    text: root.diagnostics_archive;
+                                    color: UiTheme.text-secondary;
                                     font-size: 12px;
                                     overflow: elide;
+                                }
+                                if root.diagnostics_error == "" && root.diagnostics_system_unavailable != "" : Text {
+                                    text: root.translate("diagnostics.system_unavailable", root.language_index)
+                                        + root.diagnostics_system_unavailable;
+                                    color: UiTheme.warning-text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                if root.diagnostics_error != "" : Text {
+                                    text: root.diagnostics_error;
+                                    color: UiTheme.danger-text;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
                                 }
                             }
                             if root.diagnostics_archive != "" : CenteredActionButton {

@@ -268,17 +268,27 @@ export component SetupStep inherits Rectangle {
     }
 }
 
+// Invisible text with the DiagnosticRow label style. A card measures all of
+// its row labels with it and passes the widest as the shared label-width.
+export component RowLabelMeasure inherits Text {
+    visible: false;
+    font-size: UiTheme.row-label-font-size;
+}
+
 export component DiagnosticRow inherits Rectangle {
     in property <string> label;
     in property <string> status;
     in property <string> detail;
     in property <string> tone: "neutral";
+    // Defaults to this row's own label; cards pass a shared width to align rows.
+    in property <length> label-width: row-label.preferred-width;
 
-    height: 44px;
     background: transparent;
     HorizontalLayout {
+        padding-top: 5px;
+        padding-bottom: 5px;
         spacing: 14px;
-        Text { width: 150px; text: root.label; color: UiTheme.text-secondary; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        row-label := Text { width: root.label-width; text: root.label; color: UiTheme.text-secondary; font-size: UiTheme.row-label-font-size; vertical-alignment: center; overflow: elide; }
         VerticalLayout {
             horizontal-stretch: 1;
             spacing: 3px;
