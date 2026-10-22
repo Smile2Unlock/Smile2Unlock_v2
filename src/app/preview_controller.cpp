@@ -1,4 +1,6 @@
 module;
+#include "common/log/logger.h"
+#include <format>
 #include <slint/slint.h>
 #include "recognizer/latest_frame.h"
 #include <atomic>
@@ -80,18 +82,18 @@ public:
                FrameCallback callback) {
         stop();
         if (!callback) {
-            std::println(stderr, "[preview] missing frame callback");
+            su::log::process_logger().warn("preview.diagnostic", {su::log::field("detail", std::format("[preview] missing frame callback"))});
             return;
         }
         fps = std::clamp(fps, 1, 120);
         if (const auto opened = recognizer.open_camera(camera_index); !opened) {
-            std::println(stderr, "[preview] open_camera failed");
+            su::log::process_logger().warn("preview.diagnostic", {su::log::field("detail", std::format("[preview] open_camera failed"))});
             return;
         }
         if (liveness_enabled) {
             if (const auto reset = recognizer.reset_liveness(); !reset) {
                 recognizer.close_camera();
-                std::println(stderr, "[preview] liveness reset failed");
+                su::log::process_logger().warn("preview.diagnostic", {su::log::field("detail", std::format("[preview] liveness reset failed"))});
                 return;
             }
         }
@@ -121,8 +123,8 @@ public:
                 }, liveness_enabled);
                 const auto finished = std::chrono::steady_clock::now();
                 if (finished >= next_log) {
-                    std::println(stderr, "[preview] inference_ms={}",
-                        std::chrono::duration_cast<std::chrono::milliseconds>(finished - frame_time).count());
+                    su::log::process_logger().debug("preview.diagnostic", {su::log::field("detail", std::format("[preview] inference_ms={}",
+                        std::chrono::duration_cast<std::chrono::milliseconds>(finished - frame_time).count()))});
                     next_log = finished + std::chrono::seconds{5};
                 }
                 auto overlay = PreviewOverlay{};
@@ -209,8 +211,8 @@ public:
                     const auto measured_until = std::chrono::steady_clock::now();
                     const auto seconds = std::chrono::duration<double>(measured_until - measured_since).count();
                     if (seconds >= 5.0) {
-                        std::println(stderr, "[preview] capture_fps={:.1f} size={}x{}",
-                            captured_count / seconds, shared_frame->width, shared_frame->height);
+                        su::log::process_logger().debug("preview.diagnostic", {su::log::field("detail", std::format("[preview] capture_fps={:.1f} size={}x{}",
+                            captured_count / seconds, shared_frame->width, shared_frame->height))});
                         measured_since = measured_until;
                         captured_count = 0;
                     }

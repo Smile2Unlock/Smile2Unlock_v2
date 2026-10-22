@@ -1,3 +1,5 @@
+#include "common/log/logger.h"
+#include <format>
 #include "app_window.h"
 #include "username_initial.h"
 #include "web_link.h"
@@ -163,7 +165,7 @@ void apply_theme(const WindowHandle& window, const su::app::AppTheme& snapshot) 
 
 void log_theme_diagnostics(const std::vector<std::string>& diagnostics) {
     for (const auto& diagnostic : diagnostics) {
-        std::println(stderr, "[theme] {}", diagnostic);
+        su::log::process_logger().warn("app.diagnostic", {su::log::field("detail", std::format("[theme] {}", diagnostic))});
     }
 }
 
@@ -239,48 +241,9 @@ void set_activity(
     window->set_busy(busy);
 }
 
-// Diagnostic log for GUI bring-up (window creation, GL, event loop). File
-// based because GUI-subsystem builds have no console; fail-silent.
-void gui_log(const std::string& message) {
-#ifdef _WIN32
-    try {
-        const auto path = su::windows::temporary_directory() / L"su_gui.log";
-        if (auto file = std::ofstream(path, std::ios::app)) file << message << '\n';
-    } catch (...) {
-        // Logging must never stop GUI startup if TEMP is unavailable.
-    }
-#else
-    std::error_code error;
-    const auto path = std::filesystem::temp_directory_path(error) / "su_gui.log";
-    if (!error) {
-        if (auto file = std::ofstream(path, std::ios::app)) {
-            file << message << "\n";
-        }
-    }
-#endif
-}
-
-#ifdef _WIN32
-extern "C" unsigned long __stdcall GetCurrentThreadId(void);
-#endif
-
-double now_seconds() {
-    namespace chrono = std::chrono;
-    return chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-unsigned long thread_id() {
-#ifdef _WIN32
-    return ::GetCurrentThreadId();
-#else
-    return static_cast<unsigned long>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-#endif
-}
-
-// Timed + thread-id variant so we can tell WHICH thread wrote a line and
-// measure how long each stage took (a stuck thread stops producing lines).
+// Verbose startup/window diagnostics share the bounded application log.
 void gui_log_t(const std::string& message) {
-    gui_log(std::format("[{:>9.3f}s tid=0x{:X}] {}", now_seconds(), thread_id(), message));
+    su::log::process_logger().debug("app.lifecycle", {su::log::field("detail", message)});
 }
 
 #ifdef _WIN32
@@ -485,7 +448,7 @@ void persist_ui_preferences(
     const std::filesystem::path& path,
     const su::app::UiPreferences& preferences) {
     if (const auto saved = su::app::save_ui_preferences(path, preferences); !saved) {
-        std::println(stderr, "[preferences] {}", saved.error());
+        su::log::process_logger().warn("app.diagnostic", {su::log::field("detail", std::format("[preferences] {}", saved.error()))});
     }
 }
 
@@ -636,13 +599,6 @@ bool detect_linux_desktop_size(float& width, float& height) {
 }  // namespace
 
 int main(int argc, char** argv) try {
-#ifdef _WIN32
-    // GUI-subsystem builds have no console: capture stderr so Rust-side
-    // diagnostics from slint (backend/renderer errors, panics) are visible.
-    if (auto* log = std::freopen("C:/Windows/Temp/su_stderr.log", "w", stderr)) {
-        (void)log;
-    }
-#endif
     gui_log_t("main enter");
 #ifdef _WIN32
     // Force slint's software renderer. Two requirements:
@@ -663,7 +619,7 @@ int main(int argc, char** argv) try {
     if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
         *preferences = std::move(*loaded);
     } else {
-        std::println(stderr, "[preferences] {}", loaded.error());
+        su::log::process_logger().warn("app.diagnostic", {su::log::field("detail", std::format("[preferences] {}", loaded.error()))});
     }
     gui_log_t("preferences loaded");
     const auto theme_paths = su::app::default_theme_paths();
@@ -676,7 +632,7 @@ int main(int argc, char** argv) try {
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
     if (!loaded_catalog) {
-        std::cerr << "su_app failed to load language packs: " << loaded_catalog.error() << '\n';
+        su::log::process_logger().error("i18n.load_failed", {su::log::field("cause", loaded_catalog.error())});
         return 1;
     }
     gui_log_t("language loaded");
@@ -689,7 +645,7 @@ int main(int argc, char** argv) try {
     const auto snapshot = controller->load_initial_snapshot();
     gui_log_t("snapshot loaded");
     if (!snapshot) {
-        std::cerr << "su_app failed to start: " << snapshot.error() << '\n';
+        su::log::process_logger().error("app.start_failed", {su::log::field("cause", snapshot.error())});
         return 1;
     }
 
@@ -726,7 +682,7 @@ int main(int argc, char** argv) try {
                     }
                     set_preview_idle(*window, *catalog);
                 }
-                std::println(stderr, "[session] GUI camera released for session lock");
+                su::log::process_logger().info("app.diagnostic", {su::log::field("detail", std::format("[session] GUI camera released for session lock"))});
             });
         });
 
@@ -1527,7 +1483,7 @@ int main(int argc, char** argv) try {
     return 0;
 } catch (const std::exception& error) {
     // A resource/path failure before the first window must leave a readable
-    // diagnostic in the redirected stderr log rather than an uncaught abort.
-    std::fprintf(stderr, "Smile2Unlock failed: %s\n", error.what());
+    // diagnostic in the application log rather than an uncaught abort.
+    su::log::process_logger().error("app.exception", {su::log::field("cause", error.what())});
     return 1;
 }

@@ -1,4 +1,6 @@
 module;
+#include "common/log/logger.h"
+#include <format>
 
 #include "common/utf8_path.h"
 
@@ -128,7 +130,7 @@ std::expected<LanguageCatalog, std::string> LanguageCatalog::load(
     for (const auto& file : files) {
         auto pack = load_pack(file);
         if (!pack) {
-            std::println(stderr, "[i18n] {}", pack.error());
+            su::log::process_logger().warn("i18n.diagnostic", {su::log::field("detail", std::format("[i18n] {}", pack.error()))});
             continue;
         }
         catalog.packs_.push_back(std::move(*pack));

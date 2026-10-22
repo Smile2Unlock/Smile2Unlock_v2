@@ -1,4 +1,6 @@
 module;
+#include "common/log/logger.h"
+#include <format>
 
 #include "common/utf8_path.h"
 
@@ -1024,14 +1026,14 @@ private:
             paths_, run_command_, preference_.load(std::memory_order_acquire));
         if (should_preserve_theme(loaded, current_)) {
             for (const auto& diagnostic : loaded.diagnostics) {
-                std::println(stderr, "[theme] {}; preserving last valid theme", diagnostic);
+                su::log::process_logger().warn("theme.diagnostic", {su::log::field("detail", std::format("[theme] {}; preserving last valid theme", diagnostic))});
             }
             return;
         }
         if (loaded.snapshot == current_) {
             return;
         }
-        std::println(stderr, "[theme] switched to {}", source_name(loaded.snapshot.source));
+        su::log::process_logger().info("theme.diagnostic", {su::log::field("detail", std::format("[theme] switched to {}", source_name(loaded.snapshot.source)))});
         current_ = loaded.snapshot;
         if (callback_) {
             callback_(std::move(loaded));

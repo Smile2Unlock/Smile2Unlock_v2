@@ -1,4 +1,6 @@
 module;
+#include "common/log/logger.h"
+#include <format>
 
 #include <nlohmann/json.hpp>
 #include "platform/linux/deploy/deployment.h"
@@ -283,7 +285,7 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
     } else {
         // Keep the UI available for diagnostics and password fallback while
         // su_authd is stopped or its encrypted key is unavailable.
-        std::println(stderr, "[storage] profile list unavailable: {}", loaded_profiles.error());
+        su::log::process_logger().warn("storage.diagnostic", {su::log::field("detail", std::format("[storage] profile list unavailable: {}", loaded_profiles.error()))});
     }
 
     return AppSnapshot{
