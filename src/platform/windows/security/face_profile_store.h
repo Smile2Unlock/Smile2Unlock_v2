@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <span>
+#include <vector>
 
 namespace su::windows::security {
 
@@ -37,6 +39,11 @@ public:
         std::string_view embedding_source,
         float threshold,
         bool liveness_ok) const;
+
+    std::expected<std::vector<std::uint8_t>, FaceProfileStoreError> captures(
+        std::string_view sid, const std::string& command,
+        std::span<const std::uint8_t> jpeg = {}) const;
+    void prune_captures() const;
 
 private:
     std::expected<std::filesystem::path, FaceProfileStoreError> profile_path(

@@ -219,6 +219,11 @@ target("su_log")
         add_files("src/common/log/file_posix.cpp")
     end
 
+target("su_capture_image")
+    apply_cpp_target("static")
+    add_files("src/common/capture/image.cpp")
+    add_packages("libjpeg-turbo", {public = true})
+
 target("su_diagnostics")
     set_kind("static")
     add_includedirs("src", { public = true })
@@ -623,7 +628,7 @@ if is_plat("linux") then
         add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_packages("nlohmann_json")
-        add_deps("su_core", "su_recognizer")
+        add_deps("su_core", "su_recognizer", "su_capture_image")
         add_rpathdirs("/usr/lib/smile2unlock")
         add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
@@ -732,6 +737,7 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/security/logon_secret_store.cpp")
         add_files("src/platform/windows/security/face_profile_store.cpp")
         add_files("src/platform/windows/auth_service/logon_secret_server.cpp")
+        add_packages("nlohmann_json")
         add_files("src/platform/windows/auth_service/service_main.cpp")
         add_includedirs(
             "src/platform/windows/security",
@@ -754,7 +760,7 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/recognition_agent/agent.rc")
         add_files("src/platform/windows/recognition_agent/main.cpp")
         add_files("src/modules/su.recognizer.*.cppm")
-        add_deps("su_recognizer")
+        add_deps("su_recognizer", "su_capture_image")
         add_ldflags("-municode", "-mwindows", {force = true})
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
 
@@ -1154,3 +1160,23 @@ after_build(function (target)
         os.exec("xmake project -k compile_commands --lsp=clangd 2>/dev/null || true")
     end
 end)
+
+target("su_capture_image_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/capture/image.cpp")
+    add_deps("su_capture_image")
+    if is_plat("mingw") then add_ldflags("-static", {force = true}) end
+    add_tests("default")
+    on_test(wine_on_test)
+
+if is_plat("windows", "mingw") then
+    target("su_windows_capture_protocol_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/windows/capture_protocol.cpp")
+        add_includedirs("src/platform/windows/auth_service", "src/core-rs/include")
+        add_ldflags("-static", {force = true})
+        add_tests("default")
+        on_test(wine_on_test)
+end

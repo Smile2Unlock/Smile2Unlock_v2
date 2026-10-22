@@ -24,6 +24,10 @@ namespace su::windows::auth_service {
 inline std::string_view operation_name(smile2unlock::logon_secret_ipc::Operation op) noexcept {
     using enum smile2unlock::logon_secret_ipc::Operation;
     switch (op) {
+    case kListCaptures: return "list_captures";
+    case kFetchCapture: return "fetch_capture";
+    case kDeleteCapture: return "delete_capture";
+    case kDeleteAllCaptures: return "delete_all_captures";
     case kStore:
         return "store";
     case kPrepare:

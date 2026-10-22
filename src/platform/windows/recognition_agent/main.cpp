@@ -1,4 +1,5 @@
 #include "common/log/logger.h"
+#include "common/capture/image.h"
 #include "../auth_service/recognition_agent_protocol.h"
 
 #include <windows.h>
@@ -41,7 +42,20 @@ bool write_exact(HANDLE handle, const void* data, DWORD size) {
 }
 
 void wipe(Response& response) {
-    SecureZeroMemory(response.feature.data(), response.feature.size() * sizeof(float));
+    SecureZeroMemory(&response, sizeof(response));
+}
+
+void attach_image(const Request& request, Response& response,
+                  const su::recognizer::PreviewFrame& frame) {
+    if (!(request.flags & smile2unlock::recognition_agent_ipc::kCaptureRequested)) return;
+    try {
+        const auto jpeg = su::capture::prepare_image(frame.rgba_or_rgb, frame.width, frame.height);
+        if (!jpeg) return;
+        response.jpeg_size = static_cast<std::uint32_t>(jpeg->bytes.size());
+        response.width = jpeg->width;
+        response.height = jpeg->height;
+        std::ranges::copy(jpeg->bytes, response.jpeg.begin());
+    } catch (...) { /* optional evidence never changes recognition */ }
 }
 
 } // namespace
@@ -66,6 +80,7 @@ int wmain() {
     response.nonce = request.nonce;
     if (request.magic != smile2unlock::recognition_agent_ipc::kRequestMagic
         || request.version != smile2unlock::recognition_agent_ipc::kVersion
+        || (request.flags & ~smile2unlock::recognition_agent_ipc::kCaptureRequested) != 0
         || request.camera_index < 0
         || request.timeout_ms < 1000
         || request.timeout_ms > 30'000
@@ -110,8 +125,13 @@ int wmain() {
     }
 
     auto saw_face = false;
+    auto best_frame = su::recognizer::PreviewFrame{};
+    auto best_score = -1.0F;
     while (std::chrono::steady_clock::now() < deadline) {
-        const auto result = recognizer.extract_features(liveness_enabled);
+        auto captured = recognizer.capture_and_extract(liveness_enabled);
+        auto result = captured
+            ? std::expected<su::recognizer::RecognitionResult, su::recognizer::RecognizerError>{std::move(captured->second)}
+            : std::unexpected(captured.error());
         if (!result && result.error() == su::recognizer::RecognizerError::kModelUnavailable) {
             logger.error("model.unavailable");
             response.status = AgentStatus::kModelUnavailable;
@@ -119,12 +139,17 @@ int wmain() {
             wipe(response);
             return 4;
         }
-        if (!result || !result->has_face || result->feature.empty()) {
+        if (!result || !result->has_face) {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
             continue;
         }
         saw_face = true;
-        if (result->liveness_score < request.liveness_threshold
+        if ((request.flags & smile2unlock::recognition_agent_ipc::kCaptureRequested)
+            && result->liveness_score >= best_score) {
+            best_frame = std::move(captured->first);
+            best_score = result->liveness_score;
+        }
+        if (result->feature.empty() || result->liveness_score < request.liveness_threshold
             || result->feature.size() > response.feature.size()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
             continue;
@@ -134,6 +159,7 @@ int wmain() {
         response.feature_count = static_cast<std::uint32_t>(result->feature.size());
         response.liveness_score = result->liveness_score;
         std::copy(result->feature.begin(), result->feature.end(), response.feature.begin());
+        attach_image(request, response, best_frame);
         (void)write_exact(output, &response, sizeof(response));
         wipe(response);
         request = {};
@@ -141,6 +167,7 @@ int wmain() {
     }
     logger.warn("recognition.timed_out");
     response.status = saw_face ? AgentStatus::kNoLiveFace : AgentStatus::kTimedOut;
+    if (saw_face) attach_image(request, response, best_frame);
     (void)write_exact(output, &response, sizeof(response));
     wipe(response);
     request = {};

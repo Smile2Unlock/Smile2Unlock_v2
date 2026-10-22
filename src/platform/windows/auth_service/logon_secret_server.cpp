@@ -1,4 +1,7 @@
 #include "logon_secret_server.h"
+#include "common/capture/image.h"
+#include "common/capture/maintenance.h"
+#include <nlohmann/json.hpp>
 #include "request_log.h"
 
 #include "client_disconnect_watcher.h"
@@ -359,6 +362,9 @@ struct RecognitionSettings {
     // Per-capture agent deadline, from the same TimeoutSec the credential
     // provider uses for its overall attempt.
     std::uint32_t timeout_ms = 10'000;
+    bool capture_enabled = false;
+    std::uint32_t capture_retention_days = 7;
+    std::uint32_t capture_max_count = 50;
 };
 
 std::optional<DWORD> registry_dword(HKEY key, const wchar_t* name) {
@@ -402,6 +408,11 @@ std::optional<RecognitionSettings> recognition_settings_at(
         value && *value >= 5 && *value <= 600) {
         settings.timeout_ms = *value * 1000;
     }
+    settings.capture_enabled = registry_dword(raw_key, L"CaptureEnabled").value_or(0) == 1;
+    if (const auto days = registry_dword(raw_key, L"CaptureRetentionDays"); days && *days >= 1 && *days <= 90)
+        settings.capture_retention_days = *days;
+    if (const auto count = registry_dword(raw_key, L"CaptureMaxCount"); count && *count >= 1 && *count <= 200)
+        settings.capture_max_count = *count;
     return settings;
 }
 
@@ -434,7 +445,10 @@ bool valid_recognition_settings(
         && payload.retry_delay_sec >= 1
         && payload.retry_delay_sec <= 3600
         && payload.timeout_sec >= 5
-        && payload.timeout_sec <= 600;
+        && payload.timeout_sec <= 600
+        && payload.capture_enabled <= 1
+        && payload.capture_retention_days >= 1 && payload.capture_retention_days <= 90
+        && payload.capture_max_count >= 1 && payload.capture_max_count <= 200;
 }
 
 bool write_recognition_settings(
@@ -478,7 +492,10 @@ bool write_recognition_settings(
         && set(L"RecognitionMode", payload.recognition_mode)
         && set(L"AutoDelaySec", payload.auto_delay_sec)
         && set(L"RetryDelaySec", payload.retry_delay_sec)
-        && set(L"TimeoutSec", payload.timeout_sec);
+        && set(L"TimeoutSec", payload.timeout_sec)
+        && set(L"CaptureEnabled", payload.capture_enabled)
+        && set(L"CaptureRetentionDays", payload.capture_retention_days)
+        && set(L"CaptureMaxCount", payload.capture_max_count);
 }
 
 std::expected<ResolvedAccount, Status> resolve_account(
@@ -695,7 +712,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     HANDLE stop_event,
     HANDLE client_gone,
     std::uint32_t requested_session_id,
-    const RecognitionSettings& settings) {
+    const RecognitionSettings& settings, su::capture::Jpeg& evidence) {
     using namespace smile2unlock::recognition_agent_ipc;
     using AgentRequest = smile2unlock::recognition_agent_ipc::Request;
     using AgentResponse = smile2unlock::recognition_agent_ipc::Response;
@@ -845,6 +862,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
         terminate_agent(ERROR_GEN_FAILURE);
         return agent_failure("random.generate", ERROR_GEN_FAILURE);
     }
+    request.flags = settings.capture_enabled ? kCaptureRequested : 0;
     request.camera_index = settings.camera_index;
     // Per-capture deadline: bounded independently of the credential
     // provider's overall attempt deadline so one slow capture cannot consume
@@ -933,8 +951,16 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     diagnostic_logger().info("agent.completed", {
         log::field("agent_status", static_cast<unsigned>(response.status)),
         log::field("exit_code", exit_code)});
-    if (const auto error = validate_agent_result(request, response, exit_code);
-        error != ERROR_SUCCESS) {
+    const auto error = validate_agent_result(request, response, exit_code);
+    if ((error == ERROR_SUCCESS || (error == ERROR_LOGON_FAILURE && exit_code == 5))
+        && response.jpeg_size != 0) {
+        try {
+            evidence = su::capture::Jpeg{
+                {response.jpeg.begin(), response.jpeg.begin() + response.jpeg_size},
+                response.width, response.height};
+        } catch (...) { /* optional image allocation cannot fail authentication */ }
+    }
+    if (error != ERROR_SUCCESS) {
         SecureZeroMemory(&request, sizeof(request));
         SecureZeroMemory(&response, sizeof(response));
         return agent_failure("response.validate", error);
@@ -958,6 +984,29 @@ std::string embedding_source(std::span<const float> feature) {
     return std::move(stream).str();
 }
 
+std::string capture_settings_json(const RecognitionSettings& settings) {
+    return nlohmann::json{{"enabled", settings.capture_enabled},
+        {"days", settings.capture_retention_days}, {"max_count", settings.capture_max_count}}.dump();
+}
+std::function<void()> deferred_capture(security::FaceProfileStore& store, std::string_view sid,
+    const RecognitionSettings& settings, su::capture::Jpeg jpeg, std::string_view reason) noexcept {
+    if (!settings.capture_enabled || jpeg.bytes.empty()) return {};
+    try {
+        return [&store, sid = std::string(sid), settings, jpeg = std::move(jpeg), reason = std::string(reason)] {
+            try {
+                auto command = nlohmann::json{{"op", "store"}, {"reason", reason},
+                    {"width", jpeg.width}, {"height", jpeg.height},
+                    {"settings", nlohmann::json::parse(capture_settings_json(settings))}};
+                const auto stored = store.captures(sid, command.dump(), jpeg.bytes);
+                if (!stored) { diagnostic_logger().warn("capture.failed"); return; }
+                const auto record = nlohmann::json::parse(stored->begin(), stored->end());
+                diagnostic_logger().info("capture.stored", {log::field("id", record.at("id").get<std::string>()),
+                    log::field("time", record.at("time").get<std::uint64_t>()), log::field("reason", reason)});
+            } catch (...) { diagnostic_logger().warn("capture.failed"); }
+        };
+    } catch (...) { return {}; }
+}
+
 Status process_request(
     HANDLE stop_event,
     HANDLE client_gone,
@@ -968,7 +1017,7 @@ Status process_request(
     ManagementAuthorizer& management_authorizer,
     std::mutex& state_mutex,
     std::span<const std::uint8_t> caller_sid,
-    DWORD caller_process_id) {
+    DWORD caller_process_id, std::function<void()>& after_response) {
     if (request.magic != smile2unlock::logon_secret_ipc::kMagic
         || request.version != smile2unlock::logon_secret_ipc::kVersion
         || request.request_id == 0) {
@@ -992,7 +1041,11 @@ Status process_request(
         || request.operation == Operation::kDeleteProfile
         || request.operation == Operation::kVerifyProfile
         || request.operation == Operation::kCredentialStatus
-        || request.operation == Operation::kSetRecognitionSettings) {
+        || request.operation == Operation::kSetRecognitionSettings
+        || request.operation == Operation::kListCaptures
+        || request.operation == Operation::kFetchCapture
+        || request.operation == Operation::kDeleteCapture
+        || request.operation == Operation::kDeleteAllCaptures) {
         const auto caller_sid_text = sid_string(caller_sid);
         if (!caller_sid_text || !std::ranges::equal(*caller_sid_text, *requested_sid)) {
             return Status::kAccessDenied;
@@ -1067,6 +1120,10 @@ Status process_request(
         }();
         if (!cleared)
             request_logger.warn("store.clear_failed", to_fields(cleared.error()));
+        if (cleared) {
+            const auto removed = profile_store.captures(*sid_utf8, R"({"op":"delete_all"})");
+            if (!removed) return map_profile_error(removed.error());
+        }
         return cleared ? Status::kOk : map_error(cleared.error());
     }
     case Operation::kAuthenticateAndPrepare: {
@@ -1076,9 +1133,13 @@ Status process_request(
         // mutations from other workers proceed during a recognition attempt.
         // client_gone terminates the agent as soon as the pipe client
         // disconnects (credential-provider cancel or deadline).
+        auto evidence = su::capture::Jpeg{};
         const auto feature = run_recognition_agent(
-            stop_event, client_gone, request.logon_session_id, settings);
+            stop_event, client_gone, request.logon_session_id, settings, evidence);
         if (!feature) {
+            if (feature.error() == ERROR_LOGON_FAILURE)
+                after_response = deferred_capture(profile_store, *sid_utf8, settings,
+                    std::move(evidence), "liveness_rejected");
             request_logger.warn("recognition.failed", log::win32_error_fields(feature.error()));
             return recognition_error_status(feature.error());
         }
@@ -1091,6 +1152,8 @@ Status process_request(
             return map_profile_error(report.error());
         }
         if (!report->accepted || !report->liveness_ok) {
+            after_response = deferred_capture(profile_store, *sid_utf8, settings,
+                std::move(evidence), report->liveness_ok ? "mismatch" : "liveness_rejected");
             return Status::kAuthenticationFailed;
         }
         auto password = store.prepare(
@@ -1234,6 +1297,24 @@ Status process_request(
         response.payload_length = 1;
         return Status::kOk;
     }
+    case Operation::kListCaptures:
+    case Operation::kFetchCapture:
+    case Operation::kDeleteCapture:
+    case Operation::kDeleteAllCaptures: {
+        auto command = nlohmann::json{{"op", "list"}};
+        if (request.operation == Operation::kDeleteAllCaptures) command["op"] = "delete_all";
+        if (request.operation == Operation::kFetchCapture || request.operation == Operation::kDeleteCapture) {
+            const auto id = request_payload(request);
+            if (!id || id->size() != 32) return Status::kInvalidRequest;
+            command = {{"op", request.operation == Operation::kFetchCapture ? "fetch" : "delete"}, {"id", *id}};
+        }
+        const auto output = profile_store.captures(*sid_utf8, command.dump());
+        if (!output) return map_profile_error(output.error());
+        if (output->size() > sizeof(response.payload)) return Status::kCorrupt;
+        std::ranges::copy(*output, response.payload);
+        response.payload_length = static_cast<std::uint32_t>(output->size());
+        return Status::kOk;
+    }
     case Operation::kSetRecognitionSettings: {
         if (request.payload_length != sizeof(RecognitionSettingsPayload)) {
             return Status::kInvalidRequest;
@@ -1243,9 +1324,10 @@ Status process_request(
         if (!valid_recognition_settings(payload)) {
             return Status::kInvalidRequest;
         }
-        return write_recognition_settings(*requested_sid, payload)
-            ? Status::kOk
-            : Status::kUnavailable;
+        if (!write_recognition_settings(*requested_sid, payload)) return Status::kUnavailable;
+        const auto settings = recognition_settings(*requested_sid);
+        const auto command = "{\"op\":\"configure\",\"settings\":" + capture_settings_json(settings) + "}";
+        return profile_store.captures(*sid_utf8, command) ? Status::kOk : Status::kUnavailable;
     }
     }
     return Status::kInvalidRequest;
@@ -1273,6 +1355,7 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
         .lpSecurityDescriptor = descriptor->get(),
         .bInheritHandle = FALSE,
     };
+    const auto maintenance = su::capture::Maintenance{[this] { profile_store_.prune_captures(); }};
     while (WaitForSingleObject(stop_event, 0) != WAIT_OBJECT_0) {
         const auto raw_pipe = CreateNamedPipeW(
             smile2unlock::logon_secret_ipc::kPipeName,
@@ -1363,10 +1446,11 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
                         // reuses the pipe handle.
                         auto watcher = ClientDisconnectWatcher{pipe_handle};
                         const auto started = std::chrono::steady_clock::now();
+                        auto after_response = std::function<void()>{};
                         response.status = process_request(
                             stop_event, watcher.event(), request, response,
                             secret_store_, profile_store_, *management_authorizer_,
-                            state_mutex_, sid, caller_pid);
+                            state_mutex_, sid, caller_pid, after_response);
                         const auto target = wide_to_utf8(fixed_wide(request.sid).value_or(L""));
                         logger_.info("request.completed", completion_fields(
                             request.request_id, request.operation, response.status,
@@ -1380,6 +1464,7 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
                         smile2unlock::logon_secret_ipc::clear_response(response);
                         (void)DisconnectNamedPipe(pipe_handle);
                         (void)CloseHandle(pipe_handle);
+                        if (after_response) after_response();
                     })) {
                 pipe.release();
                 smile2unlock::logon_secret_ipc::clear_request(request);
