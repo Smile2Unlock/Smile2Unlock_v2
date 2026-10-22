@@ -273,15 +273,15 @@
         "settings.auto_delay_detail": "锁屏后等待的秒数再触发自动识别（睡眠/休眠会暂停计时）",
         "settings.retry_delay_detail": "自动识别失败后重试的间隔秒数",
         "settings.timeout": "识别超时",
-        "settings.timeout_detail": "单次识别等待结果的最大秒数"
-    },
-    "models.title": "人脸模型（SeetaFace6）",
-    "models.ok": "已就绪",
-    "models.missing": "缺失 — 识别不可用，请下载模型文件",
-    "models.mirror_hint": "加速前缀（可修改，留空则直连）",
-    "models.download_direct": "GitHub 直连下载",
-    "models.download_mirror": "加速下载",
-    "models.status_downloading_direct": "正在从 GitHub 下载模型…",
-    "models.status_downloading_mirror": "正在通过加速镜像下载模型…",
-    "models.done": "模型已就绪"
+        "settings.timeout_detail": "单次识别等待结果的最大秒数",
+        "models.title": "人脸模型（SeetaFace6）",
+        "models.ok": "已就绪",
+        "models.missing": "缺失 — 识别不可用，请下载模型文件",
+        "models.mirror_hint": "加速前缀（可修改，留空则直连）",
+        "models.download_direct": "GitHub 直连下载",
+        "models.download_mirror": "加速下载",
+        "models.status_downloading_direct": "正在从 GitHub 下载模型…",
+        "models.status_downloading_mirror": "正在通过加速镜像下载模型…",
+        "models.done": "模型已就绪"
+    }
 }

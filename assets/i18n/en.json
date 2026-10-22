@@ -273,15 +273,15 @@
         "settings.auto_delay_detail": "Seconds after the lock screen before auto recognition starts (sleep/hibernate pauses it)",
         "settings.retry_delay_detail": "Seconds between failed auto recognition attempts",
         "settings.timeout": "Recognition timeout",
-        "settings.timeout_detail": "Maximum seconds to wait for one recognition attempt"
-    },
-    "models.title": "Face models (SeetaFace6)",
-    "models.ok": "ready",
-    "models.missing": "missing — recognition unavailable, download required",
-    "models.mirror_hint": "Mirror prefix (editable; empty = direct)",
-    "models.download_direct": "GitHub direct download",
-    "models.download_mirror": "Accelerated download",
-    "models.status_downloading_direct": "Downloading models from GitHub…",
-    "models.status_downloading_mirror": "Downloading models via mirror…",
-    "models.done": "models ready"
+        "settings.timeout_detail": "Maximum seconds to wait for one recognition attempt",
+        "models.title": "Face models (SeetaFace6)",
+        "models.ok": "ready",
+        "models.missing": "missing — recognition unavailable, download required",
+        "models.mirror_hint": "Mirror prefix (editable; empty = direct)",
+        "models.download_direct": "GitHub direct download",
+        "models.download_mirror": "Accelerated download",
+        "models.status_downloading_direct": "Downloading models from GitHub…",
+        "models.status_downloading_mirror": "Downloading models via mirror…",
+        "models.done": "models ready"
+    }
 }
