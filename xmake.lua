@@ -209,6 +209,21 @@ target("su_log")
         add_files("src/common/log/file_posix.cpp")
     end
 
+target("su_diagnostics")
+    set_kind("static")
+    add_includedirs("src", { public = true })
+    add_files("src/common/diagnostics/core.cpp")
+    if is_plat("linux") then add_files("src/common/diagnostics/process_posix.cpp") end
+
+target("su_diagnostics_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_deps("su_diagnostics")
+    add_files("tests/diagnostics/core_test.cpp")
+    if is_plat("mingw") then add_ldflags("-static", { force = true }) end
+    add_tests("default")
+    on_test(wine_on_test)
+
 target("su_log_test")
     set_default(false)
     apply_cpp_target("binary")
@@ -505,7 +520,7 @@ if is_plat("linux") then
         apply_cpp_target("binary")
         add_files("src/platform/linux/deploy_helper/*.cpp")
         add_files("src/modules/su.control.socket.cppm")
-        add_deps("su_deploy")
+        add_deps("su_deploy", "su_diagnostics")
         add_packages("nlohmann_json")
         add_syslinks("systemd")
         add_tests("version", {runargs = {"--version"}})
