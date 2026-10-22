@@ -1,6 +1,6 @@
 # Issue #117 parts 1 and 2: verification
 
-Verified locally on 2026-10-22, including review round 1. Part 3 (failed-unlock
+Verified locally on 2026-10-22, including review rounds 1 and 2. Part 3 (failed-unlock
 photos) is out of scope.
 No GUI sources, host PAM configuration or login services were changed.
 
@@ -26,7 +26,44 @@ No GUI sources, host PAM configuration or login services were changed.
   Language selection checks PAM `LC_MESSAGES`, PAM `LANG`, process
   `LC_MESSAGES`, then process `LANG`; `zh` selects Chinese, otherwise English.
 
-## Commands and results
+## Review round 2: status band
+
+The band uses Enter-retry guidance for both trigger modes after no-match,
+timeout or unavailability. Failed Windows logons retain password-only guidance.
+Snapshot bit 5 now carries the last capture's no-face outcome, independently of
+the phase, automatic flag and countdown. Both protocol mirrors and the repaint
+cache preserve it. Pure caption tests cover both languages, both modes,
+no-face/mismatch, countdown bounds, retry stops and login failures. Rust tests
+cover flag retention, clearing on mismatch/new attempt/cancellation, and hiding.
+
+Re-run from `src/platform/windows/credential_provider_rs`:
+
+```sh
+cargo test --locked --target x86_64-pc-windows-gnu
+cargo clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warnings
+cargo fmt --check
+```
+
+Passed: **128 tests, 0 failed, 1 existing Wine-specific ignored test**, plus the
+isolated secret-sealing subprocess test. Clippy and formatting exited 0.
+
+From the repository root:
+
+```sh
+xmake clean -a
+xmake f -c -y -p mingw -a x86_64 -m release --with_slint=n --with_seetaface=y
+xmake build -y su_status_host su_credential_provider su_windows_status_display_test
+xmake test -v su_windows_status_display_test/default
+git diff --check
+```
+
+Passed: status host, CP DLL and status-display test built (5.229 seconds);
+**1/1 C++ suite passed under Wine**, 0 failed (0.005 seconds for the test).
+Whitespace check passed. Linux sources were unchanged in this review round;
+the prior Linux results below were not re-run. Native secure-desktop rendering
+and physical-camera acceptance remain unverified.
+
+## Earlier commands and results (through review round 1)
 
 The pinned package submodule was initially absent:
 

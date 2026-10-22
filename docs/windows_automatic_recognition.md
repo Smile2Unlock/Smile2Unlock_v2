@@ -82,6 +82,15 @@ share one tested table. Retry guidance distinguishes no face from a face mismatc
 service/model unavailability. Failed Windows logons point only to the Windows
 password. Phase changes use the existing GIT `CredentialsChanged` notifier and field re-query.
 
+The separate lock-screen status band also offers Enter retry after no-match,
+timeout or service/model unavailability; Windows logon failure remains
+password-only. Its presentation snapshot uses bit 5 for the last capture's
+no-face outcome (phase bits 0–3, automatic bit 4, countdown bits 8–23). No-face
+retry countdowns ask the user to face the camera, and no-face stops retain that
+title. Mismatch keeps the verification/countdown text. The host includes bit 5
+in its repaint key; captions are pure functions covered by the status-display
+test. The shared mapping layout/version and authentication behavior are unchanged.
+
 The service and CP ship together. Protocol version remains 2; status 8
 (`kNoFaceDetected`) means the agent found no face in its capture window. Agent
 liveness failures and profile mismatches remain `kAuthenticationFailed`; other

@@ -14,10 +14,12 @@
 #include <optional>
 #include <string>
 #include "protocol.h"
+#include "caption.h"
 
 namespace {
 using su::status::Phase;
 using su::status::Snapshot;
+using su::status::caption;
 constexpr wchar_t window_class[] = L"Smile2UnlockRecognitionStatus";
 
 struct Handle {
@@ -120,39 +122,6 @@ HWND create_status_window(ATOM window_atom) {
     }
     return CreateWindowExW(style, window_class, L"Smile2Unlock", WS_POPUP,
         0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-}
-struct Text {
-    std::wstring title;
-    std::wstring detail;
-};
-Text caption(Snapshot state, bool chinese) {
-    const auto retry = chinese
-        ? (state.automatic ? L"请使用密码，或重新选择人脸登录" : L"按 Enter 重试，或输入密码")
-        : (state.automatic ? L"Use your password or reselect face sign-in" : L"Press Enter to retry, or enter your password");
-    switch (state.phase) {
-    case Phase::waiting: return chinese
-        ? Text{L"按 Enter 开始人脸识别", L"也可点击登录箭头，或直接输入密码"}
-        : Text{L"Press Enter to recognize your face", L"Or use the sign-in arrow or your password"};
-    case Phase::initial_delay:
-        if (!state.seconds) return chinese ? Text{L"正在启动人脸识别…", L"请看向摄像头"}
-            : Text{L"Starting face recognition…", L"Look toward the camera"};
-        return chinese ? Text{std::to_wstring(state.seconds) + L" 秒后开始人脸识别", L"也可直接输入密码"}
-            : Text{L"Face recognition starts in " + std::to_wstring(state.seconds) + L"s", L"You can also enter your password"};
-    case Phase::recognizing: return chinese ? Text{L"正在识别你…", L"请看向摄像头"}
-        : Text{L"Looking for you…", L"Look toward the camera"};
-    case Phase::retry_delay: return chinese ? Text{L"暂未通过验证", std::to_wstring(state.seconds) + L" 秒后重试，也可使用密码"}
-        : Text{L"Face not verified yet", L"Retrying in " + std::to_wstring(state.seconds) + L"s; you can use your password"};
-    case Phase::ready: return chinese ? Text{L"识别通过", L"正在准备登录"}
-        : Text{L"Face verified", L"Preparing to sign in"};
-    case Phase::submitting: return chinese ? Text{L"正在登录…", L""} : Text{L"Signing in…", L""};
-    case Phase::no_match: return {chinese ? L"暂未通过验证" : L"Face not verified", retry};
-    case Phase::timed_out: return {chinese ? L"人脸识别已超时" : L"Face recognition timed out", retry};
-    case Phase::unavailable: return chinese ? Text{L"人脸识别暂不可用", L"请使用密码登录"}
-        : Text{L"Face recognition is unavailable", L"Use your password to sign in"};
-    case Phase::login_failed: return chinese ? Text{L"Windows 未接受登录", L"请使用密码，并检查保存的账户凭据"}
-        : Text{L"Windows could not sign you in", L"Use your password and check your saved credentials"};
-    default: return {};
-    }
 }
 
 std::wstring desktop_name(HDESK desktop) {
@@ -345,7 +314,7 @@ public:
         if (!sampled_ || now - valid_sample_at_ > 1500) { hide(); return; }
         const auto frame = state.phase == Phase::recognizing
             ? static_cast<unsigned>((now / 45) % 60) : 0U;
-        const auto packed = static_cast<unsigned>(state.phase) | (state.automatic ? 16U : 0U) | (state.seconds << 8);
+        const auto packed = su::status::encode(state);
         if (visible_ && now - shown_at_ >= 180 && painted_state_ == packed
             && painted_frame_ == frame && painted_dark_ == dark_) return;
         Gdiplus::Bitmap bitmap(width, height, width * 4, PixelFormat32bppPARGB,
