@@ -28,6 +28,11 @@ export component AppWindow inherits Window {
     in property <string> diagnostics_archive: "";
     in property <string> diagnostics_error: "";
     in property <string> diagnostics_system_unavailable: "";
+    private property <string> diagnostics_status: root.diagnostics_error != "" ? root.diagnostics_error
+        : root.diagnostics_archive == "" ? ""
+        : root.diagnostics_system_unavailable == "" ? root.diagnostics_archive
+        : root.diagnostics_archive + " · " + root.translate("diagnostics.system_unavailable", root.language_index)
+            + root.diagnostics_system_unavailable;
     in property <string> config_path_text: "";
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "";
@@ -1033,10 +1038,9 @@ export component AppWindow inherits Window {
                             padding: 20px;
                             spacing: 6px;
                             HorizontalLayout {
-                                height: 48px;
+                                spacing: 16px;
                                 SectionTitle { horizontal-stretch: 1; title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
                                 CenteredActionButton {
-                                    width: 112px;
                                     label: root.translate("action.refresh", root.language_index);
                                     enabled: !root.busy;
                                     activated => { root.refresh_system_status_requested(); }
@@ -1068,7 +1072,9 @@ export component AppWindow inherits Window {
                             }
                             DiagnosticRow {
                                 label: root.translate("settings.camera", root.language_index);
-                                status: root.camera_count == 0 ? root.translate("camera.none", root.language_index) : root.camera_text;
+                                status: root.camera_count == 0 ? root.translate("camera.none", root.language_index)
+                                    : root.camera_text != "" ? root.camera_text
+                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
                                 detail: root.camera_count == 0 ? root.translate("diagnostics.camera_action", root.language_index) : root.translate("diagnostics.camera_ready_detail", root.language_index);
                                 tone: root.camera_count > 0 ? "good" : "bad";
                             }
@@ -1106,7 +1112,6 @@ export component AppWindow inherits Window {
                     }
 
                     Rectangle {
-                        height: 170px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
@@ -1119,13 +1124,11 @@ export component AppWindow inherits Window {
                             spacing: 10px;
                             SectionTitle { title: root.translate("diagnostics.local_data", root.language_index); detail: root.translate("diagnostics.local_data_detail", root.language_index); }
                             VerticalLayout {
-                                height: 36px;
                                 spacing: 3px;
                                 Text { text: root.translate("diagnostics.configuration", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
                                 Text { text: root.config_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
                             }
                             VerticalLayout {
-                                height: 36px;
                                 spacing: 3px;
                                 Text { text: root.translate("overview.face_samples", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
                                 Text { text: root.profile_store_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
@@ -1139,41 +1142,36 @@ export component AppWindow inherits Window {
                         border-color: UiTheme.border;
                         background: UiTheme.surface;
                         vertical-stretch: 0;
-                        VerticalLayout {
-                            padding-left: 20px;
-                            padding-right: 20px;
-                            padding-top: 16px;
-                            padding-bottom: 16px;
-                            spacing: 10px;
-                            Text { text: root.translate("diagnostics.bundle_title", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
-                            Text { text: root.translate("diagnostics.bundle_detail", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
-                            Text {
-                                text: root.diagnostics_error != "" ? root.diagnostics_error
-                                    : root.diagnostics_archive + (root.diagnostics_system_unavailable != ""
-                                        ? " · " + root.translate("diagnostics.system_unavailable", root.language_index) + root.diagnostics_system_unavailable : "");
-                                color: root.diagnostics_error != "" ? UiTheme.danger-text : UiTheme.text-secondary;
-                                font-size: 12px;
-                                overflow: elide;
+                        HorizontalLayout {
+                            padding: 20px;
+                            spacing: 16px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 3px;
+                                Text { text: root.translate("diagnostics.bundle_title", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
+                                Text { text: root.translate("diagnostics.bundle_detail", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+                                if root.diagnostics_status != "" : Text {
+                                    text: root.diagnostics_status;
+                                    color: root.diagnostics_error != "" ? UiTheme.danger-text : UiTheme.text-secondary;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                }
                             }
-                            HorizontalLayout {
-                                spacing: 10px;
-                                alignment: start;
-                                ActionButton {
-                                    label: root.translate(root.diagnostics_exporting ? "diagnostics.exporting" : "diagnostics.export", root.language_index);
-                                    primary: true;
-                                    enabled: !root.diagnostics_exporting;
-                                    activated => { root.export_diagnostics_requested(); }
-                                }
-                                if root.diagnostics_archive != "" : ActionButton {
-                                    label: root.translate("diagnostics.show_folder", root.language_index);
-                                    activated => { root.show_diagnostics_requested(); }
-                                }
+                            if root.diagnostics_archive != "" : CenteredActionButton {
+                                label: root.translate("diagnostics.show_folder", root.language_index);
+                                activated => { root.show_diagnostics_requested(); }
+                            }
+                            CenteredActionButton {
+                                label: root.translate(root.diagnostics_exporting ? "diagnostics.exporting" : "diagnostics.export", root.language_index);
+                                primary: true;
+                                enabled: !root.diagnostics_exporting;
+                                activated => { root.export_diagnostics_requested(); }
                             }
                         }
                     }
 
                     if !root.platform_windows : Rectangle {
-                        height: 118px;
                         border-radius: 6px;
                         border-width: 1px;
                         border-color: UiTheme.border;
@@ -1183,17 +1181,12 @@ export component AppWindow inherits Window {
                             spacing: 16px;
                             VerticalLayout {
                                 horizontal-stretch: 1;
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                                VerticalLayout {
-                                    height: 44px;
-                                    spacing: 6px;
-                                    Text { text: root.translate("diagnostics.desktop_auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
-                                    Text { text: root.translate("diagnostics.desktop_auth_detail", root.language_index); color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
-                                }
-                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                alignment: center;
+                                spacing: 6px;
+                                Text { text: root.translate("diagnostics.desktop_auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
+                                Text { text: root.translate("diagnostics.desktop_auth_detail", root.language_index); color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
                             }
                             CenteredActionButton {
-                                width: 140px;
                                 label: root.busy
                                     ? root.translate("status.checking", root.language_index)
                                     : root.translate("action.run_check", root.language_index);

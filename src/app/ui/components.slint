@@ -54,8 +54,9 @@ export component ActionButton inherits Rectangle {
     callback activated();
 
     height: 40px;
-    min-width: 104px;
-    preferred-width: max(104px, button-label.preferred-width + 28px);
+    min-width: UiTheme.button-min-width;
+    preferred-width: max(UiTheme.button-min-width,
+        button-label.preferred-width + 2 * UiTheme.button-padding);
     border-radius: 6px;
     border-width: primary ? 0px : 1px;
     border-color: button-focus.has-focus ? UiTheme.primary : danger ? UiTheme.danger-surface : UiTheme.border;
@@ -77,7 +78,7 @@ export component ActionButton inherits Rectangle {
             : root.primary ? UiTheme.on-primary
             : root.danger ? UiTheme.danger-text
             : UiTheme.text-primary;
-        font-size: 14px;
+        font-size: UiTheme.button-font-size;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -166,6 +167,14 @@ export component InlineStatus inherits HorizontalLayout {
     }
 }
 
+// Invisible text with the ActionButton label style, used to reserve the width
+// of the widest label a button column can show.
+export component ActionLabelMeasure inherits Text {
+    visible: false;
+    font-size: UiTheme.button-font-size;
+    font-weight: 600;
+}
+
 export component CenteredActionButton inherits VerticalLayout {
     in property <string> label;
     in property <bool> primary: false;
@@ -175,7 +184,6 @@ export component CenteredActionButton inherits VerticalLayout {
 
     Rectangle { vertical-stretch: 1; background: transparent; }
     ActionButton {
-        width: parent.width;
         label: root.label;
         primary: root.primary;
         danger: root.danger;
