@@ -532,6 +532,9 @@ std::wstring utf8_to_wide(std::string_view value) {
 // Runs su_deploy_helper elevated via UAC (ShellExecuteEx runas) and waits
 // for its result file. Returns the helper's JSON result.
 std::expected<std::string, std::string> run_elevated_deploy(std::string_view arguments) {
+    // All operations share the existing result-file protocol.
+    static auto result_mutex = std::mutex{};
+    const auto lock = std::lock_guard{result_mutex};
     const auto helper = deploy_helper_path();
     if (helper.empty()) {
         return std::unexpected("failed to locate Smile2UnlockDeployHelper.exe");
@@ -571,7 +574,8 @@ std::expected<std::string, std::string> run_elevated_deploy(std::string_view arg
     if (info.hProcess == nullptr) {
         return std::unexpected("UAC helper did not return a process handle");
     }
-    const auto wait_result = ::WaitForSingleObject(info.hProcess, 60000);
+    const auto wait_result = ::WaitForSingleObject(info.hProcess,
+        arguments == "--collect-diagnostics" ? 300000 : 60000);
     (void)::CloseHandle(info.hProcess);
     if (wait_result == WAIT_TIMEOUT) {
         return std::unexpected("su_deploy_helper timed out");
@@ -907,6 +911,11 @@ std::expected<std::string, std::string> extract_archive_with_tar(
 }
 
 } // namespace
+
+std::expected<std::string, std::string> collect_diagnostics_elevated() {
+    return run_elevated_deploy("--collect-diagnostics");
+}
+
 
 ModelsStatus AppController::models_status() {
     auto status = ModelsStatus{};

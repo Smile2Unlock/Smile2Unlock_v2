@@ -132,6 +132,7 @@ std::expected<std::string, std::string> call_string_method(
     if (::sd_bus_open_system(&bus) < 0) {
         return std::unexpected("deployment helper system bus is unavailable");
     }
+    if (method == "CollectDiagnostics") ::sd_bus_set_method_call_timeout(bus, 300 * 1000000ULL);
     const auto result = ::sd_bus_call_method(
         bus,
         kBusName.data(),
@@ -428,6 +429,10 @@ std::expected<std::string, std::string> DeploymentClient::install_helper() const
     }
     return std::unexpected(
         "deployment helper was installed but did not become available");
+}
+
+std::expected<std::string, std::string> DeploymentClient::collect_diagnostics() const {
+    return call_string_method("CollectDiagnostics");
 }
 
 std::expected<std::string, std::string> DeploymentClient::initialize_runtime() const {

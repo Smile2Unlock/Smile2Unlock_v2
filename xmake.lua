@@ -209,6 +209,45 @@ target("su_log")
         add_files("src/common/log/file_posix.cpp")
     end
 
+target("su_diagnostics")
+    set_kind("static")
+    add_includedirs("src", { public = true })
+    add_deps("su_log")
+    add_files("src/common/diagnostics/core.cpp", "src/common/diagnostics/export.cpp")
+    if is_plat("linux") then add_files("src/common/diagnostics/process_posix.cpp", "src/common/diagnostics/export_posix.cpp")
+    else
+        add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN")
+        add_files("src/common/diagnostics/export_windows.cpp", "src/common/diagnostics/windows_security.cpp")
+    end
+
+target("su_diagnostics_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_deps("su_diagnostics")
+    add_files("tests/diagnostics/core_test.cpp")
+    if is_plat("mingw") then add_ldflags("-static", { force = true }) end
+    add_tests("default")
+    on_test(wine_on_test)
+
+if is_plat("linux") then
+    target("su_diagnostics_export_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_deps("su_diagnostics")
+        add_files("tests/diagnostics/export_posix_test.cpp")
+        add_tests("default")
+end
+
+if is_plat("windows", "mingw") then
+    target("su_windows_diagnostics_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_deps("su_diagnostics")
+        add_files("tests/diagnostics/export_windows_test.cpp")
+        add_tests("default")
+        on_test(wine_on_test)
+end
+
 target("su_log_test")
     set_default(false)
     apply_cpp_target("binary")
@@ -344,7 +383,7 @@ target("su_recognizer")
         apply_cpp_target("binary")
         add_includedirs("src/core-rs/include", {public = true})
         add_packages("nlohmann_json")
-        add_deps("su_core", "su_recognizer")
+        add_deps("su_core", "su_recognizer", "su_diagnostics")
         if is_plat("mingw") then
             -- Product-facing Windows binary names: the UAC prompt and the
             -- installed tree show these verbatim, so they carry the full
@@ -354,6 +393,7 @@ target("su_recognizer")
             -- plain `xmake build` produces the full deployable set.
             add_deps("su_credential_provider")
         end
+    add_files("src/app/diagnostics.cpp")
     if is_plat("linux") then
         add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
         add_files("src/modules/su.auth.user.cppm")
@@ -397,7 +437,7 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "uxtheme", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "uxtheme", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp", "bcrypt")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })
@@ -505,7 +545,7 @@ if is_plat("linux") then
         apply_cpp_target("binary")
         add_files("src/platform/linux/deploy_helper/*.cpp")
         add_files("src/modules/su.control.socket.cppm")
-        add_deps("su_deploy")
+        add_deps("su_deploy", "su_diagnostics")
         add_packages("nlohmann_json")
         add_syslinks("systemd")
         add_tests("version", {runargs = {"--version"}})
@@ -517,13 +557,14 @@ elseif is_plat("windows", "mingw") then
     target("su_deploy_helper")
         apply_cpp_target("binary")
         set_basename("Smile2UnlockDeployHelper")
-        add_files("src/platform/windows/deploy_helper/main.cpp")
+        add_deps("su_diagnostics")
+        add_files("src/platform/windows/deploy_helper/*.cpp")
         add_files("src/platform/windows/deploy_helper/helper.rc")
         add_files("src/platform/windows/deploy/deployment.cpp")
         add_includedirs("src/platform/windows/deploy")
         apply_pinned_signer()
         add_packages("nlohmann_json")
-        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32")
+        add_syslinks("advapi32", "user32", "shell32", "ole32", "uuid", "wintrust", "crypt32", "bcrypt", "wevtapi")
         add_tests("version", {runargs = {"--version"}})
         on_test(wine_on_test)
 

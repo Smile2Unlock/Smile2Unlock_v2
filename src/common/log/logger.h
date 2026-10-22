@@ -44,6 +44,8 @@ auto log_error(Logger logger, std::string event,
     };
 }
 
+std::filesystem::path app_log_directory();
+
 // Construct once at each process boundary. Legacy app/recognizer calls share one value.
 Logger make_process_logger(std::string component, bool system_component = false,
                            bool ensure_system_directory = false);

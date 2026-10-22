@@ -69,6 +69,8 @@ struct ModelsStatus {
     std::string model_dir;
 };
 
+struct DiagnosticsExport { std::string archive_path; std::string system_unavailable; };
+
 class AppController {
 public:
     std::expected<AppSnapshot, std::string> load_initial_snapshot();
@@ -108,6 +110,8 @@ public:
     std::expected<void, std::string> configure_windows_account_credential(
         std::string_view windows_password);
     SystemStatus load_system_status();
+    std::expected<DiagnosticsExport, std::string> export_diagnostics();
+    std::expected<void, std::string> show_diagnostics_in_folder(std::string_view path);
     std::expected<std::string, std::string> install_deployment_helper();
     std::expected<std::string, std::string> initialize_system_deployment();
     std::expected<std::string, std::string> configure_desktop_target(

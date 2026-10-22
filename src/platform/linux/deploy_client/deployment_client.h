@@ -8,6 +8,7 @@ namespace su::deploy {
 
 class DeploymentClient {
 public:
+    [[nodiscard]] std::expected<std::string, std::string> collect_diagnostics() const;
     [[nodiscard]] bool dms_available() const;
     [[nodiscard]] bool installer_available() const;
     [[nodiscard]] std::expected<std::string, std::string> inspect() const;

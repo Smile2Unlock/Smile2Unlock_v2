@@ -54,7 +54,9 @@ export component ActionButton inherits Rectangle {
     callback activated();
 
     height: 40px;
-    min-width: 104px;
+    min-width: UiTheme.button-min-width;
+    preferred-width: max(UiTheme.button-min-width,
+        button-label.preferred-width + 2 * UiTheme.button-padding);
     border-radius: 6px;
     border-width: primary ? 0px : 1px;
     border-color: button-focus.has-focus ? UiTheme.primary : danger ? UiTheme.danger-surface : UiTheme.border;
@@ -68,7 +70,7 @@ export component ActionButton inherits Rectangle {
     accessible-label: root.label;
     accessible-action-default => { root.activated(); }
 
-    Text {
+    button-label := Text {
         width: parent.width;
         height: parent.height;
         text: root.label;
@@ -76,7 +78,7 @@ export component ActionButton inherits Rectangle {
             : root.primary ? UiTheme.on-primary
             : root.danger ? UiTheme.danger-text
             : UiTheme.text-primary;
-        font-size: 14px;
+        font-size: UiTheme.button-font-size;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -165,6 +167,14 @@ export component InlineStatus inherits HorizontalLayout {
     }
 }
 
+// Invisible text with the ActionButton label style, used to reserve the width
+// of the widest label a button column can show.
+export component ActionLabelMeasure inherits Text {
+    visible: false;
+    font-size: UiTheme.button-font-size;
+    font-weight: 600;
+}
+
 export component CenteredActionButton inherits VerticalLayout {
     in property <string> label;
     in property <bool> primary: false;
@@ -174,7 +184,6 @@ export component CenteredActionButton inherits VerticalLayout {
 
     Rectangle { vertical-stretch: 1; background: transparent; }
     ActionButton {
-        width: parent.width;
         label: root.label;
         primary: root.primary;
         danger: root.danger;
@@ -259,17 +268,27 @@ export component SetupStep inherits Rectangle {
     }
 }
 
+// Invisible text with the DiagnosticRow label style. A card measures all of
+// its row labels with it and passes the widest as the shared label-width.
+export component RowLabelMeasure inherits Text {
+    visible: false;
+    font-size: UiTheme.row-label-font-size;
+}
+
 export component DiagnosticRow inherits Rectangle {
     in property <string> label;
     in property <string> status;
     in property <string> detail;
     in property <string> tone: "neutral";
+    // Defaults to this row's own label; cards pass a shared width to align rows.
+    in property <length> label-width: row-label.preferred-width;
 
-    height: 44px;
     background: transparent;
     HorizontalLayout {
+        padding-top: 5px;
+        padding-bottom: 5px;
         spacing: 14px;
-        Text { width: 150px; text: root.label; color: UiTheme.text-secondary; font-size: 13px; vertical-alignment: center; overflow: elide; }
+        row-label := Text { width: root.label-width; text: root.label; color: UiTheme.text-secondary; font-size: UiTheme.row-label-font-size; vertical-alignment: center; overflow: elide; }
         VerticalLayout {
             horizontal-stretch: 1;
             spacing: 3px;

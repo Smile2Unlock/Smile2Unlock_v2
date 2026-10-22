@@ -1,4 +1,5 @@
 #include "common/log/logger.h"
+#include "diagnostics.h"
 #include "platform/linux/deploy/deployment.h"
 
 #include <systemd/sd-bus.h>
@@ -203,6 +204,14 @@ std::expected<void, std::string> check_authorization(
             : "administrator authorization was denied");
     }
     return {};
+}
+
+int collect_diagnostics(sd_bus_message* message, void*, sd_bus_error*) {
+    const auto authorized = check_authorization(message, "io.github.smile2unlock.deployment.diagnostics");
+    if (!authorized) return reply_error(message, authorized.error());
+    const auto collected = su::diagnostics::collect_linux_system();
+    if (!collected) return reply_error(message, collected.error().detail);
+    return reply_success(message, "s", collected->c_str());
 }
 
 int inspect(sd_bus_message* message, void*, sd_bus_error*) {
@@ -468,6 +477,7 @@ int configure_dms(sd_bus_message* message, void*, sd_bus_error*) {
 
 constexpr auto kVtable = std::to_array<sd_bus_vtable>({
     SD_BUS_VTABLE_START(0),
+    SD_BUS_METHOD("CollectDiagnostics", "", "s", collect_diagnostics, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("Inspect", "", "s", inspect, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("PlanDesktopIntegration", "sb", "ss", plan_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),

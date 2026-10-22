@@ -47,6 +47,40 @@ using WeakWindowHandle = slint::ComponentWeakHandle<ui::AppWindow>;
 
 constexpr std::string_view xdg_app_id = "smile2unlock";
 
+void setup_diagnostics(const WindowHandle& window, const std::shared_ptr<su::app::AppController>& controller) {
+    const auto weak = WeakWindowHandle(window);
+    window->on_export_diagnostics_requested([weak, controller] {
+        const auto window = weak.lock();
+        if (!window || (*window)->get_diagnostics_exporting()) return;
+        (*window)->set_diagnostics_exporting(true);
+        (*window)->set_diagnostics_error("");
+        (*window)->set_diagnostics_system_unavailable("");
+        (*window)->set_diagnostics_archive("");
+        std::thread([weak, controller] {
+            const auto result = controller->export_diagnostics();
+            slint::invoke_from_event_loop([weak, result] {
+                if (const auto window = weak.lock()) {
+                    (*window)->set_diagnostics_exporting(false);
+                    if (!result) { (*window)->set_diagnostics_error(slint::SharedString(result.error())); return; }
+                    (*window)->set_diagnostics_archive(slint::SharedString(result->archive_path));
+                    (*window)->set_diagnostics_system_unavailable(slint::SharedString(result->system_unavailable));
+                }
+            });
+        }).detach();
+    });
+    window->on_show_diagnostics_requested([weak, controller] {
+        const auto window = weak.lock();
+        if (!window) return;
+        const auto path = std::string{(*window)->get_diagnostics_archive()};
+        std::thread([weak, controller, path] {
+            const auto result = controller->show_diagnostics_in_folder(path);
+            if (!result) slint::invoke_from_event_loop([weak, error = result.error()] {
+                if (const auto window = weak.lock()) (*window)->set_diagnostics_error(slint::SharedString(error));
+            });
+        }).detach();
+    });
+}
+
 void setup_about(const WindowHandle& window,
     const std::shared_ptr<const su::app::LanguageCatalog>& catalog) {
     const auto info = std::make_shared<const su::app::AboutInfo>(su::app::about_info());
@@ -758,6 +792,7 @@ int main(int argc, char** argv) try {
         catalog->translate(selected_language, "common.current_user"));
     // Window title: plain product name (the versioned string stays in
     // snapshot->title for the diagnostics view).
+    setup_diagnostics(window, controller);
     window->set_title_text(slint::SharedString("Smile2Unlock"));
     window->set_username(slint::SharedString(username));
     window->set_username_initial(slint::SharedString(su::app::username_initial(username)));

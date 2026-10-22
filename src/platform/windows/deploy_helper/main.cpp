@@ -16,6 +16,9 @@
 
 #include "deployment.h"
 #include "result_file.h"
+#include "diagnostics.h"
+#include "common/utf8_path.h"
+#include <nlohmann/json.hpp>
 
 #include <windows.h>
 
@@ -102,6 +105,11 @@ int main(int argc, char** argv) {
     // Initialize before any helper uses process_logger() with its default arguments.
     const auto& logger = su::log::process_logger("deploy-helper", true, installing);
     logger.info("deploy.started");
+    if (argc == 2 && std::string_view{argv[1]} == "--collect-diagnostics") {
+        const auto collected = su::diagnostics::collect_windows_system();
+        if (!collected) return fail(collected.error().detail);
+        return succeed(nlohmann::json{{"ok", true}, {"staging_directory", su::path_utf8(*collected)}}.dump());
+    }
     auto register_cp = false;
     auto unregister_cp = false;
     auto ensure_service = false;
