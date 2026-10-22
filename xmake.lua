@@ -383,7 +383,7 @@ target("su_recognizer")
         apply_cpp_target("binary")
         add_includedirs("src/core-rs/include", {public = true})
         add_packages("nlohmann_json")
-        add_deps("su_core", "su_recognizer")
+        add_deps("su_core", "su_recognizer", "su_diagnostics")
         if is_plat("mingw") then
             -- Product-facing Windows binary names: the UAC prompt and the
             -- installed tree show these verbatim, so they carry the full
@@ -393,6 +393,7 @@ target("su_recognizer")
             -- plain `xmake build` produces the full deployable set.
             add_deps("su_credential_provider")
         end
+    add_files("src/app/diagnostics.cpp")
     if is_plat("linux") then
         add_files("src/app/app_controller.cpp", "src/app/core_bridge.cpp")
         add_files("src/modules/su.auth.user.cppm")
@@ -436,7 +437,7 @@ target("su_recognizer")
             add_syslinks("systemd")
         elseif is_plat("windows", "mingw") then
             -- slint/winit (Windows backend) requires COM/OLE shell + OpenGL APIs
-            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "uxtheme", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp")
+            add_syslinks("ole32", "oleaut32", "shell32", "uuid", "user32", "gdi32", "imm32", "dwmapi", "uxtheme", "comdlg32", "version", "opengl32", "ws2_32", "wtsapi32", "wintrust", "crypt32", "winhttp", "bcrypt")
             -- GUI subsystem: without -mwindows the PE subsystem is Console and
             -- Windows opens a command-line window alongside the GUI.
             add_ldflags("-mwindows", { force = true })

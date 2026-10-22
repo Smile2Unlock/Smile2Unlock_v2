@@ -55,6 +55,8 @@ password passwd secret token nonce feature embedding key credential
 
 ## 收集日志
 
+优先在 GUI「诊断」页点击「导出诊断包」，完成后点击「打开所在位置」。内容与提权说明见下方「一键导出诊断包」。需要手动排查时可使用以下方式。
+
 Windows 使用管理员终端复制上述系统日志及 `.1` 至 `.3`，并收集当前用户的 `app.log*`。若目录被拒绝，先检查所有者、ACL 和重解析属性，并通过调试输出查看 `log.directory_rejected`。不要删除或改写不可信路径指向的目标，也不要让普通用户拥有系统日志目录。
 
 受保护的密码/档案数据目录也拒绝不可信所有者。这是单独的安全修复：旧代码仅重设 DACL，原普通用户所有者仍拥有隐式 `WRITE_DAC`；现在这类安装会拒绝启动相关存储，而不会自动接管目录。管理员修复时应先停止身份验证服务、核对被拒绝的具体路径并排除重解析点。对确认是真实目录的路径，可在管理员终端逐个执行 `takeown /F "<被拒绝的目录>" /A`，将所有者设为 Administrators，再启动服务，由安全创建逻辑重设所需 DACL；不要递归穿越链接。若确认只是预建的空目录，也可删除该目录后让安装器/服务重新创建。删除真实数据目录会丢失已保存凭据和人脸档案，应先妥善备份，并准备重新绑定/录入。
@@ -78,3 +80,27 @@ journalctl --since '30 minutes ago' | rg 'pam_smile2unlock|event='
 `log_error<T>(logger, "event")` 可用于 `std::expected<T, E>::or_else`；领域类型通过 ADL 的 `to_fields(error)` 定义诊断字段并原样传播错误。`su_log` 是静态 xmake 目标，PAM 保持静态 C++ runtime 与 `--exclude-libs,ALL`。
 
 C++ 与 Rust 同时消费 `tests/log/format_golden.txt`，其中每行以 `|` 分隔输入记录与预期输出，字节使用 C 风格转义。这些用例锁定级别、时区、转义、UTF-8 修复、截断与脱敏格式。Windows 安全测试验证不可信所有者和重解析路径被拒绝且目标 ACL 不变，并检查目录访问规则。Wine 11.20 未报告 ACL 更新后的保护位，因此该位的断言仅在真实 Windows 执行；Wine 下显式输出跳过提示。Wine 测试不等同于真实 Windows/安全桌面验收。完整命令和已知限制见 [验证记录](logging-verification.md)。
+
+## 一键导出诊断包
+
+在 GUI 的「诊断」页点击「导出诊断包」。导出在后台进行，不影响其他页面操作。
+Windows 会通过部署助手请求 UAC 提权，Linux 会通过部署助手的 D-Bus 方法请求
+polkit 管理员认证。完成后状态栏显示文件路径，可点击「打开所在位置」。
+
+诊断包保存在当前用户桌面；Linux 按 XDG 桌面目录、`~/Desktop`、`$HOME` 依次回退。
+文件名为 `smile2unlock-diagnostics-YYYYMMDD-HHMMSS.zip`（Windows）或 `.tar.gz`（Linux），
+同名时追加 `-1`、`-2`，不会覆盖已有文件。包内包含：
+
+- `summary.txt`：产品及 Rust 核心版本、系统版本、带 UTC 偏移的本地时间、服务与存储保护状态、
+  识别器、摄像头名称及数量、档案数量、桌面/PAM 目标状态和路径、模型状态与目录。
+  摘要不写用户名或人脸档案标签，也不复制配置、档案或密码。
+- `app/`：GUI 使用的日志目录中的 `app.log` 及数字后缀轮转日志，每个文件最多保留末尾 8 MiB。
+- `system/`：Windows 系统组件日志、指定注册表配置、服务/凭据提供程序状态、安装文件大小、
+  SHA-256 与 Authenticode 状态、最近七天相关崩溃和 Code Integrity 事件（每类最多 20 条）。
+  旧 `su_cp.log` 只记录是否存在及大小，不复制内容。Linux 包含认证服务、部署助手及 PAM 的
+  journal、服务状态和 `/etc/pam.d/` 中包含 Smile2Unlock 的行；文本总量最多 4 MiB。
+
+拒绝提权或助手不可用时仍会生成诊断包，`system/unavailable.txt` 说明原因，GUI 标注
+「未包含系统日志」。Windows 提权助手只在受保护的 ProgramData 诊断目录中暂存数据，
+GUI 负责在自己的临时目录打包；完成后尽力删除两处暂存目录，助手下次运行也会清理旧目录。
+日志及系统事件可能包含本机路径和应用运行信息，发送给开发者前可先检查包内文本。

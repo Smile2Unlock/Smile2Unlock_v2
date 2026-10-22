@@ -12,19 +12,7 @@ namespace {
 int checks = 0;
 void check(bool value) { ++checks; if (!value) { std::cerr << "check " << checks << " failed\n"; std::exit(1); } }
 void write(const fs::path& path, std::string_view text) { std::ofstream{path} << text; }
-}
-int main() {
-    const auto root = fs::temp_directory_path() / ("s2u-export-test-" + std::to_string(getpid()));
-    fs::remove_all(root); fs::create_directories(root / "state/smile2unlock/logs");
-    fs::create_directory(root / "config"); fs::create_directory(root / "桌面");
-    setenv("HOME", root.c_str(), 1); setenv("XDG_CONFIG_HOME", (root / "config").c_str(), 1);
-    setenv("XDG_STATE_HOME", (root / "state").c_str(), 1);
-    write(root / "config/user-dirs.dirs", "XDG_DESKTOP_DIR=\"$HOME/桌面\"\n");
-    check(d::desktop_directory() == root / "桌面");
-    check(su::log::app_log_directory() == root / "state/smile2unlock/logs");
-    const auto logs = su::log::app_log_directory();
-    write(logs / "app.log", "GUI log\n"); write(logs / "app.log.1", "rotated\n");
-    write(logs / "secrets.json", "must not export");
+void check_file_and_process_boundaries(const fs::path& root) {
     write(root / "large.log", std::string(d::log_limit + 128, 'x') + "TAIL");
     const auto tail = d::read_log_tail(root / "large.log");
     check(tail && tail->size() == d::log_limit && tail->ends_with("TAIL"));
@@ -40,6 +28,8 @@ int main() {
     write(root / "reserved", "keep me");
     const auto again = d::reserve_archive(root / "reserved");
     check(again && !*again && fs::file_size(root / "reserved") == 7);
+}
+void check_bundle_contents(const fs::path& root, const fs::path& logs) {
     auto summary = d::Summary{}; summary.product_version = "test";
     const auto denied = d::export_bundle(summary, []() -> std::expected<d::PrivilegedData, d::Error> {
         return std::unexpected(d::Error{d::ErrorCode::denied, "declined test"});
@@ -68,6 +58,23 @@ int main() {
         return d::PrivilegedData{{}, privileged};
     });
     check(unsafe && !unsafe->system_unavailable.empty() && !fs::exists(privileged));
+}
+
+}
+int main() {
+    const auto root = fs::temp_directory_path() / ("s2u-export-test-" + std::to_string(getpid()));
+    fs::remove_all(root); fs::create_directories(root / "state/smile2unlock/logs");
+    fs::create_directory(root / "config"); fs::create_directory(root / "桌面");
+    setenv("HOME", root.c_str(), 1); setenv("XDG_CONFIG_HOME", (root / "config").c_str(), 1);
+    setenv("XDG_STATE_HOME", (root / "state").c_str(), 1);
+    write(root / "config/user-dirs.dirs", "XDG_DESKTOP_DIR=\"$HOME/桌面\"\n");
+    check(d::desktop_directory() == root / "桌面");
+    check(su::log::app_log_directory() == root / "state/smile2unlock/logs");
+    const auto logs = su::log::app_log_directory();
+    write(logs / "app.log", "GUI log\n"); write(logs / "app.log.1", "rotated\n");
+    write(logs / "secrets.json", "must not export");
+    check_file_and_process_boundaries(root);
+    check_bundle_contents(root, logs);
     fs::remove(root / "config/user-dirs.dirs");
     check(d::desktop_directory() == root);
     fs::create_directory(root / "Desktop"); check(d::desktop_directory() == root / "Desktop");

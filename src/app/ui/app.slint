@@ -24,6 +24,10 @@ export component AppWindow inherits Window {
     in-out property <int> license_index: 0;
     in property <string> license_text: "";
     in property <string> about_link_status: "";
+    in-out property <bool> diagnostics_exporting: false;
+    in property <string> diagnostics_archive: "";
+    in property <string> diagnostics_error: "";
+    in property <string> diagnostics_system_unavailable: "";
     in property <string> config_path_text: "";
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "";
@@ -90,6 +94,8 @@ export component AppWindow inherits Window {
     callback delete_profile_requested(string);
     callback refresh_profiles_requested();
     callback refresh_system_status_requested();
+    callback export_diagnostics_requested();
+    callback show_diagnostics_requested();
     callback install_deployment_helper_requested();
     callback initialize_system_deployment_requested();
     callback models_download_requested(bool, string);
@@ -1123,6 +1129,45 @@ export component AppWindow inherits Window {
                                 spacing: 3px;
                                 Text { text: root.translate("overview.face_samples", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
                                 Text { text: root.profile_store_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: UiTheme.border;
+                        background: UiTheme.surface;
+                        vertical-stretch: 0;
+                        VerticalLayout {
+                            padding-left: 20px;
+                            padding-right: 20px;
+                            padding-top: 16px;
+                            padding-bottom: 16px;
+                            spacing: 10px;
+                            Text { text: root.translate("diagnostics.bundle_title", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
+                            Text { text: root.translate("diagnostics.bundle_detail", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+                            Text {
+                                text: root.diagnostics_error != "" ? root.diagnostics_error
+                                    : root.diagnostics_archive + (root.diagnostics_system_unavailable != ""
+                                        ? " · " + root.translate("diagnostics.system_unavailable", root.language_index) + root.diagnostics_system_unavailable : "");
+                                color: root.diagnostics_error != "" ? UiTheme.danger-text : UiTheme.text-secondary;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                ActionButton {
+                                    label: root.translate(root.diagnostics_exporting ? "diagnostics.exporting" : "diagnostics.export", root.language_index);
+                                    primary: true;
+                                    enabled: !root.diagnostics_exporting;
+                                    activated => { root.export_diagnostics_requested(); }
+                                }
+                                if root.diagnostics_archive != "" : ActionButton {
+                                    label: root.translate("diagnostics.show_folder", root.language_index);
+                                    activated => { root.show_diagnostics_requested(); }
+                                }
                             }
                         }
                     }
