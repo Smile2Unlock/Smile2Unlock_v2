@@ -53,4 +53,15 @@
       <allow_active>auth_self_keep</allow_active>
     </defaults>
   </action>
+  <action id="io.github.smile2unlock.deployment.diagnostics">
+    <description>Collect Smile2Unlock system diagnostics</description>
+    <description xml:lang="zh_CN">收集 Smile2Unlock 系统诊断信息</description>
+    <message>Authentication is required to collect system logs for troubleshooting</message>
+    <message xml:lang="zh_CN">收集系统日志以排查问题需要管理员认证</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
 </policyconfig>
