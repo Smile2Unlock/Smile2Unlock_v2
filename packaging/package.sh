@@ -78,7 +78,7 @@ run_windows() {
     local args=(--output-dir "$output_dir")
     if [[ "$build" == true ]]; then
         build_targets mingw su_app su_auth_service su_deploy_helper \
-            su_password_tool su_recognition_agent su_credential_provider
+            su_password_tool su_recognition_agent su_credential_provider su_status_host
     fi
     "${script_dir}/windows/package.sh" "${args[@]}"
 }
