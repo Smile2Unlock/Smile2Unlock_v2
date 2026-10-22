@@ -1,14 +1,17 @@
 # Issue #117 parts 1 and 2: verification
 
-Verified locally on 2026-10-22. Part 3 (failed-unlock photos) is out of scope.
+Verified locally on 2026-10-22, including review round 1. Part 3 (failed-unlock
+photos) is out of scope.
 No GUI sources, host PAM configuration or login services were changed.
 
 ## Behavior
 
-- An explicit empty-password submit restarts one capture after `TimedOut` or
-  `NoMatch` in either trigger mode. Failed Windows logons, hard service failures
-  and submitted grants refuse resubmission; refresh-driven reselection cannot
-  restart a stopped attempt.
+- An explicit empty-password submit restarts one capture from `Stopped` for any
+  reason (`TimedOut`, `NoMatch`, `Unavailable`, or no recorded reason) in either
+  trigger mode. Failed/completed Windows logons, invalid broker passwords and
+  submitted grants still refuse resubmission; refresh-driven reselection cannot
+  restart a stopped attempt. Service/model unavailability offers Enter / → retry;
+  failed Windows logon guidance points only to the Windows password.
 - Agent no-face results use Windows protocol-v2 status 8. Liveness rejection
   and profile mismatch retain authentication-failed status; service/transport
   timeout mappings are unchanged. Existing completion logs name the new status.
@@ -41,11 +44,13 @@ cargo clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warning
 cargo fmt --check
 ```
 
-Passed: 125 tests, 0 failed, 1 existing ignored test; the isolated secret-sealing
+Passed: 126 tests, 0 failed, 1 existing ignored test; the isolated secret-sealing
 subprocess test also passed. The ignored test depends on `CredIsProtectedW`,
 which Wine does not implement. Clippy and formatting passed with exit 0.
-Tests cover retry refusal/restart, transient wire classification, localized copy,
-owner-scoped presentation, and worker notifications for no-face and mismatch.
+Tests cover explicit retry after unavailability in both trigger modes, no restart
+on reselection, one capture per retry, Windows-login and submitted-grant refusal,
+transient wire classification, split unavailable/login-failed copy, owner-scoped
+presentation, and worker notifications for no-face and mismatch.
 
 From the repository root (MinGW release with real SeetaFace enabled):
 
@@ -56,25 +61,28 @@ xmake test -v su_windows_recognition_result_test/default su_windows_request_logg
 ```
 
 Passed: all requested binaries including the CP DLL built; 2/2 C++ tests passed
-under Wine, 0 failed. The build reported an existing `-Wglobal-module` warning in
-untouched `src/recognizer/image/pixel_convert.cpp`. Wine emitted environment / EGL
-messages. After switching from Linux, an initial build encountered stale module
-metadata; the final clean configuration above resolved it.
+under Wine, 0 failed (review round 1: 0.010 seconds total). The release build
+completed in 5.585 seconds. Earlier verification reported an existing
+`-Wglobal-module` warning in untouched `src/recognizer/image/pixel_convert.cpp`
+and Wine environment / EGL messages.
 
 Linux release:
 
 ```sh
-xmake f -y -p linux -a x86_64 -m release --with_slint=n --with_seetaface=y
+xmake clean -a
+xmake f -c -y -p linux -a x86_64 -m release --with_slint=n --with_seetaface=y
 xmake build -y pam_smile2unlock su_authd su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test
 xmake test -v su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default
 ```
 
 Passed: PAM module, daemon and tests built; 3/3 suites passed, 0 failed. PAM
-integration took 24.141 seconds, covering the existing timeout/password fallback
+integration took 24.143 seconds (24.145 seconds for all three suites), covering the existing timeout/password fallback
 cases plus 14 guidance cases (both languages, no-face/mismatch/unknown, success,
 silent flags, PAM/process locale and locale precedence) and response compatibility.
-An initial test fixture used an overlong Unix socket path; shortening the private
-fixture path fixed it. No host PAM installation was needed.
+Switching from MinGW initially hit stale C++ module metadata, including after
+`xmake f -c`; `xmake clean -a` followed by reconfiguration resolved it. Earlier
+verification fixed an overlong private test socket path. No host PAM installation
+was needed.
 
 ```sh
 git diff --check

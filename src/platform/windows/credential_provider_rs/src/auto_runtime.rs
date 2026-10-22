@@ -32,9 +32,7 @@ use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent};
 use windows_core::PCWSTR;
 
-use crate::auto_recognition::{
-    AttemptMachine, Completion, Outcome, Phase, Poll, StopReason, TriggerSettings,
-};
+use crate::auto_recognition::{AttemptMachine, Completion, Outcome, Phase, Poll, TriggerSettings};
 
 use crate::event_sink::ReadyNotifier;
 use crate::wake_policy::{PowerEvent, WakePolicy};
@@ -401,13 +399,10 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             if inner.machine.is_active() {
                 return true;
             }
-            if inner.machine.phase() == Phase::Submitted
-                || (inner.machine.phase() == Phase::Stopped
-                    && !matches!(
-                        inner.machine.stop_reason(),
-                        Some(StopReason::TimedOut | StopReason::NoMatch)
-                    ))
-            {
+            // Only an explicit submit may re-arm a stopped attempt, including
+            // an unavailable service. Windows logon / broker-password guards
+            // still prevent stale credentials from reaching another logon.
+            if inner.machine.phase() == Phase::Submitted {
                 return false;
             }
             Self::clear_grant(&mut inner);
@@ -1125,6 +1120,7 @@ pub fn read_trigger_settings(sid: &str) -> TriggerSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auto_recognition::StopReason;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::AtomicUsize;
 
@@ -1148,6 +1144,10 @@ mod tests {
     }
 
     impl FakeTransport {
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+
         fn new(outcomes: Vec<Outcome>) -> Self {
             Self {
                 outcomes: Mutex::new(outcomes),
@@ -1570,7 +1570,7 @@ mod tests {
                 timeout: Duration::from_secs(30),
             },
         );
-        wait_for(|| notifier.messages.lock().unwrap().last() == Some(&Message::HardStop));
+        wait_for(|| notifier.messages.lock().unwrap().last() == Some(&Message::Unavailable));
         assert_eq!(
             *notifier.messages.lock().unwrap(),
             vec![
@@ -1579,7 +1579,7 @@ mod tests {
                 Message::NoFace,
                 Message::Mismatch,
                 Message::Mismatch,
-                Message::HardStop,
+                Message::Unavailable,
             ]
         );
         assert_eq!(runtime.generation(), generation);
@@ -2021,28 +2021,40 @@ mod tests {
     }
 
     #[test]
-    fn hard_failure_does_not_retry_or_rearm_on_serialization() {
+    fn unavailable_only_restarts_on_explicit_submit_in_both_modes() {
         for mode in [0, 1] {
             let runtime = AutoRuntime::new(
                 FakeTransport::new(vec![Outcome::Fatal, Outcome::Success]),
                 Box::new(FakeClock::new(0)),
             );
             let settings = TriggerSettings::from_values(Some(mode), Some(0), Some(1), Some(30));
-            runtime.select_owned(10, "S-1-5-21-1", 1, 7, settings);
+            let generation = runtime.select_owned(10, "S-1-5-21-1", 1, 7, settings);
             if mode == 0 {
                 assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 8));
             }
             wait_for(|| runtime.phase() == Phase::Stopped);
-            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
             assert_eq!(
-                runtime
-                    .transport
-                    .lock()
-                    .unwrap()
-                    .calls
-                    .load(Ordering::Acquire),
-                1
+                runtime.inner.lock().unwrap().machine.stop_reason(),
+                Some(StopReason::Unavailable)
             );
+            let stopped_generation = runtime.generation();
+            runtime.select_owned(10, "S-1-5-21-1", 1, 9, settings);
+            assert_eq!(runtime.phase(), Phase::Stopped);
+            assert_eq!(runtime.generation(), stopped_generation);
+            assert_eq!(runtime.transport.lock().unwrap().call_count(), 1);
+            assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 10));
+            let retry_generation = runtime.generation();
+            assert_ne!(retry_generation, stopped_generation);
+            assert_ne!(retry_generation, generation);
+            assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 11));
+            wait_for(|| runtime.phase() == Phase::Ready);
+            assert_eq!(runtime.generation(), retry_generation);
+            assert_eq!(runtime.transport.lock().unwrap().call_count(), 2);
+            assert_eq!(
+                runtime.take_ready_owned(10, "S-1-5-21-1"),
+                Some(("grant", 10, 1))
+            );
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 12));
             runtime.shutdown();
         }
     }

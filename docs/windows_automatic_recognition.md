@@ -32,9 +32,11 @@ fallback whenever automatic recognition is disabled or cannot complete.
   Tile `UnAdvise` disconnects field events during re-enumeration and preserves
   the attempt. An already empty password-field reset does the same.
 - Empty-password submission starts one capture on the same background worker
-  in manual mode, or waits for the existing automatic attempt. After a timeout
-  or exhausted no-face/no-match attempt, an explicit Enter/submit-arrow action
-  starts one new on-demand capture in either mode with a fresh deadline. It returns
+  in manual mode, or waits for the existing automatic attempt. After any stopped
+  attempt (including service/model unavailability), an explicit Enter/submit-arrow
+  action starts one new on-demand capture in either mode with a fresh deadline.
+  Failed Windows logons and invalid broker passwords still block face submission.
+  It returns
   `CPGSR_NO_CREDENTIAL_NOT_FINISHED` immediately instead of making a synchronous
   pipe call. Refresh-driven reselection does not restart stopped/submitted attempts.
 - Deselection, actual password editing, user-array replacement, provider `UnAdvise`, hard
@@ -76,9 +78,9 @@ fallback whenever automatic recognition is disabled or cannot complete.
 The CP selects Simplified Chinese for a Chinese Windows UI primary language
 (`GetUserDefaultUILanguage`), and English otherwise. Tile and submit/status copy
 share one tested table. Retry guidance distinguishes no face from a face mismatch
-(or liveness rejection), and recoverable stops explain Enter / → retry. Hard
-failures and failed Windows logons point only to the Windows password. Phase
-changes use the existing GIT `CredentialsChanged` notifier and field re-query.
+(or liveness rejection), and stopped attempts explain Enter / → retry, including
+service/model unavailability. Failed Windows logons point only to the Windows
+password. Phase changes use the existing GIT `CredentialsChanged` notifier and field re-query.
 
 The service and CP ship together. Protocol version remains 2; status 8
 (`kNoFaceDetected`) means the agent found no face in its capture window. Agent
@@ -125,10 +127,12 @@ idle, initial delay, recognizing, retry delay, ready, submitted and stopped.
    A late result is erased without notifying LogonUI or submitting credentials.
    Tile UnAdvise during a refresh only disconnects field events, and an empty
    initialization/reset of an already empty password field leaves recognition intact.
-6. Only an explicit empty-password submit can restart a recoverable stopped
-   attempt (`TimedOut` / `NoMatch`); refresh-driven reselection cannot. Hard
-   failures (`Unavailable`), submitted grants and failed Windows logons refuse
-   face submission and direct the user to their Windows password.
+6. Only an explicit empty-password submit can restart a stopped attempt, for any
+   stop reason (`TimedOut`, `NoMatch`, `Unavailable`, or no recorded reason);
+   refresh-driven reselection cannot. Unavailable service/model failures do not
+   reach Windows logon, so an explicit retry is safe. Submitted grants, failed or
+   completed Windows logons, and invalid broker passwords still block face
+   submission; failed logons direct the user to their Windows password.
    Failed Windows logon stops automatic retries. In particular, a stale stored
    password must not repeatedly attempt logon and lock the Windows account.
 

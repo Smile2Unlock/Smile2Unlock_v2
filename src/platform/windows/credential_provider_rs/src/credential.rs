@@ -518,7 +518,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                     *ppszoptionalstatustext = Credential::alloc_string(if pending {
                         crate::ui_language::text(crate::ui_text::Message::Recognizing)
                     } else {
-                        crate::ui_language::text(crate::ui_text::Message::HardStop)
+                        crate::ui_language::text(crate::ui_text::Message::LoginFailed)
                     })?
                 };
             }

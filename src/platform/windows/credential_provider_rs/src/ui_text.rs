@@ -28,12 +28,13 @@ pub enum Message {
     NoFace,
     Mismatch,
     RecoverableStop,
-    HardStop,
+    Unavailable,
+    LoginFailed,
     SavedPasswordRejected,
 }
 
 // (English, Simplified Chinese). Brand name stays the same in both languages.
-const TEXT: [(&str, &str); 11] = [
+const TEXT: [(&str, &str); 12] = [
     ("Smile2Unlock", "Smile2Unlock"),
     ("Face sign-in", "人脸登录"),
     ("Windows password", "Windows 密码"),
@@ -56,6 +57,10 @@ const TEXT: [(&str, &str); 11] = [
         "人脸识别已停止。按 Enter 或点击 → 重新识别，也可以输入 Windows 密码。",
     ),
     (
+        "Face recognition is unavailable. Press Enter or click → to retry, or enter your Windows password.",
+        "人脸识别暂不可用。按 Enter 或点击 → 重试，也可以输入 Windows 密码。",
+    ),
+    (
         "Face recognition unavailable. Enter your Windows password.",
         "人脸识别不可用，请输入 Windows 密码。",
     ),
@@ -75,7 +80,7 @@ pub fn text(language: Language, message: Message) -> &'static str {
 
 pub fn tile_message(machine: &AttemptMachine, login_failed: bool) -> Message {
     if login_failed {
-        return Message::HardStop;
+        return Message::LoginFailed;
     }
     match machine.phase() {
         Phase::InitialDelay => Message::InitialDelay,
@@ -85,8 +90,8 @@ pub fn tile_message(machine: &AttemptMachine, login_failed: bool) -> Message {
             _ => Message::Recognizing,
         },
         Phase::Stopped => match machine.stop_reason() {
-            Some(StopReason::TimedOut | StopReason::NoMatch) => Message::RecoverableStop,
-            _ => Message::HardStop,
+            Some(StopReason::Unavailable) => Message::Unavailable,
+            _ => Message::RecoverableStop,
         },
         _ => Message::Title,
     }
@@ -110,7 +115,24 @@ mod tests {
             assert!(english != chinese || english == "Smile2Unlock");
         }
         assert!(text(Language::Chinese, Message::RecoverableStop).contains("Enter"));
-        assert!(!text(Language::English, Message::HardStop).contains("try again"));
+        assert!(!text(Language::English, Message::LoginFailed).contains("retry"));
+    }
+
+    #[test]
+    fn unavailable_and_windows_failure_offer_different_actions() {
+        let mut machine = AttemptMachine::new();
+        let (generation, _) = machine.begin_on_demand(0, "test", 1, 1);
+        machine.poll(0);
+        machine.complete(generation, 1, Outcome::Fatal);
+        assert_eq!(tile_message(&machine, false), Message::Unavailable);
+        assert_eq!(tile_message(&machine, true), Message::LoginFailed);
+        for language in [Language::Chinese, Language::English] {
+            let unavailable = text(language, Message::Unavailable);
+            assert!(unavailable.contains("Enter") && unavailable.contains('→'));
+            let failed = text(language, Message::LoginFailed);
+            assert!(!failed.contains("Press Enter") && !failed.contains("按 Enter"));
+            assert!(!failed.contains('→'));
+        }
     }
 
     #[test]
@@ -132,11 +154,11 @@ mod tests {
             assert_eq!(tile_message(&machine, false), message);
             machine.expire(30_000);
             assert_eq!(tile_message(&machine, false), Message::RecoverableStop);
-            assert_eq!(tile_message(&machine, true), Message::HardStop);
+            assert_eq!(tile_message(&machine, true), Message::LoginFailed);
             machine.begin_on_demand(31_000, "test", 1, 3);
             machine.poll(31_000);
             machine.complete(machine.generation(), 31_001, Outcome::Fatal);
-            assert_eq!(tile_message(&machine, false), Message::HardStop);
+            assert_eq!(tile_message(&machine, false), Message::Unavailable);
         }
     }
 }
