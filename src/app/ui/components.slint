@@ -55,6 +55,7 @@ export component ActionButton inherits Rectangle {
 
     height: 40px;
     min-width: 104px;
+    preferred-width: max(104px, button-label.preferred-width + 28px);
     border-radius: 6px;
     border-width: primary ? 0px : 1px;
     border-color: button-focus.has-focus ? UiTheme.primary : danger ? UiTheme.danger-surface : UiTheme.border;
@@ -68,7 +69,7 @@ export component ActionButton inherits Rectangle {
     accessible-label: root.label;
     accessible-action-default => { root.activated(); }
 
-    Text {
+    button-label := Text {
         width: parent.width;
         height: parent.height;
         text: root.label;
