@@ -59,6 +59,16 @@ option("with_simd")
     set_description("Enable optional assembly/SIMD implementations")
 option_end()
 
+option("acceptance_tools")
+    -- Default off: helpers for the Windows VM acceptance run (su_embed_probe).
+    -- They are neither default nor test targets, so leaving them defined made
+    -- `xmake project -k compile_commands` fail on a fresh configuration
+    -- (xmake scans modules only for default and test targets).
+    set_default(false)
+    set_showmenu(true)
+    set_description("Build acceptance-test helpers such as su_embed_probe")
+option_end()
+
 option("with_seetaface")
     -- Default on: SeetaFace is the real recognizer backend. A build without it
     -- is a mock-only shell useful only for headless CI; the desktop app is
@@ -1111,6 +1121,7 @@ if has_config("with_seetaface") then
     -- Acceptance-test helper: prints the embedding:... source for a face
     -- photo so a headless Windows VM can enroll a profile without the GUI
     -- camera preview (the same photo is looped through a virtual camera).
+    if has_config("acceptance_tools") then
     target("su_embed_probe")
         set_default(false)
         apply_cpp_target("binary")
@@ -1130,6 +1141,7 @@ if has_config("with_seetaface") then
                 target:add("rpathdirs", dir)
             end
         end)
+    end
 end
 
 -- Auto-generate compile_commands.json for clangd LSP after each full build.

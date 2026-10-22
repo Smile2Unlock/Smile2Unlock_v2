@@ -5,7 +5,7 @@
 ## 测试方法
 
 - **虚拟摄像头**：Windows 侧摄像头栈只认 Media Foundation 枚举（`MFEnumDeviceSources` 走 PnP 设备接口），OBS 的 DirectShow 虚拟摄像头对 MF 不可见（`MFCreateVirtualCamera` 是 Windows 11 API）。改用**驱动级虚拟摄像头**（注册于 KSCATEGORY_CAPTURE）循环播放一张公有领域人脸照片。
-- **档案引导**：宿主机用 `su_embed_probe`（#72）对同一张照片提取 1024 维 embedding，经管道 `enrollfull` 写入加密档案。
+- **档案引导**：宿主机用 `su_embed_probe`（#72）对同一张照片提取 1024 维 embedding，经管道 `enrollfull` 写入加密档案。`su_embed_probe` 默认不构建，需先 `xmake f --acceptance_tools=y` 再 `xmake build su_embed_probe`。
 - **管道客户端**：C# 测试 harness（`[Reflection.Assembly]::LoadFrom` 装入现有 PowerShell，规避 VM 上新 .NET exe 的 SxS 启动失败）通过计划任务分别以 Administrator（session 1）和 SYSTEM 运行。
 
 ## 结果矩阵
