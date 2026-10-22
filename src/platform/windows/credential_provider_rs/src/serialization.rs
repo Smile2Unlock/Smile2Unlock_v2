@@ -281,7 +281,7 @@ pub fn retrieve_negotiate_auth_package() -> windows_core::Result<u32> {
     let mut handle = MaybeUninit::uninit();
     let status = unsafe { LsaConnectUntrusted(handle.as_mut_ptr()) };
     if status.0 != 0 {
-        crate::log::cp_log(&format!(
+        crate::log::cp_error(&format!(
             "negotiate package: LsaConnectUntrusted FAILED nt={:#x}",
             status.0
         ));
@@ -308,7 +308,7 @@ pub fn retrieve_negotiate_auth_package() -> windows_core::Result<u32> {
         let _ = LsaDeregisterLogonProcess(handle);
     };
     if status.0 != 0 {
-        crate::log::cp_log(&format!(
+        crate::log::cp_error(&format!(
             "negotiate package: LsaLookupAuthenticationPackage FAILED nt={:#x}",
             status.0
         ));

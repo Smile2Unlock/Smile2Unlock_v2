@@ -1,3 +1,4 @@
+#include "common/log/logger.h"
 #include <cstdio>
 
 import std;
@@ -7,7 +8,7 @@ int main() {
     su::app::AppController controller;
     const auto snapshot = controller.load_initial_snapshot();
     if (!snapshot) {
-        std::println(stderr, "su_app failed to start: {}", snapshot.error());
+        su::log::process_logger().error("app.start_failed", {su::log::field("cause", snapshot.error())});
         return 1;
     }
 
@@ -27,14 +28,14 @@ int main() {
 
     const auto demo_auth = controller.evaluate_demo_auth("demo");
     if (!demo_auth) {
-        std::println(stderr, "demo auth failed: {}", demo_auth.error());
+        su::log::process_logger().warn("app.demo_auth_failed", {su::log::field("cause", demo_auth.error())});
         return 1;
     }
     std::println("Demo auth accepted: {}", *demo_auth ? "yes" : "no");
 
     const auto profiles = controller.list_face_profile_rows();
     if (!profiles) {
-        std::println(stderr, "failed to list face profiles: {}", profiles.error());
+        su::log::process_logger().warn("storage.list_failed", {su::log::field("cause", profiles.error())});
         return 1;
     }
     std::println("Face profiles: {}", profiles->size());

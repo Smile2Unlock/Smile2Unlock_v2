@@ -1,3 +1,4 @@
+#include "common/log/logger.h"
 #include "platform/linux/deploy/deployment.h"
 
 #include <systemd/sd-bus.h>
@@ -28,6 +29,14 @@
 import su.control.socket;
 
 namespace {
+const su::log::Logger& logger() { return su::log::process_logger("deploy-helper", true); }
+using su::log::field;
+template <typename... Args>
+int reply_success(sd_bus_message* message, const char* signature, Args... args) {
+    const auto* operation = sd_bus_message_get_member(message);
+    logger().info("deploy.completed", {field("op", operation ? operation : "unknown")});
+    return ::sd_bus_reply_method_return(message, signature, args...);
+}
 
 constexpr std::string_view kBusName = "io.github.smile2unlock.Deployment1";
 constexpr std::string_view kObjectPath = "/io/github/smile2unlock/Deployment1";
@@ -60,6 +69,8 @@ std::string error_message(const sd_bus_error& error, std::string_view fallback) 
 }
 
 int reply_error(sd_bus_message* message, std::string_view detail) {
+    const auto* operation = sd_bus_message_get_member(message);
+    logger().error("deploy.failed", {field("op", operation ? operation : "unknown"), field("cause", detail)});
     return ::sd_bus_reply_method_errorf(
         message, SD_BUS_ERROR_FAILED, "%.*s", static_cast<int>(detail.size()), detail.data());
 }
@@ -200,10 +211,11 @@ int inspect(sd_bus_message* message, void*, sd_bus_error*) {
         return reply_error(message, snapshot.error());
     }
     const auto payload = su::deploy::snapshot_json(*snapshot);
-    return ::sd_bus_reply_method_return(message, "s", payload.c_str());
+    return reply_success(message, "s", payload.c_str());
 }
 
 int plan_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     const char* target_text = nullptr;
     auto wallet_token = 0;
     if (::sd_bus_message_read(message, "sb", &target_text, &wallet_token) < 0
@@ -249,10 +261,11 @@ int plan_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
         .owner = sender,
         .expires_at = now + kPlanLifetime,
     });
-    return ::sd_bus_reply_method_return(message, "ss", id.c_str(), payload.c_str());
+    return reply_success(message, "ss", id.c_str(), payload.c_str());
 }
 
 int apply_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     const char* plan_id = nullptr;
     if (::sd_bus_message_read(message, "s", &plan_id) < 0 || plan_id == nullptr) {
         return reply_error(message, "invalid deployment plan identifier");
@@ -281,10 +294,11 @@ int apply_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
         return reply_error(message, snapshot.error());
     }
     const auto payload = su::deploy::snapshot_json(*snapshot);
-    return ::sd_bus_reply_method_return(message, "s", payload.c_str());
+    return reply_success(message, "s", payload.c_str());
 }
 
 int rollback_integration(sd_bus_message* message, void*, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     const char* target_text = nullptr;
     if (::sd_bus_message_read(message, "s", &target_text) < 0 || target_text == nullptr) {
         return reply_error(message, "invalid rollback target");
@@ -305,10 +319,11 @@ int rollback_integration(sd_bus_message* message, void*, sd_bus_error*) {
         return reply_error(message, snapshot.error());
     }
     const auto payload = su::deploy::snapshot_json(*snapshot);
-    return ::sd_bus_reply_method_return(message, "s", payload.c_str());
+    return reply_success(message, "s", payload.c_str());
 }
 
 int rollback_all_integrations(sd_bus_message* message, void*, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     if (const auto authorized = check_authorization(message, kRollbackAction); !authorized) {
         return reply_error(message, authorized.error());
     }
@@ -316,10 +331,11 @@ int rollback_all_integrations(sd_bus_message* message, void*, sd_bus_error*) {
     if (!rolled_back) {
         return reply_error(message, rolled_back.error());
     }
-    return ::sd_bus_reply_method_return(message, "s", "all managed PAM integrations removed");
+    return reply_success(message, "s", "all managed PAM integrations removed");
 }
 
 int initialize_runtime(sd_bus_message* message, void*, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     if (const auto authorized = check_authorization(message, kInitializeAction); !authorized) {
         return reply_error(message, authorized.error());
     }
@@ -341,7 +357,7 @@ int initialize_runtime(sd_bus_message* message, void*, sd_bus_error*) {
     if (const auto enabled = run_fixed(*systemctl, enable); !enabled) {
         return reply_error(message, enabled.error());
     }
-    return ::sd_bus_reply_method_return(message, "s", "runtime initialized");
+    return reply_success(message, "s", "runtime initialized");
 }
 
 std::expected<std::pair<std::uint32_t, std::uint32_t>, std::string> sender_identity(
@@ -370,6 +386,7 @@ std::expected<std::pair<std::uint32_t, std::uint32_t>, std::string> sender_ident
 }
 
 int authorize_profile_management(sd_bus_message* message, void*, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     const char* operation = nullptr;
     if (::sd_bus_message_read(message, "s", &operation) < 0 || operation == nullptr
         || (std::string_view(operation) != "enroll_profile"
@@ -429,6 +446,7 @@ int authorize_profile_management(sd_bus_message* message, void*, sd_bus_error*) 
 }
 
 int configure_dms(sd_bus_message* message, void*, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     auto enabled = 0;
     if (::sd_bus_message_read(message, "b", &enabled) < 0) {
         return reply_error(message, "invalid DMS integration request");
@@ -470,19 +488,18 @@ constexpr auto kVtable = std::to_array<sd_bus_vtable>({
 
 int run_service() {
     if (::geteuid() != 0) {
-        std::cerr << "su_deploy_helper must be activated as root\n";
+        logger().error("deploy.permission_denied");
         return 1;
     }
     if (const auto recovered = su::deploy::recover_interrupted_pam_transactions("/");
         !recovered) {
-        std::cerr << "failed to recover interrupted PAM deployment: "
-                  << recovered.error() << '\n';
+        logger().error("deploy.recovery_failed", {field("cause", recovered.error())});
         return 1;
     }
     sd_bus* bus = nullptr;
     sd_bus_slot* slot = nullptr;
     if (::sd_bus_open_system(&bus) < 0) {
-        std::cerr << "failed to open the system bus\n";
+        logger().error("deploy.bus_failed");
         return 1;
     }
     auto state = ServiceState{};
@@ -512,31 +529,31 @@ int run_service() {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int run_main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout << "su_deploy_helper " << SU_VERSION_STR << "\n";
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--rollback-all") {
         if (::geteuid() != 0) {
-            std::cerr << "--rollback-all must run as root\n";
+            logger().error("deploy.permission_denied");
             return 1;
         }
         const auto rolled_back = su::deploy::rollback_all_pam_integrations("/");
         if (!rolled_back) {
-            std::cerr << rolled_back.error() << '\n';
+            logger().error("deploy.rollback_failed", {field("cause", rolled_back.error())});
             return 1;
         }
         return 0;
     }
     if (argc == 3 && std::string_view(argv[1]) == "--check-package-version") {
         if (::geteuid() != 0) {
-            std::cerr << "--check-package-version must run as root\n";
+            logger().error("deploy.permission_denied");
             return 1;
         }
         const auto checked = su::deploy::check_package_upgrade("/", argv[2]);
         if (!checked) {
-            std::cerr << checked.error() << '\n';
+            logger().error("deploy.version_check_failed", {field("cause", checked.error())});
             return 1;
         }
         return 0;
@@ -547,4 +564,12 @@ int main(int argc, char** argv) {
         return 64;
     }
     return run_service();
+}
+
+int main(int argc, char** argv) {
+    const auto operation = argc > 1 ? std::string_view{argv[1]} : "service";
+    logger().info("deploy.started", {field("op", operation)});
+    const auto result = run_main(argc, argv);
+    logger().info("deploy.completed", {field("op", operation), field("exit_code", result)});
+    return result;
 }

@@ -1,4 +1,5 @@
 #include "face_profile_store.h"
+#include "common/log/windows_directory.h"
 
 #include <windows.h>
 #include <aclapi.h>
@@ -14,7 +15,6 @@ namespace {
 
 // Apply the SYSTEM-only ACE to descendants as well. Without OI/CI, files
 // created below the directory could receive the process token's default ACL.
-constexpr wchar_t kSystemOnlySddl[] = L"D:P(A;OICI;FA;;;SY)";
 
 bool valid_sid_text(std::string_view sid) {
     return sid.size() >= 5 && sid.size() <= 184 && sid.starts_with("S-1-")
@@ -65,45 +65,6 @@ std::expected<std::string, FaceProfileStoreError> utf8_path(
     return output;
 }
 
-std::expected<void, FaceProfileStoreError> create_system_directory(
-    const std::filesystem::path& path) {
-    PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            kSystemOnlySddl, SDDL_REVISION_1, &raw_descriptor, nullptr)) {
-        return std::unexpected(FaceProfileStoreError::kWriteFailed);
-    }
-    const auto descriptor = std::unique_ptr<void, decltype(&LocalFree)>{
-        raw_descriptor, &LocalFree};
-    auto attributes = SECURITY_ATTRIBUTES{
-        .nLength = sizeof(SECURITY_ATTRIBUTES),
-        .lpSecurityDescriptor = descriptor.get(),
-        .bInheritHandle = FALSE,
-    };
-    if (!CreateDirectoryW(path.c_str(), &attributes)
-        && GetLastError() != ERROR_ALREADY_EXISTS) {
-        return std::unexpected(FaceProfileStoreError::kWriteFailed);
-    }
-    auto dacl_present = BOOL{};
-    auto dacl_defaulted = BOOL{};
-    auto* dacl = static_cast<PACL>(nullptr);
-    if (!GetSecurityDescriptorDacl(
-            descriptor.get(), &dacl_present, &dacl, &dacl_defaulted)
-        || !dacl_present
-        || SetNamedSecurityInfoW(
-            const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            nullptr, nullptr, dacl, nullptr) != ERROR_SUCCESS) {
-        return std::unexpected(FaceProfileStoreError::kWriteFailed);
-    }
-    const auto attributes_on_disk = GetFileAttributesW(path.c_str());
-    if (attributes_on_disk == INVALID_FILE_ATTRIBUTES
-        || (attributes_on_disk & FILE_ATTRIBUTE_DIRECTORY) == 0
-        || (attributes_on_disk & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        return std::unexpected(FaceProfileStoreError::kWriteFailed);
-    }
-    return {};
-}
-
 std::expected<std::filesystem::path, FaceProfileStoreError> program_data_path() {
     PWSTR raw_path = nullptr;
     if (FAILED(SHGetKnownFolderPath(
@@ -141,8 +102,8 @@ FaceProfileStore::profile_path(std::string_view sid) const {
     const auto users = product / "Users";
     const auto account = users / std::string{sid};
     for (const auto& directory : {product, users, account}) {
-        if (const auto created = create_system_directory(directory); !created) {
-            return std::unexpected(created.error());
+        if (const auto created = su::log::create_system_directory(directory); !created) {
+            return std::unexpected(FaceProfileStoreError::kWriteFailed);
         }
     }
     return account / "profiles.s2u";

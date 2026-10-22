@@ -1,3 +1,4 @@
+#include "common/log/logger.h"
 // Windows Media Foundation camera backend (plain TU; see windows_mf_camera.h).
 //
 // Design:
@@ -545,9 +546,11 @@ private:
         bottom_up_ = stride < 0 && v4l2_format_ == kV4l2Yuyv;
         UINT64 rate = 0;
         (void)negotiated->GetUINT64(MF_MT_FRAME_RATE, &rate);
-        std::fprintf(stderr, "[camera] MF mode=%s size=%ux%u fps=%u/%u\n",
-            v4l2_format_ == kV4l2Mjpg ? "MJPEG" : "YUY2", width_, height_,
-            static_cast<unsigned>(rate >> 32), static_cast<unsigned>(rate));
+        su::log::process_logger().info("camera.mode", {
+            su::log::field("format", v4l2_format_ == kV4l2Mjpg ? "MJPEG" : "YUY2"),
+            su::log::field("width", width_), su::log::field("height", height_),
+            su::log::field("fps_numerator", static_cast<unsigned>(rate >> 32)),
+            su::log::field("fps_denominator", static_cast<unsigned>(rate))});
         open_ = true;
         finish_open(true);
     }

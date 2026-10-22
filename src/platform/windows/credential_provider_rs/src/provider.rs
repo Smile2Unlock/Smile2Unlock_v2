@@ -105,7 +105,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         crate::log::cp_log(&format!("Provider::SetUsageScenario({})", cpus.0));
         if !Provider::supported_scenario(cpus) {
             // CREDUI/change-password/remote flows are out of scope for v1.
-            crate::log::cp_log("Provider::SetUsageScenario: unsupported -> E_NOTIMPL");
+            crate::log::cp_warn("Provider::SetUsageScenario: unsupported -> E_NOTIMPL");
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
         if self.usage_scenario.get() != Some(cpus.0) {
@@ -148,12 +148,12 @@ impl ICredentialProvider_Impl for Provider_Impl {
                     self.runtime.set_notifier(Arc::new(notifier));
                     crate::log::cp_log("Provider::Advise: events marshalled into GIT");
                 }
-                Err(error) => crate::log::cp_log(&format!(
+                Err(error) => crate::log::cp_error(&format!(
                     "Provider::Advise: GIT registration FAILED {:08x}",
                     error.code().0
                 )),
             },
-            None => crate::log::cp_log("Provider::Advise: events pointer missing"),
+            None => crate::log::cp_warn("Provider::Advise: events pointer missing"),
         }
         if self.power_events.borrow().is_none() {
             *self.power_events.borrow_mut() =
@@ -175,7 +175,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
     }
 
     fn GetFieldDescriptorCount(&self) -> windows_core::Result<u32> {
-        crate::log::cp_log("Provider::GetFieldDescriptorCount");
+        crate::log::cp_debug("Provider::GetFieldDescriptorCount");
         Ok(fields::FIELD_COUNT as u32)
     }
 
@@ -183,7 +183,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         &self,
         dwindex: u32,
     ) -> windows_core::Result<*mut CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR> {
-        crate::log::cp_log(&format!("Provider::GetFieldDescriptorAt({})", dwindex));
+        crate::log::cp_debug(&format!("Provider::GetFieldDescriptorAt({})", dwindex));
         let mut descriptor = match Provider::descriptor_for(dwindex) {
             Some(d) => d,
             None => {
@@ -239,7 +239,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         pdwdefault: *mut u32,
         pbautologonwithdefault: *mut BOOL,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log("Provider::GetCredentialCount");
+        crate::log::cp_debug("Provider::GetCredentialCount");
         // When automatic recognition published a grant, LogonUI is woken with
         // CredentialsChanged and re-queries this method: make that tile the
         // default and request autologon so LogonUI calls GetSerialization
@@ -271,7 +271,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
         if !pbautologonwithdefault.is_null() {
             unsafe { *pbautologonwithdefault = BOOL(autologon as i32) };
         }
-        crate::log::cp_log(&format!(
+        crate::log::cp_debug(&format!(
             "Provider::GetCredentialCount autologon={} default={}",
             autologon, default_index
         ));
@@ -279,7 +279,7 @@ impl ICredentialProvider_Impl for Provider_Impl {
     }
 
     fn GetCredentialAt(&self, dwindex: u32) -> windows_core::Result<ICredentialProviderCredential> {
-        crate::log::cp_log(&format!("Provider::GetCredentialAt({})", dwindex));
+        crate::log::cp_debug(&format!("Provider::GetCredentialAt({})", dwindex));
         let sid = self
             .user_sids
             .borrow()

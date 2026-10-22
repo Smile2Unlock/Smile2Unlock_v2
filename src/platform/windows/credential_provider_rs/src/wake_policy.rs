@@ -39,7 +39,7 @@ impl WakePolicy {
     /// Returns true when outstanding work must be invalidated immediately.
     /// Initial closed/off samples pause work but never count as a return.
     pub(crate) fn observe(&mut self, event: PowerEvent) -> bool {
-        let pause = match event {
+        match event {
             PowerEvent::Suspend => {
                 self.suspended = true;
                 self.leave();
@@ -78,8 +78,7 @@ impl WakePolicy {
                 value == 0 && previous != Some(0)
             }
             PowerEvent::Display(_) => false,
-        };
-        pause
+        }
     }
 
     pub(crate) fn pending(&self) -> Option<u64> {

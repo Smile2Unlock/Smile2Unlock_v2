@@ -168,6 +168,7 @@ local function apply_pinned_signer()
 end
 local function apply_cpp_target(kind)
     set_kind(kind)
+    add_deps("su_log")
     add_cxxflags("-Wall", "-Wextra", "-Wpedantic")
     add_includedirs("src", { public = true })
     if is_plat("linux") then
@@ -193,6 +194,57 @@ end
 -- (e.g. su_platform_zig) are not scanned by the module scanner.
 -- su_recognizer owns the recognizer + core types modules; su_app and test
 -- targets depend on su_recognizer and inherit its module BMIs.
+
+target("su_log")
+    set_kind("static")
+    add_includedirs("src", { public = true })
+    add_files("src/common/log/core.cpp", "src/common/log/logger.cpp",
+              "src/common/log/sinks.cpp", "src/common/log/process.cpp")
+    if is_plat("windows", "mingw") then
+        add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN")
+        add_files("src/common/log/file_windows.cpp", "src/common/log/windows_directory.cpp")
+        add_syslinks("advapi32", "shell32", "ole32", "uuid", { public = true })
+    else
+        add_cxxflags("-fPIC") -- Also linked into the PAM shared module.
+        add_files("src/common/log/file_posix.cpp")
+    end
+
+target("su_log_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/log/core_test.cpp")
+    add_defines('SU_LOG_GOLDEN="' .. path.join(os.projectdir(), "tests/log/format_golden.txt") .. '"')
+    if is_plat("mingw") then add_ldflags("-static", { force = true }) end
+    add_tests("default")
+    on_test(wine_on_test)
+
+target("su_log_sinks_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/log/sinks_test.cpp")
+    if is_plat("mingw") then add_ldflags("-static", { force = true }) end
+    add_tests("default")
+    on_test(wine_on_test)
+
+if is_plat("windows", "mingw") then
+    target("su_windows_log_security_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/windows/log_security.cpp")
+        add_ldflags("-static", { force = true })
+        add_tests("default")
+        on_test(wine_on_test)
+
+    target("su_windows_request_logging_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/windows/request_logging.cpp")
+        add_includedirs("src/platform/windows/auth_service", "src/platform/windows/security",
+                        "src/core-rs/include")
+        add_ldflags("-static", { force = true })
+        add_tests("default")
+        on_test(wine_on_test)
+end
 
 target("su_core")
     set_kind("phony")

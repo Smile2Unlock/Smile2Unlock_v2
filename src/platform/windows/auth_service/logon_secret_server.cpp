@@ -1,4 +1,5 @@
 #include "logon_secret_server.h"
+#include "request_log.h"
 
 #include "client_disconnect_watcher.h"
 #include "logon_secret_protocol.h"
@@ -157,15 +158,16 @@ private:
     std::unordered_map<std::wstring, Grant> grants_;
 };
 
-// Diagnostic log (SYSTEM-writable). Diagnostic only. Workers append from pool
-// threads, so serialize whole lines.
-void server_log(const char* message) {
-    static std::mutex log_mutex;
-    const auto lock = std::lock_guard{log_mutex};
-    std::filesystem::create_directories(L"C:\\ProgramData\\Smile2Unlock\\Logs");
-    std::ofstream log(
-        L"C:\\ProgramData\\Smile2Unlock\\Logs\\auth-service.log", std::ios::app);
-    log << message << "\n";
+// ServiceMain initializes this process logger before constructing the server.
+const log::Logger& diagnostic_logger() { return log::process_logger("auth-service", true); }
+
+std::unexpected<DWORD> agent_failure(std::string_view step, DWORD error) noexcept {
+    try {
+        diagnostic_logger().with({log::field("step", step)}).warn(
+            "agent.failed", log::win32_error_fields(error));
+    } catch (...) {
+    }
+    return std::unexpected(error);
 }
 
 namespace {
@@ -441,7 +443,7 @@ bool write_recognition_settings(
     const auto path =
         L"SOFTWARE\\Smile2Unlock\\Recognition\\" + std::wstring{sid};
     auto raw_key = HKEY{};
-    if (RegCreateKeyExW(
+    const auto created = RegCreateKeyExW(
             HKEY_LOCAL_MACHINE,
             path.c_str(),
             0,
@@ -450,20 +452,24 @@ bool write_recognition_settings(
             KEY_SET_VALUE,
             nullptr,
             &raw_key,
-            nullptr) != ERROR_SUCCESS) {
+            nullptr);
+    if (created != ERROR_SUCCESS) {
+        diagnostic_logger().warn("settings.create_failed", log::win32_error_fields(created));
         return false;
     }
     const auto key = std::unique_ptr<std::remove_pointer_t<HKEY>, decltype(&RegCloseKey)>{
         raw_key, &RegCloseKey};
     const auto set = [raw_key](const wchar_t* name, DWORD value) {
-        return RegSetValueExW(
+        const auto result = RegSetValueExW(
                    raw_key,
                    name,
                    0,
                    REG_DWORD,
                    reinterpret_cast<const BYTE*>(&value),
-                   sizeof(value))
-            == ERROR_SUCCESS;
+                   sizeof(value));
+        if (result != ERROR_SUCCESS)
+            diagnostic_logger().warn("settings.write_failed", log::win32_error_fields(result));
+        return result == ERROR_SUCCESS;
     };
     return set(L"CameraIndex", payload.camera_index)
         && set(L"RecognitionThresholdMilli", payload.recognition_threshold_milli)
@@ -489,6 +495,7 @@ std::expected<ResolvedAccount, Status> resolve_account(
         &domain_size,
         &sid_type);
     if (name_size == 0 || domain_size == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        diagnostic_logger().warn("account.resolve_failed", log::win32_error_fields(GetLastError()));
         return std::unexpected(Status::kInvalidRequest);
     }
     auto name = std::wstring(name_size, L'\0');
@@ -502,6 +509,7 @@ std::expected<ResolvedAccount, Status> resolve_account(
             &domain_size,
             &sid_type)
         || sid_type != SidTypeUser) {
+        diagnostic_logger().warn("account.resolve_failed", log::win32_error_fields(GetLastError()));
         return std::unexpected(Status::kInvalidRequest);
     }
     name.resize(wcsnlen(name.c_str(), name.size()));
@@ -510,6 +518,7 @@ std::expected<ResolvedAccount, Status> resolve_account(
     auto computer_name = std::array<wchar_t, MAX_COMPUTERNAME_LENGTH + 1>{};
     auto computer_name_size = DWORD{computer_name.size()};
     if (!GetComputerNameW(computer_name.data(), &computer_name_size)) {
+        diagnostic_logger().warn("account.computer_name_failed", log::win32_error_fields(GetLastError()));
         return std::unexpected(Status::kUnavailable);
     }
     auto kind = SuWindowsAccountKind_Local;
@@ -645,11 +654,14 @@ bool verify_windows_password(
         LOGON32_LOGON_NETWORK,
         LOGON32_PROVIDER_DEFAULT,
         &token);
+    const auto error = GetLastError();
     SecureZeroMemory(
         password_buffer.data(), password_buffer.size() * sizeof(wchar_t));
     if (token != nullptr) {
         CloseHandle(token);
     }
+    if (!authenticated)
+        diagnostic_logger().warn("account.password_check_failed", log::win32_error_fields(error));
     return authenticated != FALSE;
 }
 
@@ -691,7 +703,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     const auto attributes = GetFileAttributesW(agent_path.c_str());
     if (agent_path.empty() || attributes == INVALID_FILE_ATTRIBUTES
         || (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
-        return std::unexpected(ERROR_FILE_NOT_FOUND);
+        return agent_failure("path", ERROR_FILE_NOT_FOUND);
     }
 
     auto inheritable = SECURITY_ATTRIBUTES{
@@ -705,11 +717,12 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     HANDLE child_write_raw = nullptr;
     if (!CreatePipe(&child_read_raw, &service_write_raw, &inheritable, sizeof(AgentRequest))
         || !CreatePipe(&service_read_raw, &child_write_raw, &inheritable, sizeof(AgentResponse))) {
+        const auto pipe_error = GetLastError();
         if (child_read_raw != nullptr) CloseHandle(child_read_raw);
         if (service_write_raw != nullptr) CloseHandle(service_write_raw);
         if (service_read_raw != nullptr) CloseHandle(service_read_raw);
         if (child_write_raw != nullptr) CloseHandle(child_write_raw);
-        return std::unexpected(GetLastError());
+        return agent_failure("pipe.create", pipe_error);
     }
     auto child_read = ScopedHandle{child_read_raw};
     auto service_write = ScopedHandle{service_write_raw};
@@ -717,14 +730,14 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     auto child_write = ScopedHandle{child_write_raw};
     if (!SetHandleInformation(service_write_raw, HANDLE_FLAG_INHERIT, 0)
         || !SetHandleInformation(service_read_raw, HANDLE_FLAG_INHERIT, 0)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("pipe.inheritance", GetLastError());
     }
 
     const auto null_error_raw = CreateFileW(
         L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (null_error_raw == INVALID_HANDLE_VALUE) {
-        return std::unexpected(GetLastError());
+        return agent_failure("stderr.open", GetLastError());
     }
     auto null_error = ScopedHandle{null_error_raw};
 
@@ -733,7 +746,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             GetCurrentProcess(),
             TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY,
             &process_token_raw)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("token.open", GetLastError());
     }
     const auto process_token = ScopedHandle{process_token_raw};
     HANDLE session_token_raw = nullptr;
@@ -745,7 +758,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             SecurityImpersonation,
             TokenPrimary,
             &session_token_raw)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("token.duplicate", GetLastError());
     }
     const auto session_token = ScopedHandle{session_token_raw};
     auto session_id = requested_session_id;
@@ -755,7 +768,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     if (session_id == 0 || session_id == 0xFFFF'FFFF
         || !SetTokenInformation(
             session_token_raw, TokenSessionId, &session_id, sizeof(session_id))) {
-        return std::unexpected(session_id == 0 || session_id == 0xFFFF'FFFF
+        return agent_failure("token.session", session_id == 0 || session_id == 0xFFFF'FFFF
             ? ERROR_NO_SUCH_LOGON_SESSION : GetLastError());
     }
 
@@ -765,7 +778,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     auto* attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(
         attribute_storage.data());
     if (!InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_size)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("attributes.initialize", GetLastError());
     }
     using AttributeList = std::remove_pointer_t<LPPROC_THREAD_ATTRIBUTE_LIST>;
     const auto delete_attributes = std::unique_ptr<AttributeList, decltype(&DeleteProcThreadAttributeList)>{
@@ -779,7 +792,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             sizeof(inherited_handles),
             nullptr,
             nullptr)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("attributes.update", GetLastError());
     }
 
     auto startup = STARTUPINFOEXW{};
@@ -793,7 +806,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     auto process = PROCESS_INFORMATION{};
     void* environment = nullptr;
     if (!CreateEnvironmentBlock(&environment, session_token_raw, FALSE)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("environment.create", GetLastError());
     }
     const auto destroy_environment = std::unique_ptr<void, decltype(&DestroyEnvironmentBlock)>{
         environment, &DestroyEnvironmentBlock};
@@ -810,7 +823,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             working_directory.c_str(),
             &startup.StartupInfo,
             &process)) {
-        return std::unexpected(GetLastError());
+        return agent_failure("process.create", GetLastError());
     }
     const auto process_handle = ScopedHandle{process.hProcess};
     const auto thread_handle = ScopedHandle{process.hThread};
@@ -830,7 +843,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             static_cast<ULONG>(request.nonce.size()),
             BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
         terminate_agent(ERROR_GEN_FAILURE);
-        return std::unexpected(ERROR_GEN_FAILURE);
+        return agent_failure("random.generate", ERROR_GEN_FAILURE);
     }
     request.camera_index = settings.camera_index;
     // Per-capture deadline: bounded independently of the credential
@@ -844,7 +857,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
     if (!write_exact(service_write_raw, &request, sizeof(request))) {
         const auto error = GetLastError();
         terminate_agent(ERROR_WRITE_FAULT);
-        return std::unexpected(error);
+        return agent_failure("request.write", error);
     }
     service_write.reset();
 
@@ -859,7 +872,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             terminate_agent(ERROR_CANCELLED);
             SecureZeroMemory(&request, sizeof(request));
             SecureZeroMemory(&response, sizeof(response));
-            return std::unexpected(ERROR_CANCELLED);
+            return agent_failure("cancelled", ERROR_CANCELLED);
         }
         auto available = DWORD{0};
         if (!PeekNamedPipe(service_read_raw, nullptr, 0, nullptr, &available, nullptr)) {
@@ -867,7 +880,7 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
             terminate_agent(error);
             SecureZeroMemory(&request, sizeof(request));
             SecureZeroMemory(&response, sizeof(response));
-            return std::unexpected(error);
+            return agent_failure("response.peek", error);
         }
         if (available != 0) {
             const auto remaining = sizeof(response) - received;
@@ -880,22 +893,25 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
                 terminate_agent(error);
                 SecureZeroMemory(&request, sizeof(request));
                 SecureZeroMemory(&response, sizeof(response));
-                return std::unexpected(error);
+                return agent_failure("response.read", error);
             }
             received += bytes_read;
             continue;
         }
         if (WaitForSingleObject(process.hProcess, 0) == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            if (GetExitCodeProcess(process.hProcess, &code))
+                diagnostic_logger().warn("agent.exited", {log::field("exit_code", code)});
             SecureZeroMemory(&request, sizeof(request));
             SecureZeroMemory(&response, sizeof(response));
-            return std::unexpected(ERROR_HANDLE_EOF);
+            return agent_failure("process.exited", ERROR_HANDLE_EOF);
         }
         const auto now = GetTickCount64();
         if (now >= deadline) {
             terminate_agent(ERROR_TIMEOUT);
             SecureZeroMemory(&request, sizeof(request));
             SecureZeroMemory(&response, sizeof(response));
-            return std::unexpected(ERROR_TIMEOUT);
+            return agent_failure("timeout", ERROR_TIMEOUT);
         }
         const auto slice = static_cast<DWORD>(std::min<ULONGLONG>(25, deadline - now));
         if (watch_client) {
@@ -912,13 +928,16 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
         terminate_agent(ERROR_GEN_FAILURE);
         SecureZeroMemory(&request, sizeof(request));
         SecureZeroMemory(&response, sizeof(response));
-        return std::unexpected(ERROR_GEN_FAILURE);
+        return agent_failure("process.wait", ERROR_GEN_FAILURE);
     }
+    diagnostic_logger().info("agent.completed", {
+        log::field("agent_status", static_cast<unsigned>(response.status)),
+        log::field("exit_code", exit_code)});
     if (const auto error = validate_agent_result(request, response, exit_code);
         error != ERROR_SUCCESS) {
         SecureZeroMemory(&request, sizeof(request));
         SecureZeroMemory(&response, sizeof(response));
-        return std::unexpected(error);
+        return agent_failure("response.validate", error);
     }
     auto feature = std::vector<float>(
         response.feature.begin(), response.feature.begin() + response.feature_count);
@@ -984,6 +1003,10 @@ Status process_request(
         return sid_utf8.error();
     }
 
+    const auto request_logger = diagnostic_logger().with({
+        log::field("request_id", request.request_id), log::field("sid", *sid_utf8),
+        log::field("op", operation_name(request.operation))});
+
     switch (request.operation) {
     case Operation::kPrepare: {
         // Version 2 closes the old bypass: password release is only reachable
@@ -993,6 +1016,8 @@ Status process_request(
     case Operation::kMarkStale: {
         const auto lock = std::lock_guard{state_mutex};
         const auto marked = store.mark_stale(*sid_utf8);
+        if (!marked)
+            request_logger.warn("store.mark_stale_failed", to_fields(marked.error()));
         return marked ? Status::kOk : map_error(marked.error());
     }
     case Operation::kStore: {
@@ -1016,6 +1041,7 @@ Status process_request(
                 std::span<const wchar_t>{password->data(), password->size()});
         }();
         if (!stored) {
+            request_logger.warn("store.store_failed", to_fields(stored.error()));
             return map_error(stored.error());
         }
         if (!management_authorizer.issue(
@@ -1039,6 +1065,8 @@ Status process_request(
             const auto lock = std::lock_guard{state_mutex};
             return store.clear(*sid_utf8);
         }();
+        if (!cleared)
+            request_logger.warn("store.clear_failed", to_fields(cleared.error()));
         return cleared ? Status::kOk : map_error(cleared.error());
     }
     case Operation::kAuthenticateAndPrepare: {
@@ -1051,6 +1079,7 @@ Status process_request(
         const auto feature = run_recognition_agent(
             stop_event, client_gone, request.logon_session_id, settings);
         if (!feature) {
+            request_logger.warn("recognition.failed", log::win32_error_fields(feature.error()));
             return recognition_error_status(feature.error());
         }
         const auto source = embedding_source(*feature);
@@ -1058,6 +1087,7 @@ Status process_request(
         const auto report = profile_store.authenticate(
             *sid_utf8, source, settings.recognition_threshold, true);
         if (!report) {
+            request_logger.warn("profile.authenticate_failed", to_fields(report.error()));
             return map_profile_error(report.error());
         }
         if (!report->accepted || !report->liveness_ok) {
@@ -1065,6 +1095,8 @@ Status process_request(
         }
         auto password = store.prepare(
             *sid_utf8, request.request_id, request.logon_session_id);
+        if (!password)
+            request_logger.warn("store.prepare_failed", to_fields(password.error()));
         if (!password || password->size() >= std::size(response.password)) {
             return password ? Status::kCorrupt : map_error(password.error());
         }
@@ -1091,6 +1123,8 @@ Status process_request(
             const auto lock = std::lock_guard{state_mutex};
             return store.configured(*sid_utf8);
         }();
+        if (!credential_ready)
+            request_logger.warn("store.configured_failed", to_fields(credential_ready.error()));
         if (!credential_ready || !*credential_ready) {
             return credential_ready ? Status::kUnavailable : map_error(credential_ready.error());
         }
@@ -1099,12 +1133,15 @@ Status process_request(
             return profile_store.enroll(*sid_utf8, *label_utf8, *payload);
         }();
         if (!enrolled) {
+            request_logger.warn("profile.enroll_failed", to_fields(enrolled.error()));
             return map_profile_error(enrolled.error());
         }
         const auto profiles = [&] {
             const auto lock = std::lock_guard{state_mutex};
             return profile_store.list_json(*sid_utf8);
         }();
+        if (!profiles)
+            request_logger.warn("profile.list_failed", to_fields(profiles.error()));
         if (!profiles || !copy_payload(*profiles, response)) {
             return profiles ? Status::kCorrupt : map_profile_error(profiles.error());
         }
@@ -1121,6 +1158,8 @@ Status process_request(
             const auto lock = std::lock_guard{state_mutex};
             return profile_store.list_json(*sid_utf8);
         }();
+        if (!profiles)
+            request_logger.warn("profile.list_failed", to_fields(profiles.error()));
         return profiles && copy_payload(*profiles, response)
             ? Status::kOk
             : (profiles ? Status::kCorrupt : map_profile_error(profiles.error()));
@@ -1140,6 +1179,7 @@ Status process_request(
             return profile_store.remove(*sid_utf8, *profile_id);
         }();
         if (!removed) {
+            request_logger.warn("profile.remove_failed", to_fields(removed.error()));
             return map_profile_error(removed.error());
         }
         if (!*removed) {
@@ -1166,6 +1206,7 @@ Status process_request(
                 request.account_kind == 1);
         }();
         if (!report) {
+            request_logger.warn("profile.authenticate_failed", to_fields(report.error()));
             return map_profile_error(report.error());
         }
         const auto report_json = std::format(
@@ -1186,6 +1227,7 @@ Status process_request(
             return store.configured(*sid_utf8);
         }();
         if (!configured) {
+            request_logger.warn("store.configured_failed", to_fields(configured.error()));
             return map_error(configured.error());
         }
         response.payload[0] = *configured ? 1 : 0;
@@ -1211,8 +1253,8 @@ Status process_request(
 
 } // namespace
 
-LogonSecretServer::LogonSecretServer(security::StorageKey storage_key)
-    : storage_key_(std::move(storage_key)),
+LogonSecretServer::LogonSecretServer(security::StorageKey storage_key, log::Logger logger)
+    : logger_(std::move(logger)), storage_key_(std::move(storage_key)),
       secret_store_(storage_key_),
       profile_store_(storage_key_),
       management_authorizer_(std::make_unique<ManagementAuthorizer>()),
@@ -1223,6 +1265,7 @@ LogonSecretServer::~LogonSecretServer() = default;
 std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
     const auto descriptor = pipe_descriptor();
     if (!descriptor) {
+        logger_.error("pipe.descriptor_failed", log::win32_error_fields(descriptor.error()));
         return std::unexpected(descriptor.error());
     }
     auto attributes = SECURITY_ATTRIBUTES{
@@ -1241,10 +1284,11 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             3000,
             &attributes);
         if (raw_pipe == INVALID_HANDLE_VALUE) {
-            server_log("serve: CreateNamedPipeW FAILED");
-            return std::unexpected(GetLastError());
+            const auto error = GetLastError();
+            logger_.error("pipe.create_failed", log::win32_error_fields(error));
+            return std::unexpected(error);
         }
-        server_log("serve: pipe created, waiting for client");
+        logger_.debug("pipe.listening");
         // Non-const: ownership transfers to the pool task via release().
         auto pipe = ScopedHandle{raw_pipe};
         const auto connected = wait_for_pipe_client(raw_pipe, stop_event);
@@ -1253,12 +1297,13 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
                 || WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
                 break;
             }
+            logger_.warn("pipe.connect_failed", log::win32_error_fields(connected.error()));
             continue;
         }
         if (!*connected) {
             break;
         }
-        server_log("serve: client connected");
+        logger_.debug("pipe.connected");
 
         const auto caller_sid = client_sid(raw_pipe);
         const auto caller_process_id = client_process_id(raw_pipe);
@@ -1273,13 +1318,10 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             // when the client did not request an impersonation-capable pipe
             // handle) are the only way to tell misbehaving clients from a
             // misconfigured service, so log them before dropping the pipe.
-            server_log(("serve: caller identity rejected sid_err="
-                        + std::to_string(caller_sid ? 0ul : caller_sid.error())
-                        + " pid_err="
-                        + std::to_string(caller_process_id ? 0ul : caller_process_id.error())
-                        + " text_err="
-                        + std::to_string(caller_sid_text ? 0ul : caller_sid_text.error()))
-                           .c_str());
+            logger_.warn("pipe.identity_rejected", {
+                log::field("sid_error", caller_sid ? 0ul : caller_sid.error()),
+                log::field("pid_error", caller_process_id ? 0ul : caller_process_id.error()),
+                log::field("text_error", caller_sid_text ? 0ul : caller_sid_text.error())});
             (void)DisconnectNamedPipe(raw_pipe);
             continue;
         }
@@ -1289,8 +1331,8 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
         auto response = Response{};
         const auto read = read_request(raw_pipe, stop_event, request, bytes_read);
         if (!read || !*read) {
-            server_log(read ? "serve: read_request failed"
-                            : "serve: read_request stopped");
+            logger_.warn("pipe.read_failed",
+                log::win32_error_fields(read ? ERROR_HANDLE_EOF : read.error()));
             smile2unlock::logon_secret_ipc::clear_request(request);
             if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
                 break;
@@ -1298,13 +1340,12 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             continue;
         }
         if (bytes_read != sizeof(request)) {
-            server_log(("serve: short read " + std::to_string(bytes_read)
-                        + " of " + std::to_string(sizeof(request)))
-                           .c_str());
+            logger_.warn("pipe.short_read", {log::field("bytes", bytes_read),
+                                             log::field("expected_bytes", sizeof(request))});
         }
         if (bytes_read == sizeof(request)
             && rate_limiter_->allow_request(*caller_sid_text)) {
-            server_log("serve: request received");
+            logger_.debug("request.received", {log::field("request_id", request.request_id)});
             response.request_id = request.request_id;
             response.logon_session_id = request.logon_session_id;
             // The transaction owns the pipe once the pool accepts it: the
@@ -1321,10 +1362,17 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
                         // handle closes; reclaimed before the response write
                         // reuses the pipe handle.
                         auto watcher = ClientDisconnectWatcher{pipe_handle};
+                        const auto started = std::chrono::steady_clock::now();
                         response.status = process_request(
                             stop_event, watcher.event(), request, response,
                             secret_store_, profile_store_, *management_authorizer_,
                             state_mutex_, sid, caller_pid);
+                        const auto target = wide_to_utf8(fixed_wide(request.sid).value_or(L""));
+                        logger_.info("request.completed", completion_fields(
+                            request.request_id, request.operation, response.status,
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - started).count(),
+                            target ? *target : "unavailable"));
                         watcher.finish();
                         smile2unlock::logon_secret_ipc::clear_request(request);
                         (void)write_pipe_response(
@@ -1339,11 +1387,14 @@ std::expected<void, DWORD> LogonSecretServer::serve(HANDLE stop_event) {
             }
             // Pool saturated: reject now instead of queueing behind up to
             // ~30 s recognition attempts.
-            server_log("serve: worker pool saturated, rejecting");
+            logger_.warn("request.capacity_rejected", {log::field("request_id", request.request_id)});
             response.status = Status::kUnavailable;
         } else {
             response.status = Status::kInvalidRequest;
         }
+        const auto target = wide_to_utf8(fixed_wide(request.sid).value_or(L""));
+        logger_.info("request.completed", completion_fields(request.request_id, request.operation,
+            response.status, 0, target ? *target : "unavailable"));
         smile2unlock::logon_secret_ipc::clear_request(request);
         (void)write_pipe_response(
             raw_pipe, stop_event, std::as_bytes(std::span{&response, 1}));

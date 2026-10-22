@@ -1,4 +1,6 @@
 module;
+#include "common/log/logger.h"
+#include <format>
 #include "liveness_window.h"
 #include "common/utf8_path.h"
 #if defined(_WIN32)
@@ -334,9 +336,11 @@ public:
                 prev_liveness_status_ = liveness_status;
                 prev_liveness_passes_ = passes;
                 next_liveness_log_ = now + std::chrono::seconds{3};
-                std::println(stderr, "[seeta] liveness status={} clarity={:.3f} reality={:.3f} score={:.3f} frames={}/10",
-                    liveness_status_name(liveness_status), clarity, reality, liveness_score,
-                    liveness_window_.sample_count());
+                su::log::process_logger().debug("seeta.liveness", {
+                    su::log::field("status", liveness_status_name(liveness_status)),
+                    su::log::field("clarity", clarity), su::log::field("reality", reality),
+                    su::log::field("score", liveness_score),
+                    su::log::field("frames", liveness_window_.sample_count())});
             }
         }
 

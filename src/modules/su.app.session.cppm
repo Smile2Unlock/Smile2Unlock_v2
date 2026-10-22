@@ -1,4 +1,6 @@
 module;
+#include "common/log/logger.h"
+#include <format>
 
 #if defined(__linux__)
 #include <systemd/sd-bus.h>
@@ -177,13 +179,14 @@ private:
         sd_bus_slot* properties_slot = nullptr;
         sd_bus_slot* sleep_slot = nullptr;
         if (::sd_bus_open_system(&bus) < 0) {
-            std::println(stderr, "[session] failed to connect to the system bus");
+            su::log::process_logger().warn("session.bus_connect_failed");
             return;
         }
 
         const auto session_path = session_path_for_process(bus);
         if (!session_path) {
-            std::println(stderr, "[session] lock monitoring unavailable: {}", session_path.error());
+            su::log::process_logger().warn("session.path_unavailable",
+                {su::log::field("cause", session_path.error())});
             ::sd_bus_unref(bus);
             return;
         }
@@ -196,7 +199,8 @@ private:
                 "Lock",
                 &Impl::on_lock,
                 this) < 0) {
-            std::println(stderr, "[session] failed to subscribe to logind Lock");
+            su::log::process_logger().warn("session.lock_subscribe_failed",
+                {su::log::field("signal", "Lock")});
             ::sd_bus_unref(bus);
             return;
         }
@@ -209,7 +213,8 @@ private:
                 "PropertiesChanged",
                 &Impl::on_properties_changed,
                 this) < 0) {
-            std::println(stderr, "[session] failed to subscribe to logind LockedHint");
+            su::log::process_logger().warn("session.lock_subscribe_failed",
+                {su::log::field("signal", "LockedHint")});
             ::sd_bus_slot_unref(lock_slot);
             ::sd_bus_unref(bus);
             return;
@@ -223,7 +228,8 @@ private:
                 "PrepareForSleep",
                 &Impl::on_prepare_for_sleep,
                 this) < 0) {
-            std::println(stderr, "[session] failed to subscribe to logind PrepareForSleep");
+            su::log::process_logger().warn("session.lock_subscribe_failed",
+                {su::log::field("signal", "PrepareForSleep")});
             ::sd_bus_slot_unref(properties_slot);
             ::sd_bus_slot_unref(lock_slot);
             ::sd_bus_unref(bus);
@@ -231,7 +237,8 @@ private:
         }
 
         available_.store(true, std::memory_order_release);
-        std::println(stderr, "[session] monitoring logind Lock on {}", *session_path);
+        su::log::process_logger().info("session.monitoring_started",
+            {su::log::field("path", *session_path)});
         while (running_.load(std::memory_order_acquire)) {
             const auto processed = ::sd_bus_process(bus, nullptr);
             if (processed < 0) {

@@ -72,7 +72,7 @@ impl PowerEvents {
             return None;
         }
         let token = NEXT_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .ok()?;
         let epoch = runtime.begin_power_subscription();
         let weak = Arc::downgrade(runtime);
@@ -125,7 +125,7 @@ impl PowerEvents {
                     if result.0 == 0 {
                         registrations.push((HPOWERNOTIFY(handle as isize), guid.is_none()));
                     } else {
-                        crate::log::cp_log(&format!(
+                        crate::log::cp_error(&format!(
                             "power registration {guid:?} failed: {}",
                             result.0
                         ));
@@ -154,7 +154,7 @@ impl PowerEvents {
                     };
                     if result.0 != 0 {
                         unregister_failed = true;
-                        crate::log::cp_log(&format!("power unregister failed: {}", result.0));
+                        crate::log::cp_error(&format!("power unregister failed: {}", result.0));
                     }
                 }
                 // If unregister failed, retain the OS registration parameters.
@@ -165,7 +165,7 @@ impl PowerEvents {
             });
         if spawned.is_err() {
             runtime.finish_power_subscription(epoch);
-            crate::log::cp_log("power subscription thread spawn failed");
+            crate::log::cp_error("power subscription thread spawn failed");
             return None;
         }
         Some(Self(stop))
@@ -285,7 +285,7 @@ mod tests {
         );
         let (baseline, _) = mpsc::channel();
         let token = NEXT_TOKEN
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .unwrap();
         contexts().lock().unwrap().insert(
             token,

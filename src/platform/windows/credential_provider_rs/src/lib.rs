@@ -102,37 +102,37 @@ pub extern "system" fn DllGetClassObject(
     riid: *const windows_core::GUID,
     ppv: *mut *mut core::ffi::c_void,
 ) -> HRESULT {
-    log::cp_log("DllGetClassObject enter");
+    log::cp_debug("DllGetClassObject enter");
     if ppv.is_null() {
-        log::cp_log("DllGetClassObject: ppv null -> E_POINTER");
+        log::cp_debug("DllGetClassObject: ppv null -> E_POINTER");
         return E_POINTER;
     }
     unsafe {
         *ppv = core::ptr::null_mut();
     }
     if rclsid.is_null() || riid.is_null() {
-        log::cp_log("DllGetClassObject: rclsid/riid null -> E_POINTER");
+        log::cp_debug("DllGetClassObject: rclsid/riid null -> E_POINTER");
         return E_POINTER;
     }
     // SAFETY: caller passes valid in-parameters per COM contract.
     let clsid = unsafe { *rclsid };
     let requested = unsafe { *riid };
     if clsid != CLSID_SU_PROVIDER {
-        log::cp_log("DllGetClassObject: clsid mismatch -> CLASS_E_CLASSNOTAVAILABLE");
+        log::cp_warn("DllGetClassObject: clsid mismatch -> CLASS_E_CLASSNOTAVAILABLE");
         return CLASS_E_CLASSNOTAVAILABLE;
     }
     if requested != IClassFactory::IID && requested != IUnknown::IID {
-        log::cp_log("DllGetClassObject: riid mismatch -> E_NOINTERFACE");
+        log::cp_warn("DllGetClassObject: riid mismatch -> E_NOINTERFACE");
         return E_NOINTERFACE;
     }
-    log::cp_log("DllGetClassObject: creating class factory");
+    log::cp_debug("DllGetClassObject: creating class factory");
     let factory: IClassFactory = class_factory::ClassFactory::new().into();
     // SAFETY: into_raw hands over ownership; the caller (COM) releases it.
     let ptr: *mut core::ffi::c_void = factory.into_raw();
     unsafe {
         *ppv = ptr;
     }
-    log::cp_log("DllGetClassObject: S_OK");
+    log::cp_debug("DllGetClassObject: S_OK");
     HRESULT(0) // S_OK
 }
 
@@ -142,7 +142,7 @@ pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     // The generated COM wrappers do not expose a reliable process-wide count
     // for every Provider/Credential interface. Keep the DLL loaded rather
     // than allowing LogonUI to unload code while an object is still alive.
-    log::cp_log("DllCanUnloadNow: S_FALSE (conservative lifetime policy)");
+    log::cp_debug("DllCanUnloadNow: S_FALSE (conservative lifetime policy)");
     HRESULT(1) // S_FALSE
 }
 

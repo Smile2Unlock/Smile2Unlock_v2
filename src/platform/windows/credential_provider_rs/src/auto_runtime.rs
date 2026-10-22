@@ -812,7 +812,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             .spawn(move || runtime.worker_loop());
         if spawned.is_err() {
             self.worker_running.store(false, Ordering::Release);
-            crate::log::cp_log("auto worker spawn FAILED");
+            crate::log::cp_error("auto worker spawn FAILED");
         }
     }
 

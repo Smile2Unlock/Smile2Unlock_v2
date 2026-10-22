@@ -1,4 +1,5 @@
 module;
+#include "common/log/logger.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -25,6 +26,9 @@ int run_daemon(std::string_view socket_path = su::control::kDefaultSocketPath);
 namespace su::auth {
 
 namespace {
+
+const su::log::Logger& logger() { return su::log::process_logger("su_authd", true); }
+using su::log::field;
 
 constexpr auto kAuthenticationTimeout = std::chrono::seconds{6};
 // Liveness needs a sequence of frames; keep its budget below the socket's
@@ -63,23 +67,6 @@ std::string_view message_type_name(su::app::ControlMessageType type) {
         return "issue_management_capability";
     }
     std::unreachable();
-}
-
-std::string log_value(std::string_view value, std::size_t limit = 160) {
-    auto output = std::string{};
-    output.reserve(std::min(value.size(), limit));
-    for (const auto character : value.substr(0, limit)) {
-        switch (character) {
-        case '"': output += "\\\""; break;
-        case '\\': output += "\\\\"; break;
-        case '\n': output += "\\n"; break;
-        case '\r': output += "\\r"; break;
-        case '\t': output += "\\t"; break;
-        default:
-            output += static_cast<unsigned char>(character) < 0x20 ? '?' : character;
-        }
-    }
-    return output;
 }
 
 std::optional<std::string_view> peer_authorization_error(
@@ -594,38 +581,30 @@ public:
     void handle(su::control::Connection connection) {
         const auto peer = connection.peer_credentials();
         if (!peer) {
-            std::println(stderr, "su_authd event=peer_rejected");
+            logger().warn("peer_rejected");
             return;
         }
         auto payload = connection.receive_frame();
         if (!payload) {
-            std::println(stderr, "su_authd event=request_receive_failed");
+            logger().warn("request_receive_failed");
             return;
         }
         auto request = su::app::parse_control_request(*payload);
         std::ranges::fill(*payload, '\0');
         if (!request) {
-            std::println(stderr, "su_authd event=request_invalid");
+            logger().warn("request_invalid");
             return;
         }
 
         if (const auto reason = peer_authorization_error(peer->uid, *request)) {
-            std::println(
-                stderr,
-                R"(su_authd event=peer_rejected peer_uid={} request_id={} type={} reason="{}")",
-                peer->uid,
-                request->request_id,
-                message_type_name(request->type),
-                *reason);
+            logger().warn("peer_rejected", {field("peer_uid", peer->uid),
+                field("request_id", request->request_id), field("type", message_type_name(request->type)), field("reason", *reason)});
             const auto sent = connection.send_frame(su::control::make_response(
                 request->request_id,
                 su::control::ControlResult::kRejected,
                 *reason));
             if (!sent) {
-                std::println(
-                    stderr,
-                    "su_authd event=response_send_failed request_id={}",
-                    request->request_id);
+                logger().warn("response_send_failed", {field("request_id", request->request_id)});
             }
             return;
         }
@@ -637,30 +616,15 @@ public:
                 su::control::ControlResult::kRejected,
                 "profile management authorization is missing, expired, or invalid"));
             if (!sent) {
-                std::println(
-                    stderr,
-                    "su_authd event=response_send_failed request_id={}",
-                    request->request_id);
+                logger().warn("response_send_failed", {field("request_id", request->request_id)});
             }
             return;
         }
 
         const auto started_at = std::chrono::steady_clock::now();
         const auto type_name = message_type_name(request->type);
-        if (request->type == su::app::ControlMessageType::kAuthenticate) {
-            std::println(
-                stderr,
-                R"(su_authd event=request_started request_id={} type={} user="{}")",
-                request->request_id,
-                type_name,
-                log_value(request->username, 64));
-        } else {
-            std::println(
-                stderr,
-                "su_authd event=request_started request_id={} type={}",
-                request->request_id,
-                type_name);
-        }
+        const auto request_logger = logger().with({field("request_id", request->request_id), field("type", type_name)});
+        request_logger.info("request_started");
 
         auto response = AttemptResult{};
         switch (request->type) {
@@ -715,14 +679,8 @@ public:
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started_at);
-        std::println(
-            stderr,
-            R"(su_authd event=request_completed request_id={} type={} result={} reason="{}" duration_ms={})",
-            request->request_id,
-            type_name,
-            su::control::control_result_name(response.result),
-            log_value(response.reason),
-            elapsed.count());
+        request_logger.info("request_completed", {field("result", su::control::control_result_name(response.result)),
+            field("reason", response.reason), field("duration_ms", elapsed.count())});
 
         auto response_frame = su::control::make_response(
             request->request_id,
@@ -734,10 +692,7 @@ public:
         std::ranges::fill(response.payload_json, '\0');
         response.payload_json.clear();
         if (!sent) {
-            std::println(
-                stderr,
-                "su_authd event=response_send_failed request_id={}",
-                request->request_id);
+            logger().warn("response_send_failed", {field("request_id", request->request_id)});
         }
     }
 
@@ -763,8 +718,9 @@ private:
 } // namespace
 
 int run_daemon(std::string_view socket_path) {
+    (void)logger();
     if (::geteuid() != 0) {
-        std::println(stderr, "su_authd must run as root");
+        logger().error("permission_denied");
         return 1;
     }
 
@@ -772,33 +728,26 @@ int run_daemon(std::string_view socket_path) {
     std::error_code error;
     std::filesystem::create_directories(path.parent_path(), error);
     if (error || ::chmod(path.parent_path().c_str(), 0755) != 0) {
-        std::println(stderr, "su_authd failed to prepare runtime directory");
+        logger().error("runtime_directory_failed", {field("errno", errno)});
         return 1;
     }
 
     auto listener = su::control::Listener::bind_to(socket_path);
     if (!listener) {
-        std::println(stderr, "su_authd failed to bind {}", socket_path);
+        logger().error("socket_bind_failed", {field("socket", socket_path)});
         return 1;
     }
 
     auto loaded_key = load_systemd_key_credential();
     if (!loaded_key) {
-        std::println(
-            stderr,
-            "su_authd event=storage_unavailable reason={}",
-            key_provider_error_message(loaded_key.error()));
+        logger().warn("storage_unavailable", {field("reason", key_provider_error_message(loaded_key.error()))});
     }
     auto service = AuthService{
         loaded_key
             ? std::optional<MasterKey>{std::move(*loaded_key)}
             : std::nullopt};
-    std::println(
-        stderr,
-        "su_authd event=listening socket={} available={} storage={}",
-        socket_path,
-        service.available(),
-        service.storage_status());
+    logger().info("listening", {field("socket", socket_path), field("available", service.available()),
+        field("storage", service.storage_status())});
     auto connection_slots = std::counting_semaphore<kMaxConcurrentConnections>{
         kMaxConcurrentConnections};
     while (true) {
@@ -807,7 +756,7 @@ int run_daemon(std::string_view socket_path) {
             continue;
         }
         if (!connection_slots.try_acquire()) {
-            std::println(stderr, "su_authd event=connection_rejected reason=capacity");
+            logger().warn("connection_rejected", {field("reason", "capacity")});
             continue;
         }
         // Authentication is intentionally detached from accept so status and

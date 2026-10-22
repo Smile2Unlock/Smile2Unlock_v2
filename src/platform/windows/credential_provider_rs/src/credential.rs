@@ -215,7 +215,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         pcpfs: *mut CREDENTIAL_PROVIDER_FIELD_STATE,
         pcpfis: *mut CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::GetFieldState({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::GetFieldState({})", dwfieldid));
         let pairs = fields::state_pairs();
         let pair = match dwfieldid {
             0..=4 => &pairs[dwfieldid as usize],
@@ -235,7 +235,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     }
 
     fn GetStringValue(&self, dwfieldid: u32) -> windows_core::Result<PWSTR> {
-        crate::log::cp_log(&format!("Credential::GetStringValue({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::GetStringValue({})", dwfieldid));
         let id = Credential::field_id(dwfieldid)?;
         // LogonUI renders SMALL_TEXT/LARGE_TEXT fields from this value;
         // an error here aborts tile creation, so always hand back a string.
@@ -259,7 +259,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     }
 
     fn GetBitmapValue(&self, dwfieldid: u32) -> windows_core::Result<HBITMAP> {
-        crate::log::cp_log(&format!("Credential::GetBitmapValue({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::GetBitmapValue({})", dwfieldid));
         if dwfieldid != FieldId::TileImage as u32 {
             return Err(Error::from_hresult(crate::E_INVALIDARG));
         }
@@ -272,7 +272,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         // BITMAPFILEHEADER: bfOffBits is a little-endian u32 at offset 10.
         // BITMAPINFOHEADER: biWidth(i32)@18, biHeight(i32)@22, biBitCount(u16)@28.
         if BMP.len() < 54 {
-            crate::log::cp_log("  GetBitmapValue: BMP too short");
+            crate::log::cp_error("  GetBitmapValue: BMP too short");
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
         let off_bits = u32::from_le_bytes([BMP[10], BMP[11], BMP[12], BMP[13]]) as usize;
@@ -280,7 +280,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let height = i32::from_le_bytes([BMP[22], BMP[23], BMP[24], BMP[25]]);
         let bpp = u16::from_le_bytes([BMP[28], BMP[29]]);
         if width <= 0 || height == 0 || bpp != 24 {
-            crate::log::cp_log("  GetBitmapValue: bad BMP header");
+            crate::log::cp_error("  GetBitmapValue: bad BMP header");
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
         let abs_h = height.unsigned_abs();
@@ -288,7 +288,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let row_stride = (width as u32 * 3).div_ceil(4) * 4;
         let pixels_needed = row_stride * abs_h;
         if off_bits + pixels_needed as usize > BMP.len() {
-            crate::log::cp_log("  GetBitmapValue: BMP truncated");
+            crate::log::cp_error("  GetBitmapValue: BMP truncated");
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
 
@@ -316,7 +316,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         {
             Ok(h) => h,
             Err(e) => {
-                crate::log::cp_log(&format!(
+                crate::log::cp_error(&format!(
                     "  GetBitmapValue: CreateDIBSection failed {:08x}",
                     e.code().0
                 ));
@@ -324,7 +324,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             }
         };
         if bits.is_null() {
-            crate::log::cp_log("  GetBitmapValue: CreateDIBSection null bits");
+            crate::log::cp_error("  GetBitmapValue: CreateDIBSection null bits");
             return Err(Error::from_hresult(crate::E_NOTIMPL));
         }
         // Positive height means bottom-up rows, which matches the file layout;
@@ -338,7 +338,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                 pixels_needed as usize,
             );
         }
-        crate::log::cp_log(&format!(
+        crate::log::cp_debug(&format!(
             "  GetBitmapValue: OK {}x{} bpp={}",
             width, abs_h, bpp
         ));
@@ -351,7 +351,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         _pbchecked: *mut BOOL,
         _ppszlabel: *mut PWSTR,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::GetCheckboxValue({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::GetCheckboxValue({})", dwfieldid));
         // The checkbox field was removed from the v1 tile; keep the method
         // for interface completeness but reject any probe.
         let _ = Credential::field_id(dwfieldid)?;
@@ -359,7 +359,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     }
 
     fn GetSubmitButtonValue(&self, dwfieldid: u32) -> windows_core::Result<u32> {
-        crate::log::cp_log(&format!("Credential::GetSubmitButtonValue({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::GetSubmitButtonValue({})", dwfieldid));
         if dwfieldid == FieldId::SubmitButton as u32 {
             // Place the submit button adjacent to the password field. LogonUI
             // requires this reference to be an input field, not the button
@@ -376,14 +376,14 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         _pcitems: *mut u32,
         _pdwselecteditem: *mut u32,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::GetComboBoxValueCount({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::GetComboBoxValueCount({})", dwfieldid));
         // The combobox field was removed from the v1 tile.
         let _ = Credential::field_id(dwfieldid)?;
         Err(Error::from_hresult(crate::E_INVALIDARG))
     }
 
     fn GetComboBoxValueAt(&self, dwfieldid: u32, dwitem: u32) -> windows_core::Result<PWSTR> {
-        crate::log::cp_log(&format!(
+        crate::log::cp_debug(&format!(
             "Credential::GetComboBoxValueAt({}, {})",
             dwfieldid, dwitem
         ));
@@ -393,7 +393,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     }
 
     fn SetStringValue(&self, dwfieldid: u32, psz: &PCWSTR) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::SetStringValue({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::SetStringValue({})", dwfieldid));
         let field = Credential::field_id(dwfieldid)?;
         if field == FieldId::PasswordText {
             let mut length = 0usize;
@@ -425,7 +425,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     }
 
     fn SetCheckboxValue(&self, dwfieldid: u32, _bchecked: BOOL) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!("Credential::SetCheckboxValue({})", dwfieldid));
+        crate::log::cp_debug(&format!("Credential::SetCheckboxValue({})", dwfieldid));
         Ok(())
     }
 
@@ -434,7 +434,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         dwfieldid: u32,
         _dwselecteditem: u32,
     ) -> windows_core::Result<()> {
-        crate::log::cp_log(&format!(
+        crate::log::cp_debug(&format!(
             "Credential::SetComboBoxSelectedValue({})",
             dwfieldid
         ));
@@ -473,7 +473,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         // Only one serialization may be outstanding. ReportResult resets the
         // state after a failed Windows logon so the user can retry.
         if self.stale.get() || self.serialized.get() {
-            crate::log::cp_log(&format!(
+            crate::log::cp_warn(&format!(
                 "GetSerialization: rejected stale={} serialized={}",
                 self.stale.get(),
                 self.serialized.get()
@@ -541,7 +541,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         {
             Ok(d) => d,
             Err(err) => {
-                crate::log::cp_log("GetSerialization: username resolve failed");
+                crate::log::cp_error("GetSerialization: username resolve failed");
                 return Err(err);
             }
         };
@@ -554,7 +554,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         ) {
             Ok(k) => k,
             Err(err) => {
-                crate::log::cp_log("GetSerialization: kerb init FAILED");
+                crate::log::cp_error("GetSerialization: kerb init FAILED");
                 crate::pipe_client::secure_clear(&mut protected);
                 return Err(err);
             }
@@ -563,7 +563,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             match crate::serialization::kerb_interactive_unlock_logon_pack(&kiul) {
                 Ok(b) => b,
                 Err(err) => {
-                    crate::log::cp_log("GetSerialization: kerb pack FAILED");
+                    crate::log::cp_error("GetSerialization: kerb pack FAILED");
                     crate::pipe_client::secure_clear(&mut protected);
                     return Err(err);
                 }
@@ -572,7 +572,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         let auth_package = match crate::serialization::retrieve_negotiate_auth_package() {
             Ok(p) => p,
             Err(err) => {
-                crate::log::cp_log("GetSerialization: negotiate package FAILED");
+                crate::log::cp_error("GetSerialization: negotiate package FAILED");
                 unsafe { windows::Win32::System::Com::CoTaskMemFree(Some(blob as *const _)) };
                 crate::pipe_client::secure_clear(&mut protected);
                 return Err(err);
@@ -587,12 +587,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         if !pcpgsr.is_null() {
             unsafe { *pcpgsr = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE(2) }; // CPGSR_RETURN_CREDENTIAL_FINISHED
         }
-        crate::log::cp_log(&format!(
-            "GetSerialization: done domain={} user={} cb={}",
-            String::from_utf16_lossy(&domain),
-            String::from_utf16_lossy(&username),
-            blob_len
-        ));
+        crate::log::cp_log(&format!("GetSerialization: done cb={}", blob_len));
         crate::pipe_client::secure_clear(&mut protected);
         self.serialized.set(true);
         self.runtime.submission_owned(self.owner);
@@ -635,14 +630,14 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             // A failed broker notification must not permit repeated old-password
             // submissions from this tile. Manual Windows passwords remain usable.
             self.broker_password_invalid.set(true);
-            if let Some(sid) = self.user_sid.borrow().as_ref() {
-                if let Err(error) = crate::pipe_client::PipeClient::mark_stale_async(
+            if let Some(sid) = self.user_sid.borrow().as_ref()
+                && let Err(error) = crate::pipe_client::PipeClient::mark_stale_async(
                     sid.clone(),
                     request_id,
                     session_id,
-                ) {
-                    crate::log::cp_log(&format!("mark_stale worker failed: {error}"));
-                }
+                )
+            {
+                crate::log::cp_error(&format!("mark_stale worker failed: {error}"));
             }
             if !ppszoptionalstatustext.is_null() {
                 unsafe {
@@ -669,7 +664,7 @@ fn password_requires_refresh(status: i32, substatus: i32) -> bool {
 
 impl ICredentialProviderCredential2_Impl for Credential_Impl {
     fn GetUserSid(&self) -> windows_core::Result<PWSTR> {
-        crate::log::cp_log("Credential::GetUserSid");
+        crate::log::cp_debug("Credential::GetUserSid");
         // V2 rule: a provider implementing ICredentialProviderSetUserArray
         // must return a SID matching a user in the array via
         // ICredentialProviderCredential2::GetUserSid, or LogonUI discards
@@ -689,7 +684,7 @@ impl ICredentialProviderCredentialWithFieldOptions_Impl for Credential_Impl {
         &self,
         fieldid: u32,
     ) -> windows_core::Result<CREDENTIAL_PROVIDER_CREDENTIAL_FIELD_OPTIONS> {
-        crate::log::cp_log(&format!("Credential::GetFieldOptions({})", fieldid));
+        crate::log::cp_debug(&format!("Credential::GetFieldOptions({})", fieldid));
         let id = Credential::field_id(fieldid)?;
         // Official wincred.h values for CREDENTIAL_PROVIDER_CREDENTIAL_
         // FIELD_OPTIONS (winsdk-10 10.0.16299.0): CPCFO_NONE=0,

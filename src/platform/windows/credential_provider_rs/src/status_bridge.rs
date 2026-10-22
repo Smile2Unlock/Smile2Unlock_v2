@@ -59,7 +59,7 @@ impl StatusBridge {
             .name("su-status-display".into())
             .spawn(move || {
                 if let Err(error) = run(runtime, &cancelled) {
-                    crate::log::cp_log(&format!("status display unavailable: {error}"));
+                    crate::log::cp_error(&format!("status display unavailable: {error}"));
                 }
             })
             .ok()?;
