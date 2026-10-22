@@ -154,11 +154,17 @@ template <typename Check> void backup_read_checks(const fs::path& root, Check ch
     if (wine)
         std::cout
             << "SKIP: SYSTEM-only directory ACL enforcement under Wine; native Windows required\n";
-    else
+    else {
         set_dacl(product, L"D:P(A;OICI;FA;;;SY)");
+        set_dacl(logs, L"D:P(A;OICI;FA;;;SY)");
+        set_dacl(logs / "service.log", L"D:P(A;;FA;;;SY)");
+    }
     const auto product_security = security_text(product);
     const auto log_security = security_text(logs);
+    const auto file_security = security_text(logs / "service.log");
     const auto previous = backup_attributes();
+    if (!wine && !(previous & SE_PRIVILEGE_ENABLED))
+        check(!d::read_system_log_tail(logs / "service.log"));
     {
         const auto privilege = d::BackupPrivilege::acquire();
         check(privilege.has_value());
@@ -169,9 +175,12 @@ template <typename Check> void backup_read_checks(const fs::path& root, Check ch
         check(text && *text == "protected system log");
         check(security_text(product) == product_security);
         check(security_text(logs) == log_security);
+        check(security_text(logs / "service.log") == file_security);
     }
     check(backup_attributes() == previous);
     // Restore only this test fixture's ACL so the temporary tree can be removed.
     set_dacl(product, L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+    set_dacl(logs, L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+    set_dacl(logs / "service.log", L"D:P(A;;FA;;;SY)(A;;FA;;;BA)");
 }
 } // namespace security_test
