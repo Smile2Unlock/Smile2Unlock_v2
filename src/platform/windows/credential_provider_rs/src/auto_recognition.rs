@@ -159,6 +159,10 @@ pub enum Outcome {
     Success,
     /// Retryable: no face, camera busy, no match, liveness not met.
     Transient,
+    /// No face was found in the capture window.
+    NoFace,
+    /// A face did not match (or did not meet liveness).
+    Mismatch,
     /// Stop: stale/consumed password, access denied, missing profile,
     /// invalid model or unavailable service.
     Fatal,
@@ -198,6 +202,7 @@ pub struct AttemptMachine {
     in_flight: bool,
     retry_allowed: bool,
     stop_reason: Option<StopReason>,
+    retry_hint: Option<Outcome>,
 }
 
 impl AttemptMachine {
@@ -219,6 +224,7 @@ impl AttemptMachine {
             in_flight: false,
             retry_allowed: false,
             stop_reason: None,
+            retry_hint: None,
         }
     }
 
@@ -244,6 +250,10 @@ impl AttemptMachine {
 
     pub fn delay_remaining_ms(&self, now_ms: u64) -> u64 {
         self.next_ms.min(self.deadline_ms).saturating_sub(now_ms)
+    }
+
+    pub fn retry_hint(&self) -> Option<Outcome> {
+        self.retry_hint
     }
 
     pub fn stop_reason(&self) -> Option<StopReason> {
@@ -338,6 +348,7 @@ impl AttemptMachine {
         self.in_flight = false;
         self.retry_allowed = retry_allowed;
         self.stop_reason = None;
+        self.retry_hint = None;
         (self.generation, true)
     }
 
@@ -354,6 +365,7 @@ impl AttemptMachine {
         self.attempts = 0;
         self.in_flight = false;
         self.stop_reason = None;
+        self.retry_hint = None;
         self.generation
     }
 
@@ -437,7 +449,8 @@ impl AttemptMachine {
                 self.stop_reason = Some(StopReason::Unavailable);
                 Completion::Aborted
             }
-            Outcome::Transient => {
+            Outcome::Transient | Outcome::NoFace | Outcome::Mismatch => {
+                self.retry_hint = Some(outcome);
                 let next = now_ms.saturating_add(self.settings.retry_delay_ms());
                 if !self.retry_allowed || self.attempts >= MAX_ATTEMPTS || next >= self.deadline_ms
                 {

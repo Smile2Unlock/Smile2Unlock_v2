@@ -134,21 +134,22 @@ pub fn field_type_guid(id: FieldId) -> (u32, u16, u16, [u8; 8]) {
 
 /// Field label for GetFieldDescriptorAt's pszLabel.
 pub fn label(id: FieldId) -> &'static str {
-    match id {
-        FieldId::TileImage => "Smile2Unlock",
-        FieldId::Label => "Tooltip",
-        FieldId::LargeText => "Smile2Unlock Provider",
-        FieldId::PasswordText => "Password text",
-        FieldId::SubmitButton => "Submit",
-    }
+    use crate::ui_text::Message;
+    crate::ui_language::text(match id {
+        FieldId::TileImage | FieldId::LargeText => Message::Title,
+        FieldId::Label => Message::Tooltip,
+        FieldId::PasswordText => Message::Password,
+        FieldId::SubmitButton => Message::Submit,
+    })
 }
 
 /// Display text for GetStringValue.
 pub fn display_text(id: FieldId) -> &'static str {
     match id {
         FieldId::TileImage => "",
-        FieldId::Label => "Smile2Unlock",
-        FieldId::LargeText => "Smile2Unlock Provider",
+        FieldId::Label | FieldId::LargeText => {
+            crate::ui_language::text(crate::ui_text::Message::Title)
+        }
         FieldId::PasswordText => "",
         FieldId::SubmitButton => "",
     }

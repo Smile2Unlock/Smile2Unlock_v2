@@ -71,6 +71,22 @@ fallback whenever automatic recognition is disabled or cannot complete.
   so a cancelled attempt does not keep the camera busy for the remaining
   capture budget and the next retry can start on schedule.
 
+## Tile guidance and wire compatibility
+
+The CP selects Simplified Chinese for a Chinese Windows UI primary language
+(`GetUserDefaultUILanguage`), and English otherwise. Tile and submit/status copy
+share one tested table. Retry guidance distinguishes no face from a face mismatch
+(or liveness rejection), and recoverable stops explain Enter / → retry. Hard
+failures and failed Windows logons point only to the Windows password. Phase
+changes use the existing GIT `CredentialsChanged` notifier and field re-query.
+
+The service and CP ship together. Protocol version remains 2; status 8
+(`kNoFaceDetected`) means the agent found no face in its capture window. Agent
+liveness failures and profile mismatches remain `kAuthenticationFailed`; other
+error mappings are unchanged, including service/transport timeouts. An old CP
+treats status 8 as unavailable and safely stops instead of retrying. The existing
+`request.completed` log records `status=no_face_detected` without camera data.
+
 ## Remaining gaps
 
 - Real Windows secure-desktop acceptance (cold boot, lock/unlock, switching

@@ -24,7 +24,9 @@ inline DWORD validate_agent_result(
     case AgentStatus::kCameraUnavailable: return ERROR_BUSY;
     case AgentStatus::kModelUnavailable: return ERROR_MOD_NOT_FOUND;
     case AgentStatus::kNoLiveFace: return ERROR_LOGON_FAILURE;
-    case AgentStatus::kTimedOut: return ERROR_TIMEOUT;
+    // Reserve ERROR_NO_MATCH for the agent's no-face capture result; a service
+    // wait/transport ERROR_TIMEOUT must retain its previous classification.
+    case AgentStatus::kTimedOut: return ERROR_NO_MATCH;
     case AgentStatus::kInternalError: return ERROR_GEN_FAILURE;
     case AgentStatus::kOk: break;
     default: return ERROR_INVALID_DATA;
@@ -42,10 +44,11 @@ inline DWORD validate_agent_result(
 }
 
 // Keep hard failures distinct all the way to the CP's retry classifier. This
-// uses existing wire statuses, so older clients still stop safely.
+// adds a no-face status; older clients still stop safely as unavailable.
 inline smile2unlock::logon_secret_ipc::Status recognition_error_status(DWORD error) {
     using smile2unlock::logon_secret_ipc::Status;
     switch (error) {
+    case ERROR_NO_MATCH: return Status::kNoFaceDetected;
     case ERROR_BUSY:
     case ERROR_NOT_READY:
     case ERROR_DEVICE_NOT_CONNECTED:

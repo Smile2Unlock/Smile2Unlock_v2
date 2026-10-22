@@ -60,6 +60,8 @@ pub enum TransportResult<G> {
     Grant(G),
     /// Retryable outcome.
     Transient,
+    NoFace,
+    Mismatch,
     /// Non-retryable outcome.
     Fatal,
 }
@@ -657,10 +659,13 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             .map(|(_, sid)| sid.clone())
     }
 
-    pub(crate) fn phase_owned(&self, owner: u64) -> Option<Phase> {
+    pub(crate) fn tile_message_owned(&self, owner: u64) -> crate::ui_text::Message {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_locked(&mut inner);
-        (inner.owner.as_ref().map(|(id, _)| *id) == Some(owner)).then(|| inner.machine.phase())
+        if inner.owner.as_ref().map(|(id, _)| *id) != Some(owner) {
+            return crate::ui_text::Message::Title;
+        }
+        crate::ui_text::tile_message(&inner.machine, inner.login_failed)
     }
 
     /// A display-only snapshot: no identity, camera data or credential leaves
@@ -886,6 +891,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                     // cancellation after this point cannot be lost.
                     self.cancel_event.reset();
                     drop(inner);
+                    self.notify_ready();
                     let abort = self.cancel_event.raw();
                     let outcome = {
                         let mut transport =
@@ -918,12 +924,17 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                             // A stale grant is dropped here and zeroized by
                             // `PreparedPipePassword::drop`.
                         }
-                        TransportResult::Transient => {
-                            let _ = inner.machine.complete(
-                                request.generation,
-                                completed_at,
-                                Outcome::Transient,
-                            );
+                        TransportResult::Transient
+                        | TransportResult::NoFace
+                        | TransportResult::Mismatch => {
+                            let hint = match outcome {
+                                TransportResult::NoFace => Outcome::NoFace,
+                                TransportResult::Mismatch => Outcome::Mismatch,
+                                _ => Outcome::Transient,
+                            };
+                            let _ = inner
+                                .machine
+                                .complete(request.generation, completed_at, hint);
                         }
                         TransportResult::Fatal => {
                             let _ = inner.machine.complete(
@@ -934,7 +945,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                         }
                     }
                     if inner.machine.generation() == request.generation
-                        && inner.machine.phase() == Phase::Stopped
+                        && matches!(inner.machine.phase(), Phase::Stopped | Phase::RetryDelay)
                     {
                         Self::clear_grant(&mut inner);
                         drop(inner);
@@ -1004,6 +1015,8 @@ impl RecognitionTransport for PipeRecognitionTransport {
                 ));
                 match outcome {
                     Outcome::Transient => TransportResult::Transient,
+                    Outcome::NoFace => TransportResult::NoFace,
+                    Outcome::Mismatch => TransportResult::Mismatch,
                     _ => TransportResult::Fatal,
                 }
             }
@@ -1022,10 +1035,10 @@ pub fn classify(hresult: u32) -> Outcome {
     let code = hresult & 0xffff;
     if (hresult & FACILITY_WIN32) == FACILITY_WIN32 {
         match code {
-            // ERROR_LOGON_FAILURE: face did not match, or liveness failed.
-            1326
+            1169 => return Outcome::NoFace, // ERROR_NO_MATCH: no face in capture window.
+            1326 => return Outcome::Mismatch, // ERROR_LOGON_FAILURE: mismatch / liveness.
             // ERROR_PIPE_BUSY / ERROR_SEM_TIMEOUT / ERROR_TIMEOUT.
-            | 231 | 121 | 1460
+            231 | 121 | 1460
             // ERROR_OPERATION_ABORTED: the abort event fired; if the attempt
             // is still active this was a spurious race, so retry rather than
             // kill.
@@ -1164,6 +1177,8 @@ mod tests {
             match outcome {
                 Outcome::Success => TransportResult::Grant("grant"),
                 Outcome::Transient => TransportResult::Transient,
+                Outcome::NoFace => TransportResult::NoFace,
+                Outcome::Mismatch => TransportResult::Mismatch,
                 Outcome::Fatal => TransportResult::Fatal,
             }
         }
@@ -1461,7 +1476,7 @@ mod tests {
 
     #[test]
     fn classify_retries_only_expected_outcomes() {
-        assert_eq!(classify(0x8007_052E), Outcome::Transient); // 1326
+        assert_eq!(classify(0x8007_052E), Outcome::Mismatch); // 1326
         assert_eq!(classify(0x8007_00E7), Outcome::Transient); // 231 pipe busy
         assert_eq!(classify(0x8007_0079), Outcome::Transient); // 121 sem timeout
         assert_eq!(classify(0x8007_05B4), Outcome::Transient); // 1460 timeout
@@ -1485,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_publishes_grant_and_notifies_once() {
+    fn worker_refreshes_recognizing_then_notifies_grant_once() {
         let clock = Box::new(FakeClock::new(0));
         let runtime = AutoRuntime::new(FakeTransport::new(vec![Outcome::Success]), clock);
         let notifier = Arc::new(CountingNotifier(AtomicUsize::new(0)));
@@ -1497,8 +1512,8 @@ mod tests {
             Some(30),
         ));
         runtime.select("S-1-5-21-1", 1, 7);
-        wait_for(|| runtime.ready_sid().as_deref() == Some("S-1-5-21-1"));
-        assert_eq!(notifier.0.load(Ordering::Acquire), 1);
+        wait_for(|| notifier.0.load(Ordering::Acquire) == 2);
+        assert_eq!(runtime.ready_sid().as_deref(), Some("S-1-5-21-1"));
         assert_eq!(runtime.phase(), Phase::Ready);
         // Repeated notification is suppressed while the grant waits.
         runtime.set_settings(TriggerSettings::from_values(
@@ -1508,10 +1523,66 @@ mod tests {
             Some(30),
         ));
         thread::sleep(Duration::from_millis(20));
-        assert_eq!(notifier.0.load(Ordering::Acquire), 1);
+        assert_eq!(notifier.0.load(Ordering::Acquire), 2);
         let grant = runtime.take_ready("S-1-5-21-1");
         assert_eq!(grant.map(|(grant, _, _)| grant), Some("grant"));
         assert!(runtime.take_ready("S-1-5-21-1").is_none());
+        runtime.shutdown();
+    }
+
+    struct GuidanceNotifier {
+        runtime: std::sync::Weak<AutoRuntime<FakeTransport>>,
+        messages: Mutex<Vec<crate::ui_text::Message>>,
+    }
+
+    impl ReadyNotifier for GuidanceNotifier {
+        fn notify_ready(&self) {
+            if let Some(runtime) = self.runtime.upgrade() {
+                self.messages
+                    .lock()
+                    .unwrap()
+                    .push(runtime.tile_message_owned(10));
+            }
+        }
+    }
+
+    #[test]
+    fn worker_refreshes_no_face_and_mismatch_guidance_without_restarting() {
+        use crate::ui_text::Message;
+        let runtime = AutoRuntime::new(
+            FakeTransport::new(vec![Outcome::NoFace, Outcome::Mismatch, Outcome::Fatal]),
+            Box::new(FakeClock::new(0)),
+        );
+        let notifier = Arc::new(GuidanceNotifier {
+            runtime: Arc::downgrade(&runtime),
+            messages: Mutex::new(vec![]),
+        });
+        runtime.set_notifier(notifier.clone());
+        let generation = runtime.select_owned(
+            10,
+            "S-1-5-21-1",
+            1,
+            1,
+            TriggerSettings {
+                mode: crate::TriggerMode::Automatic,
+                auto_delay: Duration::ZERO,
+                retry_delay: Duration::ZERO,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        wait_for(|| notifier.messages.lock().unwrap().last() == Some(&Message::HardStop));
+        assert_eq!(
+            *notifier.messages.lock().unwrap(),
+            vec![
+                Message::Recognizing,
+                Message::NoFace,
+                Message::NoFace,
+                Message::Mismatch,
+                Message::Mismatch,
+                Message::HardStop,
+            ]
+        );
+        assert_eq!(runtime.generation(), generation);
         runtime.shutdown();
     }
 
@@ -1951,36 +2022,36 @@ mod tests {
 
     #[test]
     fn hard_failure_does_not_retry_or_rearm_on_serialization() {
-        let runtime = AutoRuntime::new(
-            FakeTransport::new(vec![Outcome::Fatal, Outcome::Success]),
-            Box::new(FakeClock::new(0)),
-        );
-        runtime.select_owned(
-            10,
-            "S-1-5-21-1",
-            1,
-            7,
-            TriggerSettings::from_values(Some(1), Some(0), Some(1), Some(30)),
-        );
-        wait_for(|| runtime.phase() == Phase::Stopped);
-        assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 8));
-        assert_eq!(
-            runtime
-                .transport
-                .lock()
-                .unwrap()
-                .calls
-                .load(Ordering::Acquire),
-            1
-        );
-        runtime.shutdown();
+        for mode in [0, 1] {
+            let runtime = AutoRuntime::new(
+                FakeTransport::new(vec![Outcome::Fatal, Outcome::Success]),
+                Box::new(FakeClock::new(0)),
+            );
+            let settings = TriggerSettings::from_values(Some(mode), Some(0), Some(1), Some(30));
+            runtime.select_owned(10, "S-1-5-21-1", 1, 7, settings);
+            if mode == 0 {
+                assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 8));
+            }
+            wait_for(|| runtime.phase() == Phase::Stopped);
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
+            assert_eq!(
+                runtime
+                    .transport
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .load(Ordering::Acquire),
+                1
+            );
+            runtime.shutdown();
+        }
     }
 
     #[test]
     fn service_wire_hard_failures_stop_and_capture_failures_retry() {
         use crate::pipe_client::{
             kStatusAccessDenied, kStatusAuthenticationFailed, kStatusCorrupt,
-            kStatusInvalidRequest, kStatusUnavailable, status_to_hresult,
+            kStatusInvalidRequest, kStatusNoFaceDetected, kStatusUnavailable, status_to_hresult,
         };
         for status in [
             kStatusUnavailable,
@@ -1995,7 +2066,11 @@ mod tests {
         }
         assert_eq!(
             classify(status_to_hresult(kStatusAuthenticationFailed).code().0 as u32),
-            Outcome::Transient
+            Outcome::Mismatch
+        );
+        assert_eq!(
+            classify(status_to_hresult(kStatusNoFaceDetected).code().0 as u32),
+            Outcome::NoFace
         );
     }
     #[test]

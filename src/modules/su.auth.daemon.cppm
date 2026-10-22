@@ -43,6 +43,7 @@ struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
     std::string reason;
     std::string payload_json = "null";
+    su::control::AuthenticationReason authentication_reason = su::control::AuthenticationReason::kUnknown;
 };
 
 struct UserAuthData {
@@ -364,12 +365,15 @@ public:
         }
 
         if (!saw_face) {
-            return {su::control::ControlResult::kRejected, "no face detected"};
+            return {su::control::ControlResult::kRejected, "no face detected", "null",
+                su::control::AuthenticationReason::kNoFace};
         }
         if (!saw_live_face) {
-            return {su::control::ControlResult::kRejected, "liveness check failed"};
+            return {su::control::ControlResult::kRejected, "liveness check failed", "null",
+                su::control::AuthenticationReason::kMismatch};
         }
-        return {su::control::ControlResult::kRejected, "face did not match"};
+        return {su::control::ControlResult::kRejected, "face did not match", "null",
+            su::control::AuthenticationReason::kMismatch};
     }
 
     AttemptResult list_profiles(std::string_view username) const {
@@ -686,7 +690,8 @@ public:
             request->request_id,
             response.result,
             response.reason,
-            response.payload_json);
+            response.payload_json,
+            response.authentication_reason);
         const auto sent = connection.send_frame(response_frame);
         std::ranges::fill(response_frame, '\0');
         std::ranges::fill(response.payload_json, '\0');

@@ -48,11 +48,15 @@ enum class ControlResult {
     kError,
 };
 
+// Stable, non-sensitive guidance code; absent/unknown wire value means unknown.
+enum class AuthenticationReason { kUnknown, kNoFace, kMismatch };
+
 struct ControlResponse {
     std::uint64_t request_id = 0;
     ControlResult result = ControlResult::kError;
     std::string reason;
     std::string payload_json = "null";
+    AuthenticationReason authentication_reason = AuthenticationReason::kUnknown;
 };
 
 struct PeerCredentials {
@@ -149,7 +153,8 @@ std::string make_response(
     std::uint64_t request_id,
     ControlResult result,
     std::string_view reason = {},
-    std::string_view payload_json = "null");
+    std::string_view payload_json = "null",
+    AuthenticationReason authentication_reason = AuthenticationReason::kUnknown);
 std::expected<ControlResponse, SocketError> parse_response(std::string_view response);
 
 } // namespace su::control
@@ -564,19 +569,25 @@ std::string make_response(
     std::uint64_t request_id,
     ControlResult result,
     std::string_view reason,
-    std::string_view payload_json) {
+    std::string_view payload_json,
+    AuthenticationReason authentication_reason) {
     auto payload = nlohmann::json::parse(payload_json, nullptr, false);
     if (payload.is_discarded()) {
         payload = nullptr;
     }
-    return nlohmann::json{
+    auto response = nlohmann::json{
         {"version", kProtocolVersion},
         {"msg_type", "auth_result"},
         {"request_id", request_id},
         {"result", control_result_name(result)},
         {"reason", reason},
         {"payload", std::move(payload)},
-    }.dump();
+    };
+    if (authentication_reason != AuthenticationReason::kUnknown) {
+        response["authentication_reason"] = authentication_reason == AuthenticationReason::kNoFace
+            ? "no_face" : "mismatch";
+    }
+    return response.dump();
 }
 
 std::expected<ControlResponse, SocketError> parse_response(std::string_view response) try {
@@ -602,11 +613,17 @@ std::expected<ControlResponse, SocketError> parse_response(std::string_view resp
     if (request_id == 0 || !result) {
         return std::unexpected(SocketError::kProtocolError);
     }
+    if (parsed.contains("authentication_reason") && !parsed["authentication_reason"].is_string()) {
+        return std::unexpected(SocketError::kProtocolError);
+    }
+    const auto reason = parsed.value("authentication_reason", std::string{});
     return ControlResponse{
         .request_id = request_id,
         .result = *result,
         .reason = parsed["reason"].get<std::string>(),
         .payload_json = parsed.contains("payload") ? parsed["payload"].dump() : "null",
+        .authentication_reason = reason == "no_face" ? AuthenticationReason::kNoFace
+            : reason == "mismatch" ? AuthenticationReason::kMismatch : AuthenticationReason::kUnknown,
     };
 } catch (const nlohmann::json::exception&) {
     return std::unexpected(SocketError::kProtocolError);

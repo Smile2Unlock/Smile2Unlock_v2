@@ -20,7 +20,7 @@ int main() {
         {AgentStatus::kInternalError, 4, Status::kUnavailable},
         {AgentStatus::kInvalidRequest, 2, Status::kInvalidRequest},
         {AgentStatus::kCameraUnavailable, 3, Status::kAuthenticationFailed},
-        {AgentStatus::kTimedOut, 5, Status::kAuthenticationFailed},
+        {AgentStatus::kTimedOut, 5, Status::kNoFaceDetected},
         {AgentStatus::kNoLiveFace, 5, Status::kAuthenticationFailed},
     };
     for (const auto& value : cases) {
@@ -33,6 +33,8 @@ int main() {
     for (const auto error : {ERROR_FILE_NOT_FOUND, ERROR_MOD_NOT_FOUND, ERROR_BAD_EXE_FORMAT}) {
         if (recognition_error_status(error) != Status::kUnavailable) { return 2; }
     }
+    if (recognition_error_status(ERROR_TIMEOUT) != Status::kAuthenticationFailed) { return 9; }
+    if (recognition_error_status(ERROR_LOGON_FAILURE) != Status::kAuthenticationFailed) { return 10; }
     if (recognition_error_status(ERROR_ACCESS_DENIED) != Status::kAccessDenied) { return 3; }
     response.status = AgentStatus::kTimedOut;
     response.nonce[0] = 1;
