@@ -1,4 +1,5 @@
 #include "logon_secret_store.h"
+#include "common/log/windows_directory.h"
 
 #include <windows.h>
 #include <aclapi.h>
@@ -12,7 +13,6 @@
 namespace su::windows::security {
 namespace {
 
-constexpr wchar_t kSystemOnlySddl[] = L"D:P(A;OICI;FA;;;SY)";
 
 LogonSecretError map_status(SuStatus status) {
     switch (status) {
@@ -61,49 +61,6 @@ std::expected<std::string, LogonSecretError> utf8_path(
         return std::unexpected(LogonSecretError::kInvalidArgument);
     }
     return output;
-}
-
-std::expected<void, LogonSecretError> create_system_directory(
-    const std::filesystem::path& path) {
-    PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            kSystemOnlySddl, SDDL_REVISION_1, &raw_descriptor, nullptr)) {
-        return std::unexpected(LogonSecretError::kWriteFailed);
-    }
-    const auto descriptor = std::unique_ptr<void, decltype(&LocalFree)>{
-        raw_descriptor, &LocalFree};
-    auto attributes = SECURITY_ATTRIBUTES{
-        .nLength = sizeof(SECURITY_ATTRIBUTES),
-        .lpSecurityDescriptor = descriptor.get(),
-        .bInheritHandle = FALSE,
-    };
-    if (!CreateDirectoryW(path.c_str(), &attributes)
-        && GetLastError() != ERROR_ALREADY_EXISTS) {
-        return std::unexpected(LogonSecretError::kWriteFailed);
-    }
-    auto dacl_present = BOOL{};
-    auto dacl_defaulted = BOOL{};
-    auto* dacl = static_cast<PACL>(nullptr);
-    if (!GetSecurityDescriptorDacl(
-            descriptor.get(), &dacl_present, &dacl, &dacl_defaulted)
-        || !dacl_present
-        || SetNamedSecurityInfoW(
-            const_cast<LPWSTR>(path.c_str()),
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            nullptr,
-            nullptr,
-            dacl,
-            nullptr) != ERROR_SUCCESS) {
-        return std::unexpected(LogonSecretError::kWriteFailed);
-    }
-    const auto file_attributes = GetFileAttributesW(path.c_str());
-    if (file_attributes == INVALID_FILE_ATTRIBUTES
-        || (file_attributes & FILE_ATTRIBUTE_DIRECTORY) == 0
-        || (file_attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-        return std::unexpected(LogonSecretError::kWriteFailed);
-    }
-    return {};
 }
 
 std::expected<std::filesystem::path, LogonSecretError> program_data_path() {
@@ -171,8 +128,8 @@ std::expected<std::filesystem::path, LogonSecretError> LogonSecretStore::secret_
     const auto users = product / "Users";
     const auto account = users / std::string{sid};
     for (const auto& directory : {product, users, account}) {
-        if (const auto created = create_system_directory(directory); !created) {
-            return std::unexpected(created.error());
+        if (const auto created = su::log::create_system_directory(directory); !created) {
+            return std::unexpected(LogonSecretError::kWriteFailed);
         }
     }
     return account / "logon-secret.s2u";
