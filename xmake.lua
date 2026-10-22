@@ -238,6 +238,16 @@ if is_plat("linux") then
         add_tests("default")
 end
 
+if is_plat("windows", "mingw") then
+    target("su_windows_diagnostics_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_deps("su_diagnostics")
+        add_files("tests/diagnostics/export_windows_test.cpp")
+        add_tests("default")
+        on_test(wine_on_test)
+end
+
 target("su_log_test")
     set_default(false)
     apply_cpp_target("binary")
