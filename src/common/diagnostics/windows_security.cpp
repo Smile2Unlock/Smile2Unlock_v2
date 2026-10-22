@@ -15,8 +15,8 @@ Error win32_error(std::string_view operation) {
 std::expected<void, Error> check_protected_dacl(HANDLE handle) {
     PACL dacl = nullptr;
     PSECURITY_DESCRIPTOR raw = nullptr;
-    const auto result = GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                                        nullptr, nullptr, &dacl, nullptr, &raw);
+    const auto result = GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr,
+                                        nullptr, &dacl, nullptr, &raw);
     const auto descriptor = std::unique_ptr<void, decltype(&LocalFree)>{raw, &LocalFree};
     if (result != ERROR_SUCCESS || !dacl)
         return std::unexpected(Error{ErrorCode::denied, "diagnostics root DACL unavailable"});
@@ -39,7 +39,8 @@ std::expected<std::filesystem::path, Error> final_path(HANDLE handle) {
     if (!count)
         return std::unexpected(win32_error("resolve staging handle path"));
     auto text = std::wstring(count, L'\0');
-    const auto written = GetFinalPathNameByHandleW(handle, text.data(), count, FILE_NAME_NORMALIZED);
+    const auto written =
+        GetFinalPathNameByHandleW(handle, text.data(), count, FILE_NAME_NORMALIZED);
     if (!written || written >= count)
         return std::unexpected(win32_error("resolve staging handle path"));
     text.resize(written);
@@ -83,7 +84,8 @@ std::expected<BackupPrivilege, Error> BackupPrivilege::acquire() {
     auto previous = TOKEN_PRIVILEGES{};
     DWORD size = sizeof(previous);
     SetLastError(ERROR_SUCCESS);
-    if (!AdjustTokenPrivileges(token.get(), FALSE, &requested, sizeof(previous), &previous, &size) ||
+    if (!AdjustTokenPrivileges(token.get(), FALSE, &requested, sizeof(previous), &previous,
+                               &size) ||
         GetLastError() != ERROR_SUCCESS)
         return std::unexpected(win32_error("enable SeBackupPrivilege"));
     return BackupPrivilege{std::move(token), previous};
@@ -94,7 +96,7 @@ BackupPrivilege::~BackupPrivilege() {
         return;
     if (!AdjustTokenPrivileges(token_.get(), FALSE, &previous_, 0, nullptr, nullptr))
         su::log::process_logger().warn("diagnostics.privilege_restore_failed",
-                                      to_fields(win32_error("restore SeBackupPrivilege")));
+                                       to_fields(win32_error("restore SeBackupPrivilege")));
 }
 
 std::expected<std::filesystem::path, Error> windows_diagnostics_root() {
@@ -134,21 +136,23 @@ open_protected_directory(const std::filesystem::path& path) {
 }
 
 namespace {
-std::expected<su::log::Handle, Error>
-open_staging_child(const std::filesystem::path& root, std::string_view candidate) {
+std::expected<su::log::Handle, Error> open_staging_child(const std::filesystem::path& root,
+                                                         std::string_view candidate) {
     if (!valid_helper_path(su::path_utf8(root), candidate))
         return std::unexpected(Error{ErrorCode::invalid_path, "helper staging path rejected"});
     const auto path = su::path_from_utf8(candidate);
-    auto handle = su::log::Handle{CreateFileW(
-        path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+    auto handle = su::log::Handle{
+        CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
     if (!su::log::check_handle(handle.get(), true, true))
         return std::unexpected(Error{ErrorCode::invalid_path, "helper staging directory rejected"});
     // The SY/BA-only parent intentionally denies an unelevated GUI READ_CONTROL.
     // Validate the opened child's normalized path instead of requesting access to that parent.
     const auto resolved = final_path(handle.get());
     if (!resolved || !valid_helper_path(su::path_utf8(root), su::path_utf8(*resolved)))
-        return std::unexpected(Error{ErrorCode::invalid_path, "helper staging ancestors redirected"});
+        return std::unexpected(
+            Error{ErrorCode::invalid_path, "helper staging ancestors redirected"});
     return handle;
 }
 } // namespace
@@ -182,10 +186,10 @@ system_log_files(const std::filesystem::path& directory) {
     const auto chain = su::log::check_directory_chain(directory, true);
     if (!chain)
         return std::unexpected(Error{ErrorCode::invalid_path, "system log ancestors rejected"});
-    const auto handle = su::log::Handle{CreateFileW(
-        directory.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+    const auto handle = su::log::Handle{
+        CreateFileW(directory.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
     if (!su::log::check_handle(handle.get(), true, true))
         return std::unexpected(Error{ErrorCode::invalid_path, "system log directory rejected"});
     auto files = std::vector<std::filesystem::path>{};
