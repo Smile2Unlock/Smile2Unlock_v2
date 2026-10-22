@@ -2,8 +2,6 @@
 
 #include "face_profile_store.h"
 #include "common/log/logger.h"
-#include "logon_secret_protocol.h"
-#include <span>
 #include "logon_secret_store.h"
 #include "request_worker_pool.h"
 
@@ -20,7 +18,7 @@ class SidRateLimiter;
 
 class LogonSecretServer {
 public:
-    explicit LogonSecretServer(security::StorageKey storage_key, su::log::Logger logger);
+    explicit LogonSecretServer(security::StorageKey storage_key, log::Logger logger);
     ~LogonSecretServer();
     LogonSecretServer(const LogonSecretServer&) = delete;
     LogonSecretServer& operator=(const LogonSecretServer&) = delete;
@@ -28,14 +26,7 @@ public:
     std::expected<void, DWORD> serve(HANDLE stop_event);
 
 private:
-    bool handle_connection(HANDLE pipe, HANDLE stop_event);
-    void execute_request(HANDLE pipe, HANDLE stop_event,
-                         smile2unlock::logon_secret_ipc::Request& request,
-                         std::span<const std::uint8_t> sid, DWORD pid);
-    void reject_request(HANDLE pipe, HANDLE stop_event,
-                        smile2unlock::logon_secret_ipc::Request& request,
-                        smile2unlock::logon_secret_ipc::Status status);
-    const su::log::Logger logger_;
+    const log::Logger logger_;
     security::StorageKey storage_key_;
     security::LogonSecretStore secret_store_;
     security::FaceProfileStore profile_store_;

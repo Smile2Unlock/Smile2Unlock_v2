@@ -1,5 +1,5 @@
 #pragma once
-#include "common/log/logger.h"
+#include "common/log/core.h"
 #include "logon_secret_protocol.h"
 #include "face_profile_store.h"
 #include "logon_secret_store.h"
@@ -71,38 +71,11 @@ inline std::string_view status_name(smile2unlock::logon_secret_ipc::Status statu
     }
     return "unknown";
 }
-struct RequestLog {
-    const log::Logger logger;
-    const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-    std::vector<log::Field> causes = {};
-    bool completion_written = false;
-    ~RequestLog() {
-        // Preserve one completion record when request processing unwinds.
-        if (!completion_written)
-            completed(smile2unlock::logon_secret_ipc::Status::kUnavailable);
-    }
-    template <typename E> void cause(const E& error) noexcept {
-        try {
-            using log::to_fields;
-            auto fields = to_fields(error);
-            causes.insert(causes.end(), fields.begin(), fields.end());
-        } catch (...) {
-        }
-    }
-    void completed(smile2unlock::logon_secret_ipc::Status status) noexcept {
-        if (completion_written)
-            return;
-        completion_written = true;
-        try {
-            auto fields = causes;
-            fields.push_back(log::field("status", status_name(status)));
-            fields.push_back(
-                log::field("duration_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
-                                              std::chrono::steady_clock::now() - started)
-                                              .count()));
-            logger.info("request.completed", std::move(fields));
-        } catch (...) {
-        }
-    }
-};
+inline std::vector<log::Field> completion_fields(
+    std::uint64_t id, smile2unlock::logon_secret_ipc::Operation operation,
+    smile2unlock::logon_secret_ipc::Status status, std::int64_t duration_ms, std::string_view sid) {
+    return {log::field("request_id", id), log::field("op", operation_name(operation)),
+            log::field("status", status_name(status)), log::field("duration_ms", duration_ms),
+            log::field("sid", sid)};
+}
 } // namespace su::windows::auth_service
