@@ -356,7 +356,9 @@ fn write_bytes(bytes: &mut [u8], offset: usize, value: &[u8]) {
 
 fn write_words(bytes: &mut [u8], offset: usize, words: &[u16]) {
     for (output, word) in bytes[offset..offset + words.len() * 2]
-        .chunks_exact_mut(2)
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
         .zip(words)
     {
         output.copy_from_slice(&word.to_le_bytes());
@@ -706,7 +708,7 @@ fn spawn_stale_notification(
         .spawn(move || {
             let sid = sid.encode_utf16().collect::<Vec<_>>();
             if let Err(error) = notify(&sid, request_id, session_id) {
-                crate::log::cp_log(&format!("mark_stale failed: {:08x}", error.code().0));
+                crate::log::cp_error(&format!("mark_stale failed: {:08x}", error.code().0));
             }
         })
 }
@@ -915,7 +917,7 @@ fn transact_on(
     let pipe = connect_pipe(pipe_name, abort, deadline_ms)?;
     let request_bytes = request.request_bytes();
     if let Err(error) = overlapped_write(pipe.0, &request_bytes, abort, deadline_ms) {
-        crate::log::cp_log(&format!(
+        crate::log::cp_error(&format!(
             "pipe write FAILED code={:#x}",
             error.code().0 as u32 & 0xffff
         ));
@@ -925,7 +927,7 @@ fn transact_on(
     let bytes_read = match overlapped_read(pipe.0, &mut response_bytes, abort, deadline_ms) {
         Ok(bytes) => bytes,
         Err(error) => {
-            crate::log::cp_log(&format!(
+            crate::log::cp_error(&format!(
                 "pipe read FAILED code={:#x}",
                 error.code().0 as u32 & 0xffff
             ));

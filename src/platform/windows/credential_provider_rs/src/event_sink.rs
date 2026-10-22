@@ -81,7 +81,7 @@ impl ReadyNotifier for GitEventNotifier {
             Ok(())
         })();
         if let Err(error) = result {
-            crate::log::cp_log(&format!("auto notify_ready FAILED {:08x}", error.code().0));
+            crate::log::cp_error(&format!("auto notify_ready FAILED {:08x}", error.code().0));
         }
     }
 }
@@ -101,7 +101,7 @@ impl Drop for GitEventNotifier {
             Ok(())
         })();
         if let Err(error) = result {
-            crate::log::cp_log(&format!(
+            crate::log::cp_error(&format!(
                 "auto revoke notifier FAILED {:08x}",
                 error.code().0
             ));

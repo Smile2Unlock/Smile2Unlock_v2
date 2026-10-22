@@ -37,9 +37,9 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         riid: *const GUID,
         ppvobject: *mut *mut c_void,
     ) -> Result<(), Error> {
-        crate::log::cp_log("ClassFactory::CreateInstance enter");
+        crate::log::cp_debug("ClassFactory::CreateInstance enter");
         if ppvobject.is_null() {
-            crate::log::cp_log("ClassFactory::CreateInstance: ppv null -> E_POINTER");
+            crate::log::cp_debug("ClassFactory::CreateInstance: ppv null -> E_POINTER");
             return Err(Error::from_hresult(crate::E_POINTER));
         }
         unsafe {
@@ -47,21 +47,21 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         }
         if !punkouter.is_null() {
             // No aggregation support: LogonUI never aggregates providers.
-            crate::log::cp_log("ClassFactory::CreateInstance: outer -> CLASS_E_NOAGGREGATION");
+            crate::log::cp_debug("ClassFactory::CreateInstance: outer -> CLASS_E_NOAGGREGATION");
             return Err(Error::from_hresult(CLASS_E_NOAGGREGATION));
         }
         if riid.is_null() {
-            crate::log::cp_log("ClassFactory::CreateInstance: riid null -> E_POINTER");
+            crate::log::cp_debug("ClassFactory::CreateInstance: riid null -> E_POINTER");
             return Err(Error::from_hresult(crate::E_POINTER));
         }
         let requested = unsafe { *riid };
         // LogonUI asks for ICredentialProvider; IUnknown::IID is the COM
         // convention fallback. Anything else is E_NOINTERFACE.
         if requested != ICredentialProvider::IID && requested != IUnknown::IID {
-            crate::log::cp_log("ClassFactory::CreateInstance: riid mismatch -> E_NOINTERFACE");
+            crate::log::cp_warn("ClassFactory::CreateInstance: riid mismatch -> E_NOINTERFACE");
             return Err(Error::from_hresult(crate::E_NOINTERFACE));
         }
-        crate::log::cp_log("ClassFactory::CreateInstance: handing out Provider");
+        crate::log::cp_debug("ClassFactory::CreateInstance: handing out Provider");
         let provider: ICredentialProvider = Provider::new().into();
         // SAFETY: into_raw hands over ownership of the refcount; the caller
         // (COM) releases it.
@@ -69,7 +69,7 @@ impl IClassFactory_Impl for ClassFactory_Impl {
         unsafe {
             *ppvobject = ptr;
         }
-        crate::log::cp_log("ClassFactory::CreateInstance: ok");
+        crate::log::cp_debug("ClassFactory::CreateInstance: ok");
         Ok(())
     }
 
