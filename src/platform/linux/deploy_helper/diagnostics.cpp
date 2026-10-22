@@ -45,8 +45,8 @@ std::expected<std::string, Error> collect_linux_system() {
         auto sections = std::vector<Section>{};
         for (const auto* unit : {"su-authd.service", "su-deploy-helper.service"}) {
             sections.push_back(command_section(std::string("Journal ") + unit,
-                                               {"/usr/bin/journalctl", "--no-pager", "-o",
-                                                "short-iso", "-n", "2000", "-u", unit}));
+                                               {"/usr/bin/journalctl", "--since=-7d", "--no-pager",
+                                                "-o", "short-iso", "-n", "2000", "-u", unit}));
             sections.push_back(
                 command_section(std::string("Service ") + unit,
                                 {"/usr/bin/systemctl", "show", "-p",
@@ -54,9 +54,10 @@ std::expected<std::string, Error> collect_linux_system() {
         }
         // pam_sink uses pam_syslog: the identifier belongs to the PAM host (sddm,
         // login, etc.), not a fixed module identifier. Match the module in MESSAGE.
-        sections.push_back(command_section("PAM journal (pam_syslog host identifiers)",
-                                           {"/usr/bin/journalctl", "--no-pager", "-o", "short-iso",
-                                            "-n", "2000", "--grep=smile2unlock|Smile2Unlock"}));
+        sections.push_back(
+            command_section("PAM journal (pam_syslog host identifiers)",
+                            {"/usr/bin/journalctl", "--since=-7d", "--no-pager", "-o", "short-iso",
+                             "-n", "2000", "--grep=smile2unlock|Smile2Unlock"}));
         sections.push_back(pam_lines());
         return format_system(sections);
     } catch (const std::exception& error) {
