@@ -1,0 +1,18 @@
+[package]
+namespace = "smile2unlock"
+name = "portable-tests"
+version = "0.1.0"
+
+[build]
+sources = []
+
+[dependencies]
+"smile2unlock.log" = { path = "../src/common/log" }
+"smile2unlock.diagnostics" = { path = "../src/common/diagnostics" }
+
+[target.windows.build]
+defines = ["NOMINMAX", "WIN32_LEAN_AND_MEAN"]
+
+[test]
+# Start with a wildcard so mcpp retains log/ and diagnostics/ in the names.
+discover = ["**/log/core_test.cpp", "**/log/sinks_test.cpp", "**/diagnostics/core_test.cpp"]

@@ -1,0 +1,24 @@
+[package]
+namespace = "smile2unlock"
+name = "log"
+version = "0.1.0"
+
+[targets.su_log]
+kind = "lib"
+
+[build]
+sources = ["core.cpp", "sinks.cpp", "logger.cpp", "process.cpp"]
+include_dirs = ["../.."]
+
+[target.linux.build]
+sources = ["file_posix.cpp"]
+cxxflags = ["-fPIC"]
+
+[target.windows.build]
+sources = ["file_windows.cpp", "windows_directory.cpp"]
+defines = ["NOMINMAX", "WIN32_LEAN_AND_MEAN"]
+ldflags = ["-ladvapi32", "-lshell32", "-lole32", "-luuid"]
+
+[test]
+discover = []
+

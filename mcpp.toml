@@ -1,0 +1,29 @@
+# Optional portable-core build. The application and packaging still use xmake.
+[workspace]
+members = ["src/common/log", "src/common/diagnostics", "src/modules", "tests"]
+
+[package]
+namespace = "smile2unlock"
+name = "socket-tests"
+version = "0.1.0"
+
+[build]
+sources = []
+
+[target.linux.dependencies]
+"smile2unlock.control-socket" = { path = "src/modules" }
+
+[test]
+discover = ["tests/control/socket_smoke.cpp", "tests/control/socket_deadline.cpp"]
+
+[workspace.package]
+standard = "c++26"
+mcpp = ">=2026.10.21.1"
+
+[workspace.toolchain]
+default = "gcc@16.1.0"
+
+[workspace.build]
+cxx_runtime = "self-contained"
+
+

@@ -1,0 +1,20 @@
+[package]
+namespace = "smile2unlock"
+name = "control-socket"
+version = "0.1.0"
+platforms = ["linux"]
+
+[targets.su_control_socket]
+kind = "lib"
+
+[build]
+sources = []
+
+[target.linux.build]
+sources = ["su.control.socket.cppm"]
+
+[target.linux.dependencies]
+"nlohmann.json" = "3.12.0"
+
+[test]
+discover = []

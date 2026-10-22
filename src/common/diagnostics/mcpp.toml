@@ -1,0 +1,18 @@
+[package]
+namespace = "smile2unlock"
+name = "diagnostics"
+version = "0.1.0"
+
+[targets.su_diagnostics]
+kind = "lib"
+
+[build]
+sources = ["core.cpp"]
+include_dirs = ["../.."]
+
+[dependencies]
+"smile2unlock.log" = { path = "../log" }
+
+[test]
+discover = []
+

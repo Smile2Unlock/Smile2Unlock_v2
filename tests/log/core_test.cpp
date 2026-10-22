@@ -1,10 +1,15 @@
 #include "common/log/core.h"
 #undef NDEBUG
 #include <cassert>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <thread>
+
+#ifndef SU_LOG_GOLDEN
+#define SU_LOG_GOLDEN (std::filesystem::path{__FILE__}.parent_path() / "format_golden.txt")
+#endif
 
 using namespace su::log;
 namespace {
