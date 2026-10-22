@@ -13,7 +13,13 @@ struct State {
     level: Level,
     invalid: bool,
     path: Option<PathBuf>,
-    writer: Mutex<bool>,
+    writer: Mutex<WriterState>,
+}
+#[derive(Default)]
+struct WriterState {
+    warned: bool,
+    #[cfg(windows)]
+    file: platform::Writer,
 }
 fn state() -> &'static State {
     static STATE: OnceLock<State> = OnceLock::new();
@@ -32,11 +38,11 @@ fn state() -> &'static State {
             level: parsed.unwrap_or(Level::Info),
             invalid: setting.is_some() && parsed.is_none(),
             path,
-            writer: Mutex::new(false),
+            writer: Mutex::new(WriterState::default()),
         }
     })
 }
-fn emit(state: &State, level: Level, event: &str, msg: &str) {
+fn emit(state: &State, writer: &mut WriterState, level: Level, event: &str, msg: &str) {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -59,26 +65,32 @@ fn emit(state: &State, level: Level, event: &str, msg: &str) {
     if state
         .path
         .as_ref()
-        .and_then(|p| platform::append(p, &line))
+        .and_then(|p| writer.file.append(p, &line))
         .is_none()
     {
         platform::debug_output(&line);
     }
     #[cfg(not(windows))]
-    let _ = (state, line);
+    let _ = (state, writer, line);
 }
 fn log(level: Level, msg: &str) {
     let state = state();
     // A poisoned diagnostic mutex must not panic inside LogonUI.
-    let Ok(mut warned) = state.writer.lock() else {
+    let Ok(mut writer) = state.writer.lock() else {
         return;
     };
-    if state.invalid && !*warned {
-        emit(state, Level::Warn, "log.level_invalid", "using info");
-        *warned = true;
+    if state.invalid && !writer.warned {
+        emit(
+            state,
+            &mut writer,
+            Level::Warn,
+            "log.level_invalid",
+            "using info",
+        );
+        writer.warned = true;
     }
     if level >= state.level {
-        emit(state, level, "cp.trace", msg);
+        emit(state, &mut writer, level, "cp.trace", msg);
     }
 }
 pub fn cp_log(msg: &str) {

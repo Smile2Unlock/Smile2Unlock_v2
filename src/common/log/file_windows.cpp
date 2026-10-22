@@ -1,4 +1,5 @@
 #include "windows_directory.h"
+#include <algorithm>
 #include <mutex>
 
 namespace su::log {
@@ -9,17 +10,37 @@ struct FileState {
     bool system;
     std::mutex mutex;
     Handle handle;
+    DirectoryHandles directories;
 };
 std::expected<Handle, SinkError> open_file(const std::filesystem::path& path, bool system,
                                            DWORD disposition) {
     auto handle = Handle{
         CreateFileW(path.c_str(), FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL,
-                    FILE_SHARE_READ, nullptr, disposition, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, disposition,
+                    FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
     if (handle.get() == INVALID_HANDLE_VALUE)
         return std::unexpected(SinkError::open_failed);
     if (const auto checked = check_handle(handle.get(), false, system); !checked)
         return std::unexpected(checked.error());
     return handle;
+}
+std::expected<Handle, SinkError> open_current(FileState& state) {
+    auto directories = check_directory_chain(state.path.parent_path(), state.system);
+    if (!directories)
+        return std::unexpected(directories.error());
+    auto file = open_file(state.path, state.system, OPEN_ALWAYS);
+    if (!file)
+        return std::unexpected(file.error());
+    // Pin the validated ancestors for the lifetime of the file handle.
+    state.directories = std::move(*directories);
+    return file;
+}
+std::expected<bool, SinkError> same_file(HANDLE a, HANDLE b) {
+    BY_HANDLE_FILE_INFORMATION first{}, second{};
+    if (!GetFileInformationByHandle(a, &first) || !GetFileInformationByHandle(b, &second))
+        return std::unexpected(SinkError::open_failed);
+    return first.dwVolumeSerialNumber == second.dwVolumeSerialNumber &&
+           first.nFileIndexHigh == second.nFileIndexHigh && first.nFileIndexLow == second.nFileIndexLow;
 }
 std::filesystem::path rotation_path(const std::filesystem::path& base, unsigned index) {
     auto path = base;
@@ -34,12 +55,8 @@ std::expected<void, SinkError> check_optional_file(const std::filesystem::path& 
     return handle ? std::expected<void, SinkError>{} : std::unexpected(handle.error());
 }
 std::expected<void, SinkError> rotate(FileState& state) {
-    state.handle.reset();
-    if (!state.policy.keep) {
-        return DeleteFileW(state.path.c_str()) ? std::expected<void, SinkError>{}
-                                               : std::unexpected(SinkError::rotate_failed);
-    }
-    for (auto index = state.policy.keep; index > 0; --index) {
+    // Keep the checked append handle alive: a rename/reopen failure must not drop this line.
+    for (auto index = std::max(1u, state.policy.keep); index > 0; --index) {
         const auto source = index == 1 ? state.path : rotation_path(state.path, index - 1);
         const auto destination = rotation_path(state.path, index);
         if (!check_optional_file(source, state.system) ||
@@ -51,12 +68,30 @@ std::expected<void, SinkError> rotate(FileState& state) {
     }
     return {};
 }
+void try_rotation(FileState& state) {
+    auto current = open_current(state);
+    if (!current)
+        return;
+    const auto same = same_file(state.handle.get(), current->get());
+    if (!same)
+        return;
+    if (!*same) {
+        // Another process rotated our handle. Append to the newly checked current path.
+        state.handle = std::move(*current);
+        return;
+    }
+    if (!rotate(state))
+        return;
+    auto reopened = open_current(state);
+    if (!reopened)
+        return;
+    state.handle = std::move(*reopened);
+    if (!state.policy.keep)
+        (void)DeleteFileW(rotation_path(state.path, 1).c_str());
+}
 std::expected<void, SinkError> append(FileState& state, std::string_view line) {
-    auto parents = check_directory_chain(state.path.parent_path(), state.system);
-    if (!parents)
-        return std::unexpected(parents.error());
     if (!state.handle) {
-        auto opened = open_file(state.path, state.system, OPEN_ALWAYS);
+        auto opened = open_current(state);
         if (!opened)
             return std::unexpected(opened.error());
         state.handle = std::move(*opened);
@@ -64,23 +99,14 @@ std::expected<void, SinkError> append(FileState& state, std::string_view line) {
     auto size = LARGE_INTEGER{};
     if (!GetFileSizeEx(state.handle.get(), &size))
         return std::unexpected(SinkError::write_failed);
-    if (std::holds_alternative<Rotate>(plan_write(size.QuadPart, line.size(), state.policy))) {
-        if (const auto rotated = rotate(state); !rotated)
-            return rotated;
-        auto opened = open_file(state.path, state.system, OPEN_ALWAYS);
-        if (!opened)
-            return std::unexpected(opened.error());
-        state.handle = std::move(*opened);
-    }
-    auto offset = std::size_t{0};
-    while (offset < line.size()) {
-        DWORD written = 0;
-        if (!WriteFile(state.handle.get(), line.data() + offset,
-                       static_cast<DWORD>(line.size() - offset), &written, nullptr) ||
-            !written)
-            return std::unexpected(SinkError::write_failed);
-        offset += written;
-    }
+    if (std::holds_alternative<Rotate>(plan_write(size.QuadPart, line.size(), state.policy)))
+        try_rotation(state);
+    if (line.size() > MAXDWORD)
+        return std::unexpected(SinkError::write_failed);
+    DWORD written = 0;
+    if (!WriteFile(state.handle.get(), line.data(), static_cast<DWORD>(line.size()), &written,
+                   nullptr) || written != line.size())
+        return std::unexpected(SinkError::write_failed);
     return {};
 }
 } // namespace

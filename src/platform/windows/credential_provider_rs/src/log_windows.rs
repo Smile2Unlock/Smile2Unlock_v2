@@ -134,7 +134,11 @@ fn checked(path: &Path, directory: bool, system: bool, create: bool) -> Option<F
         .read(directory)
         .access_mode(0x00020080 | if directory { 0 } else { 4 })
         .create(create)
-        .share_mode(if directory { 3 } else { 1 })
+        .share_mode(if directory {
+            FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0
+        } else {
+            FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0
+        })
         .custom_flags(
             FILE_FLAG_OPEN_REPARSE_POINT.0
                 | if directory {
@@ -166,7 +170,7 @@ fn checked(path: &Path, directory: bool, system: bool, create: bool) -> Option<F
     }
     Some(file)
 }
-fn parents(path: &Path) -> Option<Vec<File>> {
+fn parents(path: &Path, system: bool) -> Option<Vec<File>> {
     let mut current = PathBuf::new();
     let mut product = false;
     let mut guards = Vec::new();
@@ -176,11 +180,11 @@ fn parents(path: &Path) -> Option<Vec<File>> {
             continue;
         }
         product |= part.as_os_str() == "Smile2Unlock";
-        guards.push(checked(&current, true, product, false)?);
+        guards.push(checked(&current, true, system && product, false)?);
     }
     Some(guards)
 }
-fn rotate(path: &Path) -> Option<()> {
+fn rotate(path: &Path, system: bool) -> Option<()> {
     for index in (1..=3).rev() {
         let source = if index == 1 {
             path.to_path_buf()
@@ -192,12 +196,12 @@ fn rotate(path: &Path) -> Option<()> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) => return None,
             Ok(_) => {
-                checked(&source, false, true, false)?;
+                checked(&source, false, system, false)?;
             }
         }
         match std::fs::symlink_metadata(&destination) {
             Ok(_) => {
-                checked(&destination, false, true, false)?;
+                checked(&destination, false, system, false)?;
                 std::fs::remove_file(&destination).ok()?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -207,17 +211,67 @@ fn rotate(path: &Path) -> Option<()> {
     }
     Some(())
 }
-pub fn append(path: &Path, line: &str) -> Option<()> {
-    // Hold each ancestor without FILE_SHARE_DELETE while opening/writing/rotating.
-    let _guards = parents(path)?;
-    let mut file = checked(path, false, true, true)?;
-    let size = file.metadata().ok()?.len();
-    if size > 0 && size.saturating_add(line.len() as u64) > 1024 * 1024 {
-        drop(file);
-        rotate(path)?;
-        file = checked(path, false, true, true)?;
+fn open_current(path: &Path, system: bool) -> Option<(File, Vec<File>)> {
+    // Pin each checked ancestor until this append handle is replaced.
+    let guards = parents(path, system)?;
+    Some((checked(path, false, system, true)?, guards))
+}
+fn same_file(first: &File, second: &File) -> Option<bool> {
+    let mut a = BY_HANDLE_FILE_INFORMATION::default();
+    let mut b = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: live file handles and correctly sized initialized output buffers.
+    unsafe {
+        GetFileInformationByHandle(HANDLE(first.as_raw_handle()), &mut a).ok()?;
+        GetFileInformationByHandle(HANDLE(second.as_raw_handle()), &mut b).ok()?;
     }
-    file.write_all(line.as_bytes()).ok()
+    Some(
+        a.dwVolumeSerialNumber == b.dwVolumeSerialNumber
+            && a.nFileIndexHigh == b.nFileIndexHigh
+            && a.nFileIndexLow == b.nFileIndexLow,
+    )
+}
+#[derive(Default)]
+pub struct Writer {
+    file: Option<File>,
+    guards: Vec<File>,
+}
+impl Writer {
+    fn prepare_rotation(&mut self, path: &Path, system: bool) -> Option<()> {
+        let (current, guards) = open_current(path, system)?;
+        self.guards = guards;
+        if same_file(self.file.as_ref()?, &current)? {
+            // Keep the original append handle on any rename/reopen failure.
+            rotate(path, system)?;
+            let (next, guards) = open_current(path, system)?;
+            self.file = Some(next);
+            self.guards = guards;
+        } else {
+            // Another process rotated our handle; join its current file.
+            self.file = Some(current);
+        }
+        Some(())
+    }
+    fn append_with_limit(
+        &mut self,
+        path: &Path,
+        line: &str,
+        system: bool,
+        limit: u64,
+    ) -> Option<()> {
+        if self.file.is_none() {
+            let (file, guards) = open_current(path, system)?;
+            self.file = Some(file);
+            self.guards = guards;
+        }
+        let size = self.file.as_ref()?.metadata().ok()?.len();
+        if size > 0 && size.saturating_add(line.len() as u64) > limit {
+            let _ = self.prepare_rotation(path, system);
+        }
+        self.file.as_mut()?.write_all(line.as_bytes()).ok()
+    }
+    pub fn append(&mut self, path: &Path, line: &str) -> Option<()> {
+        self.append_with_limit(path, line, true, 1024 * 1024)
+    }
 }
 pub fn debug_output(line: &str) {
     let wide: Vec<_> = line.encode_utf16().chain(Some(0)).collect();
@@ -227,4 +281,135 @@ pub fn debug_output(line: &str) {
             wide.as_ptr(),
         ))
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn test_path(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "s2u-log-{}-{name}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        root.join("test.log")
+    }
+    #[test]
+    fn child_writer() {
+        let Some(path) = std::env::var_os("S2U_LOG_WRITER_PATH") else {
+            return;
+        };
+        assert!(
+            Writer::default()
+                .append_with_limit(Path::new(&path), "child\n", false, 1024)
+                .is_some()
+        );
+    }
+    #[test]
+    fn multiple_processes_share_append_handles() {
+        let path = test_path("process");
+        let mut parent = Writer::default();
+        assert!(
+            parent
+                .append_with_limit(&path, "parent\n", false, 1024)
+                .is_some()
+        );
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "log::platform::tests::child_writer",
+                "--nocapture",
+            ])
+            .env("S2U_LOG_WRITER_PATH", &path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            parent
+                .append_with_limit(&path, "after\n", false, 1024)
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "parent\nchild\nafter\n"
+        );
+        drop(parent);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn stale_writer_joins_rotated_path() {
+        let path = test_path("rotation");
+        let mut first = Writer::default();
+        let mut second = Writer::default();
+        assert!(
+            first
+                .append_with_limit(&path, "first\n", false, 20)
+                .is_some()
+        );
+        assert!(
+            second
+                .append_with_limit(&path, "second\n", false, 20)
+                .is_some()
+        );
+        assert!(
+            first
+                .append_with_limit(&path, "third-long-line\n", false, 20)
+                .is_some()
+        );
+        assert!(
+            second
+                .append_with_limit(&path, "rejoined\n", false, 20)
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "third-long-line\nrejoined\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("log.1")).unwrap(),
+            "first\nsecond\n"
+        );
+        drop((first, second));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn failed_rotation_retains_line_and_retries() {
+        let path = test_path("blocked");
+        let archive = path.with_extension("log.1");
+        let mut writer = Writer::default();
+        assert!(
+            writer
+                .append_with_limit(&path, "123456\n", false, 10)
+                .is_some()
+        );
+        std::fs::write(&archive, "archive\n").unwrap();
+        let blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
+            .open(&archive)
+            .unwrap();
+        assert!(
+            writer
+                .append_with_limit(&path, "abcdef\n", false, 10)
+                .is_some()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "123456\nabcdef\n");
+        drop(blocker);
+        assert!(
+            writer
+                .append_with_limit(&path, "ghijkl\n", false, 10)
+                .is_some()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ghijkl\n");
+        assert_eq!(
+            std::fs::read_to_string(&archive).unwrap(),
+            "123456\nabcdef\n"
+        );
+        drop(writer);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 }
