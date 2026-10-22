@@ -205,6 +205,7 @@ target("su_log")
         add_files("src/common/log/file_windows.cpp", "src/common/log/windows_directory.cpp")
         add_syslinks("advapi32", "shell32", "ole32", "uuid", { public = true })
     else
+        add_cxxflags("-fPIC") -- Also linked into the PAM shared module.
         add_files("src/common/log/file_posix.cpp")
     end
 
