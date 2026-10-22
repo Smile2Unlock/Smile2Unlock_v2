@@ -89,7 +89,6 @@ export component AppWindow inherits Window {
     in-out property <int> capture_max_count: 50;
     in property <[CaptureRow]> captures;
     in-out property <image> capture_selected_image;
-    in-out property <float> capture_selected_ratio: 1;
     in-out property <bool> capture_selected: false;
     in property <string> capture_status;
     callback capture_refresh();
@@ -972,7 +971,6 @@ export component AppWindow inherits Window {
                         max-count <=> root.capture_max_count;
                         records: root.captures;
                         selected-image: root.capture_selected_image;
-                        selected-ratio: root.capture_selected_ratio;
                         selected: root.capture_selected;
                         status: root.capture_status;
                         language-index: root.language_index;

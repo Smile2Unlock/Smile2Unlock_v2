@@ -1,4 +1,5 @@
 #include "capture_test_window.h"
+#include "../../src/app/capture_time.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -32,7 +33,8 @@ int main(int argc, char** argv) {
         window->set_photo(photo);
         window->set_selected(true);
         window->set_records(std::make_shared<slint::VectorModel<ui::CaptureRow>>(
-            std::vector<ui::CaptureRow>{{"abc", "2026-10-22 08:00:00 UTC", "mismatch", photo, 0.75F}}));
+            std::vector<ui::CaptureRow>{{"abc", slint::SharedString(su::app::capture_local_time(1792710000)),
+                                       "mismatch", photo, 0.75F}}));
     }
     window->show();
     slint::Timer timer;

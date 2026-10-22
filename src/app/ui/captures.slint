@@ -1,6 +1,6 @@
 import { Switch, SpinBox } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
-import { ActionButton, SectionTitle, RowLabelMeasure } from "components.slint";
+import { ActionButton, RowLabelMeasure } from "components.slint";
 export struct CaptureRow { id: string, time: string, reason: string, thumbnail: image, ratio: float }
 export component CapturePanel inherits Rectangle {
     in-out property <bool> capture-enabled: false;
@@ -8,7 +8,6 @@ export component CapturePanel inherits Rectangle {
     in-out property <int> max-count: 50;
     in property <[CaptureRow]> records;
     in property <image> selected-image;
-    in property <float> selected-ratio: 1;
     in property <bool> selected: false;
     in property <string> status;
     in property <int> language-index;
@@ -31,7 +30,13 @@ export component CapturePanel inherits Rectangle {
         alignment: start;
         padding: UiTheme.card-padding;
         spacing: UiTheme.content-gap;
-        SectionTitle { title: root.translate("capture.title", root.language-index); }
+        Text {
+            text: root.translate("capture.title", root.language-index);
+            color: UiTheme.text-primary;
+            font-size: 16px;
+            font-weight: 700;
+            wrap: word-wrap;
+        }
         Text {
             text: root.translate-value("capture.privacy", root.language-index, root.days);
             wrap: word-wrap;
@@ -85,7 +90,18 @@ export component CapturePanel inherits Rectangle {
         }
         if root.selected: VerticalLayout {
             spacing: UiTheme.content-gap;
-            Image { source: root.selected-image; image-fit: contain; height: self.width * root.selected-ratio; }
+            HorizontalLayout {
+                alignment: center;
+                Image {
+                    source: root.selected-image;
+                    image-fit: contain;
+                    horizontal-stretch: 0;
+                    min-width: 0px;
+                    max-width: root.selected-image.width * 2px;
+                    preferred-width: root.selected-image.width * 1px;
+                    height: self.width * root.selected-image.height / max(1, root.selected-image.width);
+                }
+            }
             ActionButton { label: root.translate("capture.close", root.language-index); activated => { root.close(); } }
         }
     }

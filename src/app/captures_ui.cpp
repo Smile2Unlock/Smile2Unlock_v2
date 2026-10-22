@@ -1,4 +1,5 @@
 #include "app_window.h"
+#include "capture_time.h"
 #include <nlohmann/json.hpp>
 
 import std;
@@ -25,11 +26,12 @@ std::expected<std::vector<Photo>, std::string> load_photos(AppController& contro
             const auto id = record.at("id").get<std::string>();
             const auto jpeg = controller.captures("fetch", id);
             if (!jpeg) continue; // A concurrent retention/delete can remove a row.
-            const auto time = std::chrono::sys_seconds{std::chrono::seconds{record.at("time").get<std::uint64_t>()}};
             const auto width = record.at("width").get<unsigned>();
             const auto height = record.at("height").get<unsigned>();
             if (!width || !height || width > 320 || height > 320) continue;
-            result.push_back({id, std::format("{:%F %T} UTC", time), record.at("reason").get<std::string>(),
+            result.push_back({id,
+                capture_local_time(record.at("time").get<std::uint64_t>()),
+                record.at("reason").get<std::string>(),
                 static_cast<float>(height) / width, *jpeg});
         }
         return result;
@@ -84,7 +86,6 @@ struct CaptureUi : std::enable_shared_from_this<CaptureUi> {
             const auto row = rows->row_data(i);
             if (row && std::string_view(row->id) == id) {
                 (*current)->set_capture_selected_image(row->thumbnail);
-                (*current)->set_capture_selected_ratio(row->ratio);
                 (*current)->set_capture_selected(true);
                 break;
             }
