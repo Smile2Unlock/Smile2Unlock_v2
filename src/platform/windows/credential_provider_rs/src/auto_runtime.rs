@@ -32,7 +32,9 @@ use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent};
 use windows_core::PCWSTR;
 
-use crate::auto_recognition::{AttemptMachine, Completion, Outcome, Phase, Poll, TriggerSettings};
+use crate::auto_recognition::{
+    AttemptMachine, Completion, Outcome, Phase, Poll, StopReason, TriggerSettings,
+};
 
 use crate::event_sink::ReadyNotifier;
 use crate::wake_policy::{PowerEvent, WakePolicy};
@@ -387,6 +389,8 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 || inner.power.blocked()
                 || inner.power_paused
                 || inner.submitting
+                || inner.login_failed
+                || inner.login_complete
                 || inner.owner.as_ref().map(|(id, s)| (*id, s.as_str())) != Some((owner, sid))
             {
                 return false;
@@ -397,7 +401,10 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             }
             if inner.machine.phase() == Phase::Submitted
                 || (inner.machine.phase() == Phase::Stopped
-                    && inner.machine.settings().is_automatic())
+                    && !matches!(
+                        inner.machine.stop_reason(),
+                        Some(StopReason::TimedOut | StopReason::NoMatch)
+                    ))
             {
                 return false;
             }
@@ -1670,9 +1677,11 @@ mod tests {
         assert_eq!(phase(), 1, "old tile cannot hide the new user's hint");
         runtime.logon_result_owned(20, false);
         assert_eq!(phase(), 10);
+        assert!(!runtime.submit_owned(20, "S-1-5-21-2", 1, 9));
+        runtime.password_entry_owned(20, false);
         assert!(runtime.submit_owned(20, "S-1-5-21-2", 1, 9));
         wait_for(|| runtime.phase() == Phase::Ready);
-        assert_eq!(phase(), 5, "a new manual attempt clears the old error");
+        assert_eq!(phase(), 5, "password editing clears the old error");
         assert!(runtime.take_ready_owned(20, "S-1-5-21-2").is_some());
         assert_eq!(phase(), 6);
         runtime.logon_result_owned(20, true);
@@ -1862,6 +1871,82 @@ mod tests {
             Some(("grant", 11, 1))
         );
         runtime.shutdown();
+    }
+
+    #[test]
+    fn timeout_submit_restarts_once_but_refresh_does_not() {
+        let runtime = sleeping_tile();
+        let generation = runtime.generation();
+        let settings = runtime.inner.lock().unwrap().machine.settings();
+        runtime.select_owned(10, "S-1-5-21-1", 1, 8, settings);
+        assert_eq!(runtime.phase(), Phase::Stopped);
+        assert_eq!(runtime.generation(), generation);
+        assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
+        wait_for(|| runtime.phase() == Phase::Stopped);
+        assert_ne!(runtime.generation(), generation);
+        assert_eq!(
+            runtime
+                .transport
+                .lock()
+                .unwrap()
+                .calls
+                .load(Ordering::Acquire),
+            1
+        );
+        runtime.shutdown();
+    }
+
+    #[test]
+    fn no_match_submit_restarts_in_both_modes() {
+        for mode in [0, 1] {
+            let runtime = sleeping_tile();
+            {
+                let mut inner = runtime.inner.lock().unwrap();
+                inner.machine.set_settings(TriggerSettings::from_values(
+                    Some(mode),
+                    Some(0),
+                    Some(1),
+                    Some(30),
+                ));
+                let (generation, _) = inner.machine.begin_on_demand(100_000, "S-1-5-21-1", 1, 8);
+                inner.machine.poll(100_000);
+                inner
+                    .machine
+                    .complete(generation, 100_001, Outcome::Transient);
+                assert_eq!(inner.machine.stop_reason(), Some(StopReason::NoMatch));
+            }
+            runtime.transport.lock().unwrap().outcomes = Mutex::new(vec![Outcome::Success]);
+            assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
+            wait_for(|| runtime.phase() == Phase::Ready);
+            assert!(runtime.take_ready_owned(10, "S-1-5-21-1").is_some());
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 10));
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
+    fn windows_logon_failure_refuses_submit_in_both_modes() {
+        for mode in [0, 1] {
+            let runtime = sleeping_tile();
+            runtime
+                .inner
+                .lock()
+                .unwrap()
+                .machine
+                .set_settings(TriggerSettings::from_values(Some(mode), None, None, None));
+            runtime.logon_result_owned(10, false);
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
+            assert_eq!(
+                runtime
+                    .transport
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .load(Ordering::Acquire),
+                0
+            );
+            runtime.shutdown();
+        }
     }
 
     #[test]

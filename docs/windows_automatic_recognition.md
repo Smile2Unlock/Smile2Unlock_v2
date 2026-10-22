@@ -32,7 +32,9 @@ fallback whenever automatic recognition is disabled or cannot complete.
   Tile `UnAdvise` disconnects field events during re-enumeration and preserves
   the attempt. An already empty password-field reset does the same.
 - Empty-password submission starts one capture on the same background worker
-  in manual mode, or waits for the existing automatic attempt. It returns
+  in manual mode, or waits for the existing automatic attempt. After a timeout
+  or exhausted no-face/no-match attempt, an explicit Enter/submit-arrow action
+  starts one new on-demand capture in either mode with a fresh deadline. It returns
   `CPGSR_NO_CREDENTIAL_NOT_FINISHED` immediately instead of making a synchronous
   pipe call. Refresh-driven reselection does not restart stopped/submitted attempts.
 - Deselection, actual password editing, user-array replacement, provider `UnAdvise`, hard
@@ -107,7 +109,11 @@ idle, initial delay, recognizing, retry delay, ready, submitted and stopped.
    A late result is erased without notifying LogonUI or submitting credentials.
    Tile UnAdvise during a refresh only disconnects field events, and an empty
    initialization/reset of an already empty password field leaves recognition intact.
-6. Failed Windows logon stops automatic retries. In particular, a stale stored
+6. Only an explicit empty-password submit can restart a recoverable stopped
+   attempt (`TimedOut` / `NoMatch`); refresh-driven reselection cannot. Hard
+   failures (`Unavailable`), submitted grants and failed Windows logons refuse
+   face submission and direct the user to their Windows password.
+   Failed Windows logon stops automatic retries. In particular, a stale stored
    password must not repeatedly attempt logon and lock the Windows account.
 
 The UI thread must never join a blocking worker. Worker ownership and module
