@@ -55,7 +55,10 @@ std::string format_system(const std::vector<Section>& sections) {
     auto result = std::string{};
     for (const auto& section : sections) {
         result += "[" + section.name + "]\n";
-        for (const auto& record : section.records) result += record.name + ": " + record.value + "\n";
+        for (const auto& record : section.records) {
+            result += record.name + ": " + truncate_output(record.value) + "\n";
+            if (result.size() > output_limit) return truncate_output(result);
+        }
         result += '\n';
     }
     return truncate_output(result);

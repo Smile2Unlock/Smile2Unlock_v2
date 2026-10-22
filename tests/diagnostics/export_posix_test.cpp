@@ -54,6 +54,20 @@ int main() {
     check(complete && complete->system_unavailable.empty() && complete->archive_path != denied->archive_path);
     const auto text = d::run_command({"/usr/bin/tar", "-xOzf", complete->archive_path, "./system/system.txt"});
     check(text && *text == "system test");
+    const auto privileged = root / "privileged";
+    fs::create_directory(privileged); write(privileged / "system.txt", "snapshot");
+    write(privileged / "service.log.1", "service tail");
+    const auto partial = d::export_bundle(summary, [privileged]() -> std::expected<d::PrivilegedData, d::Error> {
+        return d::PrivilegedData{{}, privileged, "one log unreadable"};
+    });
+    check(partial && partial->system_unavailable == "one log unreadable" && !fs::exists(privileged));
+    const auto staged = d::run_command({"/usr/bin/tar", "-tzf", partial->archive_path});
+    check(staged && staged->find("./system/system.txt") != staged->npos && staged->find("./system/service.log.1") != staged->npos);
+    fs::create_directory(privileged); fs::create_symlink(logs / "app.log", privileged / "system.txt");
+    const auto unsafe = d::export_bundle(summary, [privileged]() -> std::expected<d::PrivilegedData, d::Error> {
+        return d::PrivilegedData{{}, privileged};
+    });
+    check(unsafe && !unsafe->system_unavailable.empty() && !fs::exists(privileged));
     fs::remove(root / "config/user-dirs.dirs");
     check(d::desktop_directory() == root);
     fs::create_directory(root / "Desktop"); check(d::desktop_directory() == root / "Desktop");

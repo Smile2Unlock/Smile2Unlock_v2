@@ -19,6 +19,8 @@ int main() {
     check(truncate_output(std::string(100, 'x'), 32) == std::string(12, 'x') + "\n[output truncated]\n");
     check(truncate_output("abcdef", 2).size() == 2);
     check(truncate_output(std::string(100, 'x'), 0).empty());
+    check(truncate_output(std::string(12, 'x') + "中文" + std::string(100, 'x'), 34) == std::string(12, 'x') + "\n[output truncated]\n");
+    check(format_system({{"large", {{"data", std::string(output_limit + 100, 'x')}}}}).size() <= output_limit);
     const auto system = std::vector<Section>{{"Registry", {{"key", "missing"}}}, {"Service", {{"state", "running"}}}, {"Files", {{"a.dll", "size=4 sha256=abcd signature=valid"}}}, {"Events", {{"1000", "LogonUI"}}}};
     check(format_system(system) == "[Registry]\nkey: missing\n\n[Service]\nstate: running\n\n[Files]\na.dll: size=4 sha256=abcd signature=valid\n\n[Events]\n1000: LogonUI\n\n");
     Summary summary;

@@ -4,6 +4,7 @@
 #include "common/log/logger.h"
 #include "common/utf8_path.h"
 #include <sddl.h>
+#include <aclapi.h>
 #include <bcrypt.h>
 #include <fstream>
 #include <format>
@@ -47,6 +48,32 @@ std::expected<std::filesystem::path, Error> create_child(const std::filesystem::
     if (!CreateDirectoryW(child.c_str(), &attributes)) return std::unexpected(Error{ErrorCode::io, "staging creation failed"});
     return child;
 }
+std::expected<void, Error> remove_staging_tree(const std::filesystem::path& path) {
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(path)) {
+            const auto attributes = GetFileAttributesW(entry.path().c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES) return std::unexpected(Error{ErrorCode::io, "stale file attributes unavailable"});
+            const auto directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (directory && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                const auto removed = remove_staging_tree(entry.path());
+                if (!removed) return removed;
+            } else if (!(directory ? RemoveDirectoryW(entry.path().c_str()) : DeleteFileW(entry.path().c_str()))) {
+                return std::unexpected(Error{ErrorCode::io, "could not delete stale diagnostics entry"});
+            }
+        }
+        if (!RemoveDirectoryW(path.c_str())) return std::unexpected(Error{ErrorCode::io, "could not delete stale diagnostics directory"});
+        return {};
+    } catch (const std::exception& error) { return std::unexpected(Error{ErrorCode::io, error.what()}); }
+}
+struct StageCleanup {
+    std::filesystem::path path;
+    bool keep = false;
+    ~StageCleanup() {
+        if (keep) return;
+        const auto removed = remove_staging_tree(path);
+        if (!removed) su::log::process_logger().warn("diagnostics.cleanup_failed", to_fields(removed.error()));
+    }
+};
 void remove_stale(const std::filesystem::path& root) {
     for (const auto& entry : std::filesystem::directory_iterator(root)) {
         if (!staging_child(su::path_utf8(entry.path().filename()))) continue;
@@ -58,13 +85,20 @@ void remove_stale(const std::filesystem::path& root) {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
         if (!su::log::check_handle(handle.get(), true, true)) continue;
-        auto error = std::error_code{};
-        std::filesystem::remove_all(entry.path(), error);
-        if (error) su::log::process_logger().warn("diagnostics.cleanup_failed", {su::log::field("cause", error.message())});
+        const auto removed = remove_staging_tree(entry.path());
+        if (!removed) su::log::process_logger().warn("diagnostics.cleanup_failed", to_fields(removed.error()));
     }
 }
 std::expected<void, Error> write_stage(const std::filesystem::path& path, std::string_view text) {
-    const auto file = Handle{CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+    // Preserve the administrator owner as well as the caller's inherited ACL.
+    // A caller-owned file could otherwise have its DACL rewritten by that caller.
+    PSECURITY_DESCRIPTOR raw = nullptr;
+    if (GetNamedSecurityInfoW(path.parent_path().c_str(), SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, nullptr, nullptr, nullptr, nullptr, &raw) != ERROR_SUCCESS)
+        return std::unexpected(Error{ErrorCode::denied, "staging security unavailable"});
+    const auto descriptor = std::unique_ptr<void, decltype(&LocalFree)>{raw, &LocalFree};
+    auto attributes = SECURITY_ATTRIBUTES{sizeof(SECURITY_ATTRIBUTES), raw, FALSE};
+    const auto file = Handle{CreateFileW(path.c_str(), GENERIC_WRITE, 0, &attributes, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
     DWORD written = 0;
     if (file.get() == INVALID_HANDLE_VALUE || !WriteFile(file.get(), text.data(), static_cast<DWORD>(text.size()), &written, nullptr)
         || written != text.size()) return std::unexpected(Error{ErrorCode::io, "staging write failed"});
@@ -72,7 +106,7 @@ std::expected<void, Error> write_stage(const std::filesystem::path& path, std::s
 }
 std::expected<void, Error> stage_logs(const std::filesystem::path& root, const std::filesystem::path& child) {
     const auto logs = root.parent_path() / "Logs";
-    if (!std::filesystem::exists(logs)) return {};
+    if (!std::filesystem::exists(logs)) return std::unexpected(Error{ErrorCode::io, "system logs directory is unavailable"});
     const auto chain = su::log::check_directory_chain(logs, true);
     if (!chain) return std::unexpected(Error{ErrorCode::invalid_path, "system logs directory rejected"});
     for (const auto& entry : std::filesystem::directory_iterator(logs)) {
@@ -98,11 +132,19 @@ std::expected<std::filesystem::path, Error> collect_windows_system() {
         remove_stale(*root);
         const auto child = create_child(*root);
         if (!child) return std::unexpected(child.error());
+        auto cleanup = StageCleanup{*child};
+        const auto child_guard = su::log::check_directory_chain(*child, false);
+        if (!child_guard) return std::unexpected(Error{ErrorCode::invalid_path, "fresh staging directory rejected"});
         const auto logs = stage_logs(*root, *child);
         auto records = windows_system_records();
-        if (!logs) records.push_back({"System logs unavailable", {{"reason", logs.error().detail}}});
+        if (!logs) {
+            records.push_back({"System logs unavailable", {{"reason", logs.error().detail}}});
+            const auto reason = write_stage(*child / "unavailable.txt", logs.error().detail);
+            if (!reason) return std::unexpected(reason.error());
+        }
         const auto written = write_stage(*child / "system.txt", format_system(records));
-        if (!written) { std::filesystem::remove_all(*child); return std::unexpected(written.error()); }
+        if (!written) return std::unexpected(written.error());
+        cleanup.keep = true;
         return child;
     } catch (const std::exception& error) { return std::unexpected(Error{ErrorCode::io, error.what()}); }
 }

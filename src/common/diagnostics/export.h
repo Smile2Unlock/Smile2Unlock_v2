@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <functional>
 namespace su::diagnostics {
-struct PrivilegedData { std::string text; std::filesystem::path directory; };
+struct PrivilegedData { std::string text; std::filesystem::path directory; std::string unavailable_reason = {}; };
 struct ExportResult { std::string archive_path; std::string system_unavailable; };
 using Collector = std::function<std::expected<PrivilegedData, Error>()>;
 std::expected<ExportResult, Error> export_bundle(Summary summary, const Collector& collect);

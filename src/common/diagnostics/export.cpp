@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <ctime>
+#include <cstdio>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -45,7 +46,7 @@ std::expected<void, Error> write_text(const std::filesystem::path& path, std::st
 }
 std::expected<void, Error> copy_logs(const std::filesystem::path& from,
                                     const std::filesystem::path& to, bool app) {
-    if (!app && !std::filesystem::is_regular_file(from / "system.txt"))
+    if (!app && !std::filesystem::is_regular_file(std::filesystem::symlink_status(from / "system.txt")))
         return std::unexpected(Error{ErrorCode::invalid_result, "helper did not produce system.txt"});
     auto error = std::error_code{};
     if (!std::filesystem::exists(from, error) && !error) return {};
@@ -70,8 +71,18 @@ std::pair<std::string, std::string> time_strings() {
 #endif
     std::array<char, 64> timestamp{}, display{};
     std::strftime(timestamp.data(), timestamp.size(), "%Y%m%d-%H%M%S", &local);
-    std::strftime(display.data(), display.size(), "%Y-%m-%dT%H:%M:%S%z", &local);
-    return {timestamp.data(), display.data()};
+    std::strftime(display.data(), display.size(), "%Y-%m-%dT%H:%M:%S", &local);
+#ifdef _WIN32
+    auto utc = std::tm{};
+    gmtime_s(&utc, &time);
+    const auto offset = static_cast<int>((_mkgmtime(&local) - _mkgmtime(&utc)) / 60);
+#else
+    const auto offset = static_cast<int>(local.tm_gmtoff / 60);
+#endif
+    const auto minutes = std::abs(offset);
+    auto zone = std::array<char, 8>{};
+    std::snprintf(zone.data(), zone.size(), "%c%02d%02d", offset < 0 ? '-' : '+', minutes / 60, minutes % 60);
+    return {timestamp.data(), std::string(display.data()) + zone.data()};
 }
 std::expected<std::filesystem::path, Error> reserve_destination(std::string_view timestamp) {
     const auto desktop = desktop_directory();
@@ -101,7 +112,7 @@ std::expected<std::string, Error> collect_system(const Collector& collect,
         const auto written = write_text(destination / "system.txt", truncate_output(data->text));
         if (!written) return std::unexpected(written.error());
     }
-    return std::string{};
+    return data->unavailable_reason;
 }
 std::expected<ExportResult, Error> perform_export(Summary summary, const Collector& collect) {
     const auto temporary = temporary_directory();
