@@ -6,6 +6,8 @@
 //! the FFI layer and the internal modules share a single source of truth.
 
 mod auth;
+mod capture;
+mod capture_policy;
 mod config;
 mod embedding;
 mod encrypted_store;
@@ -100,6 +102,9 @@ pub struct SuCoreConfig {
     pub retry_delay_sec: u32,
     /// Per-attempt wait for a terminal status.
     pub timeout_sec: u32,
+    pub capture_enabled: bool,
+    pub capture_retention_days: u32,
+    pub capture_max_count: u32,
 }
 
 pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};

@@ -40,6 +40,7 @@ impl AccountId {
 pub(crate) enum DataKind {
     Profile = 1,
     WindowsPassword = 2,
+    Capture = 3,
 }
 
 impl TryFrom<u8> for DataKind {
@@ -49,6 +50,7 @@ impl TryFrom<u8> for DataKind {
         match value {
             1 => Ok(Self::Profile),
             2 => Ok(Self::WindowsPassword),
+            3 => Ok(Self::Capture),
             _ => Err(EnvelopeError::UnsupportedDataKind),
         }
     }

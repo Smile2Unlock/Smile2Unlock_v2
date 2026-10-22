@@ -850,3 +850,69 @@ pub extern "C" fn su_core_authenticate_face_sample_report_with_liveness_into(
     unsafe { out_report.write(report) };
     status
 }
+
+fn capture_from_ptrs(
+    context: *const SuEncryptedStoreContext,
+    directory: *const c_char,
+    command: *const c_char,
+    jpeg: *const u8,
+    jpeg_len: usize,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, SuStatus> {
+    let context = encrypted_context_from_ptr(context)?;
+    let directory = unsafe { CStr::from_ptr(directory) }
+        .to_str()
+        .map_err(|_| SuStatus::InvalidUtf8)?;
+    let command = unsafe { CStr::from_ptr(command) }.to_bytes();
+    if command.len() > 1024 {
+        return Err(SuStatus::InvalidArgument);
+    }
+    let command = serde_json::from_slice(command).map_err(|_| SuStatus::ParseError)?;
+    let jpeg = if jpeg_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(jpeg, jpeg_len) }
+    };
+    crate::capture::execute(std::path::Path::new(directory), &context, command, jpeg)
+}
+
+/// Bounded privileged-host capture API. Fetch returns raw JPEG; other commands
+/// return JSON. Mutations execute once: callers must provide the full 48 KiB
+/// output buffer rather than probing required size and replaying a command.
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_capture(
+    context: *const SuEncryptedStoreContext,
+    directory: *const c_char,
+    command: *const c_char,
+    jpeg: *const u8,
+    jpeg_len: usize,
+    output: *mut u8,
+    capacity: usize,
+    written: *mut usize,
+) -> SuStatus {
+    if directory.is_null()
+        || command.is_null()
+        || output.is_null()
+        || written.is_null()
+        || (jpeg.is_null() && jpeg_len != 0)
+    {
+        return SuStatus::NullArgument;
+    }
+    if capacity < 48 * 1024 || jpeg_len > crate::capture_policy::MAX_JPEG_BYTES {
+        return SuStatus::InvalidArgument;
+    }
+    unsafe {
+        written.write(0);
+    }
+    let result = capture_from_ptrs(context, directory, command, jpeg, jpeg_len);
+    match result {
+        Ok(bytes) if bytes.len() <= capacity => {
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
+                written.write(bytes.len());
+            }
+            SuStatus::Ok
+        }
+        Ok(_) => SuStatus::BufferTooSmall,
+        Err(status) => status,
+    }
+}

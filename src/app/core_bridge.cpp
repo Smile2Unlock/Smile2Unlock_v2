@@ -52,6 +52,9 @@ CoreConfig map_config(const SuCoreConfig& config) {
         .auto_delay_sec = config.auto_delay_sec,
         .retry_delay_sec = config.retry_delay_sec,
         .timeout_sec = config.timeout_sec,
+        .capture_enabled = config.capture_enabled,
+        .capture_retention_days = config.capture_retention_days,
+        .capture_max_count = config.capture_max_count,
     };
 }
 
@@ -67,6 +70,9 @@ SuCoreConfig map_config(const CoreConfig& config) {
         .auto_delay_sec = config.auto_delay_sec,
         .retry_delay_sec = config.retry_delay_sec,
         .timeout_sec = config.timeout_sec,
+        .capture_enabled = config.capture_enabled,
+        .capture_retention_days = config.capture_retention_days,
+        .capture_max_count = config.capture_max_count,
     };
 }
 
@@ -572,3 +578,24 @@ std::expected<bool, CoreError> migrate_plaintext_face_profiles(
 }
 
 }  // namespace su::app
+
+namespace su::app {
+std::expected<std::vector<std::uint8_t>, CoreError> capture_command(
+    const EncryptedStoreContext& context, const std::string& directory,
+    const std::string& command, std::span<const std::uint8_t> jpeg) {
+    const auto* sid = std::get_if<std::string>(&context.account);
+    const auto* uid = std::get_if<std::uint32_t>(&context.account);
+    const SuEncryptedStoreContext ffi{
+        .master_key = context.master_key.data(), .master_key_len = context.master_key.size(),
+        .key_version = context.key_version,
+        .account_kind = static_cast<std::uint32_t>(sid ? SuAccountKind_WindowsSid : SuAccountKind_LinuxUid),
+        .linux_uid = uid ? *uid : 0, .windows_sid = sid ? sid->c_str() : nullptr};
+    auto bytes = std::vector<std::uint8_t>(48 * 1024);
+    std::uintptr_t written = 0;
+    const auto status = su_core_capture(&ffi, directory.c_str(), command.c_str(), jpeg.data(),
+        jpeg.size(), bytes.data(), bytes.size(), &written);
+    if (status != SuStatus_Ok) return std::unexpected(map_status(status));
+    bytes.resize(written);
+    return bytes;
+}
+}
