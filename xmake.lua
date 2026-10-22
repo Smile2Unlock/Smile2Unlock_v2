@@ -212,8 +212,13 @@ target("su_log")
 target("su_diagnostics")
     set_kind("static")
     add_includedirs("src", { public = true })
-    add_files("src/common/diagnostics/core.cpp")
-    if is_plat("linux") then add_files("src/common/diagnostics/process_posix.cpp") end
+    add_deps("su_log")
+    add_files("src/common/diagnostics/core.cpp", "src/common/diagnostics/export.cpp")
+    if is_plat("linux") then add_files("src/common/diagnostics/process_posix.cpp", "src/common/diagnostics/export_posix.cpp")
+    else
+        add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN")
+        add_files("src/common/diagnostics/export_windows.cpp")
+    end
 
 target("su_diagnostics_test")
     set_default(false)
@@ -223,6 +228,15 @@ target("su_diagnostics_test")
     if is_plat("mingw") then add_ldflags("-static", { force = true }) end
     add_tests("default")
     on_test(wine_on_test)
+
+if is_plat("linux") then
+    target("su_diagnostics_export_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_deps("su_diagnostics")
+        add_files("tests/diagnostics/export_posix_test.cpp")
+        add_tests("default")
+end
 
 target("su_log_test")
     set_default(false)

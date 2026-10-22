@@ -42,7 +42,8 @@ LevelSetting configured_level(bool system) {
     const auto level = parse_level(*text);
     return {level.value_or(Level::info), !level};
 }
-std::filesystem::path app_directory() {
+} // namespace
+std::filesystem::path app_log_directory() {
 #ifdef _WIN32
     PWSTR raw = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw)))
@@ -58,8 +59,9 @@ std::filesystem::path app_directory() {
                          : std::filesystem::path{};
 #endif
 }
+namespace {
 Sink app_sink() {
-    const auto path = app_directory();
+    const auto path = app_log_directory();
     if (path.empty())
         return stderr_sink();
     auto error = std::error_code{};
