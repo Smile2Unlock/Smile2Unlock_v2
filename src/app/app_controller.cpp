@@ -285,7 +285,8 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
     } else {
         // Keep the UI available for diagnostics and password fallback while
         // su_authd is stopped or its encrypted key is unavailable.
-        su::log::process_logger().warn("storage.diagnostic", {su::log::field("detail", std::format("[storage] profile list unavailable: {}", loaded_profiles.error()))});
+        su::log::process_logger().warn("storage.profile_list_failed",
+            {su::log::field("cause", loaded_profiles.error())});
     }
 
     return AppSnapshot{

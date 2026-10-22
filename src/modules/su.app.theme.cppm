@@ -1026,14 +1026,16 @@ private:
             paths_, run_command_, preference_.load(std::memory_order_acquire));
         if (should_preserve_theme(loaded, current_)) {
             for (const auto& diagnostic : loaded.diagnostics) {
-                su::log::process_logger().warn("theme.diagnostic", {su::log::field("detail", std::format("[theme] {}; preserving last valid theme", diagnostic))});
+                su::log::process_logger().warn("theme.reload_failed",
+                    {su::log::field("cause", diagnostic), su::log::field("preserving_previous", true)});
             }
             return;
         }
         if (loaded.snapshot == current_) {
             return;
         }
-        su::log::process_logger().info("theme.diagnostic", {su::log::field("detail", std::format("[theme] switched to {}", source_name(loaded.snapshot.source)))});
+        su::log::process_logger().info("theme.switched",
+            {su::log::field("source", source_name(loaded.snapshot.source))});
         current_ = loaded.snapshot;
         if (callback_) {
             callback_(std::move(loaded));

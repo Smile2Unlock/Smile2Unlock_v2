@@ -165,7 +165,7 @@ void apply_theme(const WindowHandle& window, const su::app::AppTheme& snapshot) 
 
 void log_theme_diagnostics(const std::vector<std::string>& diagnostics) {
     for (const auto& diagnostic : diagnostics) {
-        su::log::process_logger().warn("app.diagnostic", {su::log::field("detail", std::format("[theme] {}", diagnostic))});
+        su::log::process_logger().warn("theme.load_warning", {su::log::field("cause", diagnostic)});
     }
 }
 
@@ -242,9 +242,10 @@ void set_activity(
 }
 
 // Verbose startup/window diagnostics share the bounded application log.
-void gui_log_t(const std::string& message) {
-    su::log::process_logger().debug("app.lifecycle", {su::log::field("detail", message)});
+void gui_log(std::string_view event, std::vector<su::log::Field> fields = {}) {
+    su::log::process_logger().debug(event, std::move(fields));
 }
+using su::log::field;
 
 #ifdef _WIN32
 // Set the title-bar and taskbar icon from the .ico file next to the
@@ -274,7 +275,7 @@ void apply_window_icon() {
         };
         set_icon(32, 1 /* ICON_BIG: taskbar / alt-tab */);
         set_icon(16, 0 /* ICON_SMALL: title bar */);
-        gui_log_t("window icon applied");
+        gui_log("window.icon_applied");
     }
 }
 #endif
@@ -448,7 +449,7 @@ void persist_ui_preferences(
     const std::filesystem::path& path,
     const su::app::UiPreferences& preferences) {
     if (const auto saved = su::app::save_ui_preferences(path, preferences); !saved) {
-        su::log::process_logger().warn("app.diagnostic", {su::log::field("detail", std::format("[preferences] {}", saved.error()))});
+        su::log::process_logger().warn("preferences.save_failed", {su::log::field("cause", saved.error())});
     }
 }
 
@@ -463,8 +464,7 @@ void apply_system_status(
     window->set_pam_configured(status.pam_configured);
     window->set_pam_service(slint::SharedString(status.pam_service));
     window->set_deployment_helper_available(status.deployment_helper_available);
-    gui_log_t(std::format("deployment helper available: {}",
-        status.deployment_helper_available ? "yes" : "no"));
+    gui_log("deploy.helper_status", {field("available", status.deployment_helper_available)});
     window->set_deployment_installer_available(status.deployment_installer_available);
     window->set_login_pam_configured(status.login_pam_configured);
     window->set_lock_pam_configured(status.lock_pam_configured);
@@ -599,7 +599,7 @@ bool detect_linux_desktop_size(float& width, float& height) {
 }  // namespace
 
 int main(int argc, char** argv) try {
-    gui_log_t("main enter");
+    gui_log("app.starting");
 #ifdef _WIN32
     // Force slint's software renderer. Two requirements:
     //  1. slint reads SLINT_BACKEND from the OS environment block (Rust
@@ -614,20 +614,20 @@ int main(int argc, char** argv) try {
 #endif
     slint::set_xdg_app_id(xdg_app_id);
     const auto preference_path = ui_preference_path();
-    gui_log_t("preference path: " + su::path_utf8(preference_path));
+    gui_log("preferences.path_resolved", {field("path", su::path_utf8(preference_path))});
     auto preferences = std::make_shared<su::app::UiPreferences>();
     if (auto loaded = su::app::load_ui_preferences(preference_path); loaded) {
         *preferences = std::move(*loaded);
     } else {
-        su::log::process_logger().warn("app.diagnostic", {su::log::field("detail", std::format("[preferences] {}", loaded.error()))});
+        su::log::process_logger().warn("preferences.load_failed", {su::log::field("cause", loaded.error())});
     }
-    gui_log_t("preferences loaded");
+    gui_log("preferences.loaded");
     const auto theme_paths = su::app::default_theme_paths();
     const auto theme_commands = su::app::system_theme_command_runner();
     auto initial_theme = su::app::load_desktop_theme(
         theme_paths, theme_commands, preferences->theme);
     log_theme_diagnostics(initial_theme.diagnostics);
-    gui_log_t("theme loaded");
+    gui_log("theme.loaded");
     const auto language_path = language_directory(
         executable_directory(argc > 0 ? argv[0] : "su_app"));
     auto loaded_catalog = su::app::LanguageCatalog::load(language_path);
@@ -635,22 +635,22 @@ int main(int argc, char** argv) try {
         su::log::process_logger().error("i18n.load_failed", {su::log::field("cause", loaded_catalog.error())});
         return 1;
     }
-    gui_log_t("language loaded");
+    gui_log("i18n.loaded");
     const auto catalog = std::make_shared<const su::app::LanguageCatalog>(std::move(*loaded_catalog));
     const auto selected_language = catalog->select_language(preferences->language, system_locale());
 
     auto controller = std::make_shared<su::app::AppController>();
-    gui_log_t("controller constructed");
+    gui_log("app.controller_created");
     auto preview = std::make_shared<su::app::PreviewController>();
     const auto snapshot = controller->load_initial_snapshot();
-    gui_log_t("snapshot loaded");
+    gui_log("app.snapshot_loaded");
     if (!snapshot) {
         su::log::process_logger().error("app.start_failed", {su::log::field("cause", snapshot.error())});
         return 1;
     }
 
     auto window = ui::AppWindow::create();
-    gui_log_t("AppWindow::create ok");
+    gui_log("window.created");
     apply_theme(window, initial_theme.snapshot.theme);
     const WeakWindowHandle weak_window(window);
     const auto theme_monitor = std::make_shared<su::app::ThemeMonitor>(
@@ -682,7 +682,7 @@ int main(int argc, char** argv) try {
                     }
                     set_preview_idle(*window, *catalog);
                 }
-                su::log::process_logger().info("app.diagnostic", {su::log::field("detail", std::format("[session] GUI camera released for session lock"))});
+                su::log::process_logger().info("preview.camera_released", {su::log::field("reason", "session_lock")});
             });
         });
 
@@ -784,9 +784,8 @@ int main(int argc, char** argv) try {
     window->set_camera_options(camera_model);
     update_camera_controls(
         window, snapshot->cameras, camera_model, camera_indices, snapshot->config.selected_camera);
-    gui_log_t(std::format("cameras enumerated: {} (first='{}')",
-        snapshot->cameras.size(),
-        snapshot->cameras.empty() ? "<none>" : snapshot->cameras.front().name));
+    gui_log("camera.enumerated", {field("count", snapshot->cameras.size()),
+        field("first", snapshot->cameras.empty() ? "" : snapshot->cameras.front().name)});
     window->set_seetaface_available(snapshot->seetaface_available);
     {
         const auto models = controller->models_status();
@@ -1351,10 +1350,8 @@ int main(int argc, char** argv) try {
         }
     });
 
-    gui_log_t(std::format("before run: visible={} size={}x{}",
-        window->window().is_visible(),
-        static_cast<int>(window->window().size().width),
-        static_cast<int>(window->window().size().height)));
+    gui_log("window.before_run", {field("visible", window->window().is_visible()),
+        field("width", window->window().size().width), field("height", window->window().size().height)});
     // Poll window state once a second while the event loop runs, to see
     // whether show() actually makes the window visible.
     slint::Timer state_timer(std::chrono::milliseconds(1000), [weak_window] {
@@ -1362,19 +1359,17 @@ int main(int argc, char** argv) try {
         if (w.has_value()) {
             auto handle = *w;
             auto& win = handle->window();
-            gui_log_t(std::format("tick: visible={} size={}x{}",
-                win.is_visible(),
-                static_cast<int>(win.size().width),
-                static_cast<int>(win.size().height)));
+            gui_log("window.state", {field("visible", win.is_visible()),
+                field("width", win.size().width), field("height", win.size().height)});
         }
     });
-    gui_log_t(std::format("renderer env: SLINT_BACKEND={}",
-        std::getenv("SLINT_BACKEND") ? std::getenv("SLINT_BACKEND") : "(unset)"));
+    gui_log("renderer.configured", {field("backend",
+        std::getenv("SLINT_BACKEND") ? std::getenv("SLINT_BACKEND") : "(unset)")});
     window->show();
 #ifdef _WIN32
-    gui_log_t(std::format("show() returned (lastError=0x{:X})", ::GetLastError()));
+    gui_log("window.shown", {field("last_win32", ::GetLastError())});
 #else
-    gui_log_t("show() returned");
+    gui_log("window.shown");
 #endif
     // Fit the window to the desktop so it is never larger than the screen.
     // Windows: SPI_GETWORKAREA reports PHYSICAL pixels; set_size takes a
@@ -1430,14 +1425,10 @@ int main(int argc, char** argv) try {
         center_y -= fitted.height * sf / 2.0f;
         window->window().set_position(slint::LogicalPosition({center_x / sf, center_y / sf}));
 #endif
-        gui_log_t(std::format("window fitted: avail={}x{} sf={:.2f} -> {}x{} physical {}x{}",
-            static_cast<int>(avail_w),
-            static_cast<int>(avail_h),
-            sf,
-            static_cast<int>(fitted.width),
-            static_cast<int>(fitted.height),
-            static_cast<int>(fitted.width * sf),
-            static_cast<int>(fitted.height * sf)));
+        gui_log("window.fitted", {field("available_width", avail_w),
+            field("available_height", avail_h), field("scale_factor", sf),
+            field("width", fitted.width), field("height", fitted.height),
+            field("physical_width", fitted.width * sf), field("physical_height", fitted.height * sf)});
     };
     fit_window_to_screen();
     // One-shot: re-apply the fitted size once the first layout pass has
@@ -1457,29 +1448,30 @@ int main(int argc, char** argv) try {
     // count so we can verify this watcher thread is actually alive.
 #ifdef _WIN32
     std::thread window_watcher([] {
-        gui_log_t("watcher thread started");
+        gui_log("window.watcher_started");
         for (int i = 0; i < 120; ++i) {
             if (i > 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
             char buffer[2048] = {};
-            gui_log_t("watch: before find_window");
+            gui_log("window.search_started");
             const int f = su_win_find_window("Smile2Unlock", buffer, sizeof(buffer));
-            gui_log_t(std::format("watch: find_window -> {} ({})", f, buffer));
-            gui_log_t("watch: before enum_own");
+            gui_log("window.search_completed", {field("found", f), field("windows", buffer)});
+            gui_log("window.enumeration_started");
             const int n = su_win_enum_own_windows(buffer, sizeof(buffer));
             const int threads = su_win_count_own_threads();
-            gui_log_t(std::format("watch tick {} ({} bytes, threads={}): {}", i, n, threads, buffer));
+            gui_log("window.enumerated", {field("iteration", i), field("bytes", n),
+                field("threads", threads), field("windows", buffer)});
         }
-        gui_log_t("watcher thread done");
+        gui_log("window.watcher_stopped");
     });
     window_watcher.detach();
 #endif
-    gui_log_t("calling run_event_loop");
+    gui_log("app.event_loop_starting");
     slint::run_event_loop();
-    gui_log_t("run returned");
+    gui_log("app.event_loop_stopped");
     preview->stop();
-    gui_log_t("main exiting");
+    gui_log("app.exiting");
     return 0;
 } catch (const std::exception& error) {
     // A resource/path failure before the first window must leave a readable

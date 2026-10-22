@@ -130,7 +130,8 @@ std::expected<LanguageCatalog, std::string> LanguageCatalog::load(
     for (const auto& file : files) {
         auto pack = load_pack(file);
         if (!pack) {
-            su::log::process_logger().warn("i18n.diagnostic", {su::log::field("detail", std::format("[i18n] {}", pack.error()))});
+            su::log::process_logger().warn("i18n.pack_load_failed",
+                {su::log::field("cause", pack.error())});
             continue;
         }
         catalog.packs_.push_back(std::move(*pack));
