@@ -109,7 +109,7 @@ export component DeploymentPanel inherits Rectangle {
             background: UiTheme.surface;
 
             VerticalLayout {
-                padding: 16px;
+                padding: 20px;
                 spacing: 12px;
 
                 HorizontalLayout {
@@ -177,7 +177,7 @@ export component DeploymentPanel inherits Rectangle {
             border-color: UiTheme.border;
             border-radius: 4px;
             VerticalLayout {
-                padding: 16px;
+                padding: 20px;
                 Text {
                     text: root.translate("deployment.no_targets", root.language_index);
                     color: UiTheme.text-secondary;
@@ -195,7 +195,7 @@ export component DeploymentPanel inherits Rectangle {
             property <bool> wallet_selected: target.wallet_enabled;
 
             HorizontalLayout {
-                padding: 16px;
+                padding: 20px;
                 spacing: 24px;
 
                 // Text column: three rows whose items share a baseline.
@@ -235,6 +235,7 @@ export component DeploymentPanel inherits Rectangle {
                             vertical-alignment: center;
                         }
                         InlineStatus {
+                            horizontal-stretch: 0;
                             label: target.state == "supported"
                                 ? root.translate("deployment.state_supported", root.language_index)
                                 : target.state == "managed"
