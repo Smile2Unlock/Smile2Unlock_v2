@@ -1,3 +1,5 @@
+#include "common/log/logger.h"
+#include "common/log/pam_sink.h"
 #include <security/pam_appl.h>
 #include <security/pam_modules.h>
 #include <unistd.h>
@@ -11,6 +13,22 @@ namespace {
 // conversation timeout. This bounds the whole PAM exchange, including a
 // stalled daemon; other control clients keep their existing frame timeouts.
 constexpr auto kPamAuthenticationTimeout = std::chrono::seconds{8};
+
+su::log::Logger pam_logger(pam_handle_t* handle) {
+    static const auto level = [] {
+        const auto setting = std::getenv("SMILE2UNLOCK_LOG_LEVEL");
+        return setting ? su::log::parse_level(setting) : std::optional{su::log::Level::info};
+    }();
+    const auto logger = su::log::Logger{
+        "pam", level.value_or(su::log::Level::info), su::log::pam_sink(handle)};
+    static const auto warned = [&] {
+        if (!level)
+            logger.warn("log.level_invalid");
+        return true;
+    }();
+    (void)warned;
+    return logger;
+}
 
 std::string_view socket_path_from_args(int argc, const char** argv) {
     constexpr auto prefix = std::string_view{"socket="};
@@ -54,11 +72,13 @@ PAM_EXTERN int pam_sm_authenticate(
     int argc,
     const char** argv) try {
     (void)flags;
-
+    const auto logger = pam_logger(pamh);
+    logger.info("authentication.entered");
     const char* username = nullptr;
     if (::pam_get_user(pamh, &username, nullptr) != PAM_SUCCESS
         || username == nullptr
         || username[0] == '\0') {
+        logger.warn("authentication.user_unavailable");
         return PAM_USER_UNKNOWN;
     }
 
@@ -66,23 +86,29 @@ PAM_EXTERN int pam_sm_authenticate(
     auto connection = su::control::Connection::connect_to(
         socket_path_from_args(argc, argv), kPamAuthenticationTimeout);
     if (!connection) {
+        logger.warn("daemon.connect_failed");
         return PAM_AUTHINFO_UNAVAIL;
     }
 
     const auto request_id = next_request_id();
+    const auto request_logger = logger.with({su::log::field("request_id", request_id)});
     const auto request = su::control::make_authenticate_request(request_id, username);
     if (auto sent = connection->send_frame(request, deadline); !sent) {
+        request_logger.warn("request.send_failed");
         return PAM_AUTHINFO_UNAVAIL;
     }
     const auto response = connection->receive_frame(deadline);
     if (!response) {
+        request_logger.warn("response.receive_failed");
         return PAM_AUTHINFO_UNAVAIL;
     }
     const auto result = su::control::parse_response(*response);
-    return result && result->request_id == request_id
-        ? pam_result(result->result)
-        : PAM_AUTHINFO_UNAVAIL;
+    const auto outcome = result && result->request_id == request_id
+        ? pam_result(result->result) : PAM_AUTHINFO_UNAVAIL;
+    request_logger.info("authentication.completed", {su::log::field("pam_status", outcome)});
+    return outcome;
 } catch (...) {
+    try { su::log::Logger{"pam", su::log::Level::info, su::log::pam_sink(pamh)}.error("authentication.exception"); } catch (...) {}
     // No C++ exception may cross the PAM C ABI or prevent password fallback.
     return PAM_AUTHINFO_UNAVAIL;
 }
