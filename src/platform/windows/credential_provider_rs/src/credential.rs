@@ -240,18 +240,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         // LogonUI renders SMALL_TEXT/LARGE_TEXT fields from this value;
         // an error here aborts tile creation, so always hand back a string.
         let text = if id == FieldId::LargeText {
-            match self.runtime.phase_owned(self.owner) {
-                Some(crate::Phase::InitialDelay) => {
-                    "Face recognition will start shortly. You can enter your Windows password."
-                }
-                Some(crate::Phase::Recognizing | crate::Phase::RetryDelay) => {
-                    "Recognizing your face. You can enter your Windows password."
-                }
-                Some(crate::Phase::Stopped) => {
-                    "Face recognition stopped. Use your Windows password or select this option again."
-                }
-                _ => crate::fields::display_text(id),
-            }
+            crate::ui_language::text(self.runtime.tile_message_owned(self.owner))
         } else {
             crate::fields::display_text(id)
         };
@@ -527,9 +516,9 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             if !ppszoptionalstatustext.is_null() {
                 unsafe {
                     *ppszoptionalstatustext = Credential::alloc_string(if pending {
-                        "Recognizing your face. You can enter your Windows password."
+                        crate::ui_language::text(crate::ui_text::Message::Recognizing)
                     } else {
-                        "Face recognition is not ready. Use your Windows password or select this option again."
+                        crate::ui_language::text(crate::ui_text::Message::LoginFailed)
                     })?
                 };
             }
@@ -641,9 +630,9 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             }
             if !ppszoptionalstatustext.is_null() {
                 unsafe {
-                    *ppszoptionalstatustext = Credential::alloc_string(
-                        "Update the saved Windows password in Smile2Unlock. Use your Windows password to sign in.",
-                    )?;
+                    *ppszoptionalstatustext = Credential::alloc_string(crate::ui_language::text(
+                        crate::ui_text::Message::SavedPasswordRejected,
+                    ))?;
                 }
             }
             if !pcpsioptionalstatusicon.is_null() {

@@ -326,8 +326,10 @@ bool administrator_stacks_preserve_fallback() {
 
 } // namespace
 
+bool pam_guidance_tests();
+
 int main() {
-    return run_socket_case(
+    return pam_guidance_tests() && run_socket_case(
                "accepted", su::control::ControlResult::kAccepted, PAM_SUCCESS)
             && run_socket_case(
                 "rejected", su::control::ControlResult::kRejected, PAM_AUTH_ERR)

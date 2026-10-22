@@ -66,6 +66,7 @@ pub const kStatusStaleOrConsumed: u32 = 4;
 pub const kStatusCorrupt: u32 = 5;
 pub const kStatusAuthenticationFailed: u32 = 6;
 pub const kStatusProfileNotFound: u32 = 7;
+pub const kStatusNoFaceDetected: u32 = 8;
 
 pub const kSidCapacity: usize = 185;
 pub const kUsernameCapacity: usize = 513;
@@ -407,8 +408,9 @@ pub fn status_to_hresult(status: u32) -> Error {
         kStatusAccessDenied => win32_error(5),      // E_ACCESSDENIED
         kStatusStaleOrConsumed => win32_error(kWin32ErrorPasswordRestriction),
         kStatusCorrupt => win32_error(kWin32ErrorInvalidData),
+        kStatusNoFaceDetected => win32_error(1169), // ERROR_NO_MATCH: no face in capture window
         kStatusAuthenticationFailed => win32_error(1326), // ERROR_LOGON_FAILURE
-        kStatusProfileNotFound => win32_error(1168),      // ERROR_NOT_FOUND
+        kStatusProfileNotFound => win32_error(1168), // ERROR_NOT_FOUND
         kStatusUnavailable => win32_error(kWin32ErrorServiceNotActive),
         _ => win32_error(kWin32ErrorInvalidData),
     }

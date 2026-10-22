@@ -1,5 +1,9 @@
 //! Non-secret display protocol. Keep values in sync with status_host/protocol.h.
-use crate::auto_recognition::{AttemptMachine, Phase, StopReason};
+use crate::auto_recognition::{AttemptMachine, Outcome, Phase, StopReason};
+
+// Packed word: phase bits 0–3, automatic bit 4, last-no-face bit 5,
+// countdown seconds bits 8–23. Bits 6–7 and 24–31 remain reserved.
+pub const LAST_NO_FACE: u32 = 1 << 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -43,7 +47,12 @@ pub fn snapshot(machine: &AttemptMachine, now_ms: u64, visible: bool, login_fail
     } else {
         0
     };
-    state as u32 | ((machine.settings().is_automatic() as u32) << 4) | (seconds << 8)
+    let no_face = if machine.retry_hint() == Some(Outcome::NoFace) {
+        LAST_NO_FACE
+    } else {
+        0
+    };
+    state as u32 | ((machine.settings().is_automatic() as u32) << 4) | no_face | (seconds << 8)
 }
 
 #[cfg(test)]
@@ -96,5 +105,54 @@ mod tests {
         machine.poll(20);
         machine.complete(generation, 30, Outcome::Fatal);
         assert_eq!(snapshot(&machine, 30, true, false), 9);
+    }
+
+    #[test]
+    fn no_face_flag_survives_retry_and_timeout_then_clears_on_new_attempt() {
+        let mut machine = AttemptMachine::with_settings(TriggerSettings::from_values(
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(5),
+        ));
+        let (generation, _) = machine.begin(0, "test", 1, 1);
+        machine.poll(0);
+        machine.complete(generation, 1, Outcome::NoFace);
+        assert_eq!(
+            snapshot(&machine, 1, true, false),
+            4 | 16 | LAST_NO_FACE | (1 << 8)
+        );
+        machine.poll(1001);
+        assert_eq!(snapshot(&machine, 1001, true, false), 3 | 16 | LAST_NO_FACE);
+        machine.expire(5000);
+        assert_eq!(snapshot(&machine, 5000, true, false), 8 | 16 | LAST_NO_FACE);
+        assert_eq!(snapshot(&machine, 5000, false, false), 0);
+        machine.begin_on_demand(6000, "test", 1, 2);
+        assert_eq!(snapshot(&machine, 6000, true, false) & LAST_NO_FACE, 0);
+    }
+
+    #[test]
+    fn mismatch_replaces_no_face_flag_and_manual_no_face_stops_with_flag() {
+        let mut machine = AttemptMachine::with_settings(TriggerSettings::from_values(
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(30),
+        ));
+        let (generation, _) = machine.begin(0, "test", 1, 1);
+        machine.poll(0);
+        machine.complete(generation, 1, Outcome::NoFace);
+        machine.poll(1001);
+        machine.complete(generation, 1002, Outcome::Mismatch);
+        assert_eq!(snapshot(&machine, 1002, true, false), 4 | 16 | (1 << 8));
+        machine.expire(30_000);
+        assert_eq!(snapshot(&machine, 30_000, true, false), 8 | 16);
+        machine.set_settings(TriggerSettings::manual());
+        let (generation, _) = machine.begin_on_demand(31_000, "test", 1, 2);
+        machine.poll(31_000);
+        machine.complete(generation, 31_001, Outcome::NoFace);
+        assert_eq!(snapshot(&machine, 31_001, true, false), 7 | LAST_NO_FACE);
+        machine.cancel();
+        assert_eq!(snapshot(&machine, 31_002, true, false), 1);
     }
 }

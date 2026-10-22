@@ -17,6 +17,8 @@ mod fields;
 mod power_events;
 mod secret_buffer;
 mod status;
+mod ui_language;
+mod ui_text;
 mod wake_policy;
 
 #[cfg(windows)]

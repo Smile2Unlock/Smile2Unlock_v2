@@ -109,6 +109,7 @@ int wmain() {
         return 4;
     }
 
+    auto saw_face = false;
     while (std::chrono::steady_clock::now() < deadline) {
         const auto result = recognizer.extract_features(liveness_enabled);
         if (!result && result.error() == su::recognizer::RecognizerError::kModelUnavailable) {
@@ -122,6 +123,7 @@ int wmain() {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
             continue;
         }
+        saw_face = true;
         if (result->liveness_score < request.liveness_threshold
             || result->feature.size() > response.feature.size()) {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
@@ -138,7 +140,7 @@ int wmain() {
         return 0;
     }
     logger.warn("recognition.timed_out");
-    response.status = AgentStatus::kTimedOut;
+    response.status = saw_face ? AgentStatus::kNoLiveFace : AgentStatus::kTimedOut;
     (void)write_exact(output, &response, sizeof(response));
     wipe(response);
     request = {};

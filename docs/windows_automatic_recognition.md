@@ -32,7 +32,11 @@ fallback whenever automatic recognition is disabled or cannot complete.
   Tile `UnAdvise` disconnects field events during re-enumeration and preserves
   the attempt. An already empty password-field reset does the same.
 - Empty-password submission starts one capture on the same background worker
-  in manual mode, or waits for the existing automatic attempt. It returns
+  in manual mode, or waits for the existing automatic attempt. After any stopped
+  attempt (including service/model unavailability), an explicit Enter/submit-arrow
+  action starts one new on-demand capture in either mode with a fresh deadline.
+  Failed Windows logons and invalid broker passwords still block face submission.
+  It returns
   `CPGSR_NO_CREDENTIAL_NOT_FINISHED` immediately instead of making a synchronous
   pipe call. Refresh-driven reselection does not restart stopped/submitted attempts.
 - Deselection, actual password editing, user-array replacement, provider `UnAdvise`, hard
@@ -68,6 +72,31 @@ fallback whenever automatic recognition is disabled or cannot complete.
   agent wait observes that event and terminates the camera agent immediately,
   so a cancelled attempt does not keep the camera busy for the remaining
   capture budget and the next retry can start on schedule.
+
+## Tile guidance and wire compatibility
+
+The CP selects Simplified Chinese for a Chinese Windows UI primary language
+(`GetUserDefaultUILanguage`), and English otherwise. Tile and submit/status copy
+share one tested table. Retry guidance distinguishes no face from a face mismatch
+(or liveness rejection), and stopped attempts explain Enter / → retry, including
+service/model unavailability. Failed Windows logons point only to the Windows
+password. Phase changes use the existing GIT `CredentialsChanged` notifier and field re-query.
+
+The separate lock-screen status band also offers Enter retry after no-match,
+timeout or service/model unavailability; Windows logon failure remains
+password-only. Its presentation snapshot uses bit 5 for the last capture's
+no-face outcome (phase bits 0–3, automatic bit 4, countdown bits 8–23). No-face
+retry countdowns ask the user to face the camera, and no-face stops retain that
+title. Mismatch keeps the verification/countdown text. The host includes bit 5
+in its repaint key; captions are pure functions covered by the status-display
+test. The shared mapping layout/version and authentication behavior are unchanged.
+
+The service and CP ship together. Protocol version remains 2; status 8
+(`kNoFaceDetected`) means the agent found no face in its capture window. Agent
+liveness failures and profile mismatches remain `kAuthenticationFailed`; other
+error mappings are unchanged, including service/transport timeouts. An old CP
+treats status 8 as unavailable and safely stops instead of retrying. The existing
+`request.completed` log records `status=no_face_detected` without camera data.
 
 ## Remaining gaps
 
@@ -107,7 +136,13 @@ idle, initial delay, recognizing, retry delay, ready, submitted and stopped.
    A late result is erased without notifying LogonUI or submitting credentials.
    Tile UnAdvise during a refresh only disconnects field events, and an empty
    initialization/reset of an already empty password field leaves recognition intact.
-6. Failed Windows logon stops automatic retries. In particular, a stale stored
+6. Only an explicit empty-password submit can restart a stopped attempt, for any
+   stop reason (`TimedOut`, `NoMatch`, `Unavailable`, or no recorded reason);
+   refresh-driven reselection cannot. Unavailable service/model failures do not
+   reach Windows logon, so an explicit retry is safe. Submitted grants, failed or
+   completed Windows logons, and invalid broker passwords still block face
+   submission; failed logons direct the user to their Windows password.
+   Failed Windows logon stops automatic retries. In particular, a stale stored
    password must not repeatedly attempt logon and lock the Windows account.
 
 The UI thread must never join a blocking worker. Worker ownership and module

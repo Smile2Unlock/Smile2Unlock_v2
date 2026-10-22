@@ -58,6 +58,8 @@ pub enum TransportResult<G> {
     Grant(G),
     /// Retryable outcome.
     Transient,
+    NoFace,
+    Mismatch,
     /// Non-retryable outcome.
     Fatal,
 }
@@ -387,6 +389,8 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                 || inner.power.blocked()
                 || inner.power_paused
                 || inner.submitting
+                || inner.login_failed
+                || inner.login_complete
                 || inner.owner.as_ref().map(|(id, s)| (*id, s.as_str())) != Some((owner, sid))
             {
                 return false;
@@ -395,10 +399,10 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             if inner.machine.is_active() {
                 return true;
             }
-            if inner.machine.phase() == Phase::Submitted
-                || (inner.machine.phase() == Phase::Stopped
-                    && inner.machine.settings().is_automatic())
-            {
+            // Only an explicit submit may re-arm a stopped attempt, including
+            // an unavailable service. Windows logon / broker-password guards
+            // still prevent stale credentials from reaching another logon.
+            if inner.machine.phase() == Phase::Submitted {
                 return false;
             }
             Self::clear_grant(&mut inner);
@@ -650,10 +654,13 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
             .map(|(_, sid)| sid.clone())
     }
 
-    pub(crate) fn phase_owned(&self, owner: u64) -> Option<Phase> {
+    pub(crate) fn tile_message_owned(&self, owner: u64) -> crate::ui_text::Message {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         self.expire_locked(&mut inner);
-        (inner.owner.as_ref().map(|(id, _)| *id) == Some(owner)).then(|| inner.machine.phase())
+        if inner.owner.as_ref().map(|(id, _)| *id) != Some(owner) {
+            return crate::ui_text::Message::Title;
+        }
+        crate::ui_text::tile_message(&inner.machine, inner.login_failed)
     }
 
     /// A display-only snapshot: no identity, camera data or credential leaves
@@ -879,6 +886,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                     // cancellation after this point cannot be lost.
                     self.cancel_event.reset();
                     drop(inner);
+                    self.notify_ready();
                     let abort = self.cancel_event.raw();
                     let outcome = {
                         let mut transport =
@@ -911,12 +919,17 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                             // A stale grant is dropped here and zeroized by
                             // `PreparedPipePassword::drop`.
                         }
-                        TransportResult::Transient => {
-                            let _ = inner.machine.complete(
-                                request.generation,
-                                completed_at,
-                                Outcome::Transient,
-                            );
+                        TransportResult::Transient
+                        | TransportResult::NoFace
+                        | TransportResult::Mismatch => {
+                            let hint = match outcome {
+                                TransportResult::NoFace => Outcome::NoFace,
+                                TransportResult::Mismatch => Outcome::Mismatch,
+                                _ => Outcome::Transient,
+                            };
+                            let _ = inner
+                                .machine
+                                .complete(request.generation, completed_at, hint);
                         }
                         TransportResult::Fatal => {
                             let _ = inner.machine.complete(
@@ -927,7 +940,7 @@ impl<T: RecognitionTransport> AutoRuntime<T> {
                         }
                     }
                     if inner.machine.generation() == request.generation
-                        && inner.machine.phase() == Phase::Stopped
+                        && matches!(inner.machine.phase(), Phase::Stopped | Phase::RetryDelay)
                     {
                         Self::clear_grant(&mut inner);
                         drop(inner);
@@ -997,6 +1010,8 @@ impl RecognitionTransport for PipeRecognitionTransport {
                 ));
                 match outcome {
                     Outcome::Transient => TransportResult::Transient,
+                    Outcome::NoFace => TransportResult::NoFace,
+                    Outcome::Mismatch => TransportResult::Mismatch,
                     _ => TransportResult::Fatal,
                 }
             }
@@ -1015,10 +1030,10 @@ pub fn classify(hresult: u32) -> Outcome {
     let code = hresult & 0xffff;
     if (hresult & FACILITY_WIN32) == FACILITY_WIN32 {
         match code {
-            // ERROR_LOGON_FAILURE: face did not match, or liveness failed.
-            1326
+            1169 => return Outcome::NoFace, // ERROR_NO_MATCH: no face in capture window.
+            1326 => return Outcome::Mismatch, // ERROR_LOGON_FAILURE: mismatch / liveness.
             // ERROR_PIPE_BUSY / ERROR_SEM_TIMEOUT / ERROR_TIMEOUT.
-            | 231 | 121 | 1460
+            231 | 121 | 1460
             // ERROR_OPERATION_ABORTED: the abort event fired; if the attempt
             // is still active this was a spurious race, so retry rather than
             // kill.
@@ -1105,6 +1120,7 @@ pub fn read_trigger_settings(sid: &str) -> TriggerSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auto_recognition::StopReason;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::AtomicUsize;
 
@@ -1128,6 +1144,10 @@ mod tests {
     }
 
     impl FakeTransport {
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+
         fn new(outcomes: Vec<Outcome>) -> Self {
             Self {
                 outcomes: Mutex::new(outcomes),
@@ -1157,6 +1177,8 @@ mod tests {
             match outcome {
                 Outcome::Success => TransportResult::Grant("grant"),
                 Outcome::Transient => TransportResult::Transient,
+                Outcome::NoFace => TransportResult::NoFace,
+                Outcome::Mismatch => TransportResult::Mismatch,
                 Outcome::Fatal => TransportResult::Fatal,
             }
         }
@@ -1454,7 +1476,7 @@ mod tests {
 
     #[test]
     fn classify_retries_only_expected_outcomes() {
-        assert_eq!(classify(0x8007_052E), Outcome::Transient); // 1326
+        assert_eq!(classify(0x8007_052E), Outcome::Mismatch); // 1326
         assert_eq!(classify(0x8007_00E7), Outcome::Transient); // 231 pipe busy
         assert_eq!(classify(0x8007_0079), Outcome::Transient); // 121 sem timeout
         assert_eq!(classify(0x8007_05B4), Outcome::Transient); // 1460 timeout
@@ -1478,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_publishes_grant_and_notifies_once() {
+    fn worker_refreshes_recognizing_then_notifies_grant_once() {
         let clock = Box::new(FakeClock::new(0));
         let runtime = AutoRuntime::new(FakeTransport::new(vec![Outcome::Success]), clock);
         let notifier = Arc::new(CountingNotifier(AtomicUsize::new(0)));
@@ -1490,8 +1512,8 @@ mod tests {
             Some(30),
         ));
         runtime.select("S-1-5-21-1", 1, 7);
-        wait_for(|| runtime.ready_sid().as_deref() == Some("S-1-5-21-1"));
-        assert_eq!(notifier.0.load(Ordering::Acquire), 1);
+        wait_for(|| notifier.0.load(Ordering::Acquire) == 2);
+        assert_eq!(runtime.ready_sid().as_deref(), Some("S-1-5-21-1"));
         assert_eq!(runtime.phase(), Phase::Ready);
         // Repeated notification is suppressed while the grant waits.
         runtime.set_settings(TriggerSettings::from_values(
@@ -1501,10 +1523,66 @@ mod tests {
             Some(30),
         ));
         thread::sleep(Duration::from_millis(20));
-        assert_eq!(notifier.0.load(Ordering::Acquire), 1);
+        assert_eq!(notifier.0.load(Ordering::Acquire), 2);
         let grant = runtime.take_ready("S-1-5-21-1");
         assert_eq!(grant.map(|(grant, _, _)| grant), Some("grant"));
         assert!(runtime.take_ready("S-1-5-21-1").is_none());
+        runtime.shutdown();
+    }
+
+    struct GuidanceNotifier {
+        runtime: std::sync::Weak<AutoRuntime<FakeTransport>>,
+        messages: Mutex<Vec<crate::ui_text::Message>>,
+    }
+
+    impl ReadyNotifier for GuidanceNotifier {
+        fn notify_ready(&self) {
+            if let Some(runtime) = self.runtime.upgrade() {
+                self.messages
+                    .lock()
+                    .unwrap()
+                    .push(runtime.tile_message_owned(10));
+            }
+        }
+    }
+
+    #[test]
+    fn worker_refreshes_no_face_and_mismatch_guidance_without_restarting() {
+        use crate::ui_text::Message;
+        let runtime = AutoRuntime::new(
+            FakeTransport::new(vec![Outcome::NoFace, Outcome::Mismatch, Outcome::Fatal]),
+            Box::new(FakeClock::new(0)),
+        );
+        let notifier = Arc::new(GuidanceNotifier {
+            runtime: Arc::downgrade(&runtime),
+            messages: Mutex::new(vec![]),
+        });
+        runtime.set_notifier(notifier.clone());
+        let generation = runtime.select_owned(
+            10,
+            "S-1-5-21-1",
+            1,
+            1,
+            TriggerSettings {
+                mode: crate::TriggerMode::Automatic,
+                auto_delay: Duration::ZERO,
+                retry_delay: Duration::ZERO,
+                timeout: Duration::from_secs(30),
+            },
+        );
+        wait_for(|| notifier.messages.lock().unwrap().last() == Some(&Message::Unavailable));
+        assert_eq!(
+            *notifier.messages.lock().unwrap(),
+            vec![
+                Message::Recognizing,
+                Message::NoFace,
+                Message::NoFace,
+                Message::Mismatch,
+                Message::Mismatch,
+                Message::Unavailable,
+            ]
+        );
+        assert_eq!(runtime.generation(), generation);
         runtime.shutdown();
     }
 
@@ -1670,9 +1748,11 @@ mod tests {
         assert_eq!(phase(), 1, "old tile cannot hide the new user's hint");
         runtime.logon_result_owned(20, false);
         assert_eq!(phase(), 10);
+        assert!(!runtime.submit_owned(20, "S-1-5-21-2", 1, 9));
+        runtime.password_entry_owned(20, false);
         assert!(runtime.submit_owned(20, "S-1-5-21-2", 1, 9));
         wait_for(|| runtime.phase() == Phase::Ready);
-        assert_eq!(phase(), 5, "a new manual attempt clears the old error");
+        assert_eq!(phase(), 5, "password editing clears the old error");
         assert!(runtime.take_ready_owned(20, "S-1-5-21-2").is_some());
         assert_eq!(phase(), 6);
         runtime.logon_result_owned(20, true);
@@ -1865,20 +1945,16 @@ mod tests {
     }
 
     #[test]
-    fn hard_failure_does_not_retry_or_rearm_on_serialization() {
-        let runtime = AutoRuntime::new(
-            FakeTransport::new(vec![Outcome::Fatal, Outcome::Success]),
-            Box::new(FakeClock::new(0)),
-        );
-        runtime.select_owned(
-            10,
-            "S-1-5-21-1",
-            1,
-            7,
-            TriggerSettings::from_values(Some(1), Some(0), Some(1), Some(30)),
-        );
+    fn timeout_submit_restarts_once_but_refresh_does_not() {
+        let runtime = sleeping_tile();
+        let generation = runtime.generation();
+        let settings = runtime.inner.lock().unwrap().machine.settings();
+        runtime.select_owned(10, "S-1-5-21-1", 1, 8, settings);
+        assert_eq!(runtime.phase(), Phase::Stopped);
+        assert_eq!(runtime.generation(), generation);
+        assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
         wait_for(|| runtime.phase() == Phase::Stopped);
-        assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 8));
+        assert_ne!(runtime.generation(), generation);
         assert_eq!(
             runtime
                 .transport
@@ -1892,10 +1968,102 @@ mod tests {
     }
 
     #[test]
+    fn no_match_submit_restarts_in_both_modes() {
+        for mode in [0, 1] {
+            let runtime = sleeping_tile();
+            {
+                let mut inner = runtime.inner.lock().unwrap();
+                inner.machine.set_settings(TriggerSettings::from_values(
+                    Some(mode),
+                    Some(0),
+                    Some(1),
+                    Some(30),
+                ));
+                let (generation, _) = inner.machine.begin_on_demand(100_000, "S-1-5-21-1", 1, 8);
+                inner.machine.poll(100_000);
+                inner
+                    .machine
+                    .complete(generation, 100_001, Outcome::Transient);
+                assert_eq!(inner.machine.stop_reason(), Some(StopReason::NoMatch));
+            }
+            runtime.transport.lock().unwrap().outcomes = Mutex::new(vec![Outcome::Success]);
+            assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
+            wait_for(|| runtime.phase() == Phase::Ready);
+            assert!(runtime.take_ready_owned(10, "S-1-5-21-1").is_some());
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 10));
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
+    fn windows_logon_failure_refuses_submit_in_both_modes() {
+        for mode in [0, 1] {
+            let runtime = sleeping_tile();
+            runtime
+                .inner
+                .lock()
+                .unwrap()
+                .machine
+                .set_settings(TriggerSettings::from_values(Some(mode), None, None, None));
+            runtime.logon_result_owned(10, false);
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 9));
+            assert_eq!(
+                runtime
+                    .transport
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .load(Ordering::Acquire),
+                0
+            );
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
+    fn unavailable_only_restarts_on_explicit_submit_in_both_modes() {
+        for mode in [0, 1] {
+            let runtime = AutoRuntime::new(
+                FakeTransport::new(vec![Outcome::Fatal, Outcome::Success]),
+                Box::new(FakeClock::new(0)),
+            );
+            let settings = TriggerSettings::from_values(Some(mode), Some(0), Some(1), Some(30));
+            let generation = runtime.select_owned(10, "S-1-5-21-1", 1, 7, settings);
+            if mode == 0 {
+                assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 8));
+            }
+            wait_for(|| runtime.phase() == Phase::Stopped);
+            assert_eq!(
+                runtime.inner.lock().unwrap().machine.stop_reason(),
+                Some(StopReason::Unavailable)
+            );
+            let stopped_generation = runtime.generation();
+            runtime.select_owned(10, "S-1-5-21-1", 1, 9, settings);
+            assert_eq!(runtime.phase(), Phase::Stopped);
+            assert_eq!(runtime.generation(), stopped_generation);
+            assert_eq!(runtime.transport.lock().unwrap().call_count(), 1);
+            assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 10));
+            let retry_generation = runtime.generation();
+            assert_ne!(retry_generation, stopped_generation);
+            assert_ne!(retry_generation, generation);
+            assert!(runtime.submit_owned(10, "S-1-5-21-1", 1, 11));
+            wait_for(|| runtime.phase() == Phase::Ready);
+            assert_eq!(runtime.generation(), retry_generation);
+            assert_eq!(runtime.transport.lock().unwrap().call_count(), 2);
+            assert_eq!(
+                runtime.take_ready_owned(10, "S-1-5-21-1"),
+                Some(("grant", 10, 1))
+            );
+            assert!(!runtime.submit_owned(10, "S-1-5-21-1", 1, 12));
+            runtime.shutdown();
+        }
+    }
+
+    #[test]
     fn service_wire_hard_failures_stop_and_capture_failures_retry() {
         use crate::pipe_client::{
             kStatusAccessDenied, kStatusAuthenticationFailed, kStatusCorrupt,
-            kStatusInvalidRequest, kStatusUnavailable, status_to_hresult,
+            kStatusInvalidRequest, kStatusNoFaceDetected, kStatusUnavailable, status_to_hresult,
         };
         for status in [
             kStatusUnavailable,
@@ -1910,7 +2078,11 @@ mod tests {
         }
         assert_eq!(
             classify(status_to_hresult(kStatusAuthenticationFailed).code().0 as u32),
-            Outcome::Transient
+            Outcome::Mismatch
+        );
+        assert_eq!(
+            classify(status_to_hresult(kStatusNoFaceDetected).code().0 as u32),
+            Outcome::NoFace
         );
     }
     #[test]

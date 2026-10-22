@@ -66,6 +66,8 @@ inline std::string_view status_name(smile2unlock::logon_secret_ipc::Status statu
         return "corrupt";
     case kAuthenticationFailed:
         return "authentication_failed";
+    case kNoFaceDetected:
+        return "no_face_detected";
     case kProfileNotFound:
         return "profile_not_found";
     }

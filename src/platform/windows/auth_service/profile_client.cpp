@@ -116,6 +116,7 @@ std::string status_error(Status status) {
     case Status::kStaleOrConsumed: return "profile request is stale";
     case Status::kCorrupt: return "secure profile store is corrupt";
     case Status::kAuthenticationFailed: return "Windows password verification failed";
+    case Status::kNoFaceDetected: return "no face detected";
     case Status::kProfileNotFound: return "face profile was not found";
     case Status::kOk: return {};
     }
