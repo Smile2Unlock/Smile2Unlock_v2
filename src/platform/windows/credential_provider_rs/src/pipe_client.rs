@@ -1112,10 +1112,9 @@ mod tests {
 
     #[test]
     fn pipe_mode_failure_closes_the_connected_handle() {
-        use windows::Win32::Foundation::GetHandleInformation;
         use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows::Win32::System::Pipes::{
-            CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+            CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT, PeekNamedPipe,
         };
         let (_storage, name) = wide_name("byte-mode");
         let server = PipeGuard(unsafe {
@@ -1143,10 +1142,12 @@ mod tests {
             )
         }
         .unwrap();
+        // Observe the connection via the live server handle. A closed client's
+        // numeric handle can be reused by another test running in parallel.
+        unsafe { PeekNamedPipe(server.0, None, 0, None, None, None) }.unwrap();
         assert!(configure_pipe(PipeGuard(client)).is_err());
-        let mut flags = Default::default();
-        let error = unsafe { GetHandleInformation(client, &mut flags) }.unwrap_err();
-        assert_eq!(win32_code(&error), 6); // ERROR_INVALID_HANDLE
+        let error = unsafe { PeekNamedPipe(server.0, None, 0, None, None, None) }.unwrap_err();
+        assert_eq!(win32_code(&error), 109); // ERROR_BROKEN_PIPE
     }
 
     #[test]
