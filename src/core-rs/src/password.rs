@@ -158,7 +158,9 @@ fn bytes_to_password(bytes: &[u8]) -> Result<Zeroizing<Vec<u16>>, SuStatus> {
     }
     let password = Zeroizing::new(
         bytes
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect::<Vec<_>>(),
     );
@@ -267,8 +269,7 @@ pub(crate) fn store_logon_secret(
         credential_generation: generation,
         stale: false,
     };
-    let result = save_secret(path, context, &secret);
-    result.map(|_| generation)
+    save_secret(path, context, &secret).map(|_| generation)
 }
 
 pub(crate) fn prepare_logon_secret(
@@ -308,8 +309,7 @@ pub(crate) fn mark_logon_secret_stale(
     let _guard = PASSWORD_STORE_LOCK.lock().map_err(|_| SuStatus::IoError)?;
     let mut secret = load_secret(path, context)?;
     secret.stale = true;
-    let result = save_secret(path, context, &secret);
-    result
+    save_secret(path, context, &secret)
 }
 
 pub(crate) fn clear_logon_secret(
