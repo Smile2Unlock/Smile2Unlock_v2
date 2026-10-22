@@ -51,11 +51,11 @@ export component DeploymentPanel inherits Rectangle {
         : root.operation_status;
     // Every target card reserves the width of its widest possible action label
     // so the action column lines up across cards in every language.
-    private property <length> action_width: max(
+    private property <length> action_width: max(UiTheme.button-min-width, max(
         measure-review.preferred-width, measure-rollback.preferred-width,
         measure-repair.preferred-width, measure-confirm-rollback.preferred-width,
         measure-confirm-repair.preferred-width, measure-apply.preferred-width)
-        + 2 * UiTheme.button-padding;
+        + 2 * UiTheme.button-padding);
 
     background: transparent;
 
