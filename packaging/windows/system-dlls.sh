@@ -13,7 +13,7 @@ windows_is_system_dll() {
         msvcrt.dll|ncrypt.dll|netapi32.dll|normaliz.dll|ntdll.dll|ole32.dll|oleaut32.dll) return 0 ;;
         onecoreuap.dll|opengl32.dll|opengl32sw.dll|powrprof.dll|propsys.dll|psapi.dll) return 0 ;;
         rpcrt4.dll|secur32.dll|setupapi.dll|shell32.dll|shlwapi.dll|sspicli.dll) return 0 ;;
-        ucrtbase.dll|user32.dll|userenv.dll|uxtheme.dll|version.dll|winhttp.dll) return 0 ;;
+        ucrtbase.dll|user32.dll|userenv.dll|uxtheme.dll|version.dll|wevtapi.dll|winhttp.dll) return 0 ;;
         winmm.dll|wintrust.dll|windows.storage.dll|wldp.dll|ws2_32.dll|wtsapi32.dll) return 0 ;;
         *) return 1 ;;
     esac
