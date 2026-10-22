@@ -99,6 +99,7 @@ int main(int argc, char** argv) {
     const auto installing = std::ranges::any_of(std::span{argv, static_cast<std::size_t>(argc)}, [](const char* value) {
         return std::string_view{value} == "--register-cp" || std::string_view{value} == "--ensure-service";
     });
+    // Initialize before any helper uses process_logger() with its default arguments.
     const auto& logger = su::log::process_logger("deploy-helper", true, installing);
     logger.info("deploy.started");
     auto register_cp = false;

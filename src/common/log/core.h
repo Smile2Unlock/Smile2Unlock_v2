@@ -29,15 +29,15 @@ Field field(std::string_view key, T value) { return field(key, std::to_string(va
 
 using Timestamp = std::chrono::sys_time<std::chrono::milliseconds>;
 struct Record {
-    const Timestamp timestamp;
-    const int utc_offset_minutes;
-    const Level level;
-    const std::string component;
-    const std::string event;
-    const std::uint64_t pid;
-    const std::uint64_t tid;
-    const std::vector<Field> fields = {};
-    const std::optional<std::source_location> source = std::nullopt;
+    Timestamp timestamp;
+    int utc_offset_minutes;
+    Level level;
+    std::string component;
+    std::string event;
+    std::uint64_t pid;
+    std::uint64_t tid;
+    std::vector<Field> fields = {};
+    std::optional<std::source_location> source = std::nullopt;
 };
 
 // These transformations never read clocks, environment, process state, or files.
