@@ -39,9 +39,17 @@ namespace {
 constexpr wchar_t kClsid[] = L"{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
 constexpr wchar_t kClsidKeyPath[] =
     L"SOFTWARE\\Classes\\CLSID\\{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
+// LogonUI only enumerates "Credential Providers" (with a space).
 constexpr wchar_t kCredentialProvidersKeyPath[] =
-    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\CredentialProviders";
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers";
 constexpr wchar_t kCredentialProviderKeyPath[] =
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\Credential Providers\\"
+    L"{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
+// Releases up to 2.3.3 enrolled under this misspelled key, which LogonUI
+// never reads; it is removed on register/unregister.
+constexpr wchar_t kLegacyCredentialProvidersKeyPath[] =
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\CredentialProviders";
+constexpr wchar_t kLegacyCredentialProviderKeyPath[] =
     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\CredentialProviders\\"
     L"{5fd3d285-0dd9-4362-8855-e0abaacd4af6}";
 constexpr wchar_t kServiceName[] = L"Smile2UnlockAuthService";
@@ -848,6 +856,46 @@ std::string json_escape(std::string_view text) {
     return escaped;
 }
 
+// Remove values written by early development builds, which incorrectly
+// stored the CLSID directly below the parent key.
+void remove_clsid_values(const wchar_t* parent_path) {
+    HKEY cp_key = nullptr;
+    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, parent_path, 0,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &cp_key) != ERROR_SUCCESS) {
+        return;
+    }
+    for (DWORD index = 0;; ++index) {
+        wchar_t name[64] = {};
+        DWORD name_size = 64;
+        BYTE value[256] = {};
+        DWORD value_size = sizeof(value);
+        const auto status = ::RegEnumValueW(
+            cp_key, index, name, &name_size, nullptr, nullptr, value, &value_size);
+        if (status == ERROR_NO_MORE_ITEMS) {
+            break;
+        }
+        if (status != ERROR_SUCCESS) {
+            continue;
+        }
+        std::wstring text(reinterpret_cast<wchar_t*>(value),
+            value_size / sizeof(wchar_t));
+        while (!text.empty() && text.back() == L'\0') {
+            text.pop_back();
+        }
+        if (text == kClsid) {
+            ::RegDeleteValueW(cp_key, name);
+            break;
+        }
+    }
+    ::RegCloseKey(cp_key);
+}
+
+// Best-effort cleanup of the misspelled enrollment from releases <= 2.3.3.
+void remove_legacy_enrollment() {
+    (void)::RegDeleteTreeW(HKEY_LOCAL_MACHINE, kLegacyCredentialProviderKeyPath);
+    remove_clsid_values(kLegacyCredentialProvidersKeyPath);
+}
+
 }  // namespace
 
 bool process_elevated() {
@@ -1060,7 +1108,7 @@ std::expected<void, std::string> register_credential_provider() {
     if (::RegCreateKeyExW(HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath, 0, nullptr, 0,
             KEY_CREATE_SUB_KEY | KEY_SET_VALUE | KEY_WOW64_64KEY,
             nullptr, &cp_key, nullptr) != ERROR_SUCCESS) {
-        return std::unexpected("failed to open the CredentialProviders registry key");
+        return std::unexpected("failed to open the Credential Providers registry key");
     }
     constexpr wchar_t kProviderName[] = L"Smile2Unlock Credential Provider";
     const auto enrollment_status = ::RegSetValueExW(cp_key, L"", 0, REG_SZ,
@@ -1079,44 +1127,17 @@ std::expected<void, std::string> register_credential_provider() {
         return std::unexpected("credential provider enrollment was not persisted");
     }
     ::RegCloseKey(enrolled_key);
+    remove_legacy_enrollment();
     return {};
 }
 
 std::expected<void, std::string> unregister_credential_provider() {
     const auto removed = ::RegDeleteTreeW(HKEY_LOCAL_MACHINE, kCredentialProviderKeyPath);
     if (removed != ERROR_SUCCESS && removed != ERROR_FILE_NOT_FOUND) {
-        return std::unexpected("failed to remove the CredentialProviders registration");
+        return std::unexpected("failed to remove the Credential Providers registration");
     }
-    // Remove values written by early development builds, which incorrectly
-    // stored the CLSID directly below the parent key.
-    HKEY cp_key = nullptr;
-    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, kCredentialProvidersKeyPath, 0,
-            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY, &cp_key) == ERROR_SUCCESS) {
-        for (DWORD index = 0;; ++index) {
-            wchar_t name[64] = {};
-            DWORD name_size = 64;
-            BYTE value[256] = {};
-            DWORD value_size = sizeof(value);
-            const auto status = ::RegEnumValueW(
-                cp_key, index, name, &name_size, nullptr, nullptr, value, &value_size);
-            if (status == ERROR_NO_MORE_ITEMS) {
-                break;
-            }
-            if (status != ERROR_SUCCESS) {
-                continue;
-            }
-            std::wstring text(reinterpret_cast<wchar_t*>(value),
-                value_size / sizeof(wchar_t));
-            while (!text.empty() && text.back() == L'\0') {
-                text.pop_back();
-            }
-            if (text == kClsid) {
-                ::RegDeleteValueW(cp_key, name);
-                break;
-            }
-        }
-        ::RegCloseKey(cp_key);
-    }
+    remove_clsid_values(kCredentialProvidersKeyPath);
+    remove_legacy_enrollment();
     // Keep the CLSID/InprocServer32 registration for diagnostics.
     return {};
 }

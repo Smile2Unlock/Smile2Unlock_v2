@@ -2,7 +2,7 @@
 //
 // Windows deployment/integration library, the counterpart of the Linux
 // su_deploy library. Owns the credential-provider registration (CLSID +
-// CredentialProviders logon-UI enrollment) and the auth-service lifecycle
+// Credential Providers logon-UI enrollment) and the auth-service lifecycle
 // checks. The GUI (AppController) runs these either directly when already
 // elevated, or through Smile2UnlockDeployHelper.exe relaunched with UAC.
 
@@ -43,7 +43,7 @@ inline constexpr std::string_view kAuthServiceId = "auth-service";
 [[nodiscard]] bool process_elevated();
 
 // Registry: is the credential provider enrolled in the logon UI?
-// (CredentialProviders contains a CLSID-named subkey.)
+// ("Credential Providers" contains a CLSID-named subkey.)
 [[nodiscard]] bool credential_provider_enrolled();
 
 // Registry: is the CLSID registered and pointing at an existing DLL?
