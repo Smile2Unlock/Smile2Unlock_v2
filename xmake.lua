@@ -440,7 +440,7 @@ target("su_recognizer")
         set_policy("check.target_package_licenses", false)
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
-        add_files("src/app/slint_main.cpp", "src/app/web_link.cpp")
+        add_files("src/app/slint_main.cpp", "src/app/web_link.cpp", "src/app/captures_ui.cpp")
         add_about_content()
         add_files("src/app/preview_controller.cpp")
         add_files("src/modules/su.app.preview.cppm")
@@ -1179,4 +1179,27 @@ if is_plat("windows", "mingw") then
         add_ldflags("-static", {force = true})
         add_tests("default")
         on_test(wine_on_test)
+end
+
+if has_config("with_slint") and is_plat("linux") then
+    target("su_capture_ui_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        set_policy("check.target_package_licenses", false)
+        add_packages("slint", "nlohmann_json")
+        add_files("tests/capture/viewer.cpp")
+        add_files("build/generated/capture-test/capture_test_window.cpp", {always_added = true})
+        add_includedirs("build/generated/capture-test")
+        on_load(function (target)
+            local slint = assert(target:pkg("slint"))
+            target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
+            if is_plat("linux") then target:add("rpathdirs", path.join(slint:installdir(), "lib")) end
+            local output = path.join(os.projectdir(), "build/generated/capture-test")
+            os.mkdir(output)
+            os.execv(path.join(slint:installdir(), "bin/slint-compiler"), {
+                "-f", "cpp", "--cpp-namespace", "su::test::ui",
+                "-o", path.join(output, "capture_test_window.h"),
+                "--cpp-file", path.join(output, "capture_test_window.cpp"),
+                path.join(os.projectdir(), "tests/capture/viewer.slint")})
+        end)
 end

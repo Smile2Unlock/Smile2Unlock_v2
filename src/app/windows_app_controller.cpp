@@ -196,7 +196,10 @@ bool save_recognition_settings(const CoreConfig& config) {
         && set(L"RecognitionMode", static_cast<DWORD>(config.recognition_mode))
         && set(L"AutoDelaySec", static_cast<DWORD>(config.auto_delay_sec))
         && set(L"RetryDelaySec", static_cast<DWORD>(config.retry_delay_sec))
-        && set(L"TimeoutSec", static_cast<DWORD>(config.timeout_sec));
+        && set(L"TimeoutSec", static_cast<DWORD>(config.timeout_sec))
+        && set(L"CaptureEnabled", config.capture_enabled ? 1U : 0U)
+        && set(L"CaptureRetentionDays", config.capture_retention_days)
+        && set(L"CaptureMaxCount", config.capture_max_count);
     if (!trigger_saved) {
         return false;
     }
@@ -214,6 +217,9 @@ bool save_recognition_settings(const CoreConfig& config) {
             .auto_delay_sec = static_cast<std::uint32_t>(config.auto_delay_sec),
             .retry_delay_sec = static_cast<std::uint32_t>(config.retry_delay_sec),
             .timeout_sec = static_cast<std::uint32_t>(config.timeout_sec),
+            .capture_enabled = config.capture_enabled ? 1U : 0U,
+            .capture_retention_days = config.capture_retention_days,
+            .capture_max_count = config.capture_max_count,
         });
     return pushed.has_value();
 }
@@ -1027,3 +1033,10 @@ void AppController::download_models(
 }
 
 }  // namespace su::app
+
+namespace su::app {
+std::expected<std::vector<std::uint8_t>, std::string> AppController::captures(
+    std::string_view op, std::string_view id) {
+    return su::windows::profile_client::captures(op, id);
+}
+}

@@ -670,3 +670,29 @@ void AppController::download_models(
 }
 
 }  // namespace su::app
+
+namespace su::app {
+std::expected<std::vector<std::uint8_t>, std::string> AppController::captures(
+    std::string_view op, std::string_view id) {
+    auto command = nlohmann::json{{"op", op}};
+    if (!id.empty()) command["id"] = id;
+    if (op == "configure") {
+        const auto config = load_config_snapshot();
+        if (!config) return std::unexpected(config.error());
+        command["settings"] = {{"enabled", config->capture_enabled},
+            {"days", config->capture_retention_days}, {"max_count", config->capture_max_count}};
+    }
+    const auto request = nlohmann::json{{"version", su::control::kProtocolVersion},
+        {"msg_type", "captures"}, {"request_id", next_request_id()},
+        {"username", current_username("")}, {"command", command}};
+    const auto response = send_control_request(request.dump());
+    if (!response) return std::unexpected(response.error());
+    if (response->result != su::control::ControlResult::kAccepted) return std::unexpected(response->reason);
+    if (op == "fetch") {
+        const auto bytes = nlohmann::json::parse(response->payload_json, nullptr, false);
+        if (!bytes.is_array() || bytes.size() > 45 * 1024) return std::unexpected("invalid capture image");
+        return bytes.get<std::vector<std::uint8_t>>();
+    }
+    return std::vector<std::uint8_t>(response->payload_json.begin(), response->payload_json.end());
+}
+}

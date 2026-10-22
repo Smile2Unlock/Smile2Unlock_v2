@@ -36,6 +36,10 @@ extern "C" void* __stdcall FindWindowW(const wchar_t* class_name, const wchar_t*
 extern "C" void __stdcall DestroyIcon(void* icon);
 #endif
 
+namespace su::app {
+void setup_captures(const slint::ComponentHandle<ui::AppWindow>&,
+    const std::shared_ptr<AppController>&, const std::shared_ptr<const LanguageCatalog>&);
+}
 namespace {
 
 namespace ui = su::app::ui;
@@ -793,6 +797,7 @@ int main(int argc, char** argv) try {
     // Window title: plain product name (the versioned string stays in
     // snapshot->title for the diagnostics view).
     setup_diagnostics(window, controller);
+    su::app::setup_captures(window, controller, catalog);
     window->set_title_text(slint::SharedString("Smile2Unlock"));
     window->set_username(slint::SharedString(username));
     window->set_username_initial(slint::SharedString(su::app::username_initial(username)));
@@ -835,6 +840,9 @@ int main(int argc, char** argv) try {
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
+    window->set_capture_enabled(snapshot->config.capture_enabled);
+    window->set_capture_days(static_cast<int>(snapshot->config.capture_retention_days));
+    window->set_capture_max_count(static_cast<int>(snapshot->config.capture_max_count));
     // Retain legacy trigger fields for config compatibility; the broker only
     // supports manual submission, so these are not exposed as settings.
     window->set_recognition_mode(static_cast<int>(snapshot->config.recognition_mode));
@@ -1299,7 +1307,14 @@ int main(int argc, char** argv) try {
             config->retry_delay_sec = static_cast<std::uint32_t>(std::clamp(retry_delay_sec, 1, 3600));
             config->timeout_sec = static_cast<std::uint32_t>(std::clamp(timeout_sec, 5, 600));
 
-            const auto saved = controller->save_config_snapshot(*config);
+            config->capture_enabled = (*window)->get_capture_enabled();
+            config->capture_retention_days = static_cast<std::uint32_t>((*window)->get_capture_days());
+            config->capture_max_count = static_cast<std::uint32_t>((*window)->get_capture_max_count());
+            const auto saved = controller->save_config_snapshot(*config)
+#ifndef _WIN32
+                .and_then([&] { return controller->captures("configure").transform([](const auto&) {}); })
+#endif
+                ;
             if (!saved) {
                 (*window)->set_settings_status(slint::SharedString(saved.error()));
                 set_activity(
