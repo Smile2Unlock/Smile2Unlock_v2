@@ -217,7 +217,7 @@ target("su_diagnostics")
     if is_plat("linux") then add_files("src/common/diagnostics/process_posix.cpp", "src/common/diagnostics/export_posix.cpp")
     else
         add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN")
-        add_files("src/common/diagnostics/export_windows.cpp")
+        add_files("src/common/diagnostics/export_windows.cpp", "src/common/diagnostics/windows_security.cpp")
     end
 
 target("su_diagnostics_test")

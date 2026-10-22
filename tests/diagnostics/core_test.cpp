@@ -13,7 +13,7 @@ int main() {
     for (const auto* name : {"app.log", "app.log.1", "app.log.123"}) check(log_file_name(name, true));
     for (const auto* name : {"auth-service.log", "cp.log.2"}) check(log_file_name(name) && !log_file_name(name, true));
     for (const auto* name : {"app.log.", "app.log.x", "../app.log", "x\\app.log", ".log", "app.log.1.exe", "app.log:stream"}) check(!log_file_name(name));
-    check(valid_helper_path("C:\\ProgramData\\Smile2Unlock\\Diagnostics", "c:/programdata/smile2unlock/diagnostics/0123456789abcdef"));
+    check(valid_helper_path("C:\\ProgramData\\Smile2Unlock-Diagnostics", "c:/programdata/smile2unlock-diagnostics/0123456789abcdef"));
     for (const auto* path : {"C:/root/../0123456789abcdef", "C:/root/0123456789abcdef/x", "C:/root2/0123456789abcdef", "C:/root/../../Windows", "C:/root/0123456789abcdeg", "C:/root/0123456789abcdef:ads"}) check(!valid_helper_path("C:/root", path));
     check(truncate_output("abc", 3) == "abc");
     check(truncate_output(std::string(100, 'x'), 32) == std::string(12, 'x') + "\n[output truncated]\n");

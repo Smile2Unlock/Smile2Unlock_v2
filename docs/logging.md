@@ -101,6 +101,7 @@ polkit 管理员认证。完成后状态栏显示文件路径，可点击「打�
   journal、服务状态和 `/etc/pam.d/` 中包含 Smile2Unlock 的行；文本总量最多 4 MiB。
 
 拒绝提权或助手不可用时仍会生成诊断包，`system/unavailable.txt` 说明原因，GUI 标注
-「未包含系统日志」。Windows 提权助手只在受保护的 ProgramData 诊断目录中暂存数据，
+「未包含系统日志」。Windows 提权助手只在受保护的 `%ProgramData%\Smile2Unlock-Diagnostics` 目录中暂存数据，
 GUI 负责在自己的临时目录打包；完成后尽力删除两处暂存目录，助手下次运行也会清理旧目录。
+助手只在收集系统日志期间启用 `SeBackupPrivilege`，结束后恢复原状态，不修改产品数据目录或日志目录的 DACL。
 日志及系统事件可能包含本机路径和应用运行信息，发送给开发者前可先检查包内文本。

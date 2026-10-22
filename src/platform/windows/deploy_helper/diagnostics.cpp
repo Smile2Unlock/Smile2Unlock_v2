@@ -1,5 +1,6 @@
 #include "diagnostics.h"
 #include "common/diagnostics/export.h"
+#include "common/diagnostics/windows_security.h"
 #include "common/log/windows_directory.h"
 #include "common/log/logger.h"
 #include "common/utf8_path.h"
@@ -11,11 +12,6 @@
 namespace su::diagnostics {
 namespace {
 using su::log::Handle;
-std::expected<std::filesystem::path, Error> diagnostics_root() {
-    const auto data = su::log::program_data_path();
-    if (!data) return std::unexpected(Error{ErrorCode::io, "ProgramData unavailable"});
-    return *data / L"Smile2Unlock/Diagnostics";
-}
 std::expected<std::wstring, Error> token_sid() {
     HANDLE raw = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw)) return std::unexpected(Error{ErrorCode::denied, "token unavailable"});
@@ -105,17 +101,19 @@ std::expected<void, Error> write_stage(const std::filesystem::path& path, std::s
     return {};
 }
 std::expected<void, Error> stage_logs(const std::filesystem::path& root, const std::filesystem::path& child) {
-    const auto logs = root.parent_path() / "Logs";
-    if (!std::filesystem::exists(logs)) return std::unexpected(Error{ErrorCode::io, "system logs directory is unavailable"});
+    // An elevated administrator cannot read the SYSTEM-only product directory normally.
+    // Backup opens bypass that DACL without weakening it; restore the token on scope exit.
+    const auto backup = BackupPrivilege::acquire();
+    if (!backup) return std::unexpected(backup.error());
+    const auto logs = root.parent_path() / L"Smile2Unlock/Logs";
     const auto chain = su::log::check_directory_chain(logs, true);
     if (!chain) return std::unexpected(Error{ErrorCode::invalid_path, "system logs directory rejected"});
-    for (const auto& entry : std::filesystem::directory_iterator(logs)) {
-        if (!log_file_name(su::path_utf8(entry.path().filename()))) continue;
-        const auto attributes = GetFileAttributesW(entry.path().c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))) continue;
-        const auto tail = read_log_tail(entry.path());
+    const auto files = system_log_files(logs);
+    if (!files) return std::unexpected(files.error());
+    for (const auto& path : *files) {
+        const auto tail = read_system_log_tail(path);
         if (!tail) return std::unexpected(tail.error());
-        const auto written = write_stage(child / entry.path().filename(), *tail);
+        const auto written = write_stage(child / path.filename(), *tail);
         if (!written) return written;
     }
     return {};
@@ -123,11 +121,11 @@ std::expected<void, Error> stage_logs(const std::filesystem::path& root, const s
 }
 std::expected<std::filesystem::path, Error> collect_windows_system() {
     try {
-        const auto root = diagnostics_root();
+        const auto root = windows_diagnostics_root();
         if (!root) return std::unexpected(root.error());
-        const auto product = su::log::create_system_directory(root->parent_path(), true);
-        if (!product || !su::log::create_system_directory(*root, true)) return std::unexpected(Error{ErrorCode::denied, "protected diagnostics root rejected"});
-        const auto chain = su::log::check_directory_chain(*root, true);
+        const auto created = create_protected_directory(*root);
+        if (!created) return std::unexpected(created.error());
+        const auto chain = open_protected_directory(*root);
         if (!chain) return std::unexpected(Error{ErrorCode::invalid_path, "diagnostics ancestors rejected"});
         remove_stale(*root);
         const auto child = create_child(*root);

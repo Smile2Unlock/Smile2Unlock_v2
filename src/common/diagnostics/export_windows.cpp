@@ -1,4 +1,5 @@
 #include "export.h"
+#include "windows_security.h"
 #include "common/log/windows_directory.h"
 #include "common/utf8_path.h"
 #include <shlobj.h>
@@ -25,16 +26,9 @@ std::string registry_value(const wchar_t* name) {
 }
 }
 std::expected<std::filesystem::path, Error> validate_windows_staging(std::string_view path) {
-    const auto data = su::log::program_data_path();
-    const auto root = data.transform([](const auto& path) { return path / L"Smile2Unlock/Diagnostics"; });
-    if (!root || !valid_helper_path(su::path_utf8(*root), path)) return std::unexpected(Error{ErrorCode::invalid_path, "helper staging path rejected"});
-    const auto candidate = su::path_from_utf8(path);
-    const auto parents = su::log::check_directory_chain(*root, true);
-    if (!parents) return std::unexpected(Error{ErrorCode::invalid_path, "helper staging ancestors rejected"});
-    const auto file = su::log::Handle{CreateFileW(candidate.c_str(), FILE_READ_ATTRIBUTES | READ_CONTROL,
-        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
-    if (!su::log::check_handle(file.get(), true, true)) return std::unexpected(Error{ErrorCode::invalid_path, "helper staging is not a trusted real directory"});
-    return candidate;
+    const auto root = windows_diagnostics_root();
+    if (!root) return std::unexpected(root.error());
+    return validate_staging_child(*root, path);
 }
 std::expected<std::filesystem::path, Error> desktop_directory() { return folder(FOLDERID_Desktop); }
 std::expected<std::string, Error> operating_system() {
@@ -48,12 +42,13 @@ std::expected<bool, Error> reserve_archive(const std::filesystem::path& path) {
     if (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) return false;
     return std::unexpected(Error{ErrorCode::io, "could not reserve archive (Win32 " + std::to_string(GetLastError()) + ")"});
 }
-std::expected<std::string, Error> read_log_tail(const std::filesystem::path& path) {
-    auto parents = su::log::check_directory_chain(path.parent_path(), false);
+namespace {
+std::expected<std::string, Error> read_tail(const std::filesystem::path& path, bool system) {
+    auto parents = open_log_directory(path.parent_path(), system);
     if (!parents) return std::unexpected(Error{ErrorCode::invalid_path, "log directory rejected"});
-    const auto file = su::log::Handle{CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
-    if (file.get() == INVALID_HANDLE_VALUE || !su::log::check_handle(file.get(), false, false))
+    const auto file = su::log::Handle{CreateFileW(path.c_str(), GENERIC_READ | READ_CONTROL, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+    if (file.get() == INVALID_HANDLE_VALUE || !su::log::check_handle(file.get(), false, system))
         return std::unexpected(Error{ErrorCode::invalid_path, "log file rejected"});
     LARGE_INTEGER size{};
     if (!GetFileSizeEx(file.get(), &size)) return std::unexpected(Error{ErrorCode::io, "log size unavailable"});
@@ -66,6 +61,13 @@ std::expected<std::string, Error> read_log_tail(const std::filesystem::path& pat
     if (!ReadFile(file.get(), text.data(), static_cast<DWORD>(text.size()), &count, nullptr))
         return std::unexpected(Error{ErrorCode::io, "log read failed"});
     text.resize(count); return text;
+}
+} // namespace
+std::expected<std::string, Error> read_log_tail(const std::filesystem::path& path) {
+    return read_tail(path, false);
+}
+std::expected<std::string, Error> read_system_log_tail(const std::filesystem::path& path) {
+    return read_tail(path, true);
 }
 std::expected<void, Error> create_archive(const std::filesystem::path& staging, const std::filesystem::path& archive) {
     wchar_t system[MAX_PATH]{};
