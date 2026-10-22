@@ -1,3 +1,4 @@
+#include "common/log/logger.h"
 // Windows deployment helper, the counterpart of the Linux su_deploy_helper.
 //
 // Runs with an elevated token (manifest requireAdministrator) and performs
@@ -19,6 +20,9 @@
 #include <windows.h>
 
 #include <format>
+#include <algorithm>
+#include <span>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -29,8 +33,7 @@ namespace {
 void write_result(std::string_view content) {
     const auto path = su::windeploy::result_file_path();
     if (!path) {
-        std::cerr << "su_deploy_helper: failed to resolve result path (Win32 error "
-                  << path.error() << ")\n";
+        su::log::process_logger().error("result.path_failed", su::log::win32_error_fields(path.error()));
         return;
     }
     HANDLE file = ::CreateFileW(
@@ -42,8 +45,7 @@ void write_result(std::string_view content) {
         FILE_ATTRIBUTE_NORMAL,
         nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        std::cerr << "su_deploy_helper: failed to create result file (Win32 error "
-                  << ::GetLastError() << ")\n";
+        su::log::process_logger().error("result.open_failed", su::log::win32_error_fields(::GetLastError()));
         return;
     }
     DWORD written = 0;
@@ -52,14 +54,14 @@ void write_result(std::string_view content) {
     const auto error = succeeded ? ERROR_WRITE_FAULT : ::GetLastError();
     ::CloseHandle(file);
     if (!succeeded || written != content.size()) {
-        std::cerr << "su_deploy_helper: failed to write complete result file (Win32 error "
-                  << error << ")\n";
+        su::log::process_logger().error("result.write_failed", su::log::win32_error_fields(error));
     }
 }
 
 int succeed(std::string_view content) {
     // The installer consumes the operation's exit code; the GUI consumes the
     // JSON. Report I/O failures separately without undoing a successful action.
+    su::log::process_logger().info("deploy.completed");
     write_result(content);
     return 0;
 }
@@ -87,13 +89,18 @@ int fail(std::string_view detail) {
     }
     const auto json = std::format(R"({{"ok":false,"error":"{}"}})", escaped);
     write_result(json);
-    std::cerr << "su_deploy_helper: " << detail << "\n";
+    su::log::process_logger().error("deploy.failed", {su::log::field("cause", detail)});
     return 1;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
+    const auto installing = std::ranges::any_of(std::span{argv, static_cast<std::size_t>(argc)}, [](const char* value) {
+        return std::string_view{value} == "--register-cp" || std::string_view{value} == "--ensure-service";
+    });
+    const auto& logger = su::log::process_logger("deploy-helper", true, installing);
+    logger.info("deploy.started");
     auto register_cp = false;
     auto unregister_cp = false;
     auto ensure_service = false;
@@ -120,6 +127,7 @@ int main(int argc, char** argv) {
     }
 
     if (inspect) {
+        logger.info("deploy.operation", {su::log::field("op", "inspect")});
         if (register_cp || unregister_cp || ensure_service) {
             return fail("--inspect cannot be combined with deployment operations");
         }
@@ -133,6 +141,7 @@ int main(int argc, char** argv) {
         return succeed(payload);
     }
     if (verify) {
+        logger.info("deploy.operation", {su::log::field("op", "verify")});
         if (register_cp || unregister_cp || ensure_service || inspect) {
             return fail("--verify cannot be combined with deployment operations");
         }
@@ -147,24 +156,36 @@ int main(int argc, char** argv) {
         return fail("--register-cp and --unregister-cp cannot be combined");
     }
     if (register_cp) {
+        wchar_t windows_directory[MAX_PATH]{};
+        const auto length = GetWindowsDirectoryW(windows_directory, MAX_PATH);
+        if (length && length < MAX_PATH) {
+            const auto legacy = std::filesystem::path{windows_directory} / L"Temp/su_cp.log";
+            (void)DeleteFileW(legacy.c_str());
+        }
+        logger.info("deploy.operation", {su::log::field("op", "register_cp")});
         const auto registered = su::windeploy::register_credential_provider();
         if (!registered) {
             return fail(registered.error());
         }
+        logger.info("deploy.operation_completed", {su::log::field("op", "register_cp")});
         std::cout << "credential provider registered\n";
     }
     if (unregister_cp) {
+        logger.info("deploy.operation", {su::log::field("op", "unregister_cp")});
         const auto unregistered = su::windeploy::unregister_credential_provider();
         if (!unregistered) {
             return fail(unregistered.error());
         }
+        logger.info("deploy.operation_completed", {su::log::field("op", "unregister_cp")});
         std::cout << "credential provider unregistered\n";
     }
     if (ensure_service) {
+        logger.info("deploy.operation", {su::log::field("op", "ensure_service")});
         const auto ensured = su::windeploy::ensure_auth_service();
         if (!ensured) {
             return fail(ensured.error());
         }
+        logger.info("deploy.operation_completed", {su::log::field("op", "ensure_service")});
         std::cout << "auth service ensured\n";
     }
     if (register_cp || unregister_cp || ensure_service) {

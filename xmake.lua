@@ -234,6 +234,16 @@ if is_plat("windows", "mingw") then
         add_ldflags("-static", { force = true })
         add_tests("default")
         on_test(wine_on_test)
+
+    target("su_windows_request_logging_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/windows/request_logging.cpp")
+        add_includedirs("src/platform/windows/auth_service", "src/platform/windows/security",
+                        "src/core-rs/include")
+        add_ldflags("-static", { force = true })
+        add_tests("default")
+        on_test(wine_on_test)
 end
 
 target("su_core")
@@ -670,7 +680,10 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/security/storage_key_provider.cpp")
         add_files("src/platform/windows/security/logon_secret_store.cpp")
         add_files("src/platform/windows/security/face_profile_store.cpp")
-        add_files("src/platform/windows/auth_service/logon_secret_server.cpp")
+        add_files("src/platform/windows/auth_service/logon_secret_server.cpp",
+                  "src/platform/windows/auth_service/server_helpers.cpp",
+                  "src/platform/windows/auth_service/request_processor.cpp",
+                  "src/platform/windows/auth_service/recognition_agent_runner.cpp")
         add_files("src/platform/windows/auth_service/service_main.cpp")
         add_includedirs(
             "src/platform/windows/security",

@@ -1,3 +1,4 @@
+#include "common/log/logger.h"
 #include "../auth_service/recognition_agent_protocol.h"
 
 #include <windows.h>
@@ -46,6 +47,8 @@ void wipe(Response& response) {
 } // namespace
 
 int wmain() {
+    const auto& logger = su::log::process_logger("recognition-agent", true);
+    logger.info("agent.started");
     Request request{};
     Response response{};
     response.nonce = request.nonce;
@@ -54,6 +57,7 @@ int wmain() {
     if (input == INVALID_HANDLE_VALUE || output == INVALID_HANDLE_VALUE
         || input == nullptr || output == nullptr
         || !read_exact(input, &request, sizeof(request))) {
+        logger.warn("request.invalid");
         response.status = AgentStatus::kInvalidRequest;
         (void)write_exact(output, &response, sizeof(response));
         wipe(response);
@@ -68,6 +72,7 @@ int wmain() {
         || !std::isfinite(request.liveness_threshold)
         || request.liveness_threshold < 0.0F
         || request.liveness_threshold > 1.0F) {
+        logger.warn("request.invalid");
         response.status = AgentStatus::kInvalidRequest;
         (void)write_exact(output, &response, sizeof(response));
         wipe(response);
@@ -81,6 +86,7 @@ int wmain() {
         deadline, std::chrono::steady_clock::now() + std::chrono::seconds{2});
     auto camera_open = false;
     do {
+        logger.debug("camera.open_attempt", {su::log::field("camera_index", request.camera_index)});
         if (recognizer.open_camera(request.camera_index)) {
             camera_open = true;
             break;
@@ -88,6 +94,7 @@ int wmain() {
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
     } while (std::chrono::steady_clock::now() < open_deadline);
     if (!camera_open) {
+        logger.error("camera.open_failed", {su::log::field("camera_index", request.camera_index)});
         response.status = AgentStatus::kCameraUnavailable;
         (void)write_exact(output, &response, sizeof(response));
         wipe(response);
@@ -95,6 +102,7 @@ int wmain() {
     }
     const auto liveness_enabled = request.liveness_threshold > 0.0F;
     if (liveness_enabled && !recognizer.reset_liveness()) {
+        logger.error("model.unavailable");
         response.status = AgentStatus::kModelUnavailable;
         (void)write_exact(output, &response, sizeof(response));
         wipe(response);
@@ -104,6 +112,7 @@ int wmain() {
     while (std::chrono::steady_clock::now() < deadline) {
         const auto result = recognizer.extract_features(liveness_enabled);
         if (!result && result.error() == su::recognizer::RecognizerError::kModelUnavailable) {
+            logger.error("model.unavailable");
             response.status = AgentStatus::kModelUnavailable;
             (void)write_exact(output, &response, sizeof(response));
             wipe(response);
@@ -118,6 +127,7 @@ int wmain() {
             std::this_thread::sleep_for(std::chrono::milliseconds{80});
             continue;
         }
+        logger.info("recognition.accepted");
         response.status = AgentStatus::kOk;
         response.feature_count = static_cast<std::uint32_t>(result->feature.size());
         response.liveness_score = result->liveness_score;
@@ -127,6 +137,7 @@ int wmain() {
         request = {};
         return 0;
     }
+    logger.warn("recognition.timed_out");
     response.status = AgentStatus::kTimedOut;
     (void)write_exact(output, &response, sizeof(response));
     wipe(response);

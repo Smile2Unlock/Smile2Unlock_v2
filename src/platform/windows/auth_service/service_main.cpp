@@ -1,4 +1,4 @@
-#include "common/utf8_path.h"
+#include "common/log/logger.h"
 
 #include "logon_secret_server.h"
 
@@ -14,15 +14,6 @@
 namespace {
 
 constexpr wchar_t kServiceName[] = L"Smile2UnlockAuthService";
-
-// Diagnostic log (SYSTEM-writable). Diagnostic only; never touches the
-// security surface.
-void log_line(const std::string& message) {
-    std::filesystem::create_directories(L"C:\\ProgramData\\Smile2Unlock\\Logs");
-    std::ofstream log(
-        L"C:\\ProgramData\\Smile2Unlock\\Logs\\auth-service.log", std::ios::app);
-    log << message << "\n";
-}
 
 SERVICE_STATUS_HANDLE service_status_handle = nullptr;
 HANDLE stop_event = nullptr;
@@ -58,40 +49,44 @@ DWORD WINAPI service_control_handler(
 }
 
 void WINAPI service_main(DWORD, PWSTR*) {
+    const auto& logger = su::log::process_logger("auth-service", true, true);
+    logger.info("service.starting");
     service_status_handle = RegisterServiceCtrlHandlerExW(
         kServiceName, service_control_handler, nullptr);
     if (service_status_handle == nullptr) {
+        logger.error("service.register_failed", su::log::win32_error_fields(GetLastError()));
         return;
     }
     stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (stop_event == nullptr) {
-        report_status(SERVICE_STOPPED, GetLastError());
+        const auto error = GetLastError();
+        logger.error("service.event_failed", su::log::win32_error_fields(error));
+        report_status(SERVICE_STOPPED, error);
         return;
     }
 
     const auto key_path = su::windows::security::default_storage_key_path();
-    log_line("service_main: key_path=" + su::path_utf8(key_path));
     auto storage_key = key_path.empty()
         ? std::expected<su::windows::security::StorageKey,
                         su::windows::security::StorageKeyError>{
               std::unexpected(su::windows::security::StorageKeyError::kUnavailable)}
         : su::windows::security::load_or_create_storage_key(key_path);
     if (!storage_key) {
-        log_line("service_main: storage key FAILED: "
-                 + std::string(su::windows::security::storage_key_error_message(
-                       storage_key.error())));
+        logger.error("storage.load_failed", {su::log::field("cause",
+            su::windows::security::storage_key_error_message(storage_key.error()))});
         CloseHandle(stop_event);
         stop_event = nullptr;
         report_status(SERVICE_STOPPED, ERROR_SERVICE_NOT_ACTIVE);
         return;
     }
-    log_line("service_main: storage key OK");
+    logger.info("storage.ready");
 
     report_status(SERVICE_RUNNING);
-    log_line("service_main: serving");
-    auto server = su::windows::auth_service::LogonSecretServer{std::move(*storage_key)};
+    logger.info("service.running");
+    auto server = su::windows::auth_service::LogonSecretServer{std::move(*storage_key), logger};
     const auto served = server.serve(stop_event);
     const auto exit_code = served ? NO_ERROR : served.error();
+    logger.info("service.stopped", su::log::win32_error_fields(exit_code));
     CloseHandle(stop_event);
     stop_event = nullptr;
     report_status(SERVICE_STOPPED, exit_code);
