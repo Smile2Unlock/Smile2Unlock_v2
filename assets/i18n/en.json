@@ -282,6 +282,21 @@
         "models.download_mirror": "Accelerated download",
         "models.status_downloading_direct": "Downloading models from GitHub…",
         "models.status_downloading_mirror": "Downloading models via mirror…",
-        "models.done": "models ready"
+        "models.done": "models ready",
+        "capture.title": "Capture failed attempts",
+        "capture.enable": "Capture failed attempts",
+        "capture.privacy": "When enabled, a detected face that does not match (including liveness rejection) is photographed. Photos are encrypted, visible only to you, and retained for {value} days. Save settings to apply.",
+        "capture.days": "Retention (days)",
+        "capture.count": "Maximum photos",
+        "capture.refresh": "Refresh photos",
+        "capture.delete_all": "Delete all photos",
+        "capture.delete": "Delete",
+        "capture.open": "Enlarge",
+        "capture.close": "Close photo",
+        "capture.empty": "No captured photos. Capture is off by default.",
+        "capture.mismatch": "Face did not match",
+        "capture.liveness_rejected": "Liveness rejected",
+        "capture.error": "Could not access captured photos. Check that the authentication service is running.",
+        "capture.loading": "Loading photos…"
     }
 }

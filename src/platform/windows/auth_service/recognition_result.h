@@ -15,8 +15,14 @@ inline DWORD validate_agent_result(
     const smile2unlock::recognition_agent_ipc::Response& response,
     DWORD exit_code) {
     using namespace smile2unlock::recognition_agent_ipc;
-    if (response.magic != kResponseMagic || response.version != kVersion
-        || response.nonce != request.nonce) {
+    if ((request.flags & ~kCaptureRequested) != 0
+        || response.magic != kResponseMagic || response.version != kVersion
+        || response.nonce != request.nonce || response.reserved != 0
+        || response.jpeg_size > kMaximumJpegBytes
+        || (!(request.flags & kCaptureRequested) && response.jpeg_size != 0)
+        || (response.jpeg_size != 0 && (response.width == 0 || response.height == 0
+            || response.width > 320 || response.height > 320
+            || (response.status != AgentStatus::kOk && response.status != AgentStatus::kNoLiveFace)))) {
         return ERROR_INVALID_DATA;
     }
     switch (response.status) {

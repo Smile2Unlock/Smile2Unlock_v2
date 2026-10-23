@@ -109,6 +109,8 @@ public:
     std::expected<bool, std::string> delete_face_profile_by_id(std::string_view profile_id);
     std::expected<void, std::string> configure_windows_account_credential(
         std::string_view windows_password);
+    std::expected<std::vector<std::uint8_t>, std::string> captures(
+        std::string_view op, std::string_view id = {});
     SystemStatus load_system_status();
     std::expected<DiagnosticsExport, std::string> export_diagnostics();
     std::expected<void, std::string> show_diagnostics_in_folder(std::string_view path);

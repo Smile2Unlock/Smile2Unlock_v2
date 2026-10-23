@@ -38,6 +38,9 @@ struct CoreConfig {
     std::uint32_t auto_delay_sec = 3;
     std::uint32_t retry_delay_sec = 5;
     std::uint32_t timeout_sec = 30;
+    bool capture_enabled = false;
+    std::uint32_t capture_retention_days = 7;
+    std::uint32_t capture_max_count = 50;
 };
 
 struct AuthDecision {
@@ -170,3 +173,9 @@ std::expected<bool, CoreError> migrate_plaintext_face_profiles(
     const std::string& encrypted_path);
 
 } // namespace su::app
+
+export namespace su::app {
+std::expected<std::vector<std::uint8_t>, CoreError> capture_command(
+    const EncryptedStoreContext& context, const std::string& directory,
+    const std::string& command, std::span<const std::uint8_t> jpeg = {});
+}

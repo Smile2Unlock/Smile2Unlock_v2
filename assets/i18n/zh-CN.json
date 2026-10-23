@@ -282,6 +282,21 @@
         "models.download_mirror": "加速下载",
         "models.status_downloading_direct": "正在从 GitHub 下载模型…",
         "models.status_downloading_mirror": "正在通过加速镜像下载模型…",
-        "models.done": "模型已就绪"
+        "models.done": "模型已就绪",
+        "capture.title": "失败识别抓拍",
+        "capture.enable": "失败识别抓拍",
+        "capture.privacy": "开启后，人脸不匹配时会拍摄照片（含活体检测未通过），加密保存，仅你本人可以查看，保留 {value} 天。保存设置后生效。",
+        "capture.days": "保留天数",
+        "capture.count": "最多照片数",
+        "capture.refresh": "刷新照片",
+        "capture.delete_all": "删除全部照片",
+        "capture.delete": "删除",
+        "capture.open": "放大查看",
+        "capture.close": "关闭照片",
+        "capture.empty": "暂无抓拍照片，抓拍默认关闭。",
+        "capture.mismatch": "人脸不匹配",
+        "capture.liveness_rejected": "活体检测未通过",
+        "capture.error": "无法读取抓拍照片，请检查认证服务是否运行。",
+        "capture.loading": "正在加载照片…"
     }
 }

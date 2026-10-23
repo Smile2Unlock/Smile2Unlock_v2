@@ -58,6 +58,16 @@ pub const kOperationStore: u16 = 3;
 pub const kOperationClear: u16 = 4;
 pub const kOperationAuthenticateAndPrepare: u16 = 5;
 
+// Owner-only app operations; the Credential Provider never invokes these.
+#[allow(dead_code)]
+pub const kOperationListCaptures: u16 = 12;
+#[allow(dead_code)]
+pub const kOperationFetchCapture: u16 = 13;
+#[allow(dead_code)]
+pub const kOperationDeleteCapture: u16 = 14;
+#[allow(dead_code)]
+pub const kOperationDeleteAllCaptures: u16 = 15;
+
 pub const kStatusOk: u32 = 0;
 pub const kStatusInvalidRequest: u32 = 1;
 pub const kStatusAccessDenied: u32 = 2;

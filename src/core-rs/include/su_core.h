@@ -95,6 +95,9 @@ typedef struct SuCoreConfig {
     uint32_t auto_delay_sec;
     uint32_t retry_delay_sec;
     uint32_t timeout_sec;
+    bool capture_enabled;
+    uint32_t capture_retention_days;
+    uint32_t capture_max_count;
 } SuCoreConfig;
 
 typedef struct SuFaceAuthDecision {
@@ -264,11 +267,16 @@ SuStatus su_core_clear_windows_logon_secret(
     const char* store_path,
     bool* out_cleared);
 
+// Capture output is raw JPEG for fetch, JSON otherwise; capacity >= 48 KiB.
+SuStatus su_core_capture(const SuEncryptedStoreContext* context,
+    const char* directory, const char* command, const uint8_t* jpeg,
+    uintptr_t jpeg_len, uint8_t* output, uintptr_t capacity, uintptr_t* written);
+
 #ifdef __cplusplus
 }
 
 static_assert(sizeof(SuStatus) == 4);
-static_assert(sizeof(SuCoreConfig) == 40);
+static_assert(sizeof(SuCoreConfig) == 52);
 static_assert(sizeof(SuFaceAuthDecision) == 16);
 static_assert(sizeof(SuFaceAuthReport) == 344);
 #endif

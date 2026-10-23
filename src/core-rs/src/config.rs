@@ -31,6 +31,19 @@ pub struct AppConfig {
     pub retry_delay_sec: u32,
     #[serde(default = "default_timeout_sec")]
     pub timeout_sec: u32,
+    #[serde(default)]
+    pub capture_enabled: bool,
+    #[serde(default = "default_capture_days")]
+    pub capture_retention_days: u32,
+    #[serde(default = "default_capture_count")]
+    pub capture_max_count: u32,
+}
+
+fn default_capture_days() -> u32 {
+    7
+}
+fn default_capture_count() -> u32 {
+    50
 }
 
 fn default_version() -> u32 {
@@ -74,6 +87,9 @@ impl Default for AppConfig {
             auto_delay_sec: default_auto_delay_sec(),
             retry_delay_sec: default_retry_delay_sec(),
             timeout_sec: default_timeout_sec(),
+            capture_enabled: false,
+            capture_retention_days: 7,
+            capture_max_count: 50,
         }
     }
 }
@@ -91,6 +107,9 @@ impl From<AppConfig> for SuCoreConfig {
             auto_delay_sec: value.auto_delay_sec,
             retry_delay_sec: value.retry_delay_sec,
             timeout_sec: value.timeout_sec,
+            capture_enabled: value.capture_enabled,
+            capture_retention_days: value.capture_retention_days,
+            capture_max_count: value.capture_max_count,
         }
     }
 }
@@ -112,6 +131,9 @@ impl From<SuCoreConfig> for AppConfig {
             auto_delay_sec: value.auto_delay_sec,
             retry_delay_sec: value.retry_delay_sec,
             timeout_sec: value.timeout_sec,
+            capture_enabled: value.capture_enabled,
+            capture_retention_days: value.capture_retention_days,
+            capture_max_count: value.capture_max_count,
         })
     }
 }
@@ -147,6 +169,12 @@ fn normalize_config(mut config: AppConfig) -> AppConfig {
     }
     if config.timeout_sec < 5 || config.timeout_sec > 600 {
         config.timeout_sec = default_timeout_sec();
+    }
+    if !(1..=90).contains(&config.capture_retention_days) {
+        config.capture_retention_days = 7;
+    }
+    if !(1..=200).contains(&config.capture_max_count) {
+        config.capture_max_count = 50;
     }
     config
 }

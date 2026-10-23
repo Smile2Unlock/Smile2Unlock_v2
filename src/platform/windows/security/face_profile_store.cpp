@@ -145,6 +145,10 @@ std::expected<bool, FaceProfileStoreError> FaceProfileStore::remove(
     const auto ffi_context = context(sid_string.c_str());
     const auto status = su_core_encrypted_delete_face_profile(
         &ffi_context, encoded->c_str(), profile_id_string.c_str(), &deleted);
+    if (status == SuStatus_Ok && deleted) {
+        const auto cleared = captures(sid, R"({"op":"delete_all"})");
+        if (!cleared) return std::unexpected(cleared.error());
+    }
     return status == SuStatus_Ok
         ? std::expected<bool, FaceProfileStoreError>{deleted}
         : std::unexpected(map_status(status));
@@ -206,3 +210,34 @@ std::expected<SuFaceAuthReport, FaceProfileStoreError> FaceProfileStore::authent
 }
 
 } // namespace su::windows::security
+
+namespace su::windows::security {
+std::expected<std::vector<std::uint8_t>, FaceProfileStoreError> FaceProfileStore::captures(
+    std::string_view sid, const std::string& command, std::span<const std::uint8_t> jpeg) const {
+    const auto path = profile_path(sid);
+    if (!path) return std::unexpected(path.error());
+    const auto directory = path->parent_path() / "captures";
+    if (!su::log::create_system_directory(directory))
+        return std::unexpected(FaceProfileStoreError::kWriteFailed);
+    const auto encoded = utf8_path(directory);
+    if (!encoded) return std::unexpected(encoded.error());
+    const auto account = std::string{sid};
+    const auto ffi = context(account.c_str());
+    auto output = std::vector<std::uint8_t>(48 * 1024);
+    std::uintptr_t written = 0;
+    const auto status = su_core_capture(&ffi, encoded->c_str(), command.c_str(),
+        jpeg.data(), jpeg.size(), output.data(), output.size(), &written);
+    if (status != SuStatus_Ok) return std::unexpected(map_status(status));
+    output.resize(written);
+    return output;
+}
+void FaceProfileStore::prune_captures() const {
+    const auto root = program_data_path();
+    if (!root) return;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(*root / "Smile2Unlock" / "Users", error)) {
+        if (entry.is_directory(error) && !entry.is_symlink(error))
+            (void)captures(entry.path().filename().string(), R"({"op":"prune"})");
+    }
+}
+}

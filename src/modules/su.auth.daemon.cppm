@@ -1,5 +1,7 @@
 module;
 #include "common/log/logger.h"
+#include "common/capture/image.h"
+#include "common/capture/maintenance.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -16,6 +18,7 @@ import su.core.types;
 import su.auth.storage;
 import su.auth.user;
 import su.recognizer.service;
+import su.recognizer.types;
 
 export namespace su::auth {
 
@@ -44,6 +47,7 @@ struct AttemptResult {
     std::string reason;
     std::string payload_json = "null";
     su::control::AuthenticationReason authentication_reason = su::control::AuthenticationReason::kUnknown;
+    std::function<void()> after_response{};
 };
 
 struct UserAuthData {
@@ -244,10 +248,46 @@ std::expected<su::app::FaceAuthReport, std::string> authenticate_user_sample(
     return *report;
 }
 
+std::string capture_settings(const su::app::CoreConfig& config) {
+    return nlohmann::json{{"enabled", config.capture_enabled}, {"days", config.capture_retention_days},
+        {"max_count", config.capture_max_count}}.dump();
+}
+std::function<void()> defer_capture(const MasterKey& key, const UserPaths& paths,
+    const su::app::CoreConfig& config, su::recognizer::PreviewFrame frame, std::string_view reason) noexcept {
+    if (!config.capture_enabled || frame.rgba_or_rgb.empty()) return {};
+    try {
+        return [&key, paths, config, frame = std::move(frame), reason = std::string(reason)] {
+            try {
+                const auto jpeg = su::capture::prepare_image(frame.rgba_or_rgb, frame.width, frame.height);
+                if (!jpeg) { logger().warn("capture.failed"); return; }
+                const auto command = nlohmann::json{{"op", "store"}, {"reason", reason},
+                    {"width", jpeg->width}, {"height", jpeg->height},
+                    {"settings", nlohmann::json::parse(capture_settings(config))}}.dump();
+                const auto stored = key.with_context(paths.uid, [&](const auto& context) {
+                    return su::app::capture_command(context,
+                        (paths.profiles.parent_path() / "captures").string(), command, jpeg->bytes);
+                });
+                if (!stored) { logger().warn("capture.failed"); return; }
+                const auto record = nlohmann::json::parse(stored->begin(), stored->end());
+                logger().info("capture.stored", {field("id", record.at("id").get<std::string>()),
+                    field("time", record.at("time").get<std::uint64_t>()), field("reason", reason)});
+            } catch (...) { logger().warn("capture.failed"); }
+        };
+    } catch (...) { return {}; }
+}
+
+// Capture I/O must never hold the main authentication key's access lock.
+// Load a second independently sealed handle through the same credential provider.
+std::optional<MasterKey> load_capture_key() {
+    auto key = load_systemd_key_credential();
+    if (!key) return std::nullopt;
+    return std::move(*key);
+}
+
 class AuthService {
 public:
     explicit AuthService(std::optional<MasterKey> master_key)
-        : master_key_(std::move(master_key)) {}
+        : master_key_(std::move(master_key)), capture_key_(load_capture_key()) {}
 
     bool available() const {
         return availability_reason() == "service available";
@@ -329,22 +369,31 @@ public:
         }
 
         auto saw_face = false;
+        auto best_frame = su::recognizer::PreviewFrame{};
+        auto best_score = -1.0F;
         auto saw_live_face = false;
         while (std::chrono::steady_clock::now() < deadline) {
             if (cancel_requested_.load(std::memory_order_acquire)) {
                 return {su::control::ControlResult::kCancelled, "authentication cancelled"};
             }
 
-            const auto capture = recognizer_.extract_features(config.liveness_detection);
-            if (!capture || !capture->has_face || capture->feature.empty()) {
+            auto captured = recognizer_.capture_and_extract(config.liveness_detection);
+            auto capture = captured
+                ? std::expected<su::recognizer::RecognitionResult, su::recognizer::RecognizerError>{std::move(captured->second)}
+                : std::unexpected(captured.error());
+            if (!capture || !capture->has_face) {
                 std::this_thread::sleep_for(kRetryInterval);
                 continue;
             }
             saw_face = true;
+            if (config.capture_enabled && capture->liveness_score >= best_score) {
+                best_frame = std::move(captured->first);
+                best_score = capture->liveness_score;
+            }
 
             const auto liveness_ok = !config.liveness_detection
                 || capture->liveness_score >= config.liveness_threshold;
-            if (!liveness_ok) {
+            if (!liveness_ok || capture->feature.empty()) {
                 std::this_thread::sleep_for(kRetryInterval);
                 continue;
             }
@@ -368,12 +417,11 @@ public:
             return {su::control::ControlResult::kRejected, "no face detected", "null",
                 su::control::AuthenticationReason::kNoFace};
         }
-        if (!saw_live_face) {
-            return {su::control::ControlResult::kRejected, "liveness check failed", "null",
-                su::control::AuthenticationReason::kMismatch};
-        }
-        return {su::control::ControlResult::kRejected, "face did not match", "null",
-            su::control::AuthenticationReason::kMismatch};
+        return {su::control::ControlResult::kRejected,
+            saw_live_face ? "face did not match" : "liveness check failed", "null",
+            su::control::AuthenticationReason::kMismatch,
+            capture_key_ ? defer_capture(*capture_key_, *paths, config, std::move(best_frame),
+                saw_live_face ? "mismatch" : "liveness_rejected") : std::function<void()>{}};
     }
 
     AttemptResult list_profiles(std::string_view username) const {
@@ -437,6 +485,12 @@ public:
         if (!*deleted) {
             return {su::control::ControlResult::kRejected, "profile not found"};
         }
+        if (!capture_key_) return {su::control::ControlResult::kUnavailable, "capture key unavailable"};
+        const auto cleared = capture_key_->with_context(paths->uid, [&](const auto& context) {
+            return su::app::capture_command(context, (paths->profiles.parent_path() / "captures").string(),
+                R"({"op":"delete_all"})");
+        });
+        if (!cleared) return {su::control::ControlResult::kUnavailable, "failed to delete captures"};
         return list_profiles(username);
     }
 
@@ -582,6 +636,47 @@ public:
         return true;
     }
 
+    void prune_captures() const {
+        if (!capture_key_) return;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator("/var/lib/smile2unlock/users", error)) {
+            if (!entry.is_directory(error) || entry.is_symlink(error)) continue;
+            const auto name = entry.path().filename().string();
+            auto uid = std::uint32_t{};
+            const auto parsed = std::from_chars(name.data(), name.data() + name.size(), uid);
+            if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size()) continue;
+            (void)capture_key_->with_context(uid, [&](const auto& context) {
+                return su::app::capture_command(context, (entry.path() / "captures").string(), R"({"op":"prune"})");
+            });
+        }
+    }
+
+    bool handle_captures(const su::control::Connection& connection,
+        const su::control::PeerCredentials& peer, std::string_view payload) const {
+        const auto request = nlohmann::json::parse(payload, nullptr, false);
+        if (!request.is_object() || request.value("msg_type", nlohmann::json{}) != "captures") return false;
+        auto result = AttemptResult{su::control::ControlResult::kRejected, "invalid capture request"};
+        auto id = std::uint64_t{};
+        try {
+            id = request.at("request_id").get<std::uint64_t>();
+            const auto paths = paths_for_request(request.at("username").get<std::string>());
+            const auto& command = request.at("command");
+            const auto op = command.at("op").get<std::string>();
+            if (payload.size() <= 1024 && request.size() == 5 && id != 0
+                && request.at("version") == su::control::kProtocolVersion && paths && peer.uid == paths->uid
+                && capture_key_ && (op == "list" || op == "fetch" || op == "delete" || op == "delete_all" || op == "configure")) {
+                const auto output = capture_key_->with_context(paths->uid, [&](const auto& context) {
+                    return su::app::capture_command(context, (paths->profiles.parent_path() / "captures").string(), command.dump());
+                });
+                result = output ? AttemptResult{su::control::ControlResult::kAccepted, "",
+                    op == "fetch" ? nlohmann::json(*output).dump() : std::string(output->begin(), output->end())}
+                    : AttemptResult{su::control::ControlResult::kUnavailable, "capture store unavailable"};
+            }
+        } catch (...) { /* malformed or foreign-account requests fail closed */ }
+        (void)connection.send_frame(su::control::make_response(id, result.result, result.reason, result.payload_json));
+        return true;
+    }
+
     void handle(su::control::Connection connection) {
         const auto peer = connection.peer_credentials();
         if (!peer) {
@@ -593,6 +688,7 @@ public:
             logger().warn("request_receive_failed");
             return;
         }
+        if (handle_captures(connection, *peer, *payload)) return;
         auto request = su::app::parse_control_request(*payload);
         std::ranges::fill(*payload, '\0');
         if (!request) {
@@ -699,6 +795,7 @@ public:
         if (!sent) {
             logger().warn("response_send_failed", {field("request_id", request->request_id)});
         }
+        if (response.after_response) response.after_response();
     }
 
 private:
@@ -711,6 +808,7 @@ private:
     }
 
     std::optional<MasterKey> master_key_;
+    std::optional<MasterKey> capture_key_;
     su::recognizer::RecognizerService recognizer_;
     std::mutex auth_mutex_;
     std::atomic<std::uint64_t> active_request_{0};
@@ -751,6 +849,7 @@ int run_daemon(std::string_view socket_path) {
         loaded_key
             ? std::optional<MasterKey>{std::move(*loaded_key)}
             : std::nullopt};
+    const auto maintenance = su::capture::Maintenance{[&service] { service.prune_captures(); }};
     logger().info("listening", {field("socket", socket_path), field("available", service.available()),
         field("storage", service.storage_status())});
     auto connection_slots = std::counting_semaphore<kMaxConcurrentConnections>{

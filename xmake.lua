@@ -219,6 +219,11 @@ target("su_log")
         add_files("src/common/log/file_posix.cpp")
     end
 
+target("su_capture_image")
+    apply_cpp_target("static")
+    add_files("src/common/capture/image.cpp")
+    add_packages("libjpeg-turbo", {public = true})
+
 target("su_diagnostics")
     set_kind("static")
     add_includedirs("src", { public = true })
@@ -435,7 +440,7 @@ target("su_recognizer")
         set_policy("check.target_package_licenses", false)
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
-        add_files("src/app/slint_main.cpp", "src/app/web_link.cpp")
+        add_files("src/app/slint_main.cpp", "src/app/web_link.cpp", "src/app/captures_ui.cpp")
         add_about_content()
         add_files("src/app/preview_controller.cpp")
         add_files("src/modules/su.app.preview.cppm")
@@ -623,7 +628,7 @@ if is_plat("linux") then
         add_files("src/modules/su.core.*.cppm", "src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_packages("nlohmann_json")
-        add_deps("su_core", "su_recognizer")
+        add_deps("su_core", "su_recognizer", "su_capture_image")
         add_rpathdirs("/usr/lib/smile2unlock")
         add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
@@ -732,6 +737,7 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/security/logon_secret_store.cpp")
         add_files("src/platform/windows/security/face_profile_store.cpp")
         add_files("src/platform/windows/auth_service/logon_secret_server.cpp")
+        add_packages("nlohmann_json")
         add_files("src/platform/windows/auth_service/service_main.cpp")
         add_includedirs(
             "src/platform/windows/security",
@@ -754,7 +760,7 @@ if is_plat("windows", "mingw") then
         add_files("src/platform/windows/recognition_agent/agent.rc")
         add_files("src/platform/windows/recognition_agent/main.cpp")
         add_files("src/modules/su.recognizer.*.cppm")
-        add_deps("su_recognizer")
+        add_deps("su_recognizer", "su_capture_image")
         add_ldflags("-municode", "-mwindows", {force = true})
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
 
@@ -1154,3 +1160,46 @@ after_build(function (target)
         os.exec("xmake project -k compile_commands --lsp=clangd 2>/dev/null || true")
     end
 end)
+
+target("su_capture_image_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/capture/image.cpp")
+    add_deps("su_capture_image")
+    if is_plat("mingw") then add_ldflags("-static", {force = true}) end
+    add_tests("default")
+    on_test(wine_on_test)
+
+if is_plat("windows", "mingw") then
+    target("su_windows_capture_protocol_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/windows/capture_protocol.cpp")
+        add_includedirs("src/platform/windows/auth_service", "src/core-rs/include")
+        add_ldflags("-static", {force = true})
+        add_tests("default")
+        on_test(wine_on_test)
+end
+
+if has_config("with_slint") and is_plat("linux") then
+    target("su_capture_ui_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        set_policy("check.target_package_licenses", false)
+        add_packages("slint", "nlohmann_json")
+        add_files("tests/capture/viewer.cpp")
+        add_files("build/generated/capture-test/capture_test_window.cpp", {always_added = true})
+        add_includedirs("build/generated/capture-test")
+        on_load(function (target)
+            local slint = assert(target:pkg("slint"))
+            target:add("includedirs", path.join(slint:installdir(), "include", "slint"))
+            if is_plat("linux") then target:add("rpathdirs", path.join(slint:installdir(), "lib")) end
+            local output = path.join(os.projectdir(), "build/generated/capture-test")
+            os.mkdir(output)
+            os.execv(path.join(slint:installdir(), "bin/slint-compiler"), {
+                "-f", "cpp", "--cpp-namespace", "su::test::ui",
+                "-o", path.join(output, "capture_test_window.h"),
+                "--cpp-file", path.join(output, "capture_test_window.cpp"),
+                path.join(os.projectdir(), "tests/capture/viewer.slint")})
+        end)
+end

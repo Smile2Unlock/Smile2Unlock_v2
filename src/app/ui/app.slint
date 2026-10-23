@@ -1,3 +1,5 @@
+import { CapturePanel, CaptureRow } from "captures.slint";
+export { CaptureRow } from "captures.slint";
 import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
 export { UiTheme } from "theme.slint";
 export { ProfileRow } from "components.slint";
@@ -65,6 +67,7 @@ export component AppWindow inherits Window {
     in-out property <string> preview_status_text: "";
 
     in-out property <int> current_page: 0;
+    changed current_page => { if root.current_page == 2 { root.capture_refresh(); } }
     in-out property <int> language_index: 0;
     in-out property <int> theme_mode_index: 0;
     in-out property <int> window_controls_index: 0;
@@ -81,6 +84,17 @@ export component AppWindow inherits Window {
     in-out property <float> liveness_threshold: 0.5;
     in-out property <int> preview_fps: 15;
     in-out property <string> settings_status: "";
+    in-out property <bool> capture_enabled: false;
+    in-out property <int> capture_days: 7;
+    in-out property <int> capture_max_count: 50;
+    in property <[CaptureRow]> captures;
+    in-out property <image> capture_selected_image;
+    in-out property <bool> capture_selected: false;
+    in property <string> capture_status;
+    callback capture_refresh();
+    callback capture_open(string);
+    callback capture_delete(string);
+    callback capture_delete_all();
     // Recognition trigger policy (Windows only; hidden on Linux).
     in property <bool> platform_windows: false;
     in-out property <int> recognition_mode: 0;
@@ -951,6 +965,23 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    CapturePanel {
+                        capture-enabled <=> root.capture_enabled;
+                        days <=> root.capture_days;
+                        max-count <=> root.capture_max_count;
+                        records: root.captures;
+                        selected-image: root.capture_selected_image;
+                        selected: root.capture_selected;
+                        status: root.capture_status;
+                        language-index: root.language_index;
+                        translate(key, lang) => { root.translate(key, lang) }
+                        translate-value(key, lang, value) => { root.translate_value(key, lang, value) }
+                        refresh => { root.capture_refresh(); }
+                        open(id) => { root.capture_open(id); }
+                        close => { root.capture_selected = false; }
+                        remove(id) => { root.capture_delete(id); }
+                        remove-all => { root.capture_delete_all(); }
+                    }
                     HorizontalLayout {
                         height: 44px;
                         spacing: 12px;

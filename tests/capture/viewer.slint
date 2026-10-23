@@ -1,0 +1,28 @@
+import { ScrollView, Palette } from "std-widgets.slint";
+import { CapturePanel, CaptureRow } from "../../src/app/ui/captures.slint";
+export { CaptureRow } from "../../src/app/ui/captures.slint";
+export component CaptureTestWindow inherits Window {
+    in property <[CaptureRow]> records;
+    in property <bool> selected;
+    in property <image> photo;
+    in property <int> lang;
+    pure callback translate(string, int) -> string;
+    pure callback translate-value(string, int, string) -> string;
+    init => { Palette.color-scheme = ColorScheme.light; }
+    width: 760px;
+    height: 1080px;
+    ScrollView {
+        viewport-width: self.width;
+        VerticalLayout {
+            alignment: start;
+            CapturePanel {
+                records: root.records;
+                language-index: root.lang;
+                selected: root.selected;
+                selected-image: root.photo;
+                translate(key, lang) => { root.translate(key, lang) }
+                translate-value(key, lang, value) => { root.translate-value(key, lang, value) }
+            }
+        }
+    }
+}

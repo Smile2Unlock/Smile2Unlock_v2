@@ -4,6 +4,7 @@
 #include <expected>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace su::windows::profile_client {
 
@@ -19,9 +20,13 @@ struct RecognitionSettings {
     std::uint32_t auto_delay_sec = 3;
     std::uint32_t retry_delay_sec = 5;
     std::uint32_t timeout_sec = 30;
+    std::uint32_t capture_enabled = 0;
+    std::uint32_t capture_retention_days = 7;
+    std::uint32_t capture_max_count = 50;
 };
 
 std::expected<std::string, std::string> list_profiles();
+std::expected<std::vector<std::uint8_t>, std::string> captures(std::string_view op, std::string_view id);
 std::expected<void, std::string> store_account_credential(
     std::string_view windows_password);
 std::expected<bool, std::string> account_credential_configured();

@@ -357,3 +357,27 @@ std::expected<void, std::string> store_recognition_settings(
 }
 
 } // namespace su::windows::profile_client
+
+namespace su::windows::profile_client {
+std::expected<std::vector<std::uint8_t>, std::string> captures(std::string_view op, std::string_view id) {
+    auto operation = Operation::kListCaptures;
+    if (op == "fetch") operation = Operation::kFetchCapture;
+    else if (op == "delete") operation = Operation::kDeleteCapture;
+    else if (op == "delete_all") operation = Operation::kDeleteAllCaptures;
+    else if (op != "list") return std::unexpected("invalid capture operation");
+    auto request = request_for(operation);
+    if (!request) return std::unexpected(request.error());
+    if (id.size() > 32) return std::unexpected("invalid capture id");
+    std::ranges::copy(id, request->payload);
+    request->payload_length = static_cast<std::uint32_t>(id.size());
+    auto response = transact(*request);
+    if (!response) return std::unexpected(response.error());
+    if (response->payload_length > std::size(response->payload)) {
+        smile2unlock::logon_secret_ipc::clear_response(*response);
+        return std::unexpected("invalid capture response size");
+    }
+    auto bytes = std::vector<std::uint8_t>(response->payload, response->payload + response->payload_length);
+    smile2unlock::logon_secret_ipc::clear_response(*response);
+    return bytes;
+}
+}

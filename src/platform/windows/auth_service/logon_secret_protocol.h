@@ -25,6 +25,10 @@ enum class Operation : std::uint16_t {
     kVerifyProfile = 9,
     kCredentialStatus = 10,
     kSetRecognitionSettings = 11,
+    kListCaptures = 12,
+    kFetchCapture = 13,
+    kDeleteCapture = 14,
+    kDeleteAllCaptures = 15,
 };
 
 enum class Status : std::uint32_t {
@@ -84,9 +88,12 @@ struct RecognitionSettingsPayload {
     std::uint32_t auto_delay_sec = 3;
     std::uint32_t retry_delay_sec = 5;
     std::uint32_t timeout_sec = 30;
+    std::uint32_t capture_enabled = 0;
+    std::uint32_t capture_retention_days = 7;
+    std::uint32_t capture_max_count = 50;
 };
 
-static_assert(sizeof(RecognitionSettingsPayload) == 32);
+static_assert(sizeof(RecognitionSettingsPayload) == 44);
 
 inline void clear_request(Request& request) noexcept {
     SecureZeroMemory(request.password, sizeof(request.password));
