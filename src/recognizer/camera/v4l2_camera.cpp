@@ -59,7 +59,7 @@ struct NegotiatedFormat {
 // pixel format. Preserve the complete negotiated shape for downstream bounds
 // checks and conversion.
 std::expected<NegotiatedFormat, RecognizerError> negotiate_format(int fd, int width, int height) {
-    for (const auto preferred : {V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_MJPEG}) {
+    for (const auto preferred : {V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_MJPEG, V4L2_PIX_FMT_NV12}) {
         v4l2_format fmt{};
         fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         fmt.fmt.pix.width = width;
@@ -72,7 +72,7 @@ std::expected<NegotiatedFormat, RecognizerError> negotiate_format(int fd, int wi
         if (fmt.fmt.pix.pixelformat == preferred) {
             const auto fallback_stride = preferred == V4L2_PIX_FMT_YUYV
                 ? static_cast<std::size_t>(fmt.fmt.pix.width) * 2
-                : 0;
+                : preferred == V4L2_PIX_FMT_NV12 ? static_cast<std::size_t>(fmt.fmt.pix.width) : 0;
             return NegotiatedFormat{
                 .pixel_format = preferred,
                 .width = static_cast<int>(fmt.fmt.pix.width),

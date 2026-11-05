@@ -12,6 +12,7 @@ enum class RecognizerError {
     kInvalidImage,
     kImageLoadFailed,
     kNoFace,
+    kCameraPermissionOrBusy,
 };
 
 struct CameraInfo {
@@ -56,6 +57,7 @@ struct ImageView {
 struct CapturedFrame {
     int width = 0;
     int height = 0;
+    // For NV12 this is the Y/UV row stride, and UV follows stride*height.
     std::size_t stride = 0;
     std::uint32_t v4l2_format = 0;
     std::span<const std::byte> bytes;

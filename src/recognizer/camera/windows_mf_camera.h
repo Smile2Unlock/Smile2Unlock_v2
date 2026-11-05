@@ -27,8 +27,9 @@ struct MfCameraDeviceInfo {
 std::vector<MfCameraDeviceInfo> mf_enumerate_cameras();
 
 // One captured frame. `v4l2_format` carries the same values the V4L2 camera
-// backend uses (0x56595559 'YUYV' / 0x47504A4D 'MJPG'); the MF backend
-// reports MF YUY2 frames as YUYV (identical packing) and MJPG as MJPEG.
+// backend uses ('YUYV' / 'MJPG' / 'NV12'); the MF backend reports MF YUY2
+// frames as YUYV (identical packing) and MJPG as MJPEG. NV12 is top-down,
+// with UV immediately after stride*height Y bytes and the same row stride.
 // `bytes` is owned by the stream and valid until the next grab call.
 struct MfCameraFrame {
     int width = 0;
@@ -52,6 +53,7 @@ public:
     MfCameraStream& operator=(MfCameraStream&&) = delete;
 
     bool open(int index);
+    [[nodiscard]] bool last_open_was_permission_or_busy() const;
     bool grab(MfCameraFrame& out);
     void close();
     [[nodiscard]] bool is_open() const;

@@ -215,6 +215,7 @@
         "overview.verify_account": "验证当前账户",
         "overview.verify_hint": "使用当前识别策略运行一次本地摄像头检查。",
         "preview.capture_failed": "图像采集失败",
+        "preview.camera_permission_or_busy": "摄像头访问被拒绝或正被其他应用占用。请在“设置 > 隐私和安全性 > 摄像头”中开启“让桌面应用访问你的摄像头”，或关闭其他正在使用摄像头的应用。",
         "preview.detect_failed": "人脸检测失败",
         "preview.face_liveness": "已检测到人脸，活体分数 {value}",
         "preview.idle": "摄像头空闲",

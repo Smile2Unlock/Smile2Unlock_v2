@@ -350,6 +350,8 @@ std::string localized_backend_error(
             ? "error.auth_service_response"
         : error == "auth service denied profile access"
             ? "error.profile_access_denied"
+        : error == "camera permission denied or device busy"
+            ? "preview.camera_permission_or_busy"
         : error == "face profile was not found"
             ? "error.profile_not_found"
         : std::string_view{};
@@ -360,6 +362,7 @@ void set_preview_idle(
     const WindowHandle& window,
     const su::app::LanguageCatalog& catalog) {
     window->set_preview_status_text(slint::SharedString(translated(catalog, window, "preview.idle")));
+    window->set_preview_error_text({});
     window->set_face_box_visible(false);
 }
 
@@ -1381,15 +1384,20 @@ int main(int argc, char** argv) try {
 
         (*window)->set_preview_status_text(slint::SharedString(
             translated(*catalog, *window, "preview.starting")));
-        preview->start(
+        (*window)->set_preview_error_text({});
+        const auto started = preview->start(
             controller->recognizer(),
             config->selected_camera,
             static_cast<int>(config->preview_fps),
             config->liveness_detection,
             push_preview_frame);
-        if (!preview->is_running()) {
+        if (!started) {
             (*window)->set_preview_status_text(slint::SharedString(
                 translated(*catalog, *window, "preview.start_failed")));
+            if (started.error() == su::recognizer::RecognizerError::kCameraPermissionOrBusy) {
+                (*window)->set_preview_error_text(slint::SharedString(
+                    translated(*catalog, *window, "preview.camera_permission_or_busy")));
+            }
         }
     });
 

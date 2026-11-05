@@ -33,7 +33,9 @@ class V4L2Camera::Impl {
 public:
     std::expected<void, RecognizerError> open(int index) {
         if (!stream_.open(index)) {
-            return std::unexpected(RecognizerError::kCameraUnavailable);
+            return std::unexpected(stream_.last_open_was_permission_or_busy()
+                ? RecognizerError::kCameraPermissionOrBusy
+                : RecognizerError::kCameraUnavailable);
         }
         return {};
     }

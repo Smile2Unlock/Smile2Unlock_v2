@@ -3,9 +3,6 @@ module;
 #include <cstddef>
 #if defined(__linux__)
 #include <linux/videodev2.h>
-#else
-constexpr int V4L2_PIX_FMT_YUYV = 0x56595559;   // 'YUYV'
-constexpr int V4L2_PIX_FMT_MJPEG = 0x47504A4D;  // 'MJPG'
 #endif
 
 module su.recognizer.image;
@@ -13,6 +10,12 @@ module su.recognizer.image;
 namespace su::recognizer {
 
 namespace {
+
+#if !defined(__linux__)
+constexpr int V4L2_PIX_FMT_YUYV = 0x56595559;   // 'YUYV'
+constexpr int V4L2_PIX_FMT_MJPEG = 0x47504A4D;  // 'MJPG'
+constexpr int V4L2_PIX_FMT_NV12 = 0x3231564E;   // 'NV12'
+#endif
 
 constexpr int kRgbChannels = 3;
 constexpr int kArgbChannels = 4;
@@ -87,6 +90,35 @@ std::expected<std::vector<std::byte>, RecognizerError> v4l2_frame_to_rgb(
         auto* dst = reinterpret_cast<uint8_t*>(argb.data());
         if (libyuv::MJPGToARGB(sample, sample_size, dst, argb_stride,
                                width, height, width, height) != 0) {
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
+    } else if (frame.v4l2_format == V4L2_PIX_FMT_NV12) {
+        if ((width % 2) != 0 || (height % 2) != 0) {
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
+        const auto src_stride = frame.stride == 0
+            ? static_cast<std::size_t>(width) : frame.stride;
+        const auto rows = static_cast<std::size_t>(height);
+        const auto uv_rows = rows / 2;
+        if (src_stride < static_cast<std::size_t>(width)
+            || src_stride > static_cast<std::size_t>(std::numeric_limits<int>::max())
+            || src_stride > std::numeric_limits<std::size_t>::max() / rows) {
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
+        const auto y_plane_size = src_stride * rows;
+        if (src_stride > (std::numeric_limits<std::size_t>::max() - y_plane_size) / uv_rows) {
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
+        const auto required_size = y_plane_size + src_stride * uv_rows;
+        if (frame.bytes.size() < required_size) {
+            return std::unexpected(RecognizerError::kInvalidImage);
+        }
+        const auto* y_plane = reinterpret_cast<const uint8_t*>(frame.bytes.data());
+        const auto* uv_plane = y_plane + y_plane_size;
+        auto* dst = reinterpret_cast<uint8_t*>(argb.data());
+        if (libyuv::NV12ToARGB(y_plane, static_cast<int>(src_stride),
+                               uv_plane, static_cast<int>(src_stride),
+                               dst, argb_stride, width, height) != 0) {
             return std::unexpected(RecognizerError::kInvalidImage);
         }
     } else {
