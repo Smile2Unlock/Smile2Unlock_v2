@@ -34,8 +34,10 @@ inline std::string_view sealed_unavailable_reason(bool configurable, bool parent
 
 inline std::string_view use_unavailable_reason(bool service, bool status_known, bool has_profile,
                                                bool tpm_protected, bool sealed_login) {
+    // The status line owns the unknown-status message; management availability
+    // separately covers an unavailable service. Do not repeat either here.
     if (!service || !status_known)
-        return "wallet.status_unavailable";
+        return {};
     if (!has_profile)
         return "wallet.face_required";
     if (!tpm_protected)

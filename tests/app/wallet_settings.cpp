@@ -59,12 +59,10 @@ int main() {
     check(wallet::sealed_unavailable_reason(true, true, false) == "wallet.tpm_required",
           "TPM reason");
     check(wallet::use_unavailable_reason(true, true, true, true, true).empty(), "eligible user");
-    check(wallet::use_unavailable_reason(false, true, true, true, true) ==
-              "wallet.status_unavailable",
-          "service reason");
-    check(wallet::use_unavailable_reason(true, false, true, true, true) ==
-              "wallet.status_unavailable",
-          "unknown status reason");
+    check(wallet::use_unavailable_reason(false, true, true, true, true).empty(),
+          "service message is owned by management availability");
+    check(wallet::use_unavailable_reason(true, false, true, true, true).empty(),
+          "unknown status message appears only in status line");
     check(wallet::use_unavailable_reason(true, true, false, true, true) == "wallet.face_required",
           "face reason");
     check(wallet::use_unavailable_reason(true, true, true, false, true) == "wallet.tpm_required",

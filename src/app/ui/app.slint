@@ -580,21 +580,6 @@ export component AppWindow inherits Window {
                         detail: root.translate_value("enrollment.manage_for", root.language_index, root.username);
                     }
 
-                    if !root.platform_windows: WalletPanel {
-                        enrolled: root.authtok_enrolled;
-                        status_known: root.authtok_status_known;
-                        unavailable_reason: root.wallet_use_reason(root.service_available, root.authtok_status_known,
-                            root.profiles.length > 0, root.storage_protection_index == 2, root.sealed_login_deployed);
-                        management_available: root.service_available && root.deployment_helper_available;
-                        busy: root.busy;
-                        password <=> root.wallet_password_text;
-                        operation_status: root.wallet_operation_status;
-                        language_index: root.language_index;
-                        translate(key, language) => { root.translate(key, language) }
-                        save_requested(password) => { root.save_wallet_password_requested(password); }
-                        clear_requested => { root.clear_wallet_password_requested(); }
-                    }
-
                     if root.platform_windows: Rectangle {
                         height: 124px;
                         border-radius: 6px;
@@ -812,6 +797,20 @@ export component AppWindow inherits Window {
                                 activated => { root.delete_profile_requested(profile.id); }
                             }
                         }
+                    }
+                    if !root.platform_windows: WalletPanel {
+                        enrolled: root.authtok_enrolled;
+                        status_known: root.authtok_status_known;
+                        unavailable_reason: root.wallet_use_reason(root.service_available, root.authtok_status_known,
+                            root.profiles.length > 0, root.storage_protection_index == 2, root.sealed_login_deployed);
+                        management_available: root.service_available && root.deployment_helper_available;
+                        busy: root.busy;
+                        password <=> root.wallet_password_text;
+                        operation_status: root.wallet_operation_status;
+                        language_index: root.language_index;
+                        translate(key, language) => { root.translate(key, language) }
+                        save_requested(password) => { root.save_wallet_password_requested(password); }
+                        clear_requested => { root.clear_wallet_password_requested(); }
                     }
                 }
             }
@@ -1076,6 +1075,7 @@ export component AppWindow inherits Window {
                         models_progress: root.models_progress;
                         models_status_text: root.models_status_text;
                         translate(key, index) => { root.translate(key, index) }
+                        translate_value(key, index, value) => { root.translate_value(key, index, value) }
                         initialize_requested => { root.initialize_system_deployment_requested(); }
                         models_download_requested(accelerated, prefix) => {
                             root.models_download_requested(accelerated, prefix);

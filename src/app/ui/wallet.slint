@@ -1,6 +1,6 @@
 import { LineEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
-import { ActionButton } from "components.slint";
+import { ActionButton, SectionTitle } from "components.slint";
 
 export component WalletPanel inherits Rectangle {
     in property <bool> enrolled;
@@ -26,12 +26,8 @@ export component WalletPanel inherits Rectangle {
         alignment: start;
         padding: UiTheme.card-padding;
         spacing: UiTheme.content-gap;
-        Text {
-            text: root.translate("wallet.title", root.language_index);
-            color: UiTheme.text-primary;
-            font-size: UiTheme.button-font-size;
-            font-weight: 700;
-            wrap: word-wrap;
+        SectionTitle {
+            title: root.translate("wallet.title", root.language_index);
         }
         Text {
             text: root.translate("wallet.password_help", root.language_index);
@@ -68,7 +64,7 @@ export component WalletPanel inherits Rectangle {
             vertical-stretch: 0;
             text <=> root.password;
             input-type: InputType.password;
-            enabled: !root.busy && root.management_available && root.unavailable_reason == "";
+            enabled: !root.busy && root.status_known && root.management_available && root.unavailable_reason == "";
         }
         HorizontalLayout {
             spacing: UiTheme.content-gap;
@@ -76,7 +72,7 @@ export component WalletPanel inherits Rectangle {
                 horizontal-stretch: 1;
                 label: root.translate(root.enrolled ? "wallet.update" : "wallet.save", root.language_index);
                 primary: true;
-                enabled: !root.busy && root.management_available && root.unavailable_reason == "" && root.password != "";
+                enabled: !root.busy && root.status_known && root.management_available && root.unavailable_reason == "" && root.password != "";
                 activated => {
                     root.confirming_off = false;
                     root.save_requested(root.password);
