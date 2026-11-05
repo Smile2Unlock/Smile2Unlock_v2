@@ -307,13 +307,14 @@ export component DiagnosticRow inherits Rectangle {
 export component SectionTitle inherits HorizontalLayout {
     in property <string> title;
     in property <string> detail;
+    in property <bool> title-only: false;
 
-    height: 48px;
+    height: root.title-only ? title-label.preferred-height : 48px;
     spacing: 12px;
     VerticalLayout {
         spacing: 3px;
-        Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
-        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+        title-label := Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
+        if !root.title-only: Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
     }
 }
 
@@ -329,6 +330,8 @@ export component PageHeader inherits VerticalLayout {
 
 export component SegmentedSelector inherits Rectangle {
     in property <[string]> options;
+    // Empty preserves the existing behavior for all current callers.
+    in property <[bool]> option-enabled;
     in-out property <int> current-index: 0;
     callback selected(int);
 
@@ -342,14 +345,17 @@ export component SegmentedSelector inherits Rectangle {
         spacing: 0px;
         for option[index] in root.options: Rectangle {
             horizontal-stretch: 1;
+            private property <bool> option-available: root.option-enabled.length == 0
+                || (index < root.option-enabled.length && root.option-enabled[index]);
             background: root.current-index == index
                 ? UiTheme.surface-selected
-                : option-touch.has-hover ? UiTheme.surface : transparent;
+                : option-available && option-touch.has-hover ? UiTheme.surface : transparent;
             Text {
                 width: parent.width;
                 height: parent.height;
                 text: option;
-                color: root.current-index == index ? UiTheme.primary : UiTheme.text-secondary;
+                color: !option-available ? UiTheme.disabled-text
+                    : root.current-index == index ? UiTheme.primary : UiTheme.text-secondary;
                 font-size: 12px;
                 font-weight: root.current-index == index ? 700 : 500;
                 horizontal-alignment: center;
@@ -357,9 +363,12 @@ export component SegmentedSelector inherits Rectangle {
                 overflow: elide;
             }
             option-touch := TouchArea {
+                enabled: option-available;
                 clicked => {
-                    root.current-index = index;
-                    root.selected(index);
+                    if option-available {
+                        root.current-index = index;
+                        root.selected(index);
+                    }
                 }
             }
         }

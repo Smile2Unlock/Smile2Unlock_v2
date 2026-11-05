@@ -46,7 +46,9 @@ struct DeploymentTargetStatus {
     bool configurable = false;
     bool managed = false;
     bool wallet_available = false;
-    bool wallet_enabled = false;
+    std::string wallet_unavailable_reason = {};
+    bool sealed_available = false;
+    std::string sealed_unavailable_reason = {};
     std::string authtok_source = "none";
 };
 
@@ -55,6 +57,9 @@ struct SystemStatus {
     bool account_credential_configured = false;
     std::string service_reason;
     StorageProtection storage_protection = StorageProtection::kUnavailable;
+    bool authtok_status_known = false;
+    bool authtok_enrolled = false;
+    bool sealed_login_deployed = false;
     bool pam_status_known = false;
     bool pam_configured = false;
     std::string pam_service;
@@ -117,9 +122,12 @@ public:
     std::expected<void, std::string> show_diagnostics_in_folder(std::string_view path);
     std::expected<std::string, std::string> install_deployment_helper();
     std::expected<std::string, std::string> initialize_system_deployment();
-    std::expected<std::string, std::string> configure_desktop_target(
-        std::string_view target,
-        bool wallet_token);
+    std::expected<std::string, std::string>
+    configure_desktop_target(std::string_view target, std::string_view authtok_source);
+#ifndef _WIN32
+    // Consumes the password bytes, wiping them on every exit path.
+    std::expected<void, std::string> manage_wallet_authtok(bool clear, std::string& password);
+#endif
     std::expected<std::string, std::string> rollback_desktop_target(
         std::string_view target);
     void cancel_camera_operation();

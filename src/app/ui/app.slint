@@ -7,6 +7,7 @@ export { DeploymentTargetRow } from "deployment.slint";
 export { ContributorRow, LicenseSummaryRow } from "about.slint";
 import { AboutPanel, ContributorRow, LicenseSummaryRow } from "about.slint";
 import { UiTheme } from "theme.slint";
+import { WalletPanel } from "wallet.slint";
 import { DeploymentPanel, DeploymentTargetRow } from "deployment.slint";
 import {
     ActionButton, CenteredActionButton, CenteredStatusPill, DiagnosticRow,
@@ -37,6 +38,11 @@ export component AppWindow inherits Window {
     in property <bool> seetaface_available: false;
     in property <bool> service_available: false;
     in property <bool> account_credential_configured: false;
+    in property <bool> authtok_status_known: false;
+    in property <bool> authtok_enrolled: false;
+    in property <bool> sealed_login_deployed: false;
+    in-out property <string> wallet_password_text: "";
+    in property <string> wallet_operation_status: "";
     in property <int> storage_protection_index: 0;
     in property <bool> pam_status_known: false;
     in property <bool> pam_configured: false;
@@ -68,7 +74,14 @@ export component AppWindow inherits Window {
     in-out property <string> preview_error_text: "";
 
     in-out property <int> current_page: 0;
-    changed current_page => { if root.current_page == 2 { root.capture_refresh(); } }
+    changed current_page => {
+        if root.current_page == 2 { root.capture_refresh(); }
+        if root.current_page == 1 && !root.platform_windows {
+            root.refresh_system_status_requested();
+            root.refresh_profiles_requested();
+        }
+        root.wallet_password_text = "";
+    }
     in-out property <int> language_index: 0;
     in-out property <int> theme_mode_index: 0;
     in-out property <int> window_controls_index: 0;
@@ -114,7 +127,10 @@ export component AppWindow inherits Window {
     callback install_deployment_helper_requested();
     callback initialize_system_deployment_requested();
     callback models_download_requested(bool, string);
-    callback configure_desktop_target_requested(string, bool);
+    callback configure_desktop_target_requested(string, int);
+    callback save_wallet_password_requested(string);
+    callback clear_wallet_password_requested();
+    pure callback wallet_use_reason(bool, bool, bool, bool, bool) -> string;
     callback rollback_desktop_target_requested(string);
     callback start_preview_requested();
     callback stop_preview_requested();
@@ -782,6 +798,20 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                    if !root.platform_windows: WalletPanel {
+                        enrolled: root.authtok_enrolled;
+                        status_known: root.authtok_status_known;
+                        unavailable_reason: root.wallet_use_reason(root.service_available, root.authtok_status_known,
+                            root.profiles.length > 0, root.storage_protection_index == 2, root.sealed_login_deployed);
+                        management_available: root.service_available && root.deployment_helper_available;
+                        busy: root.busy;
+                        password <=> root.wallet_password_text;
+                        operation_status: root.wallet_operation_status;
+                        language_index: root.language_index;
+                        translate(key, language) => { root.translate(key, language) }
+                        save_requested(password) => { root.save_wallet_password_requested(password); }
+                        clear_requested => { root.clear_wallet_password_requested(); }
+                    }
                 }
             }
 
@@ -1045,13 +1075,14 @@ export component AppWindow inherits Window {
                         models_progress: root.models_progress;
                         models_status_text: root.models_status_text;
                         translate(key, index) => { root.translate(key, index) }
+                        translate_value(key, index, value) => { root.translate_value(key, index, value) }
                         initialize_requested => { root.initialize_system_deployment_requested(); }
                         models_download_requested(accelerated, prefix) => {
                             root.models_download_requested(accelerated, prefix);
                         }
                         install_helper_requested => { root.install_deployment_helper_requested(); }
-                        configure_requested(target, wallet) => {
-                            root.configure_desktop_target_requested(target, wallet);
+                        configure_requested(target, source) => {
+                            root.configure_desktop_target_requested(target, source);
                         }
                         rollback_requested(target) => {
                             root.rollback_desktop_target_requested(target);

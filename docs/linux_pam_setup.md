@@ -56,6 +56,45 @@ scope, manual installation and removal.
 The install script deliberately does not edit `/etc/pam.d`. A bad PAM stack can
 lock out every login path, and distributions compose these files differently.
 
+## Keyring auto-unlock in the app
+
+Both levels default to **Off**. An administrator enables a source for each login
+(or combined login/lock) target; each user separately saves their password.
+Lock-only and administrator-authentication targets have no keyring source choice.
+
+1. Open **Diagnostics → Desktop integration** and select a target's keyring source:
+   - **Off** leaves keyring unlocking disabled for this target.
+   - **Kernel keyring (systemd)** uses the existing `pam_systemd_loadkey` path. It is
+     disabled until display-manager keyring inheritance has been verified.
+   - **Saved login password** requires **host+tpm2** storage protection and a
+     keyring `auth` line (`pam_gnome_keyring.so` or `pam_kwallet5.so`) in the parent
+     PAM service after its password-stack anchor. A session-only keyring hook or
+     one inside the skipped password stack is insufficient. The app explains
+     why an option is unavailable.
+2. Select **Review**, then **Apply**, and authorize the helper.
+   Managed targets show their deployed source and support the same two-step
+   source change directly. **Review restore**, then **Confirm restore**, restores
+   their original PAM files.
+3. On **Enrollment**, enroll a face sample, then use **Keyring auto-unlock**.
+   Enter your login password, which must match your GNOME Keyring or KWallet
+   password, select **Save**, and authorize the operation. The password field
+   clears immediately, including on failure. Each user must do this for their
+   own account. **Update** replaces an enrolled password.
+4. **Whenever your login password changes, use Update here with the new
+   password**, and ensure that the keyring password matches it. Stale-password
+   detection is not implemented.
+5. To disable the system level, choose **Off** for each affected target and
+   review/apply. To disable your account and delete its saved password, select
+   **Turn off**, then **Confirm turn off**, and authorize. Clearing remains
+   available when a saved password can no longer be used (for example, after
+   changing the deployed source). Rolling back PAM preserves user enrollment;
+   use **Turn off** to remove it explicitly.
+
+The user card reports enrollment and missing prerequisites, including missing
+face samples, non-TPM storage, or no login target deployed with **Saved login password**.
+It is not shown on Windows. Successful app operations and fixture tests do not
+replace the real desktop acceptance test below.
+
 ## Safe acceptance test
 
 Before logging out or rebooting, invoke the built PAM module against the running
@@ -152,11 +191,12 @@ identity chosen by the existing policy, which needs its own enrolled face
 profile. sudo likewise authenticates its configured PAM user; `rootpw`,
 `targetpw` and `runaspw` can select a different account. This integration does
 not unlock SSH private keys or arbitrary application secrets. For login
-services, the optional [wallet authtok feature](linux_desktop_pam_integration_plan.md#sealed-per-user-wallet-token)
-can supply an enrolled GNOME Keyring/KWallet password after accepted face
+services, optional [keyring auto-unlock](linux_desktop_pam_integration_plan.md#sealed-per-user-wallet-token)
+can supply a saved GNOME Keyring/KWallet password after accepted face
 authentication. It is off by default, requires host+TPM2 storage, and is refused
-for administrator authorization and lock-only targets. GUI enrollment and stale
-token detection follow in P3, a separate PR.
+for administrator authorization and lock-only targets. Use **Saved login password**
+and the enrollment steps above to enable it. Stale-password detection is not
+implemented.
 
 After applying an entry, test without sudo's cached credentials:
 

@@ -1,7 +1,7 @@
-import { LineEdit, ProgressIndicator, Switch } from "std-widgets.slint";
+import { LineEdit, ProgressIndicator } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import {
-    ActionButton, ActionLabelMeasure, CenteredActionButton, InlineStatus, SectionTitle,
+    ActionButton, ActionLabelMeasure, CenteredActionButton, InlineStatus, SectionTitle, SegmentedSelector,
 } from "components.slint";
 
 export struct DeploymentTargetRow {
@@ -15,7 +15,10 @@ export struct DeploymentTargetRow {
     configurable: bool,
     managed: bool,
     wallet_available: bool,
-    wallet_enabled: bool,
+    wallet_unavailable_reason: string,
+    sealed_available: bool,
+    sealed_unavailable_reason: string,
+    authtok_source: int,
 }
 
 export component DeploymentPanel inherits Rectangle {
@@ -38,9 +41,10 @@ export component DeploymentPanel inherits Rectangle {
     callback initialize_requested();
     callback models_download_requested(bool, string);
     callback install_helper_requested();
-    callback configure_requested(string, bool);
+    callback configure_requested(string, int);
     callback rollback_requested(string);
     pure callback translate(string, int) -> string;
+    pure callback translate_value(string, int, string) -> string;
 
     private property <string> pending_target: "";
     private property <string> pending_action: "";
@@ -188,168 +192,215 @@ export component DeploymentPanel inherits Rectangle {
         }
 
         for target in root.targets: Rectangle {
+            vertical-stretch: 0;
             border-radius: 6px;
             border-width: 1px;
             border-color: root.pending_target == target.id ? UiTheme.primary : UiTheme.border;
             background: root.pending_target == target.id ? UiTheme.surface-selected : UiTheme.surface;
-            property <bool> wallet_selected: target.wallet_enabled;
+            property <int> source_selected: target.authtok_source;
+            property <bool> source_changed: source_selected != target.authtok_source;
+            property <bool> source_valid: source_selected == 0 ||
+                (source_selected == 1 && target.wallet_available) ||
+                (source_selected == 2 && target.sealed_available);
 
-            HorizontalLayout {
-                padding: 20px;
-                spacing: 24px;
+            VerticalLayout {
+                padding: UiTheme.card-padding;
+                spacing: UiTheme.content-gap;
 
-                // Text column: three rows whose items share a baseline.
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 6px;
+                HorizontalLayout {
+                    spacing: UiTheme.content-gap;
+                    // Text column: three rows whose items share a baseline.
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 6px;
 
-                    HorizontalLayout {
-                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Text {
+                                horizontal-stretch: 1;
+                                text: target.id == "credential-provider"
+                                    ? root.translate("deployment.target_credential_provider", root.language_index)
+                                    : target.id == "auth-service"
+                                        ? root.translate("deployment.target_auth_service", root.language_index)
+                                        : target.id == "sudo-i"
+                                            ? "sudo -i"
+                                            : target.id == "polkit"
+                                                ? root.translate("deployment.target_polkit", root.language_index)
+                                                : target.service;
+                                color: UiTheme.text-primary;
+                                font-size: 14px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: target.role == "login"
+                                    ? root.translate("deployment.role_login", root.language_index)
+                                    : target.role == "lock"
+                                        ? root.translate("deployment.role_lock", root.language_index)
+                                        : target.role == "privilege"
+                                            ? root.translate("deployment.role_privilege", root.language_index)
+                                            : root.translate("deployment.role_both", root.language_index);
+                                color: UiTheme.text-tertiary;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+                            InlineStatus {
+                                horizontal-stretch: 0;
+                                label: target.state == "supported"
+                                    ? root.translate("deployment.state_supported", root.language_index)
+                                    : target.state == "managed"
+                                        ? root.translate("deployment.state_managed", root.language_index)
+                                        : target.state == "external"
+                                            ? root.translate("deployment.state_external", root.language_index)
+                                            : target.state == "conflict"
+                                                ? root.translate("deployment.state_conflict", root.language_index)
+                                                : root.translate("deployment.state_unsupported", root.language_index);
+                                tone: target.managed ? "accent"
+                                    : target.state == "conflict" ? "bad"
+                                    : target.configurable || target.state == "external" ? "neutral"
+                                    : "warn";
+                            }
+                        }
+
                         Text {
-                            horizontal-stretch: 1;
-                            text: target.id == "credential-provider"
-                                ? root.translate("deployment.target_credential_provider", root.language_index)
-                                : target.id == "auth-service"
-                                    ? root.translate("deployment.target_auth_service", root.language_index)
-                                    : target.id == "sudo-i"
-                                        ? "sudo -i"
-                                        : target.id == "polkit"
-                                            ? root.translate("deployment.target_polkit", root.language_index)
-                                            : target.service;
-                            color: UiTheme.text-primary;
-                            font-size: 14px;
-                            font-weight: 700;
-                            vertical-alignment: center;
+                            text: target.effective_path;
+                            color: UiTheme.text-secondary;
+                            font-size: 12px;
                             overflow: elide;
                         }
-                        Text {
-                            text: target.role == "login"
-                                ? root.translate("deployment.role_login", root.language_index)
-                                : target.role == "lock"
-                                    ? root.translate("deployment.role_lock", root.language_index)
-                                    : target.role == "privilege"
-                                        ? root.translate("deployment.role_privilege", root.language_index)
-                                        : root.translate("deployment.role_both", root.language_index);
-                            color: UiTheme.text-tertiary;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                        InlineStatus {
-                            horizontal-stretch: 0;
-                            label: target.state == "supported"
-                                ? root.translate("deployment.state_supported", root.language_index)
-                                : target.state == "managed"
-                                    ? root.translate("deployment.state_managed", root.language_index)
-                                    : target.state == "external"
-                                        ? root.translate("deployment.state_external", root.language_index)
-                                        : target.state == "conflict"
-                                            ? root.translate("deployment.state_conflict", root.language_index)
-                                            : root.translate("deployment.state_unsupported", root.language_index);
-                            tone: target.managed ? "accent"
-                                : target.state == "conflict" ? "bad"
-                                : target.configurable || target.state == "external" ? "neutral"
-                                : "warn";
-                        }
-                    }
 
-                    Text {
-                        text: target.effective_path;
-                        color: UiTheme.text-secondary;
-                        font-size: 12px;
-                        overflow: elide;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 12px;
-                        InlineStatus {
-                            horizontal-stretch: 1;
-                            label: target.id == "credential-provider"
-                                ? target.configured
-                                    ? root.translate("deployment.cp_registered", root.language_index)
-                                    : root.translate("deployment.cp_incomplete", root.language_index)
-                                : target.id == "auth-service"
+                        HorizontalLayout {
+                            spacing: 12px;
+                            InlineStatus {
+                                horizontal-stretch: 1;
+                                label: target.id == "credential-provider"
                                     ? target.configured
-                                        ? root.translate("deployment.service_running", root.language_index)
-                                        : target.state == "conflict"
-                                            ? root.translate("deployment.service_legacy_path", root.language_index)
-                                            : target.state == "supported"
-                                            ? root.translate("deployment.service_stopped", root.language_index)
-                                            : root.translate("deployment.service_missing", root.language_index)
-                                    : target.password_fallback
-                                        ? root.translate("deployment.password_fallback_ready", root.language_index)
-                                        : root.translate("deployment.password_fallback_unknown", root.language_index);
-                            tone: target.configured ? "good" : "warn";
-                        }
-                        // Wallet (KWallet / systemd-loadkey) is a Linux PAM concept;
-                        // Windows guards secrets with CNG/TPM/DPAPI.
-                        if !root.platform_windows && target.wallet_available: Switch {
-                            text: root.translate("deployment.wallet", root.language_index);
-                            checked <=> wallet_selected;
-                            enabled: target.wallet_available && !target.managed && !root.busy;
-                        }
-                        if !root.platform_windows && target.role != "privilege" && !target.wallet_available: Text {
-                            text: target.wallet_enabled
-                                ? root.translate("status.configured", root.language_index)
-                                : root.translate("deployment.wallet_unavailable", root.language_index);
-                            color: UiTheme.text-tertiary;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Action column, vertically centred on the card.
-                VerticalLayout {
-                    width: root.action_width;
-                    alignment: center;
-
-                    if root.helper_available && (target.managed || target.configurable): ActionButton {
-                        label: root.pending_target == target.id
-                            ? target.managed && target.id != "auth-service"
-                                ? root.translate("deployment.confirm_rollback", root.language_index)
-                                : target.id == "auth-service"
-                                    ? root.translate("deployment.confirm_repair", root.language_index)
-                                    : root.translate("deployment.apply", root.language_index)
-                            : target.managed && target.id != "auth-service"
-                                ? root.translate("deployment.review_rollback", root.language_index)
-                                : target.id == "auth-service"
-                                    ? root.translate("deployment.repair_service", root.language_index)
-                                    : root.translate("deployment.review", root.language_index);
-                        primary: root.pending_target == target.id
-                            && !(target.managed && target.id != "auth-service");
-                        danger: target.managed && target.id != "auth-service";
-                        enabled: root.helper_available && !root.busy
-                            && (target.managed || target.configurable);
-                        activated => {
-                            if (root.pending_target != target.id) {
-                                root.pending_target = target.id;
-                                root.pending_action = target.managed && target.id != "auth-service"
-                                    ? "rollback" : "configure";
-                            } else {
-                                root.pending_target = "";
-                                root.pending_action = "";
-                                if (target.managed && target.id != "auth-service") {
-                                    root.rollback_requested(target.id);
-                                } else {
-                                    root.configure_requested(target.id, wallet_selected);
-                                }
+                                        ? root.translate("deployment.cp_registered", root.language_index)
+                                        : root.translate("deployment.cp_incomplete", root.language_index)
+                                    : target.id == "auth-service"
+                                        ? target.configured
+                                            ? root.translate("deployment.service_running", root.language_index)
+                                            : target.state == "conflict"
+                                                ? root.translate("deployment.service_legacy_path", root.language_index)
+                                                : target.state == "supported"
+                                                ? root.translate("deployment.service_stopped", root.language_index)
+                                                : root.translate("deployment.service_missing", root.language_index)
+                                        : target.password_fallback
+                                            ? root.translate("deployment.password_fallback_ready", root.language_index)
+                                            : root.translate("deployment.password_fallback_unknown", root.language_index);
+                                tone: target.configured ? "good" : "warn";
                             }
                         }
                     }
-                    if !root.helper_available && (target.managed || target.configurable): Text {
-                        text: root.translate("deployment.helper_required", root.language_index);
-                        color: UiTheme.warning-text;
-                        font-size: 11px;
-                        horizontal-alignment: center;
+
+                    // Action column, vertically centred on the target details.
+                    VerticalLayout {
+                        width: root.action_width;
+                        spacing: UiTheme.content-gap;
+                        alignment: center;
+
+                        // A source edit uses review/apply; rollback has its own review.
+                        if root.helper_available && target.configurable && (!target.managed || source_changed || target.id == "auth-service"): ActionButton {
+                            label: root.pending_target == target.id && root.pending_action == "configure"
+                                ? target.id == "auth-service"
+                                    ? root.translate("deployment.confirm_repair", root.language_index)
+                                    : root.translate("deployment.apply", root.language_index)
+                                : target.id == "auth-service"
+                                    ? root.translate("deployment.repair_service", root.language_index)
+                                    : root.translate("deployment.review", root.language_index);
+                            primary: true;
+                            enabled: !root.busy && source_valid;
+                            activated => {
+                                if (root.pending_target != target.id || root.pending_action != "configure") {
+                                    root.pending_target = target.id;
+                                    root.pending_action = "configure";
+                                } else {
+                                    root.pending_target = "";
+                                    root.pending_action = "";
+                                    root.configure_requested(target.id, source_selected);
+                                }
+                            }
+                        }
+                        if root.helper_available && target.managed && target.id != "auth-service": ActionButton {
+                            label: root.pending_target == target.id && root.pending_action == "rollback"
+                                ? root.translate("deployment.confirm_rollback", root.language_index)
+                                : root.translate("deployment.review_rollback", root.language_index);
+                            danger: true;
+                            enabled: !root.busy;
+                            activated => {
+                                if (root.pending_target != target.id || root.pending_action != "rollback") {
+                                    root.pending_target = target.id;
+                                    root.pending_action = "rollback";
+                                } else {
+                                    root.pending_target = "";
+                                    root.pending_action = "";
+                                    root.rollback_requested(target.id);
+                                }
+                            }
+                        }
+                        if !root.helper_available && (target.managed || target.configurable): Text {
+                            text: root.translate("deployment.helper_required", root.language_index);
+                            color: UiTheme.warning-text;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        if !target.managed && !target.configurable: Text {
+                            text: target.state == "external"
+                                ? root.translate("deployment.external_read_only", root.language_index)
+                                : root.translate("deployment.not_available", root.language_index);
+                            color: UiTheme.text-tertiary;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+                if !root.platform_windows && (target.configurable || target.managed)
+                    && (target.role == "login" || target.role == "login-and-lock"): VerticalLayout {
+                    alignment: start;
+                    spacing: UiTheme.content-gap;
+                    Text {
+                        text: root.translate("deployment.wallet_source", root.language_index);
+                        color: UiTheme.text-primary;
+                        font-size: UiTheme.row-label-font-size;
                         wrap: word-wrap;
                     }
-                    if !target.managed && !target.configurable: Text {
-                        text: target.state == "external"
-                            ? root.translate("deployment.external_read_only", root.language_index)
-                            : root.translate("deployment.not_available", root.language_index);
+                    if target.managed: Text {
+                        text: root.translate_value("deployment.wallet_deployed", root.language_index,
+                            root.translate(target.authtok_source == 1 ? "deployment.source_kernel"
+                                : target.authtok_source == 2 ? "deployment.source_sealed"
+                                : "deployment.source_off", root.language_index));
+                        color: UiTheme.text-secondary;
+                        font-size: UiTheme.row-label-font-size;
+                        wrap: word-wrap;
+                    }
+                    SegmentedSelector {
+                        options: [root.translate("deployment.source_off", root.language_index),
+                            root.translate("deployment.source_kernel", root.language_index),
+                            root.translate("deployment.source_sealed", root.language_index)];
+                        option-enabled: [!root.busy && root.helper_available && target.configurable,
+                            !root.busy && root.helper_available && target.configurable && target.wallet_available,
+                            !root.busy && root.helper_available && target.configurable && target.sealed_available];
+                        current-index <=> source_selected;
+                        selected(index) => {
+                            root.pending_target = "";
+                            root.pending_action = "";
+                        }
+                    }
+                    if !target.wallet_available: Text {
+                        text: root.translate_value("deployment.kernel_unavailable", root.language_index,
+                            root.translate(target.wallet_unavailable_reason, root.language_index));
                         color: UiTheme.text-tertiary;
-                        font-size: 11px;
-                        horizontal-alignment: center;
+                        font-size: UiTheme.row-label-font-size;
+                        wrap: word-wrap;
+                    }
+                    if !target.sealed_available: Text {
+                        text: root.translate_value("deployment.sealed_unavailable", root.language_index,
+                            root.translate(target.sealed_unavailable_reason, root.language_index));
+                        color: UiTheme.text-tertiary;
+                        font-size: UiTheme.row-label-font-size;
                         wrap: word-wrap;
                     }
                 }
