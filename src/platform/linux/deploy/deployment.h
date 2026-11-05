@@ -49,6 +49,7 @@ struct TargetStatus {
     bool wallet_modules = false;
     bool wallet_token_enabled = false;
     AuthtokSource authtok_source = AuthtokSource::kNone;
+    bool sealed_available = false; // Parent AUTH wallet line follows the face/password anchor.
     std::string detail;
 };
 

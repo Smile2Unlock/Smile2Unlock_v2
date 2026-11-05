@@ -1,4 +1,4 @@
-import { LineEdit, ProgressIndicator, Switch } from "std-widgets.slint";
+import { LineEdit, ProgressIndicator } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import {
     ActionButton, ActionLabelMeasure, CenteredActionButton, InlineStatus, SectionTitle,
@@ -15,7 +15,10 @@ export struct DeploymentTargetRow {
     configurable: bool,
     managed: bool,
     wallet_available: bool,
-    wallet_enabled: bool,
+    wallet_unavailable_reason: string,
+    sealed_available: bool,
+    sealed_unavailable_reason: string,
+    authtok_source: int,
 }
 
 export component DeploymentPanel inherits Rectangle {
@@ -38,7 +41,7 @@ export component DeploymentPanel inherits Rectangle {
     callback initialize_requested();
     callback models_download_requested(bool, string);
     callback install_helper_requested();
-    callback configure_requested(string, bool);
+    callback configure_requested(string, int);
     callback rollback_requested(string);
     pure callback translate(string, int) -> string;
 
@@ -188,11 +191,16 @@ export component DeploymentPanel inherits Rectangle {
         }
 
         for target in root.targets: Rectangle {
+            vertical-stretch: 0;
             border-radius: 6px;
             border-width: 1px;
             border-color: root.pending_target == target.id ? UiTheme.primary : UiTheme.border;
             background: root.pending_target == target.id ? UiTheme.surface-selected : UiTheme.surface;
-            property <bool> wallet_selected: target.wallet_enabled;
+            property <int> source_selected: target.authtok_source;
+            property <bool> source_changed: source_selected != target.authtok_source;
+            property <bool> source_valid: source_selected == 0 ||
+                (source_selected == 1 && target.wallet_available) ||
+                (source_selected == 2 && target.sealed_available);
 
             HorizontalLayout {
                 padding: 20px;
@@ -280,20 +288,48 @@ export component DeploymentPanel inherits Rectangle {
                                         : root.translate("deployment.password_fallback_unknown", root.language_index);
                             tone: target.configured ? "good" : "warn";
                         }
-                        // Wallet (KWallet / systemd-loadkey) is a Linux PAM concept;
-                        // Windows guards secrets with CNG/TPM/DPAPI.
-                        if !root.platform_windows && target.wallet_available: Switch {
-                            text: root.translate("deployment.wallet", root.language_index);
-                            checked <=> wallet_selected;
-                            enabled: target.wallet_available && !target.managed && !root.busy;
+                    }
+                    if !root.platform_windows && (target.role == "login" || target.role == "login-and-lock"): VerticalLayout {
+                        alignment: start;
+                        spacing: UiTheme.content-gap;
+                        Text {
+                            text: root.translate("deployment.wallet_source", root.language_index);
+                            color: UiTheme.text-primary;
+                            font-size: UiTheme.row-label-font-size;
+                            wrap: word-wrap;
                         }
-                        if !root.platform_windows && target.role != "privilege" && !target.wallet_available: Text {
-                            text: target.wallet_enabled
-                                ? root.translate("status.configured", root.language_index)
-                                : root.translate("deployment.wallet_unavailable", root.language_index);
-                            color: UiTheme.text-tertiary;
-                            font-size: 11px;
-                            vertical-alignment: center;
+                        if target.managed: Text {
+                            text: root.translate("deployment.wallet_deployed", root.language_index) + " " +
+                                root.translate(target.authtok_source == 1 ? "deployment.source_kernel"
+                                    : target.authtok_source == 2 ? "deployment.source_sealed"
+                                    : "deployment.source_off", root.language_index);
+                            color: UiTheme.text-secondary;
+                            font-size: UiTheme.row-label-font-size;
+                            wrap: word-wrap;
+                        }
+                        for option in [0, 1, 2]: VerticalLayout {
+                            spacing: UiTheme.content-gap;
+                            ActionButton {
+                                horizontal-stretch: 1;
+                                label: root.translate(option == 1 ? "deployment.source_kernel"
+                                    : option == 2 ? "deployment.source_sealed" : "deployment.source_off", root.language_index);
+                                primary: source_selected == option;
+                                enabled: !root.busy && root.helper_available && target.configurable &&
+                                    (option == 0 || (option == 1 && target.wallet_available) ||
+                                        (option == 2 && target.sealed_available));
+                                activated => {
+                                    source_selected = option;
+                                    root.pending_target = "";
+                                    root.pending_action = "";
+                                }
+                            }
+                            if (option == 1 && !target.wallet_available) || (option == 2 && !target.sealed_available): Text {
+                                text: root.translate(option == 1 ? target.wallet_unavailable_reason
+                                    : target.sealed_unavailable_reason, root.language_index);
+                                color: UiTheme.text-tertiary;
+                                font-size: UiTheme.row-label-font-size;
+                                wrap: word-wrap;
+                            }
                         }
                     }
                 }
@@ -301,38 +337,45 @@ export component DeploymentPanel inherits Rectangle {
                 // Action column, vertically centred on the card.
                 VerticalLayout {
                     width: root.action_width;
+                    spacing: UiTheme.content-gap;
                     alignment: center;
 
-                    if root.helper_available && (target.managed || target.configurable): ActionButton {
-                        label: root.pending_target == target.id
-                            ? target.managed && target.id != "auth-service"
-                                ? root.translate("deployment.confirm_rollback", root.language_index)
-                                : target.id == "auth-service"
-                                    ? root.translate("deployment.confirm_repair", root.language_index)
-                                    : root.translate("deployment.apply", root.language_index)
-                            : target.managed && target.id != "auth-service"
-                                ? root.translate("deployment.review_rollback", root.language_index)
-                                : target.id == "auth-service"
-                                    ? root.translate("deployment.repair_service", root.language_index)
-                                    : root.translate("deployment.review", root.language_index);
-                        primary: root.pending_target == target.id
-                            && !(target.managed && target.id != "auth-service");
-                        danger: target.managed && target.id != "auth-service";
-                        enabled: root.helper_available && !root.busy
-                            && (target.managed || target.configurable);
+                    // A source edit uses review/apply; rollback has its own review.
+                    if root.helper_available && target.configurable && (!target.managed || source_changed || target.id == "auth-service"): ActionButton {
+                        label: root.pending_target == target.id && root.pending_action == "configure"
+                            ? target.id == "auth-service"
+                                ? root.translate("deployment.confirm_repair", root.language_index)
+                                : root.translate("deployment.apply", root.language_index)
+                            : target.id == "auth-service"
+                                ? root.translate("deployment.repair_service", root.language_index)
+                                : root.translate("deployment.review", root.language_index);
+                        primary: true;
+                        enabled: !root.busy && source_valid;
                         activated => {
-                            if (root.pending_target != target.id) {
+                            if (root.pending_target != target.id || root.pending_action != "configure") {
                                 root.pending_target = target.id;
-                                root.pending_action = target.managed && target.id != "auth-service"
-                                    ? "rollback" : "configure";
+                                root.pending_action = "configure";
                             } else {
                                 root.pending_target = "";
                                 root.pending_action = "";
-                                if (target.managed && target.id != "auth-service") {
-                                    root.rollback_requested(target.id);
-                                } else {
-                                    root.configure_requested(target.id, wallet_selected);
-                                }
+                                root.configure_requested(target.id, source_selected);
+                            }
+                        }
+                    }
+                    if root.helper_available && target.managed && target.id != "auth-service": ActionButton {
+                        label: root.pending_target == target.id && root.pending_action == "rollback"
+                            ? root.translate("deployment.confirm_rollback", root.language_index)
+                            : root.translate("deployment.review_rollback", root.language_index);
+                        danger: true;
+                        enabled: !root.busy;
+                        activated => {
+                            if (root.pending_target != target.id || root.pending_action != "rollback") {
+                                root.pending_target = target.id;
+                                root.pending_action = "rollback";
+                            } else {
+                                root.pending_target = "";
+                                root.pending_action = "";
+                                root.rollback_requested(target.id);
                             }
                         }
                     }

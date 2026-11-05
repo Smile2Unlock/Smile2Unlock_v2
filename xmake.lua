@@ -645,6 +645,14 @@ if is_plat("linux") then
         add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
 
+    target("su_wallet_settings_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/app/wallet_settings.cpp", "src/modules/su.control.socket.cppm")
+        add_packages("nlohmann_json")
+        add_deps("su_deploy")
+        add_tests("default")
+
     target("su_control_socket_smoke_test")
         set_default(false)
         apply_cpp_target("binary")

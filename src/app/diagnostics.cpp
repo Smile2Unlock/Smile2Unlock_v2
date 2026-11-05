@@ -54,7 +54,7 @@ Summary summary_input(const AppSnapshot& app, const SystemStatus& system,
                                    {"configurable", yes(target.configurable)},
                                    {"managed", yes(target.managed)},
                                    {"wallet available", yes(target.wallet_available)},
-                                   {"wallet enabled", yes(target.wallet_enabled)}}});
+                                   {"wallet source", target.authtok_source}}});
     }
     return result;
 }

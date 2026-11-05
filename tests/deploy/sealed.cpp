@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <array>
+#include <algorithm>
 #include <format>
 #include <iostream>
 
@@ -50,6 +51,9 @@ bool sealed_deployment_tests(const std::filesystem::path& base) {
             std::string(auth) +
             "account required pam_permit.so\nsession optional pam_gnome_keyring.so auto_start\n";
         write(parent, original);
+        const auto initial_status = inspect_deployment(root);
+        check(initial_status && initial_status->targets[3].sealed_available,
+              "unmanaged supported target exposes sealed eligibility");
         // Exercise every directed transition, not just returning through none.
         for (const auto initial :
              {AuthtokSource::kNone, AuthtokSource::kKernelKeyring, AuthtokSource::kSealed}) {
@@ -75,6 +79,11 @@ bool sealed_deployment_tests(const std::filesystem::path& base) {
                 const auto snapshot = inspect_deployment(root);
                 check(snapshot && snapshot->targets[3].authtok_source == next,
                       "status reports actual source");
+                check(snapshot && snapshot->targets[3].sealed_available,
+                      "managed status exposes parent AUTH eligibility for every source");
+                check(snapshot && nlohmann::json::parse(snapshot_json(
+                                      *snapshot))["targets"][3]["sealed_available"] == true,
+                      "status JSON exposes sealed eligibility");
                 const auto journal =
                     nlohmann::json::parse(read(root / "var/lib/smile2unlock/deployment.json"));
                 check(journal["version"] == 3 &&
@@ -98,6 +107,9 @@ bool sealed_deployment_tests(const std::filesystem::path& base) {
           "auth include system-auth\nauth optional pam_exec.so pam_gnome_keyring.so\n",
           "auth include system-auth\n"}) {
         write(root / "etc/pam.d/gdm-password", layout);
+        const auto snapshot = inspect_deployment(root);
+        check(snapshot && !snapshot->targets[3].sealed_available,
+              "invalid parent AUTH order is unavailable in status");
         check(!plan_pam_integration(root, TargetKind::kGdm, AuthtokSource::kSealed),
               "wallet before anchor, session-only, or in password stack conflicts");
     }
@@ -105,6 +117,13 @@ bool sealed_deployment_tests(const std::filesystem::path& base) {
                               TargetKind::kSudoLogin, TargetKind::kPolkit}) {
         write(root / "etc/pam.d" / target_service(target),
               "auth include system-auth\nauth optional pam_kwallet5.so\n");
+        const auto snapshot = inspect_deployment(root);
+        check(snapshot && std::ranges::none_of(snapshot->targets,
+                                               [target](const auto& status) {
+                                                   return status.kind == target &&
+                                                          status.sealed_available;
+                                               }),
+              "lock/privilege status does not offer sealed");
         for (const auto source : {AuthtokSource::kSealed, AuthtokSource::kKernelKeyring})
             check(!plan_pam_integration(root, target, source),
                   "lock and privilege targets refuse wallet sources");

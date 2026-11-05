@@ -3,6 +3,7 @@
 #include "app_window.h"
 #include "username_initial.h"
 #include "web_link.h"
+#include "wallet_settings.h"
 #include "common/utf8_path.h"
 #ifdef _WIN32
 #include "platform/windows/paths.h"
@@ -261,7 +262,10 @@ std::vector<ui::DeploymentTargetRow> deployment_target_rows(
             .configurable = target.configurable,
             .managed = target.managed,
             .wallet_available = target.wallet_available,
-            .wallet_enabled = target.wallet_enabled,
+            .wallet_unavailable_reason = slint::SharedString(target.wallet_unavailable_reason),
+            .sealed_available = target.sealed_available,
+            .sealed_unavailable_reason = slint::SharedString(target.sealed_unavailable_reason),
+            .authtok_source = su::app::wallet::source_index(target.authtok_source),
         });
     }
     return rows;
@@ -500,6 +504,9 @@ void apply_system_status(
     const std::shared_ptr<DeploymentTargetModel>& deployment_targets) {
     window->set_service_available(status.service_available);
     window->set_account_credential_configured(status.account_credential_configured);
+    window->set_authtok_status_known(status.authtok_status_known);
+    window->set_authtok_enrolled(status.authtok_enrolled);
+    window->set_sealed_login_deployed(status.sealed_login_deployed);
     window->set_storage_protection_index(static_cast<int>(status.storage_protection));
     window->set_pam_status_known(status.pam_status_known);
     window->set_pam_configured(status.pam_configured);
@@ -979,18 +986,14 @@ int main(int argc, char** argv) try {
         });
 
     window->on_configure_desktop_target_requested(
-        [weak_window, controller, deployment_targets, catalog](
-            slint::SharedString target,
-            bool wallet_token) {
-            start_deployment_operation(
-                weak_window,
-                controller,
-                deployment_targets,
-                catalog,
-                "deployment.configure_success",
-                [controller, target = std::string(target), wallet_token] {
-                    return controller->configure_desktop_target(target, wallet_token);
-                });
+        [weak_window, controller, deployment_targets, catalog](slint::SharedString target,
+                                                               int source) {
+            start_deployment_operation(weak_window, controller, deployment_targets, catalog,
+                                       "deployment.configure_success",
+                                       [controller, target = std::string(target), source] {
+                                           return controller->configure_desktop_target(
+                                               target, su::app::wallet::source_id(source));
+                                       });
         });
 
     window->on_rollback_desktop_target_requested(
@@ -1005,6 +1008,91 @@ int main(int argc, char** argv) try {
                     return controller->rollback_desktop_target(target);
                 });
         });
+
+    window->on_wallet_use_reason([](bool service, bool known, bool profile, bool tpm, bool login) {
+        return slint::SharedString(
+            su::app::wallet::use_unavailable_reason(service, known, profile, tpm, login));
+    });
+#ifndef _WIN32
+    // Keep the secret in one owned allocation; thread/closure copies share its
+    // owner, never copy or move password bytes (including short-string data).
+    const auto manage_wallet = [weak_window, controller, deployment_targets,
+                                catalog](bool clear, const std::shared_ptr<std::string>& password) {
+        const auto window = weak_window.lock();
+        if (!window || (*window)->get_busy()) {
+            su::security::wipe_bytes(password->data(), password->size());
+            return;
+        }
+        (*window)->set_wallet_password_text("");
+        (*window)->set_busy(true);
+        (*window)->set_wallet_operation_status(
+            slint::SharedString(translated(*catalog, *window, "wallet.working")));
+        std::thread([weak_window, controller, deployment_targets, catalog, clear, password] {
+            auto success = false;
+            {
+                const auto wipe_password = su::security::ScopedWipe{*password};
+                try {
+                    success = controller->manage_wallet_authtok(clear, *password).has_value();
+                } catch (...) {
+                    // Do not propagate backend details or exception text: the
+                    // password action reports only success/failure.
+                }
+            }
+            auto status = su::app::SystemStatus{};
+            try {
+                status = controller->load_system_status();
+            } catch (...) {
+            }
+            slint::invoke_from_event_loop([weak_window, deployment_targets, catalog, clear, success,
+                                           status = std::move(status)] {
+                const auto window = weak_window.lock();
+                if (!window)
+                    return;
+                apply_system_status(*window, status, deployment_targets);
+                (*window)->set_busy(false);
+                (*window)->set_wallet_operation_status(
+                    slint::SharedString(translated(*catalog, *window,
+                                                   !success ? "wallet.failed"
+                                                   : clear  ? "wallet.cleared"
+                                                            : "wallet.saved")));
+                gui_log("wallet.operation", {field("success", success)});
+            });
+        }).detach();
+    };
+    window->on_save_wallet_password_requested(
+        [weak_window, manage_wallet, catalog](slint::SharedString requested) {
+            if (const auto window = weak_window.lock())
+                (*window)->set_wallet_password_text("");
+            // Slint exposes shared UTF-8 bytes as const. The nonempty password is
+            // runtime-allocated; detach the input above, then wipe this callback's
+            // backing allocation on the UI thread before releasing its references.
+            auto requested_bytes = std::span{const_cast<char*>(requested.data()), requested.size()};
+            const auto wipe_requested = su::security::ScopedWipe{requested_bytes};
+            try {
+                auto password = su::app::wallet::secret_buffer();
+                password->reserve(std::max(requested.size(), std::size_t{64}));
+                password->assign(requested.data(), requested.size());
+                manage_wallet(false, password);
+            } catch (...) {
+                if (const auto window = weak_window.lock()) {
+                    (*window)->set_busy(false);
+                    (*window)->set_wallet_operation_status(
+                        slint::SharedString(translated(*catalog, *window, "wallet.failed")));
+                }
+            }
+        });
+    window->on_clear_wallet_password_requested([weak_window, manage_wallet, catalog] {
+        try {
+            manage_wallet(true, su::app::wallet::secret_buffer());
+        } catch (...) {
+            if (const auto window = weak_window.lock()) {
+                (*window)->set_busy(false);
+                (*window)->set_wallet_operation_status(
+                    slint::SharedString(translated(*catalog, *window, "wallet.failed")));
+            }
+        }
+    });
+#endif
 
     window->on_configure_account_credential_requested(
         [weak_window, controller, deployment_targets, catalog](
@@ -1195,26 +1283,29 @@ int main(int argc, char** argv) try {
     });
 
     window->on_delete_profile_requested(
-        [weak_window, controller, profiles, catalog](
-            slint::SharedString profile_id) {
+        [weak_window, controller, profiles, deployment_targets,
+         catalog](slint::SharedString profile_id) {
             const auto window = weak_window.lock();
             if (!window || (*window)->get_busy()) {
                 return;
             }
             (*window)->set_busy(true);
-            std::thread([weak_window, controller, profiles, catalog,
+            std::thread([weak_window, controller, profiles, deployment_targets, catalog,
                          profile_id = std::string(profile_id)] {
                 const auto deleted = controller->delete_face_profile_by_id(profile_id);
                 auto rows = deleted && *deleted
                     ? controller->list_face_profile_rows()
                     : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
                         std::unexpected("profile was not deleted")};
+                auto status = controller->load_system_status();
                 slint::invoke_from_event_loop(
-                    [weak_window, profiles, catalog, deleted, rows = std::move(rows)] {
+                    [weak_window, profiles, deployment_targets, catalog, deleted,
+                     rows = std::move(rows), status = std::move(status)] {
                         const auto window = weak_window.lock();
                         if (!window) {
                             return;
                         }
+                        apply_system_status(*window, status, deployment_targets);
                         if (!deleted) {
                             set_activity(
                                 *window,

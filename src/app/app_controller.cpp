@@ -1,5 +1,6 @@
 module;
 #include "common/log/logger.h"
+#include "wallet_settings.h"
 #include <format>
 
 #include <nlohmann/json.hpp>
@@ -554,6 +555,12 @@ SystemStatus AppController::load_system_status() {
     if (const auto response = send_control_request(
             su::control::make_storage_status_request(next_request_id())); response) {
         status.storage_protection = storage_protection_from_response(*response);
+        const auto payload = nlohmann::json::parse(response->payload_json, nullptr, false);
+        if (payload.is_object() && payload.contains("authtok_enrolled") &&
+            payload["authtok_enrolled"].is_boolean()) {
+            status.authtok_status_known = true;
+            status.authtok_enrolled = payload["authtok_enrolled"].get<bool>();
+        }
     }
 
     const auto deployment_client = su::deploy::DeploymentClient{};
@@ -582,7 +589,6 @@ SystemStatus AppController::load_system_status() {
                         .configurable = true,
                         .managed = false,
                         .wallet_available = false,
-                        .wallet_enabled = false,
                     });
                 }
                 continue;
@@ -591,6 +597,15 @@ SystemStatus AppController::load_system_status() {
                 || target.state == su::deploy::TargetState::kExternal;
             const auto login = role_has_login(target.role);
             const auto lock = role_has_lock(target.role);
+            status.sealed_login_deployed =
+                status.sealed_login_deployed ||
+                (login && target.state == su::deploy::TargetState::kManaged &&
+                 target.authtok_source == su::deploy::AuthtokSource::kSealed);
+            const auto configurable = target.state == su::deploy::TargetState::kSupported ||
+                                      target.state == su::deploy::TargetState::kManaged;
+            const auto sealed_reason = wallet::sealed_unavailable_reason(
+                configurable, target.sealed_available,
+                status.storage_protection == StorageProtection::kHostTpm2);
             has_login_target = has_login_target || login;
             has_lock_target = has_lock_target || lock;
             status.login_pam_configured = status.login_pam_configured || (login && configured);
@@ -607,13 +622,14 @@ SystemStatus AppController::load_system_status() {
                 .detail = target.detail,
                 .password_fallback = target.password_fallback,
                 .configured = configured,
-                .configurable = target.state == su::deploy::TargetState::kSupported &&
-                                target.kind != su::deploy::TargetKind::kGreetd,
+                .configurable = configurable,
                 .managed = target.state == su::deploy::TargetState::kManaged,
                 // Module presence alone cannot prove that the display manager
                 // inherits a usable boot key from root.
                 .wallet_available = false,
-                .wallet_enabled = target.wallet_token_enabled,
+                .wallet_unavailable_reason = "deployment.kernel_inheritance_required",
+                .sealed_available = sealed_reason.empty(),
+                .sealed_unavailable_reason = std::string(sealed_reason),
                 .authtok_source = std::string(su::deploy::authtok_source_id(target.authtok_source)),
             });
         }
@@ -636,10 +652,31 @@ std::expected<std::string, std::string> AppController::initialize_system_deploym
     return su::deploy::DeploymentClient{}.initialize_runtime();
 }
 
-std::expected<std::string, std::string> AppController::configure_desktop_target(
-    std::string_view target,
-    bool wallet_token) {
-    return su::deploy::DeploymentClient{}.configure_target(target, wallet_token);
+std::expected<std::string, std::string>
+AppController::configure_desktop_target(std::string_view target, std::string_view authtok_source) {
+    return su::deploy::DeploymentClient{}.configure_target_source(target, authtok_source);
+}
+
+std::expected<void, std::string> AppController::manage_wallet_authtok(bool clear,
+                                                                      std::string& password) {
+    return wallet::manage_authtok(
+        clear, password,
+        [](std::string_view operation) {
+            return su::deploy::DeploymentClient{}.authorize_profile_management(operation);
+        },
+        [](bool remove, std::string_view secret, std::string_view capability) {
+            const auto username = current_account_name();
+            return remove ? su::control::make_clear_authtok_request(next_request_id(), username,
+                                                                    capability)
+                          : su::control::make_set_authtok_request(next_request_id(), username,
+                                                                  secret, capability);
+        },
+        [](std::string_view request) -> std::expected<void, std::string> {
+            const auto response = send_control_request(request);
+            if (!response || response->result != su::control::ControlResult::kAccepted)
+                return std::unexpected("wallet operation failed");
+            return {};
+        });
 }
 
 std::expected<std::string, std::string> AppController::rollback_desktop_target(

@@ -494,7 +494,6 @@ SystemStatus AppController::load_system_status() {
                 .configurable = target.configurable,
                 .managed = target.managed,
                 .wallet_available = target.wallet_available,
-                .wallet_enabled = target.wallet_enabled,
             });
         }
         status.service_available = credential_provider_ready && auth_service_ready;
@@ -683,10 +682,9 @@ std::expected<std::string, std::string> AppController::initialize_system_deploym
     return "credential provider registered and auth service started";
 }
 
-std::expected<std::string, std::string> AppController::configure_desktop_target(
-    std::string_view target,
-    bool wallet_token) {
-    (void)wallet_token;
+std::expected<std::string, std::string>
+AppController::configure_desktop_target(std::string_view target, std::string_view authtok_source) {
+    (void)authtok_source;
     if (target == su::windeploy::kAuthServiceId) {
         const auto configured = deploy_action("--ensure-service");
         if (!configured) {

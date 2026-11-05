@@ -56,6 +56,45 @@ scope, manual installation and removal.
 The install script deliberately does not edit `/etc/pam.d`. A bad PAM stack can
 lock out every login path, and distributions compose these files differently.
 
+## Wallet auto-unlock in the app
+
+Both levels default to **Off**. An administrator enables a source for each login
+(or combined login/lock) target; each user separately saves their password.
+Lock-only and administrator-authentication targets have no wallet source choice.
+
+1. Open **Desktop integration** and select a target's wallet source:
+   - **Off** leaves wallet unlocking disabled for this target.
+   - **Kernel keyring** uses the existing `pam_systemd_loadkey` path. It is
+     disabled until display-manager keyring inheritance has been verified.
+   - **Face-sealed password** requires **host+tpm2** storage protection and a
+     wallet `auth` line (`pam_gnome_keyring.so` or `pam_kwallet5.so`) in the parent
+     PAM service after its password-stack anchor. A session-only wallet hook or
+     one inside the skipped password stack is insufficient. The app explains
+     why an option is unavailable.
+2. Select **Review**, then **Apply**, and authorize the helper.
+   Managed targets show their deployed source and support the same two-step
+   source change directly. **Review restore**, then **Confirm restore**, restores
+   their original PAM files.
+3. On **Enrollment**, enroll a face sample, then use **Keyring auto-unlock**.
+   Enter your login password, which must match your GNOME Keyring or KWallet
+   password, select **Save**, and authorize the operation. The password field
+   clears immediately, including on failure. Each user must do this for their
+   own account. **Update** replaces an enrolled password.
+4. **Whenever your login password changes, use Update here with the new
+   password**, and ensure that the wallet password matches it. Stale-password
+   detection is not implemented.
+5. To disable the system level, choose **Off** for each affected target and
+   review/apply. To disable your account and delete its saved password, select
+   **Turn off**, then **Confirm turn off**, and authorize. Clearing remains
+   available when a saved password can no longer be used (for example, after
+   changing the deployed source). Rolling back PAM preserves user enrollment;
+   use **Turn off** to remove it explicitly.
+
+The user card reports enrollment and missing prerequisites, including missing
+face samples, non-TPM storage, or no login target deployed with the sealed source.
+It is not shown on Windows. Successful app operations and fixture tests do not
+replace the real desktop acceptance test below.
+
 ## Safe acceptance test
 
 Before logging out or rebooting, invoke the built PAM module against the running

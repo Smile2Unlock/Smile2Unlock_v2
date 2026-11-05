@@ -1,0 +1,115 @@
+import { LineEdit } from "std-widgets.slint";
+import { UiTheme } from "theme.slint";
+import { ActionButton } from "components.slint";
+
+export component WalletPanel inherits Rectangle {
+    in property <bool> enrolled;
+    in property <bool> status_known;
+    in property <string> unavailable_reason;
+    in property <bool> management_available;
+    in property <bool> busy;
+    in property <int> language_index;
+    in property <string> operation_status;
+    in-out property <string> password;
+    callback save_requested(string);
+    callback clear_requested();
+    pure callback translate(string, int) -> string;
+    private property <bool> confirming_off: false;
+    changed busy => { root.confirming_off = false; }
+
+    vertical-stretch: 0;
+    background: UiTheme.surface;
+    border-color: UiTheme.border;
+    border-width: UiTheme.card-border;
+    border-radius: UiTheme.card-radius;
+    VerticalLayout {
+        alignment: start;
+        padding: UiTheme.card-padding;
+        spacing: UiTheme.content-gap;
+        Text {
+            text: root.translate("wallet.title", root.language_index);
+            color: UiTheme.text-primary;
+            font-size: UiTheme.button-font-size;
+            font-weight: 700;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.translate("wallet.password_help", root.language_index);
+            color: UiTheme.text-secondary;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.translate(!root.status_known ? "wallet.status_unavailable"
+                : root.enrolled ? "wallet.enrolled" : "wallet.not_enrolled", root.language_index);
+            color: root.enrolled ? UiTheme.success-text : UiTheme.text-secondary;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+        if root.unavailable_reason != "": Text {
+            text: root.translate(root.unavailable_reason, root.language_index);
+            color: UiTheme.warning-text;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+        if !root.management_available: Text {
+            text: root.translate("wallet.management_required", root.language_index);
+            color: UiTheme.warning-text;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.translate("wallet.password_label", root.language_index);
+            color: UiTheme.text-secondary;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+        LineEdit {
+            vertical-stretch: 0;
+            text <=> root.password;
+            input-type: InputType.password;
+            enabled: !root.busy && root.management_available && root.unavailable_reason == "";
+        }
+        HorizontalLayout {
+            spacing: UiTheme.content-gap;
+            ActionButton {
+                horizontal-stretch: 1;
+                label: root.translate(root.enrolled ? "wallet.update" : "wallet.save", root.language_index);
+                primary: true;
+                enabled: !root.busy && root.management_available && root.unavailable_reason == "" && root.password != "";
+                activated => {
+                    root.confirming_off = false;
+                    root.save_requested(root.password);
+                    root.password = "";
+                }
+            }
+            ActionButton {
+                horizontal-stretch: 1;
+                label: root.translate(root.confirming_off ? "wallet.confirm_off" : "wallet.turn_off", root.language_index);
+                danger: true;
+                enabled: !root.busy && root.management_available && root.status_known && root.enrolled;
+                activated => {
+                    root.password = "";
+                    if root.confirming_off {
+                        root.confirming_off = false;
+                        root.clear_requested();
+                    } else {
+                        root.confirming_off = true;
+                    }
+                }
+            }
+        }
+        if root.confirming_off: Text {
+            text: root.translate("wallet.review_off", root.language_index);
+            color: UiTheme.warning-text;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+        if root.operation_status != "": Text {
+            text: root.operation_status;
+            color: UiTheme.text-secondary;
+            font-size: UiTheme.row-label-font-size;
+            wrap: word-wrap;
+        }
+    }
+}

@@ -561,6 +561,10 @@ TargetStatus inspect_target(
     status.authtok_source =
         status.wallet_token_enabled ? AuthtokSource::kKernelKeyring : AuthtokSource::kNone;
     status.password_fallback = auth_anchor(lines, target.kind).has_value();
+    const auto login_role =
+        target.role == TargetRole::kLogin || target.role == TargetRole::kLoginAndLock;
+    if (const auto anchor = auth_anchor(lines, target.kind); anchor && login_role)
+        status.sealed_available = wallet_auth_after(lines, anchor->line);
     const auto child_service = child_service_name(target.kind);
     if (references_substack(lines, child_service)) {
         const auto child_path = effective_service_path(root, child_service);
@@ -577,6 +581,9 @@ TargetStatus inspect_target(
         }
         const auto child_lines = parse_lines(*child);
         status.state = TargetState::kManaged;
+        const auto parent_anchor = substack_line(lines, child_service);
+        status.sealed_available =
+            login_role && parent_anchor && wallet_auth_after(lines, *parent_anchor);
         status.password_fallback = auth_anchor(child_lines, target.kind).has_value();
         status.wallet_token_enabled = contains_module(child_lines, "pam_systemd_loadkey.so");
         status.authtok_source = status.wallet_token_enabled
@@ -1199,6 +1206,7 @@ std::string snapshot_json(const DeploymentSnapshot& snapshot) {
             {"wallet_modules", target.wallet_modules},
             {"wallet_token_enabled", target.wallet_token_enabled},
             {"authtok_source", authtok_source_id(target.authtok_source)},
+            {"sealed_available", target.sealed_available},
             {"detail", target.detail},
         });
     }
