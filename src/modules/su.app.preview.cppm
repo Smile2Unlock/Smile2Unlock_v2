@@ -31,11 +31,12 @@ public:
     PreviewController(PreviewController&&) = delete;
     PreviewController& operator=(PreviewController&&) = delete;
 
-    void start(su::recognizer::RecognizerService& recognizer,
-               int camera_index,
-               int fps,
-               bool liveness_enabled,
-               FrameCallback callback);
+    std::expected<void, su::recognizer::RecognizerError> start(
+        su::recognizer::RecognizerService& recognizer,
+        int camera_index,
+        int fps,
+        bool liveness_enabled,
+        FrameCallback callback);
 
     void stop();
     [[nodiscard]] bool is_running() const;

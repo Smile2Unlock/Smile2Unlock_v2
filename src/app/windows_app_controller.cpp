@@ -334,7 +334,9 @@ std::expected<std::string, std::string> AppController::enroll_face_profile_from_
         return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
     }
     if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
-        return std::unexpected("failed to open configured camera");
+        return std::unexpected(opened.error() == su::recognizer::RecognizerError::kCameraPermissionOrBusy
+            ? "camera permission denied or device busy"
+            : "failed to open configured camera");
     }
     // CameraGuard closes the camera on every exit path.
     struct [[nodiscard]] CameraGuard {
@@ -407,7 +409,9 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_current
         return std::unexpected(std::format("failed to load config from Rust core: {}", config_path()));
     }
     if (const auto opened = recognizer_.open_camera(config->selected_camera); !opened) {
-        return std::unexpected("failed to open configured camera");
+        return std::unexpected(opened.error() == su::recognizer::RecognizerError::kCameraPermissionOrBusy
+            ? "camera permission denied or device busy"
+            : "failed to open configured camera");
     }
     struct [[nodiscard]] CameraGuard {
         su::recognizer::RecognizerService& svc;

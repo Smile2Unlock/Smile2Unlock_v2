@@ -11,6 +11,7 @@
 #include <thread>
 
 using su::recognizer::detail::CaptureMode;
+using su::recognizer::detail::CaptureFormat;
 using su::recognizer::detail::capture_mode_rank;
 
 int main() {
@@ -19,24 +20,32 @@ int main() {
             return capture_mode_rank(a) < capture_mode_rank(b);
         });
     };
-    const auto mjpeg = CaptureMode{1280, 720, 30, 1, true};
-    const auto slow_yuy2 = CaptureMode{1280, 720, 5, 1, false};
-    const auto fast_yuy2 = CaptureMode{1280, 720, 30, 1, false};
-    const auto uhd = CaptureMode{3840, 2160, 30, 1, true};
-    const auto vga = CaptureMode{640, 480, 30, 1, false};
-    assert(choose(std::array{slow_yuy2, uhd, fast_yuy2, mjpeg}).mjpeg);
+    const auto mjpeg = CaptureMode{1280, 720, 30, 1, CaptureFormat::mjpeg};
+    const auto slow_yuy2 = CaptureMode{1280, 720, 5, 1, CaptureFormat::yuy2};
+    const auto fast_yuy2 = CaptureMode{1280, 720, 30, 1, CaptureFormat::yuy2};
+    const auto nv12 = CaptureMode{1280, 720, 30, 1, CaptureFormat::nv12};
+    const auto uhd = CaptureMode{3840, 2160, 30, 1, CaptureFormat::mjpeg};
+    const auto vga = CaptureMode{640, 480, 30, 1, CaptureFormat::yuy2};
+    assert(choose(std::array{slow_yuy2, uhd, fast_yuy2, nv12, mjpeg}).format
+           == CaptureFormat::mjpeg);
     assert(choose(std::array{uhd, mjpeg}).width == 1280);
     assert(choose(std::array{slow_yuy2, vga}).width == 640);
     assert(choose(std::array{uhd, vga}).width == 640);
-    const auto fractional = CaptureMode{1280, 720, 30000, 1001, true};
+    const auto fractional = CaptureMode{1280, 720, 30000, 1001, CaptureFormat::mjpeg};
     assert(fractional.fps() > 29.9 && fractional.fps() < 30.0);
     assert(choose(std::array{slow_yuy2, fractional}).rate_denominator == 1001);
-    assert(choose(std::array{fast_yuy2, fractional}).mjpeg);
-    assert(choose(std::array{fast_yuy2, CaptureMode{960, 540, 30, 1, true}}).mjpeg);
-    assert(CaptureMode({640, 480, 0, 0, false}).fps() == 0.0);
-    assert(!CaptureMode({0, 480, 30, 1, true}).valid());
-    assert(!CaptureMode({641, 480, 30, 1, false}).valid());
-    assert(CaptureMode({641, 480, 30, 1, true}).valid());
+    assert(choose(std::array{fast_yuy2, fractional}).format == CaptureFormat::mjpeg);
+    assert(choose(std::array{fast_yuy2, nv12}).format == CaptureFormat::yuy2);
+    assert(choose(std::array{slow_yuy2, nv12}).format == CaptureFormat::nv12);
+    assert(choose(std::array{nv12, mjpeg}).format == CaptureFormat::mjpeg);
+    assert(nv12.valid());
+    assert(choose(std::array{fast_yuy2, CaptureMode{960, 540, 30, 1, CaptureFormat::mjpeg}}).format
+           == CaptureFormat::mjpeg);
+    assert(CaptureMode({640, 480, 0, 0, CaptureFormat::yuy2}).fps() == 0.0);
+    assert(!CaptureMode({0, 480, 30, 1, CaptureFormat::mjpeg}).valid());
+    assert(!CaptureMode({641, 480, 30, 1, CaptureFormat::yuy2}).valid());
+    assert(CaptureMode({641, 480, 30, 1, CaptureFormat::mjpeg}).valid());
+    assert(!CaptureMode({640, 481, 30, 1, CaptureFormat::nv12}).valid());
 
     // Hold inference on its first frame while capture replaces pending
     // frames. No queue growth, no repeated inference of the same sequence.

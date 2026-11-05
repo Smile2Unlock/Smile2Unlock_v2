@@ -215,6 +215,7 @@
         "overview.verify_account": "Verify this account",
         "overview.verify_hint": "Run a local camera check using the current recognition policy.",
         "preview.capture_failed": "Capture failed",
+        "preview.camera_permission_or_busy": "Camera access was denied or the camera is in use. Check Settings > Privacy & security > Camera and enable \"Let desktop apps access your camera\", or close other camera apps.",
         "preview.detect_failed": "Detection failed",
         "preview.face_liveness": "Face detected, liveness {value}",
         "preview.idle": "Camera idle",

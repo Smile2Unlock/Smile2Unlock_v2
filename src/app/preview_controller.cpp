@@ -75,7 +75,7 @@ class PreviewController::Impl {
     };
 
 public:
-    void start(su::recognizer::RecognizerService& recognizer,
+    std::expected<void, su::recognizer::RecognizerError> start(su::recognizer::RecognizerService& recognizer,
                int camera_index,
                int fps,
                bool liveness_enabled,
@@ -83,21 +83,21 @@ public:
         stop();
         if (!callback) {
             su::log::process_logger().warn("preview.callback_missing");
-            return;
+            return std::unexpected(su::recognizer::RecognizerError::kInvalidArgument);
         }
         fps = std::clamp(fps, 1, 120);
         if (const auto opened = recognizer.open_camera(camera_index); !opened) {
             su::log::process_logger().warn("preview.camera_open_failed",
                 {su::log::field("camera_index", camera_index),
                  su::log::field("recognizer_error", static_cast<int>(opened.error()))});
-            return;
+            return std::unexpected(opened.error());
         }
         if (liveness_enabled) {
             if (const auto reset = recognizer.reset_liveness(); !reset) {
                 recognizer.close_camera();
                 su::log::process_logger().warn("preview.liveness_reset_failed",
                     {su::log::field("recognizer_error", static_cast<int>(reset.error()))});
-                return;
+                return std::unexpected(reset.error());
             }
         }
         recognizer_ = &recognizer;
@@ -227,6 +227,7 @@ public:
                     std::this_thread::sleep_until(tick + interval);
                 }
             });
+        return {};
     }
 
     void stop() {
@@ -268,7 +269,8 @@ PreviewController::~PreviewController() {
     delete impl_;
 }
 
-void PreviewController::start(su::recognizer::RecognizerService& recognizer,
+std::expected<void, su::recognizer::RecognizerError> PreviewController::start(
+                              su::recognizer::RecognizerService& recognizer,
                               int camera_index,
                               int fps,
                               bool liveness_enabled,
@@ -276,7 +278,7 @@ void PreviewController::start(su::recognizer::RecognizerService& recognizer,
     if (!impl_) {
         impl_ = new Impl();
     }
-    impl_->start(recognizer, camera_index, fps, liveness_enabled, std::move(callback));
+    return impl_->start(recognizer, camera_index, fps, liveness_enabled, std::move(callback));
 }
 
 void PreviewController::stop() {

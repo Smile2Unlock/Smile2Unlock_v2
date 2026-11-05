@@ -65,6 +65,7 @@ export component AppWindow inherits Window {
     in property <int> preview_source_width;
     in property <int> preview_source_height;
     in-out property <string> preview_status_text: "";
+    in-out property <string> preview_error_text: "";
 
     in-out property <int> current_page: 0;
     changed current_page => { if root.current_page == 2 { root.capture_refresh(); } }
@@ -523,7 +524,6 @@ export component AppWindow inherits Window {
                                 horizontal-stretch: 1;
                                 Rectangle { vertical-stretch: 1; background: transparent; }
                                 VerticalLayout {
-                                    height: 50px;
                                     spacing: 7px;
                                     Text { text: root.translate("overview.verify_account", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; }
                                     Text {
@@ -709,6 +709,11 @@ export component AppWindow inherits Window {
                                     ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy && root.camera_count > 0; activated => { root.start_preview_requested(); } }
                                     ActionButton { horizontal-stretch: 1; label: root.translate("action.stop", root.language_index); enabled: !root.busy; activated => { root.stop_preview_requested(); } }
                                 }
+                                if root.preview_error_text != "": Text {
+                                    text: root.preview_error_text;
+                                    color: UiTheme.warning-text;
+                                    wrap: word-wrap;
+                                }
                                 ActionButton {
                                     label: root.busy
                                         ? root.translate("status.capturing", root.language_index)
@@ -719,7 +724,7 @@ export component AppWindow inherits Window {
                                     activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
                                 }
                                 Rectangle { vertical-stretch: 1; background: transparent; }
-                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? UiTheme.danger-text : UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; max-height: 42px; }
+                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? UiTheme.danger-text : UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
                             }
                         }
                     }

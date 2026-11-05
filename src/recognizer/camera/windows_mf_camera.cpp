@@ -7,7 +7,7 @@
 //   source reader is apartment-affine; routing every call through one worker
 //   keeps it on a stable MTA regardless of the caller's apartment, and the
 //   synchronous request/response protocol makes open/grab thread-safe.
-// - Native MJPEG/YUY2 modes are ranked by cadence and recognition-sized
+// - Native MJPEG/YUY2/NV12 modes are ranked by cadence and recognition-sized
 //   resolution. MJPEG avoids saturating USB with uncompressed HD video.
 // - The frame buffer is copied into a stream-owned buffer so the returned
 //   pointer stays valid until the next grab (mirrors the V4L2 mmap contract).
@@ -17,6 +17,7 @@
 
 #include <windows.h>
 #include <mfapi.h>
+#include <mferror.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <wrl/client.h>
@@ -27,6 +28,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <cstdio>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -40,9 +42,11 @@ namespace {
 // V4L2_PIX_FMT values understood by v4l2_frame_to_rgb.
 constexpr std::uint32_t kV4l2Yuyv = 0x56595559; // 'YUYV'
 constexpr std::uint32_t kV4l2Mjpg = 0x47504A4D; // 'MJPG'
+constexpr std::uint32_t kV4l2Nv12 = 0x3231564E; // 'NV12'
 
 bool is_supported_subtype(const GUID& subtype) {
-    return subtype == MFVideoFormat_YUY2 || subtype == MFVideoFormat_MJPG;
+    return subtype == MFVideoFormat_YUY2 || subtype == MFVideoFormat_MJPG
+        || subtype == MFVideoFormat_NV12;
 }
 
 std::uint32_t v4l2_format_for(const GUID& subtype) {
@@ -52,7 +56,43 @@ std::uint32_t v4l2_format_for(const GUID& subtype) {
     if (subtype == MFVideoFormat_MJPG) {
         return kV4l2Mjpg;
     }
+    if (subtype == MFVideoFormat_NV12) {
+        return kV4l2Nv12;
+    }
     return 0;
+}
+
+bool permission_or_busy(HRESULT hr) {
+    return hr == E_ACCESSDENIED
+        || hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
+        || hr == HRESULT_FROM_WIN32(ERROR_BUSY)
+        || hr == MF_E_VIDEO_DEVICE_LOCKED
+        || hr == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
+#ifdef MF_E_VIDEO_RECORDING_DEVICE_LOCKED
+        || hr == MF_E_VIDEO_RECORDING_DEVICE_LOCKED
+#endif
+        ;
+}
+
+void log_open_failure(std::string_view step, HRESULT hr) {
+    char hex[11]{};
+    std::snprintf(hex, sizeof(hex), "0x%08lX", static_cast<unsigned long>(hr));
+    su::log::process_logger().warn("camera.open_failed", {
+        su::log::field("step", step), su::log::field("hresult", hex),
+        su::log::field("permission_or_busy", permission_or_busy(hr) ? 1 : 0)});
+}
+
+// Log only the media subtype, never device names or symbolic links. Some
+// subtypes are GUIDs rather than fourccs; retain their numeric Data1 as well.
+std::string subtype_fourcc(const GUID& subtype) {
+    std::string result(4, '.');
+    for (unsigned i = 0; i < 4; ++i) {
+        const auto ch = (subtype.Data1 >> (i * 8)) & 0xff;
+        if (ch >= 32 && ch <= 126) {
+            result[i] = static_cast<char>(ch);
+        }
+    }
+    return result;
 }
 
 std::string wide_to_utf8(const wchar_t* wide) {
@@ -74,10 +114,14 @@ std::string wide_to_utf8(const wchar_t* wide) {
 // Media Foundation cannot start (never fatal for the caller; camera is
 // reported unavailable).
 bool initialize_mf() {
-    if (FAILED(::CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
+    const auto com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(com)) {
+        log_open_failure("co_initialize", com);
         return false;
     }
-    if (FAILED(::MFStartup(MF_VERSION, MFSTARTUP_FULL))) {
+    const auto startup = ::MFStartup(MF_VERSION, MFSTARTUP_FULL);
+    if (FAILED(startup)) {
+        log_open_failure("mf_startup", startup);
         ::CoUninitialize();
         return false;
     }
@@ -109,25 +153,27 @@ MfEnumDeviceSourcesFn load_mf_enum_device_sources() {
     return fn;
 }
 
-bool enumerate_devices(std::vector<ComPtr<IMFActivate>>& out) {
+HRESULT enumerate_devices(std::vector<ComPtr<IMFActivate>>& out) {
     const auto mf_enum_device_sources = load_mf_enum_device_sources();
     if (mf_enum_device_sources == nullptr) {
-        return false;
+        return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
     }
     ComPtr<IMFAttributes> attributes;
-    if (FAILED(::MFCreateAttributes(&attributes, 1))) {
-        return false;
+    auto hr = ::MFCreateAttributes(&attributes, 1);
+    if (FAILED(hr)) {
+        return hr;
     }
-    if (FAILED(attributes->SetGUID(
+    hr = attributes->SetGUID(
             MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-            MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID))) {
-        return false;
+            MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+    if (FAILED(hr)) {
+        return hr;
     }
     IMFActivate** raw_devices = nullptr;
     UINT32 count = 0;
-    if (FAILED(mf_enum_device_sources(
-            attributes.Get(), &raw_devices, &count))) {
-        return false;
+    hr = mf_enum_device_sources(attributes.Get(), &raw_devices, &count);
+    if (FAILED(hr)) {
+        return hr;
     }
     out.clear();
     out.reserve(count);
@@ -137,7 +183,7 @@ bool enumerate_devices(std::vector<ComPtr<IMFActivate>>& out) {
         out.push_back(std::move(device));
     }
     ::CoTaskMemFree(raw_devices);
-    return true;
+    return S_OK;
 }
 
 } // namespace
@@ -210,7 +256,7 @@ std::vector<MfCameraDeviceInfo> mf_enumerate_cameras() {
             return;
         }
         std::vector<ComPtr<IMFActivate>> devices;
-        if (enumerate_devices(devices)) {
+        if (SUCCEEDED(enumerate_devices(devices))) {
             for (std::size_t i = 0; i < devices.size(); ++i) {
                 MfCameraDeviceInfo info;
                 info.index = static_cast<int>(i);
@@ -264,6 +310,7 @@ public:
 
     bool open(int index) {
         std::unique_lock lock(mutex_);
+        permission_or_busy_ = false;
         if (quit_pending_ || !ensure_worker(lock)) {
             return false;
         }
@@ -308,6 +355,10 @@ public:
         if (worker_.joinable()) {
             worker_.join();
         }
+    }
+
+    bool last_open_was_permission_or_busy() const {
+        return permission_or_busy_.load();
     }
 
     bool is_open() const {
@@ -396,161 +447,225 @@ private:
         }
     }
 
-    void open_worker(int index) {
-        close_worker();
-        open_ = false;
-        std::vector<ComPtr<IMFActivate>> devices;
-        if (!enumerate_devices(devices)
-            || index < 0 || static_cast<std::size_t>(index) >= devices.size()) {
-            finish_open(false);
-            return;
+    // These checks keep each COM failure attributable without logging device
+    // identifiers, images, or account information.
+    bool open_step(std::string_view step, HRESULT hr) {
+        if (SUCCEEDED(hr)) {
+            return true;
         }
-        ComPtr<IMFMediaSource> source;
-        if (FAILED(devices[static_cast<std::size_t>(index)]->ActivateObject(
-                IID_PPV_ARGS(&source)))) {
-            finish_open(false);
-            return;
-        }
-        // Async reader: hand MF our callback so reads are cancellable waits
-        // instead of unbounded synchronous calls.
-        callback_.Attach(new StreamCallback(static_cast<MfGrabSink*>(this)));
-        ComPtr<IMFAttributes> attributes;
-        ComPtr<IMFSourceReader> reader;
-        if (FAILED(::MFCreateAttributes(&attributes, 1))
-            || FAILED(attributes->SetUnknown(
-                   MF_SOURCE_READER_ASYNC_CALLBACK, callback_.Get()))
-            || FAILED(::MFCreateSourceReaderFromMediaSource(
-                   source.Get(), attributes.Get(), &reader))) {
-            callback_.Reset();
-            finish_open(false);
-            return;
-        }
+        log_open_failure(step, hr);
+        permission_or_busy_ = permission_or_busy_ || permission_or_busy(hr);
+        return false;
+    }
 
-        (void)reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
-        if (FAILED(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE))) {
-            finish_open(false);
-            return;
-        }
-        struct Candidate {
-            detail::CaptureMode mode;
-            ComPtr<IMFMediaType> type;
-        };
+    void fail_open() {
+        close_worker();
+        finish_open(false);
+    }
+
+    bool create_reader(bool video_processing) {
+        reader_.Reset();
+        ComPtr<IMFAttributes> attributes;
+        return open_step("create_reader_attributes", ::MFCreateAttributes(&attributes, 3))
+            && open_step("set_async_callback", attributes->SetUnknown(
+                MF_SOURCE_READER_ASYNC_CALLBACK, callback_.Get()))
+            // Releasing the native reader must not shut down the source
+            // before the video-processing retry. close_worker owns shutdown.
+            && open_step("set_source_lifetime", attributes->SetUINT32(
+                MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN, TRUE))
+            && open_step("set_video_processing", attributes->SetUINT32(
+                MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, video_processing ? TRUE : FALSE))
+            && open_step("create_source_reader", ::MFCreateSourceReaderFromMediaSource(
+                source_.Get(), attributes.Get(), &reader_))
+            && open_step("deselect_streams", reader_->SetStreamSelection(
+                MF_SOURCE_READER_ALL_STREAMS, FALSE))
+            && open_step("select_video_stream", reader_->SetStreamSelection(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE));
+    }
+
+    struct Candidate {
+        detail::CaptureMode mode;
+        ComPtr<IMFMediaType> type;
+    };
+
+    std::vector<Candidate> native_candidates() {
         auto candidates = std::vector<Candidate>{};
-        for (DWORD index = 0;; ++index) {
+        DWORD count = 0;
+        for (;; ++count) {
             ComPtr<IMFMediaType> type;
-            if (FAILED(reader->GetNativeMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, index, &type))) {
+            const auto hr = reader_->GetNativeMediaType(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM, count, &type);
+            if (hr == MF_E_NO_MORE_TYPES) {
+                break;
+            }
+            if (!open_step("get_native_media_type", hr)) {
                 break;
             }
             GUID subtype{};
             UINT64 size = 0;
             UINT64 rate = 0;
-            if (FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype))
-                || !is_supported_subtype(subtype)
-                || FAILED(type->GetUINT64(MF_MT_FRAME_SIZE, &size))) {
+            const auto subtype_ok = open_step("native_subtype", type->GetGUID(MF_MT_SUBTYPE, &subtype));
+            const auto size_ok = open_step("native_size", type->GetUINT64(MF_MT_FRAME_SIZE, &size));
+            (void)open_step("native_frame_rate", type->GetUINT64(MF_MT_FRAME_RATE, &rate));
+            su::log::process_logger().info("camera.native_type", {
+                su::log::field("index", count), su::log::field("subtype", subtype_fourcc(subtype)),
+                su::log::field("subtype_data1", subtype.Data1),
+                su::log::field("width", static_cast<unsigned>(size >> 32)),
+                su::log::field("height", static_cast<unsigned>(size)),
+                su::log::field("fps_numerator", static_cast<unsigned>(rate >> 32)),
+                su::log::field("fps_denominator", static_cast<unsigned>(rate))});
+            if (!subtype_ok || !size_ok || !is_supported_subtype(subtype)) {
                 continue;
             }
-            (void)type->GetUINT64(MF_MT_FRAME_RATE, &rate);
+            const auto format = subtype == MFVideoFormat_MJPG ? detail::CaptureFormat::mjpeg
+                : subtype == MFVideoFormat_YUY2 ? detail::CaptureFormat::yuy2
+                : detail::CaptureFormat::nv12;
             const auto mode = detail::CaptureMode{
                 static_cast<std::uint32_t>(size >> 32), static_cast<std::uint32_t>(size),
-                static_cast<std::uint32_t>(rate >> 32), static_cast<std::uint32_t>(rate),
-                subtype == MFVideoFormat_MJPG};
+                static_cast<std::uint32_t>(rate >> 32), static_cast<std::uint32_t>(rate), format};
             if (mode.valid()) {
                 candidates.push_back({mode, std::move(type)});
+            } else {
+                (void)open_step("invalid_native_size", MF_E_INVALIDMEDIATYPE);
             }
         }
+        su::log::process_logger().info("camera.native_types", {
+            su::log::field("count", count), su::log::field("supported", candidates.size())});
         std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
             return detail::capture_mode_rank(a.mode) < detail::capture_mode_rank(b.mode);
         });
-        auto type_set = false;
-        for (const auto& candidate : candidates) {
-            if (SUCCEEDED(reader->SetCurrentMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, candidate.type.Get()))) {
-                type_set = true;
-                break;
-            }
-        }
-        if (!type_set && candidates.empty()) {
-            // Some virtual drivers omit sizes in their native descriptors.
-            // Preserve their explicit-size fallback, bounded to 720p rather
-            // than accepting the driver's arbitrary (possibly 4K) default.
-            for (const auto& subtype : {MFVideoFormat_MJPG, MFVideoFormat_YUY2}) {
-                for (const auto& size : {std::pair{1280U, 720U}, std::pair{640U, 480U},
-                                        std::pair{320U, 240U}}) {
-                    ComPtr<IMFMediaType> requested;
-                    if (SUCCEEDED(::MFCreateMediaType(&requested))
-                        && SUCCEEDED(requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
-                        && SUCCEEDED(requested->SetGUID(MF_MT_SUBTYPE, subtype))
-                        && SUCCEEDED(requested->SetUINT64(MF_MT_FRAME_SIZE,
-                            (static_cast<UINT64>(size.first) << 32) | size.second))
-                        && SUCCEEDED(reader->SetCurrentMediaType(
-                            MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, requested.Get()))) {
-                        type_set = true;
-                        break;
-                    }
-                }
-                if (type_set) {
-                    break;
-                }
-            }
-        }
-        if (!type_set) {
-            finish_open(false);
-            return;
-        }
+        return candidates;
+    }
 
-        ComPtr<IMFMediaType> negotiated;
-        if (FAILED(reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &negotiated))) {
-            finish_open(false);
-            return;
+    bool set_native_type() {
+        for (const auto& candidate : native_candidates()) {
+            if (open_step("set_native_media_type", reader_->SetCurrentMediaType(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, candidate.type.Get()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool set_processed_type() {
+        // Some drivers expose only formats libyuv cannot decode, or incomplete
+        // native descriptors. Let MF convert to YUY2, always requesting <=720p.
+        for (const auto& size : {std::pair{1280U, 720U}, std::pair{640U, 480U},
+                                std::pair{320U, 240U}}) {
+            ComPtr<IMFMediaType> requested;
+            if (open_step("create_processed_type", ::MFCreateMediaType(&requested))
+                && open_step("processed_major_type", requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
+                && open_step("processed_subtype", requested->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2))
+                && open_step("processed_size", requested->SetUINT64(MF_MT_FRAME_SIZE,
+                    (static_cast<UINT64>(size.first) << 32) | size.second))
+                && open_step("set_processed_media_type", reader_->SetCurrentMediaType(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, requested.Get()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool read_negotiated_type(bool video_processing) {
+        ComPtr<IMFMediaType> type;
+        if (!open_step("get_current_media_type", reader_->GetCurrentMediaType(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM, &type))) {
+            return false;
         }
         GUID major{};
         GUID subtype{};
-        if (FAILED(negotiated->GetGUID(MF_MT_MAJOR_TYPE, &major))
-            || major != MFMediaType_Video
-            || FAILED(negotiated->GetGUID(MF_MT_SUBTYPE, &subtype))
-            || !is_supported_subtype(subtype)) {
-            finish_open(false);
-            return;
+        UINT64 size = 0;
+        if (!open_step("negotiated_major_type", type->GetGUID(MF_MT_MAJOR_TYPE, &major))
+            || !open_step("negotiated_subtype", type->GetGUID(MF_MT_SUBTYPE, &subtype))
+            || !open_step("negotiated_size", type->GetUINT64(MF_MT_FRAME_SIZE, &size))) {
+            return false;
         }
-        // MF_MT_FRAME_SIZE is a UINT64: width occupies the high 32 bits and
-        // height the low 32 bits.
-        UINT64 frame_size = 0;
-        if (FAILED(negotiated->GetUINT64(MF_MT_FRAME_SIZE, &frame_size))
-            || frame_size == 0) {
-            finish_open(false);
-            return;
-        }
-        const UINT32 width = static_cast<UINT32>(frame_size >> 32);
-        const UINT32 height = static_cast<UINT32>(frame_size & 0xFFFF'FFFFULL);
-        if (width == 0 || height == 0) {
-            finish_open(false);
-            return;
+        const auto width = static_cast<UINT32>(size >> 32);
+        const auto height = static_cast<UINT32>(size);
+        const auto format = subtype == MFVideoFormat_MJPG ? detail::CaptureFormat::mjpeg
+            : subtype == MFVideoFormat_YUY2 ? detail::CaptureFormat::yuy2 : detail::CaptureFormat::nv12;
+        if (major != MFMediaType_Video || !is_supported_subtype(subtype)
+            || !detail::CaptureMode{width, height, 0, 0, format}.valid()
+            || width > static_cast<UINT32>(std::numeric_limits<int>::max() / 4)
+            || height > static_cast<UINT32>(std::numeric_limits<int>::max())
+            || (video_processing && (width > 1280 || height > 720))) {
+            return open_step("invalid_negotiated_type", MF_E_INVALIDMEDIATYPE);
         }
         UINT32 raw_stride = 0;
-        INT32 stride = 0;
-        if (FAILED(negotiated->GetUINT32(MF_MT_DEFAULT_STRIDE, &raw_stride))) {
-            stride = static_cast<INT32>(width * 2); // packed 4:2:2
-        } else {
+        LONG stride = 0;
+        const auto stride_hr = type->GetUINT32(MF_MT_DEFAULT_STRIDE, &raw_stride);
+        if (SUCCEEDED(stride_hr)) {
             stride = static_cast<INT32>(raw_stride);
+        } else if (subtype != MFVideoFormat_MJPG) {
+            (void)open_step("get_default_stride", stride_hr);
+            if (!open_step("default_bitmap_stride", ::MFGetStrideForBitmapInfoHeader(
+                    subtype.Data1, width, &stride))) {
+                return false;
+            }
         }
-        reader_ = std::move(reader);
         width_ = width;
         height_ = height;
-        stride_ = static_cast<std::size_t>(
-            stride < 0 ? -static_cast<std::int64_t>(stride) : stride);
-        if (stride_ == 0) {
-            stride_ = static_cast<std::size_t>(width) * 2;
-        }
+        stride_ = static_cast<std::size_t>(stride < 0 ? -static_cast<std::int64_t>(stride) : stride);
         v4l2_format_ = v4l2_format_for(subtype);
+        // MF YUV is top-down. Only retain the existing packed YUY2 negative
+        // stride workaround; reversing NV12 rows would corrupt its UV plane.
         bottom_up_ = stride < 0 && v4l2_format_ == kV4l2Yuyv;
+        const auto minimum_stride = static_cast<std::size_t>(width) * (v4l2_format_ == kV4l2Yuyv ? 2 : 1);
+        if (subtype != MFVideoFormat_MJPG && (stride_ < minimum_stride
+            || stride_ > std::numeric_limits<std::size_t>::max() / (static_cast<std::size_t>(height) * 2))) {
+            return open_step("invalid_negotiated_stride", MF_E_INVALIDMEDIATYPE);
+        }
         UINT64 rate = 0;
-        (void)negotiated->GetUINT64(MF_MT_FRAME_RATE, &rate);
+        (void)open_step("negotiated_frame_rate", type->GetUINT64(MF_MT_FRAME_RATE, &rate));
         su::log::process_logger().info("camera.mode", {
-            su::log::field("format", v4l2_format_ == kV4l2Mjpg ? "MJPEG" : "YUY2"),
+            su::log::field("format", subtype_fourcc(subtype)),
             su::log::field("width", width_), su::log::field("height", height_),
+            su::log::field("stride", stride_),
+            su::log::field("path", video_processing ? "video_processing" : "native"),
             su::log::field("fps_numerator", static_cast<unsigned>(rate >> 32)),
             su::log::field("fps_denominator", static_cast<unsigned>(rate))});
+        return true;
+    }
+
+    void open_worker(int index) {
+        close_worker();
+        permission_or_busy_ = false;
+        std::vector<ComPtr<IMFActivate>> devices;
+        if (!open_step("enumerate_devices", enumerate_devices(devices))) {
+            fail_open();
+            return;
+        }
+        if (index < 0 || static_cast<std::size_t>(index) >= devices.size()) {
+            (void)open_step("camera_index", E_INVALIDARG);
+            fail_open();
+            return;
+        }
+        if (!open_step("activate_source", devices[static_cast<std::size_t>(index)]->ActivateObject(
+                IID_PPV_ARGS(&source_)))) {
+            fail_open();
+            return;
+        }
+        callback_.Attach(new StreamCallback(static_cast<MfGrabSink*>(this)));
+        if (!create_reader(false)) {
+            fail_open();
+            return;
+        }
+        auto video_processing = false;
+        if (!set_native_type()) {
+            video_processing = true;
+            su::log::process_logger().info("camera.open_path", {
+                su::log::field("path", "video_processing"),
+                su::log::field("reason", "no_usable_native_type")});
+            if (!create_reader(true) || !set_processed_type()) {
+                fail_open();
+                return;
+            }
+        }
+        if (!read_negotiated_type(video_processing)) {
+            fail_open();
+            return;
+        }
+        permission_or_busy_ = false;
         open_ = true;
         finish_open(true);
     }
@@ -633,35 +748,32 @@ private:
                 finish_grab(false);
                 return;
             }
-            BYTE* data = nullptr;
-            DWORD current = 0;
-            DWORD max = 0;
-            if (FAILED(buffer->Lock(&data, &max, &current)) || data == nullptr) {
+            auto frame_stride = stride_;
+            ComPtr<IMF2DBuffer> surface;
+            if (v4l2_format_ == kV4l2Nv12 && SUCCEEDED(buffer.As(&surface))) {
+                // Lock() may expose a hardware surface with extra rows or a
+                // different pitch from MF_MT_DEFAULT_STRIDE. MF's contiguous
+                // copy removes that padding and places UV after width*height.
+                DWORD length = 0;
+                const auto y_size = static_cast<std::size_t>(width_) * height_;
+                const auto required = y_size + y_size / 2;
+                if (FAILED(surface->GetContiguousLength(&length)) || length < required) {
+                    finish_grab(false);
+                    return;
+                }
+                grab_buffer_.resize(length);
+                if (FAILED(surface->ContiguousCopyTo(grab_buffer_.data(), length))) {
+                    finish_grab(false);
+                    return;
+                }
+                frame_stride = width_;
+            } else if (!copy_locked_buffer(buffer.Get())) {
                 finish_grab(false);
                 return;
             }
-            const auto image_bytes = stride_ * static_cast<std::size_t>(height_);
-            if (bottom_up_ && stride_ != 0 && current >= image_bytes) {
-                grab_buffer_.resize(current);
-                for (std::size_t row = 0; row < height_; ++row) {
-                    std::memcpy(
-                        grab_buffer_.data() + row * stride_,
-                        data + (static_cast<std::size_t>(height_) - 1 - row) * stride_,
-                        stride_);
-                }
-                if (current > image_bytes) {
-                    std::memcpy(
-                        grab_buffer_.data() + image_bytes,
-                        data + image_bytes,
-                        current - image_bytes);
-                }
-            } else {
-                grab_buffer_.assign(data, data + current);
-            }
-            buffer->Unlock();
             frame_.width = static_cast<int>(width_);
             frame_.height = static_cast<int>(height_);
-            frame_.stride = stride_;
+            frame_.stride = frame_stride;
             frame_.v4l2_format = v4l2_format_;
             frame_.bytes = grab_buffer_.data();
             frame_.byte_count = grab_buffer_.size();
@@ -669,6 +781,45 @@ private:
             break;
         }
         finish_grab(grab_result_);
+    }
+
+    bool copy_locked_buffer(IMFMediaBuffer* buffer) {
+        BYTE* data = nullptr;
+        DWORD current = 0;
+        DWORD max = 0;
+        if (FAILED(buffer->Lock(&data, &max, &current))) {
+            return false;
+        }
+        if (data == nullptr) {
+            buffer->Unlock();
+            return false;
+        }
+        const auto image_bytes = stride_ * static_cast<std::size_t>(height_);
+        const auto required = v4l2_format_ == kV4l2Nv12 ? image_bytes + image_bytes / 2
+            : v4l2_format_ == kV4l2Yuyv ? image_bytes : 1;
+        if (current < required || current > max) {
+            buffer->Unlock();
+            return false;
+        }
+        if (bottom_up_ && stride_ != 0 && current >= image_bytes) {
+            grab_buffer_.resize(current);
+            for (std::size_t row = 0; row < height_; ++row) {
+                std::memcpy(
+                    grab_buffer_.data() + row * stride_,
+                    data + (static_cast<std::size_t>(height_) - 1 - row) * stride_,
+                    stride_);
+            }
+            if (current > image_bytes) {
+                std::memcpy(
+                    grab_buffer_.data() + image_bytes,
+                    data + image_bytes,
+                    current - image_bytes);
+            }
+        } else {
+            grab_buffer_.assign(data, data + current);
+        }
+        buffer->Unlock();
+        return true;
     }
 
     void close_worker() {
@@ -680,6 +831,10 @@ private:
         }
         reader_.Reset();
         callback_.Reset();
+        if (source_) {
+            (void)source_->Shutdown();
+            source_.Reset();
+        }
         open_ = false;
     }
 
@@ -721,6 +876,7 @@ private:
     bool open_ = false;
     Op op_ = Op::None;
     int open_index_ = -1;
+    std::atomic<bool> permission_or_busy_{false};
     bool open_result_ = false;
     bool grab_result_ = false;
     bool done_ = false;
@@ -740,6 +896,7 @@ private:
     ComPtr<IMFSample> sample_;
 
     // Worker-thread-owned MF state.
+    ComPtr<IMFMediaSource> source_;
     ComPtr<IMFSourceReader> reader_;
     ComPtr<StreamCallback> callback_;
     UINT32 width_ = 0;
@@ -763,6 +920,10 @@ MfCameraStream::~MfCameraStream() = default;
 
 bool MfCameraStream::open(int index) {
     return impl_->open(index);
+}
+
+bool MfCameraStream::last_open_was_permission_or_busy() const {
+    return impl_->last_open_was_permission_or_busy();
 }
 
 bool MfCameraStream::grab(MfCameraFrame& out) {
