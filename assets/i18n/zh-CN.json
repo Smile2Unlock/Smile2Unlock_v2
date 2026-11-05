@@ -174,7 +174,6 @@
         "deployment.sealed_parent_required": "此登录服务未在密码步骤之后加载钥匙串模块（pam_gnome_keyring 或 pam_kwallet5）。",
         "deployment.kernel_unavailable": "内核密钥环（systemd）：{value}",
         "deployment.sealed_unavailable": "保存的登录密码：{value}",
-        "deployment.reason_separator": "；",
         "wallet.title": "钥匙串自动解锁",
         "wallet.password_help": "人脸登录后，Smile2Unlock 会把此密码交给 GNOME 钥匙串或 KWallet，使其自动解锁。请输入登录密码，须与钥匙串密码一致；更改登录密码后请在此更新。",
         "wallet.password_label": "登录密码",

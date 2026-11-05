@@ -174,7 +174,6 @@
         "deployment.sealed_parent_required": "This login service does not load a keyring module (pam_gnome_keyring or pam_kwallet5) after the password step.",
         "deployment.kernel_unavailable": "Kernel keyring (systemd): {value}",
         "deployment.sealed_unavailable": "Saved login password: {value}",
-        "deployment.reason_separator": "; ",
         "wallet.title": "Keyring auto-unlock",
         "wallet.password_help": "After a face login, Smile2Unlock passes this password to GNOME Keyring or KWallet so it unlocks automatically. Enter your login password; it must match the keyring password. Update it here after changing your login password.",
         "wallet.password_label": "Login password",

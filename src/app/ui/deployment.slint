@@ -357,7 +357,8 @@ export component DeploymentPanel inherits Rectangle {
                         }
                     }
                 }
-                if !root.platform_windows && (target.role == "login" || target.role == "login-and-lock"): VerticalLayout {
+                if !root.platform_windows && (target.configurable || target.managed)
+                    && (target.role == "login" || target.role == "login-and-lock"): VerticalLayout {
                     alignment: start;
                     spacing: UiTheme.content-gap;
                     Text {
@@ -388,15 +389,16 @@ export component DeploymentPanel inherits Rectangle {
                             root.pending_action = "";
                         }
                     }
-                    if !target.wallet_available || !target.sealed_available: Text {
-                        private property <string> kernel_reason: target.wallet_available ? ""
-                            : root.translate_value("deployment.kernel_unavailable", root.language_index,
-                                root.translate(target.wallet_unavailable_reason, root.language_index));
-                        private property <string> sealed_reason: target.sealed_available ? ""
-                            : root.translate_value("deployment.sealed_unavailable", root.language_index,
-                                root.translate(target.sealed_unavailable_reason, root.language_index));
-                        text: kernel_reason + (kernel_reason != "" && sealed_reason != ""
-                            ? root.translate("deployment.reason_separator", root.language_index) : "") + sealed_reason;
+                    if !target.wallet_available: Text {
+                        text: root.translate_value("deployment.kernel_unavailable", root.language_index,
+                            root.translate(target.wallet_unavailable_reason, root.language_index));
+                        color: UiTheme.text-tertiary;
+                        font-size: UiTheme.row-label-font-size;
+                        wrap: word-wrap;
+                    }
+                    if !target.sealed_available: Text {
+                        text: root.translate_value("deployment.sealed_unavailable", root.language_index,
+                            root.translate(target.sealed_unavailable_reason, root.language_index));
                         color: UiTheme.text-tertiary;
                         font-size: UiTheme.row-label-font-size;
                         wrap: word-wrap;

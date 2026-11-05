@@ -28,6 +28,7 @@ export component WalletPanel inherits Rectangle {
         spacing: UiTheme.content-gap;
         SectionTitle {
             title: root.translate("wallet.title", root.language_index);
+            title-only: true;
         }
         Text {
             text: root.translate("wallet.password_help", root.language_index);

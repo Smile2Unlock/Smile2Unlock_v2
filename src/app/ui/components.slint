@@ -307,13 +307,14 @@ export component DiagnosticRow inherits Rectangle {
 export component SectionTitle inherits HorizontalLayout {
     in property <string> title;
     in property <string> detail;
+    in property <bool> title-only: false;
 
-    height: 48px;
+    height: root.title-only ? title-label.preferred-height : 48px;
     spacing: 12px;
     VerticalLayout {
         spacing: 3px;
-        Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
-        Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+        title-label := Text { text: root.title; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
+        if !root.title-only: Text { text: root.detail; color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
     }
 }
 
