@@ -29,8 +29,8 @@ using nlohmann::json;
 
 constexpr std::string_view kManagedMarker = "# Managed by Smile2Unlock deployment helper.";
 constexpr std::string_view kPamModule = "pam_smile2unlock.so";
-constexpr auto kJournalVersion = 2;
-constexpr auto kTransformationVersion = 2;
+constexpr auto kJournalVersion = 3;
+constexpr auto kTransformationVersion = 3;
 #ifndef SU_VERSION_STR
 #define SU_VERSION_STR "0.0.0"
 #endif
@@ -213,6 +213,38 @@ bool contains_wallet_module(std::span<const ParsedLine> lines) {
         || contains_module(lines, "pam_gnome_keyring.so");
 }
 
+bool wallet_auth_after(std::span<const ParsedLine> lines, std::size_t anchor_line) {
+    for (auto index = anchor_line + 1; index < lines.size(); ++index) {
+        const auto& fields = lines[index].fields;
+        if (fields.size() >= 3 && (fields[0] == "auth" || fields[0] == "-auth") &&
+            fields[1] != "include" && fields[1] != "substack") {
+            const auto module = std::filesystem::path{fields[2]}.filename();
+            if (module == "pam_kwallet5.so" || module == "pam_gnome_keyring.so")
+                return true;
+        }
+    }
+    return false;
+}
+
+bool contains_sealed_authtok(std::span<const ParsedLine> lines) {
+    return std::ranges::any_of(lines, [](const auto& line) {
+        return line.fields.size() >= 4 && line.fields[0] == "auth" &&
+               std::filesystem::path{line.fields[2]}.filename() == kPamModule &&
+               std::ranges::find(line.fields, std::string_view{"authtok=sealed"}) !=
+                   line.fields.end();
+    });
+}
+
+std::optional<std::size_t> substack_line(std::span<const ParsedLine> lines,
+                                         std::string_view service) {
+    for (auto index = std::size_t{0}; index < lines.size(); ++index) {
+        if (lines[index].fields.size() >= 3 && lines[index].fields[0] == "auth" &&
+            lines[index].fields[1] == "substack" && lines[index].fields[2] == service)
+            return index;
+    }
+    return std::nullopt;
+}
+
 std::filesystem::path pam_path(
     const std::filesystem::path& root,
     std::string_view directory,
@@ -297,19 +329,21 @@ std::string join_lines(std::span<const ParsedLine> lines) {
     return output;
 }
 
-std::string child_content(
-    std::string_view password_stack,
-    bool wallet_token) {
+std::string child_content(std::string_view password_stack, AuthtokSource source) {
     auto output = std::string{
         "#%PAM-1.0\n"
         "# Managed by Smile2Unlock deployment helper.\n"
         "# Face failures continue to the distribution password stack.\n"};
-    if (wallet_token) {
+    if (source == AuthtokSource::kKernelKeyring) {
         output += "auth [success=2 default=ignore] pam_smile2unlock.so socket=/run/smile2unlock/control.sock\n";
         output += std::format("auth substack {}\n", password_stack);
         output += "auth [success=2 default=ignore] pam_permit.so\n";
         output += "-auth optional pam_systemd_loadkey.so\n";
         output += "auth required pam_permit.so\n";
+    } else if (source == AuthtokSource::kSealed) {
+        output += "auth sufficient pam_smile2unlock.so socket=/run/smile2unlock/control.sock "
+                  "authtok=sealed\n";
+        output += std::format("auth substack {}\n", password_stack);
     } else {
         output += "auth sufficient pam_smile2unlock.so socket=/run/smile2unlock/control.sock\n";
         output += std::format("auth substack {}\n", password_stack);
@@ -383,10 +417,11 @@ std::expected<void, std::string> atomic_write(
 // journals may omit optional fields, but present fields must have their
 // declared types so recovery and rollback never throw on corrupt records.
 bool journal_has_valid_types(const json& document) {
-    if (!document.is_object() || !document.contains("version")
-        || !document["version"].is_number_integer()
-        || (document["version"] != 1 && document["version"] != kJournalVersion)
-        || !document.contains("targets") || !document["targets"].is_object()) {
+    if (!document.is_object() || !document.contains("version") ||
+        !document["version"].is_number_integer() ||
+        (document["version"] != 1 && document["version"] != 2 &&
+         document["version"] != kJournalVersion) ||
+        !document.contains("targets") || !document["targets"].is_object()) {
         return false;
     }
     const auto strings_valid = [](const json& object, const auto& fields) {
@@ -405,17 +440,22 @@ bool journal_has_valid_types(const json& document) {
         return false;
     }
     return std::ranges::all_of(document["targets"], [&](const json& record) {
-        return record.is_object()
-            && strings_valid(record, std::array{
-                "state", "destination", "child", "parent_backup", "child_backup",
-                "source_fingerprint", "child_source_fingerprint", "result_fingerprint",
-                "child_result_fingerprint", "package_version", "upgrade_child_backup",
-                "pending_child_result_fingerprint"})
-            && transformation_valid(record)
-            && std::ranges::all_of(std::array{"destination_existed", "child_existed"},
-                [&record](const auto* name) {
-                    return !record.contains(name) || record[name].is_boolean();
-                });
+        return record.is_object() &&
+               strings_valid(record,
+                             std::array{"state", "destination", "child", "parent_backup",
+                                        "child_backup", "source_fingerprint",
+                                        "child_source_fingerprint", "result_fingerprint",
+                                        "child_result_fingerprint", "package_version",
+                                        "upgrade_child_backup", "pending_child_result_fingerprint",
+                                        "authtok_source"}) &&
+               transformation_valid(record) &&
+               (!record.contains("authtok_source") ||
+                authtok_source_from_id(record["authtok_source"].get<std::string>()).has_value()) &&
+               (!record.contains("wallet_token") || record["wallet_token"].is_boolean()) &&
+               std::ranges::all_of(std::array{"destination_existed", "child_existed"},
+                                   [&record](const auto* name) {
+                                       return !record.contains(name) || record[name].is_boolean();
+                                   });
     });
 }
 
@@ -438,19 +478,28 @@ std::expected<json, std::string> load_journal(const std::filesystem::path& root)
     if (!journal_has_valid_types(parsed)) {
         return std::unexpected("invalid deployment journal");
     }
-    if (parsed.value("version", 0) == 1) {
+    if (parsed.value("version", 0) == 1 || parsed.value("version", 0) == 2) {
+        const auto old_version = parsed.value("version", 0);
         parsed["version"] = kJournalVersion;
-        parsed["package_version"] = "0.0.0";
-        parsed["transformation_version"] = 1;
+        if (old_version == 1)
+            parsed["package_version"] = "0.0.0";
+        parsed["transformation_version"] = old_version == 1 ? 1 : 2;
         for (auto& [_, record] : parsed["targets"].items()) {
             if (record.is_object()) {
-                record["state"] = "active";
-                const auto parent = read_regular_file(record.value("parent_backup", ""));
-                const auto child = read_regular_file(record.value("child_backup", ""));
-                record["source_fingerprint"] = parent ? fingerprint(*parent) : "";
-                record["child_source_fingerprint"] = child ? fingerprint(*child) : "";
-                record["package_version"] = "0.0.0";
-                record["transformation_version"] = 1;
+                if (old_version == 1) {
+                    record["state"] = "active";
+                    const auto parent = read_regular_file(record.value("parent_backup", ""));
+                    const auto child = read_regular_file(record.value("child_backup", ""));
+                    record["source_fingerprint"] = parent ? fingerprint(*parent) : "";
+                    record["child_source_fingerprint"] = child ? fingerprint(*child) : "";
+                    record["package_version"] = "0.0.0";
+                    record["transformation_version"] = 1;
+                }
+                const auto kernel_keyring = record.contains("wallet_token") &&
+                                            record["wallet_token"].is_boolean() &&
+                                            record["wallet_token"].get<bool>();
+                record["authtok_source"] = kernel_keyring ? "kernel_keyring" : "none";
+                record.erase("wallet_token");
             }
         }
     }
@@ -509,6 +558,8 @@ TargetStatus inspect_target(
     const auto lines = parse_lines(*content);
     status.wallet_modules = contains_wallet_module(lines);
     status.wallet_token_enabled = contains_module(lines, "pam_systemd_loadkey.so");
+    status.authtok_source =
+        status.wallet_token_enabled ? AuthtokSource::kKernelKeyring : AuthtokSource::kNone;
     status.password_fallback = auth_anchor(lines, target.kind).has_value();
     const auto child_service = child_service_name(target.kind);
     if (references_substack(lines, child_service)) {
@@ -528,7 +579,22 @@ TargetStatus inspect_target(
         status.state = TargetState::kManaged;
         status.password_fallback = auth_anchor(child_lines, target.kind).has_value();
         status.wallet_token_enabled = contains_module(child_lines, "pam_systemd_loadkey.so");
+        status.authtok_source = status.wallet_token_enabled
+                                    ? AuthtokSource::kKernelKeyring
+                                    : (contains_sealed_authtok(child_lines) ? AuthtokSource::kSealed
+                                                                            : AuthtokSource::kNone);
         status.detail = "managed by Smile2Unlock";
+        if (status.authtok_source != AuthtokSource::kNone && target.role != TargetRole::kLogin &&
+            target.role != TargetRole::kLoginAndLock) {
+            status.state = TargetState::kConflict;
+            status.detail = "wallet authtok is supported only for login targets";
+        } else if (status.authtok_source == AuthtokSource::kSealed &&
+                   !wallet_auth_after(lines, *substack_line(lines, child_service))) {
+            status.state = TargetState::kConflict;
+            status.detail =
+                "sealed wallet authtok requires a parent auth wallet module after the Smile2Unlock "
+                "substack; a module inside the password stack is skipped on face success";
+        }
         return status;
     }
     if (contains_module(lines, kPamModule)) {
@@ -559,6 +625,28 @@ TargetStatus inspect_target(
 }
 
 } // namespace
+
+std::string_view authtok_source_id(AuthtokSource source) {
+    switch (source) {
+    case AuthtokSource::kNone:
+        return "none";
+    case AuthtokSource::kKernelKeyring:
+        return "kernel_keyring";
+    case AuthtokSource::kSealed:
+        return "sealed";
+    }
+    std::unreachable();
+}
+
+std::optional<AuthtokSource> authtok_source_from_id(std::string_view id) {
+    if (id == "none")
+        return AuthtokSource::kNone;
+    if (id == "kernel_keyring")
+        return AuthtokSource::kKernelKeyring;
+    if (id == "sealed")
+        return AuthtokSource::kSealed;
+    return std::nullopt;
+}
 
 std::string_view target_id(TargetKind target) {
     return definition(target).id;
@@ -605,12 +693,12 @@ std::expected<DeploymentSnapshot, std::string> inspect_deployment(
     return snapshot;
 }
 
-std::expected<PamPlan, std::string> plan_pam_integration(
-    const std::filesystem::path& root,
-    TargetKind target,
-    bool wallet_token) {
-    if (definition(target).role == TargetRole::kPrivilege && wallet_token) {
-        return std::unexpected("administrator authentication does not support wallet tokens");
+std::expected<PamPlan, std::string> plan_pam_integration(const std::filesystem::path& root,
+                                                         TargetKind target,
+                                                         AuthtokSource authtok_source) {
+    if (authtok_source != AuthtokSource::kNone && definition(target).role != TargetRole::kLogin &&
+        definition(target).role != TargetRole::kLoginAndLock) {
+        return std::unexpected("wallet authtok is supported only for login targets");
     }
     if (target == TargetKind::kDms) {
         return std::unexpected("DMS uses its dedicated PAM service installer");
@@ -638,6 +726,14 @@ std::expected<PamPlan, std::string> plan_pam_integration(
         if (!password_anchor) {
             return std::unexpected("managed PAM substack has no password fallback");
         }
+        const auto parent_anchor = substack_line(lines, child_service);
+        if (authtok_source == AuthtokSource::kSealed &&
+            (!parent_anchor || !wallet_auth_after(lines, *parent_anchor))) {
+            return std::unexpected(
+                "sealed wallet authtok requires a parent auth wallet module after the Smile2Unlock "
+                "substack; the wallet module may be inside the password stack and would be skipped "
+                "on face success");
+        }
         const auto journal = load_journal(root);
         if (!journal) {
             return std::unexpected(journal.error());
@@ -650,7 +746,7 @@ std::expected<PamPlan, std::string> plan_pam_integration(
             || (*journal)["targets"][id].value("state", "active") != "active") {
             return std::unexpected("managed PAM files do not have an active journal record");
         }
-        const auto desired_child = child_content(password_anchor->service, wallet_token);
+        const auto desired_child = child_content(password_anchor->service, authtok_source);
         const auto& record = (*journal)["targets"][id];
         const auto current_transformation = record.value("transformation_version", 0)
             == kTransformationVersion;
@@ -671,9 +767,8 @@ std::expected<PamPlan, std::string> plan_pam_integration(
             .child_source_fingerprint = fingerprint(*child),
             .destination_existed = *source_path == destination_path,
             .child_existed = true,
-            .wallet_token_requested = wallet_token,
-            .already_managed = *child == desired_child
-                && current_transformation && current_package,
+            .authtok_source = authtok_source,
+            .already_managed = *child == desired_child && current_transformation && current_package,
         };
     }
     if (contains_module(lines, kPamModule)) {
@@ -682,6 +777,12 @@ std::expected<PamPlan, std::string> plan_pam_integration(
     const auto anchor = auth_anchor(lines, target);
     if (!anchor) {
         return std::unexpected("unsupported PAM authentication layout");
+    }
+    if (authtok_source == AuthtokSource::kSealed && !wallet_auth_after(lines, anchor->line)) {
+        return std::unexpected(
+            "sealed wallet authtok requires a parent auth pam_gnome_keyring.so or pam_kwallet5.so "
+            "line after the password-stack anchor; the wallet module may be inside the password "
+            "stack and would be skipped on face success");
     }
     auto child_source = std::string{};
     auto child_source_fingerprint = std::string{};
@@ -710,13 +811,13 @@ std::expected<PamPlan, std::string> plan_pam_integration(
         .child_path = child_path,
         .source_content = *source,
         .destination_content = join_lines(lines),
-        .child_content = child_content(anchor->service, wallet_token),
+        .child_content = child_content(anchor->service, authtok_source),
         .source_fingerprint = fingerprint(*source),
         .child_source_content = std::move(child_source),
         .child_source_fingerprint = std::move(child_source_fingerprint),
         .destination_existed = *source_path == destination_path,
         .child_existed = child_existed,
-        .wallet_token_requested = wallet_token,
+        .authtok_source = authtok_source,
     };
 }
 
@@ -795,7 +896,7 @@ std::expected<void, std::string> apply_pam_plan(
         record = old_record;
         record["state"] = "active";
         record["child_result_fingerprint"] = fingerprint(plan.child_content);
-        record["wallet_token"] = plan.wallet_token_requested;
+        record["authtok_source"] = authtok_source_id(plan.authtok_source);
         record["package_version"] = kPackageVersion;
         record["transformation_version"] = kTransformationVersion;
         (*journal)["package_version"] = kPackageVersion;
@@ -835,7 +936,7 @@ std::expected<void, std::string> apply_pam_plan(
         {"child_source_fingerprint", fingerprint(plan.child_source_content)},
         {"result_fingerprint", fingerprint(plan.destination_content)},
         {"child_result_fingerprint", fingerprint(plan.child_content)},
-        {"wallet_token", plan.wallet_token_requested},
+        {"authtok_source", authtok_source_id(plan.authtok_source)},
         {"package_version", kPackageVersion},
         {"transformation_version", kTransformationVersion},
     };
@@ -1097,6 +1198,7 @@ std::string snapshot_json(const DeploymentSnapshot& snapshot) {
             {"password_fallback", target.password_fallback},
             {"wallet_modules", target.wallet_modules},
             {"wallet_token_enabled", target.wallet_token_enabled},
+            {"authtok_source", authtok_source_id(target.authtok_source)},
             {"detail", target.detail},
         });
     }
@@ -1111,10 +1213,11 @@ std::string plan_json(const PamPlan& plan) {
         {"source", plan.source_path.string()},
         {"destination", plan.destination_path.string()},
         {"substack", plan.child_path.string()},
-        {"wallet_token", plan.wallet_token_requested},
+        {"authtok_source", authtok_source_id(plan.authtok_source)},
         {"already_managed", plan.already_managed},
         {"password_fallback", true},
-    }.dump();
+    }
+        .dump();
 }
 
 } // namespace su::deploy

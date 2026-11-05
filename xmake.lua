@@ -686,11 +686,24 @@ if is_plat("linux") then
         end
         add_tests("default")
 
+    target("su_pam_wallet_fixture")
+        set_default(false)
+        set_kind("shared")
+        set_languages("c++23")
+        set_prefixname("")
+        add_files("tests/pam/wallet/module.cpp")
+        add_syslinks("pam")
+        add_rules("utils.symbols.export_list", {symbols = {"pam_sm_authenticate", "pam_sm_setcred"}})
+
     target("su_pam_integration_test")
         set_default(false)
         apply_cpp_target("binary")
         add_files("tests/pam/*.cpp", "src/modules/su.control.socket.cppm")
         add_deps("pam_smile2unlock", "su_deploy")
+        add_deps("su_pam_wallet_fixture", {inherit = false})
+        add_defines("SU_PAM_WALLET_MODULE_PATH=\"" .. path.unix(path.join(
+            os.projectdir(), "build", get_config("plat"), get_config("arch"),
+            get_config("mode"), "su_pam_wallet_fixture.so")) .. "\"")
         add_packages("nlohmann_json")
         add_defines("SU_PAM_MODULE_PATH=\"" .. path.unix(path.join(
             os.projectdir(), "build", get_config("plat"), get_config("arch"),
@@ -703,6 +716,22 @@ if is_plat("linux") then
         apply_cpp_target("binary")
         add_files("tests/storage/*.cpp")
         add_files("src/modules/su.auth.storage.cppm", "src/modules/su.core.types.cppm")
+        add_files("src/app/core_bridge.cpp")
+        add_includedirs("src/core-rs/include")
+        add_deps("su_core")
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
+        add_tests("default")
+
+    target("su_authtok_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/authtok/*.cpp", "src/app/core_bridge.cpp")
+        add_files("src/modules/su.auth.storage.cppm", "src/modules/su.auth.user.cppm", "src/modules/su.core.types.cppm")
+        add_includedirs("src/core-rs/include")
+        add_deps("su_core")
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
         add_tests("default")
 
     target("su_pam_acceptance")

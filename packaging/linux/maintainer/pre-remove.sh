@@ -14,4 +14,7 @@ fi
 if command -v systemctl >/dev/null 2>&1; then
     systemctl disable --now su-authd.service >/dev/null 2>&1 || true
 fi
+if [ -d /var/lib/smile2unlock/users ]; then
+    find /var/lib/smile2unlock/users -mindepth 2 -maxdepth 2 -type f -name 'authtok.s2u' -delete
+fi
 /usr/libexec/smile2unlock/manage-selinux-policy remove

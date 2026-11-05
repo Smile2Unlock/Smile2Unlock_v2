@@ -327,28 +327,22 @@ bool administrator_stacks_preserve_fallback() {
 } // namespace
 
 bool pam_guidance_tests();
+bool pam_authtok_tests();
 
 int main() {
-    return pam_guidance_tests() && run_socket_case(
-               "accepted", su::control::ControlResult::kAccepted, PAM_SUCCESS)
-            && run_socket_case(
-                "rejected", su::control::ControlResult::kRejected, PAM_AUTH_ERR)
-            && run_socket_case(
-                "mismatched-id",
-                su::control::ControlResult::kAccepted,
-                PAM_AUTHINFO_UNAVAIL,
-                false)
-            && run_socket_case(
-                "malformed-response",
-                su::control::ControlResult::kAccepted,
-                PAM_AUTHINFO_UNAVAIL,
-                true,
-                true)
-            && run_unavailable_case()
-            && run_timeout_case("timeout", std::nullopt)
-            && run_timeout_case("timeout-password-accepted", true)
-            && run_timeout_case("timeout-password-rejected", false)
-            && administrator_stacks_preserve_fallback()
-        ? 0
-        : 1;
+    return pam_authtok_tests() && pam_guidance_tests() &&
+                   run_socket_case("accepted", su::control::ControlResult::kAccepted,
+                                   PAM_SUCCESS) &&
+                   run_socket_case("rejected", su::control::ControlResult::kRejected,
+                                   PAM_AUTH_ERR) &&
+                   run_socket_case("mismatched-id", su::control::ControlResult::kAccepted,
+                                   PAM_AUTHINFO_UNAVAIL, false) &&
+                   run_socket_case("malformed-response", su::control::ControlResult::kAccepted,
+                                   PAM_AUTHINFO_UNAVAIL, true, true) &&
+                   run_unavailable_case() && run_timeout_case("timeout", std::nullopt) &&
+                   run_timeout_case("timeout-password-accepted", true) &&
+                   run_timeout_case("timeout-password-rejected", false) &&
+                   administrator_stacks_preserve_fallback()
+               ? 0
+               : 1;
 }

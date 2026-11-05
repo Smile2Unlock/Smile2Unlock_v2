@@ -31,7 +31,8 @@ working password fallback.
 - Do not modify autologin, greeter-bootstrap, fingerprint or smart-card PAM
   services.
 - Do not disable SELinux, PAM failure policy or the system password fallback.
-- Do not store a Linux account password in the first implementation.
+- No plaintext and no host-key-only stored wallet secrets. Sealed wallet tokens
+  require the existing master credential to use `host+tpm2` protection.
 - Do not patch KScreenLocker, Plasma Login Manager or GNOME Shell merely to add
   branded progress UI. PAM-level compatibility comes first.
 
@@ -134,7 +135,89 @@ Requirements:
 If any requirement is missing, face login still succeeds but the wallet may
 prompt after login. There is no plaintext or empty-password fallback.
 
-### Unsupported automatic-unlock cases
+### Sealed per-user wallet token
+
+P1+P2 add an independent, opt-in alternative to the boot-time kernel keyring.
+There are two switches, both off by default:
+
+- An administrator chooses `none`, `kernel_keyring`, or `sealed` for each login
+  target. `PlanDesktopIntegrationSource(target, source)` plans this choice;
+  `ApplyDesktopIntegration` keeps its existing administrator authorization.
+  The legacy `PlanDesktopIntegration(target, bool)` maps false to `none` and
+  true to `kernel_keyring`; the existing GUI continues to use that API.
+- Each user enrolls or clears their own wallet password with `set_authtok` /
+  `clear_authtok`. Both consume the same kind of one-use, UID/PID/session-bound
+  management capability as profile enrollment, with operation names
+  `set_authtok` and `clear_authtok`. User peers cannot target another UID. Root
+  may manage any account and must also supply a capability.
+
+GNOME Keyring's `pam_sm_authenticate` reads `PAM_AUTHTOK` and stashes it as
+`gkr_system_authtok`; its session hook uses that stash. KWallet's authentication
+hook similarly derives `kwallet5_key`, which its session hook needs. Therefore
+the token is injected during **AUTH**, after face success and before the
+parent's wallet authentication lines:
+
+```pam
+# Dedicated Smile2Unlock child substack for source=sealed
+auth sufficient pam_smile2unlock.so socket=/run/smile2unlock/control.sock authtok=sealed
+auth substack <distribution-password-auth-stack>
+```
+
+The parent must have a `pam_gnome_keyring.so` or `pam_kwallet5.so` **auth** line
+after `auth substack smile2unlock-...`. A wallet module only inside the password
+stack is skipped on face success; planning refuses that layout. A session-only
+wallet line or a wallet auth line before the anchor is also insufficient.
+Lock-only and privilege targets refuse both wallet sources; login and combined
+login/lock services are eligible. Session lines remain under distribution
+control; no Smile2Unlock session hook or session transaction is added.
+
+The daemon stores `secret` and `created_at` in a UID-bound authenticated
+`authtok.s2u` record under its existing encrypted per-user store. The same
+`LoadCredentialEncrypted=smile2unlock-master.key` master key and purpose-separated
+encrypted envelope protect it. Enrollment is refused with unavailable or
+host-key-only protection. Existing face enrollment still supports its current
+storage protections. A host-only installation requires a deliberate storage-key
+migration before this feature can be enrolled; rerunning setup does not replace
+an existing key.
+
+Enabling this feature makes an accepted face login equivalent to supplying
+the enrolled wallet password. It is bound to this machine's storage key;
+machine replacement, TPM/firmware resets, or replacement of that key can require
+enrollment again. A changed wallet password also requires explicit re-enrollment.
+
+The only release path is an accepted `authenticate` response for that same
+username to a root socket peer that requested `want_authtok: true`. It adds
+`payload.authtok` as base64; there is no token-fetch operation. Non-root peers
+receive no token, including after accepted recognition. `storage_status` adds
+`authtok_enrolled: bool` for the socket peer's own UID and never returns a secret.
+
+PAM never overwrites an existing non-empty `PAM_AUTHTOK`. Missing enrollment,
+missing/invalid token data, or token-storage errors leave the face result
+unchanged. The existing single exchange keeps its overall 8-second deadline.
+Tokens and response buffers are wiped after use; logs contain only token
+presence, never token content. The daemon disables core dumps with `LimitCORE=0`.
+Wallet failure leaves login successful and the wallet can prompt normally.
+
+Upgrade the PAM module and daemon together before opting into `sealed`.
+Previously released daemons use a strict request parser and reject the added
+`want_authtok` field; those binaries cannot be made tolerant by a new client
+without another exchange. The default-off request remains unchanged. The new
+daemon accepts old authenticate requests and ignores future optional auth
+fields; PAM accepts an authenticated response with no token as not enrolled.
+
+Journal/transformation v3 records `authtok_source` by name and reads v1/v2
+`wallet_token` booleans as `kernel_keyring`/`none`. Direct switching and rollback
+use the existing child-file transaction. Rolling back a target keeps enrolled
+user tokens. Explicit clear, deletion of the last face profile, removal of a
+user (checked against NSS by periodic daemon maintenance), and package removal
+remove the record. Package upgrades preserve it.
+
+P3 follows in a separate PR: GUI enrollment/state cards and stale detection
+from **wallet still locked after face login**. It does not infer staleness from
+keyring-file timestamps. Real desktop acceptance remains pending for
+Arch + greetd + GNOME Keyring, Fedora + GDM + KWallet, and SELinux enforcing.
+
+### Cases needing sealed enrollment or manual unlock
 
 - TPM2-only disk unlock with no usable passphrase in the kernel keyring.
 - Wallet password differs from the available LUKS passphrase.

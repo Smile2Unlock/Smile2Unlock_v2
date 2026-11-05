@@ -560,6 +560,8 @@ void malformed_journals_are_rejected(const std::filesystem::path& root) {
 
 } // namespace
 
+bool sealed_deployment_tests(const std::filesystem::path& base);
+
 int main() {
     const auto root = std::filesystem::current_path() / "build" / "test-data"
         / ("deploy-" + std::to_string(::getpid()));
@@ -582,6 +584,7 @@ int main() {
     upstream_variant_layouts_are_supported(root / "upstream-variants");
     administrator_targets_round_trip(root / "administrator");
     malformed_journals_are_rejected(root / "malformed-journal");
+    check(sealed_deployment_tests(root / "sealed"), "sealed deployment regressions");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {

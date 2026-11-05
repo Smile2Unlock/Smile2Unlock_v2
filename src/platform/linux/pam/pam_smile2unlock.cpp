@@ -1,9 +1,12 @@
 #include "common/log/logger.h"
 #include "common/log/pam_sink.h"
+#include "common/security/sensitive.h"
+#include "common/security/secret_json.h"
 #include <security/pam_appl.h>
 #include <security/pam_modules.h>
 #include <security/pam_ext.h>
 #include <unistd.h>
+#include <nlohmann/json.hpp>
 
 import std;
 import su.control.socket;
@@ -40,6 +43,85 @@ std::string_view socket_path_from_args(int argc, const char** argv) {
         }
     }
     return su::control::kDefaultSocketPath;
+}
+
+bool sealed_authtok_from_args(int argc, const char** argv) {
+    for (auto index = 0; index < argc; ++index) {
+        if (std::string_view(argv[index]) == "authtok=sealed")
+            return true;
+    }
+    return false;
+}
+
+void wipe(std::string& value) noexcept {
+    if (!value.empty())
+        ::explicit_bzero(value.data(), value.size());
+    value.clear();
+}
+
+std::optional<std::vector<unsigned char>> decode_base64(std::string_view encoded) {
+    constexpr auto alphabet =
+        std::string_view{"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"};
+    if (encoded.empty() || encoded.size() > 2048 || encoded.size() % 4 != 0)
+        return std::nullopt;
+    auto decoded = std::vector<unsigned char>{};
+    const auto wipe_decoded = su::security::ScopedWipe{decoded};
+    decoded.reserve(encoded.size() / 4 * 3 + 1);
+    for (auto offset = std::size_t{0}; offset < encoded.size(); offset += 4) {
+        auto value = std::uint32_t{0};
+        auto padding = 0;
+        for (auto index = 0; index < 4; ++index) {
+            const auto character = encoded[offset + static_cast<std::size_t>(index)];
+            if (character == '=') {
+                ++padding;
+                value <<= 6;
+            } else {
+                if (padding != 0)
+                    return std::nullopt;
+                const auto digit = alphabet.find(character);
+                if (digit == std::string_view::npos)
+                    return std::nullopt;
+                value = (value << 6) | static_cast<std::uint32_t>(digit);
+            }
+        }
+        if (padding > 2 || (padding != 0 && offset + 4 != encoded.size()) ||
+            (padding == 1 && (value & 0xff) != 0) || (padding == 2 && (value & 0xffff) != 0))
+            return std::nullopt;
+        decoded.push_back(static_cast<unsigned char>(value >> 16));
+        if (padding < 2)
+            decoded.push_back(static_cast<unsigned char>(value >> 8));
+        if (padding < 1)
+            decoded.push_back(static_cast<unsigned char>(value));
+    }
+    return std::optional{std::move(decoded)};
+}
+
+// This entire optional step is noexcept: a wallet error must never turn an
+// already accepted face authentication into a PAM failure.
+bool install_authtok(pam_handle_t* handle, std::string_view payload_json) noexcept {
+    try {
+        const void* current = nullptr;
+        if (::pam_get_item(handle, PAM_AUTHTOK, &current) != PAM_SUCCESS)
+            return false;
+        if (current && *static_cast<const char*>(current))
+            return true;
+        auto payload = su::security::SecretJson::parse(payload_json, nullptr, false);
+        const auto wipe_payload = su::security::ScopedJsonWipe{payload};
+        if (!payload.is_object() || !payload.contains("authtok") || !payload["authtok"].is_string())
+            return false;
+        const auto& encoded = payload["authtok"].get_ref<const su::security::SecretString&>();
+        auto token = decode_base64(std::string_view{encoded.data(), encoded.size()});
+        if (!token)
+            return false;
+        const auto wipe_token = su::security::ScopedWipe{*token};
+        if (token->empty() || token->size() > 1024 || std::ranges::find(*token, 0) != token->end())
+            return false;
+        token->push_back(0); // capacity reserved by decode_base64; no secret-bearing reallocation
+        return ::pam_set_item(handle, PAM_AUTHTOK, reinterpret_cast<const char*>(token->data())) ==
+               PAM_SUCCESS;
+    } catch (...) {
+        return false;
+    }
 }
 
 std::uint64_t next_request_id() {
@@ -94,8 +176,10 @@ const char* failure_message(bool chinese, su::control::AuthenticationReason reas
     std::unreachable();
 }
 
-std::optional<su::control::ControlResponse> authenticate(
-    std::string_view username, std::string_view socket_path, const su::log::Logger& logger) {
+std::optional<su::control::ControlResponse> authenticate(std::string_view username,
+                                                         std::string_view socket_path,
+                                                         bool want_authtok,
+                                                         const su::log::Logger& logger) {
     const auto deadline = std::chrono::steady_clock::now() + kPamAuthenticationTimeout;
     auto connection = su::control::Connection::connect_to(socket_path, kPamAuthenticationTimeout);
     if (!connection) {
@@ -104,19 +188,26 @@ std::optional<su::control::ControlResponse> authenticate(
     }
     const auto request_id = next_request_id();
     const auto request_logger = logger.with({su::log::field("request_id", request_id)});
-    const auto request = su::control::make_authenticate_request(request_id, username);
+    auto request = su::control::make_authenticate_request(request_id, username, want_authtok);
     if (!connection->send_frame(request, deadline)) {
         request_logger.warn("request.send_failed");
         return std::nullopt;
     }
-    const auto response = connection->receive_frame(deadline);
+    auto response = connection->receive_frame(deadline);
     if (!response) {
         request_logger.warn("response.receive_failed");
         return std::nullopt;
     }
-    const auto result = su::control::parse_response(*response);
-    if (!result || result->request_id != request_id) { return std::nullopt; }
-    return *result;
+    const auto wipe_frame = su::security::ScopedWipe{*response};
+    auto result = su::control::parse_response(*response);
+    wipe(*response);
+    wipe(request);
+    if (!result)
+        return std::nullopt;
+    const auto wipe_payload = su::security::ScopedWipe{result->payload_json};
+    if (result->request_id != request_id)
+        return std::nullopt;
+    return std::move(*result);
 }
 
 } // namespace
@@ -137,8 +228,21 @@ PAM_EXTERN int pam_sm_authenticate(
     const auto chinese = chinese_messages(pamh);
     show_info(pamh, flags, chinese ? "正在识别人脸，请正对摄像头"
         : "Recognizing your face, please look at the camera");
-    const auto result = authenticate(username, socket_path_from_args(argc, argv), logger);
+    auto result = authenticate(username, socket_path_from_args(argc, argv),
+                               sealed_authtok_from_args(argc, argv), logger);
     const auto outcome = result ? pam_result(result->result) : PAM_AUTHINFO_UNAVAIL;
+    if (result) {
+        const auto wipe_payload = su::security::ScopedWipe{result->payload_json};
+        if (sealed_authtok_from_args(argc, argv)) {
+            const auto token_present =
+                outcome == PAM_SUCCESS && install_authtok(pamh, result->payload_json);
+            try {
+                logger.info("authentication.authtok",
+                            {su::log::field("token_present", token_present ? 1 : 0)});
+            } catch (...) { /* optional-token logging cannot affect PAM status */
+            }
+        }
+    }
     if (outcome != PAM_SUCCESS) {
         show_info(pamh, flags, failure_message(chinese, result
             ? result->authentication_reason : su::control::AuthenticationReason::kUnknown));

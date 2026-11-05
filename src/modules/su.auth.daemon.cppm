@@ -2,11 +2,14 @@ module;
 #include "common/log/logger.h"
 #include "common/capture/image.h"
 #include "common/capture/maintenance.h"
+#include "common/security/sensitive.h"
+#include "common/security/secret_json.h"
 
 #include <cerrno>
 #include <cstdio>
 #include <sys/fsuid.h>
 #include <sys/stat.h>
+#include <pwd.h>
 #include <unistd.h>
 #include <nlohmann/json.hpp>
 
@@ -70,6 +73,10 @@ std::string_view message_type_name(su::app::ControlMessageType type) {
     case su::app::ControlMessageType::kVerifyProfile: return "verify_profile";
     case su::app::ControlMessageType::kIssueManagementCapability:
         return "issue_management_capability";
+    case su::app::ControlMessageType::kSetAuthtok:
+        return "set_authtok";
+    case su::app::ControlMessageType::kClearAuthtok:
+        return "clear_authtok";
     }
     std::unreachable();
 }
@@ -312,7 +319,8 @@ public:
             : "unavailable";
     }
 
-    AttemptResult authenticate(std::uint64_t request_id, std::string_view username) {
+    AttemptResult authenticate(std::uint64_t request_id, std::string_view username,
+                               std::uint32_t peer_uid, bool want_authtok) {
         auto auth_lock = std::unique_lock(auth_mutex_, std::try_to_lock);
         if (!auth_lock.owns_lock()) {
             return {su::control::ControlResult::kBusy, "another authentication is active"};
@@ -408,7 +416,20 @@ public:
                 return {su::control::ControlResult::kUnavailable, report.error()};
             }
             if (report->accepted) {
-                return {su::control::ControlResult::kAccepted, "face matched"};
+                auto response =
+                    AttemptResult{su::control::ControlResult::kAccepted, "face matched"};
+                if (peer_uid == 0 && want_authtok) {
+                    try {
+                        auto payload = authenticate_authtok(
+                            &*master_key_, paths->uid,
+                            (paths->profiles.parent_path() / "authtok.s2u").string(), peer_uid,
+                            want_authtok, true);
+                        if (payload && !payload->empty())
+                            response.payload_json = std::move(*payload);
+                    } catch (...) { /* wallet failures never change face success */
+                    }
+                }
+                return response;
             }
             std::this_thread::sleep_for(kRetryInterval);
         }
@@ -440,6 +461,34 @@ public:
         return profiles
             ? AttemptResult{su::control::ControlResult::kAccepted, "profiles listed", *profiles}
             : AttemptResult{su::control::ControlResult::kUnavailable, "failed to decrypt profiles"};
+    }
+
+    AttemptResult set_authtok(std::string_view username, std::string_view secret) const {
+        const auto paths = paths_for_request(username);
+        if (!paths)
+            return {su::control::ControlResult::kRejected, paths.error()};
+        if (!master_key_)
+            return {su::control::ControlResult::kUnavailable, "encrypted storage key unavailable"};
+        if (master_key_->protection() != KeyProtection::kTpm2Bound)
+            return {su::control::ControlResult::kRejected,
+                    "sealed authtok requires host+tpm2 storage protection"};
+        const auto stored =
+            enroll_authtok(&*master_key_, paths->uid,
+                           (paths->profiles.parent_path() / "authtok.s2u").string(), secret);
+        return stored ? AttemptResult{su::control::ControlResult::kAccepted, "authtok stored"}
+                      : AttemptResult{su::control::ControlResult::kUnavailable,
+                                      "failed to encrypt authtok"};
+    }
+
+    AttemptResult clear_authtok(std::string_view username) const {
+        const auto paths = paths_for_request(username);
+        if (!paths)
+            return {su::control::ControlResult::kRejected, paths.error()};
+        const auto cleared =
+            su::app::clear_authtok((paths->profiles.parent_path() / "authtok.s2u").string());
+        return cleared ? AttemptResult{su::control::ControlResult::kAccepted, "authtok cleared"}
+                       : AttemptResult{su::control::ControlResult::kUnavailable,
+                                       "failed to clear authtok"};
     }
 
     AttemptResult enroll_profile(
@@ -484,6 +533,20 @@ public:
         }
         if (!*deleted) {
             return {su::control::ControlResult::kRejected, "profile not found"};
+        }
+        const auto remaining = master_key_->with_context(paths->uid, [&](const auto& context) {
+            return su::app::list_encrypted_face_profile_summaries(context,
+                                                                  paths->profiles.string());
+        });
+        if (!remaining)
+            return {su::control::ControlResult::kUnavailable,
+                    "failed to inspect remaining profiles"};
+        if (remaining->empty()) {
+            const auto cleared =
+                su::app::clear_authtok((paths->profiles.parent_path() / "authtok.s2u").string());
+            if (!cleared)
+                return {su::control::ControlResult::kUnavailable,
+                        "failed to clear purged profile authtok"};
         }
         if (!capture_key_) return {su::control::ControlResult::kUnavailable, "capture key unavailable"};
         const auto cleared = capture_key_->with_context(paths->uid, [&](const auto& context) {
@@ -637,7 +700,6 @@ public:
     }
 
     void prune_captures() const {
-        if (!capture_key_) return;
         std::error_code error;
         for (const auto& entry : std::filesystem::directory_iterator("/var/lib/smile2unlock/users", error)) {
             if (!entry.is_directory(error) || entry.is_symlink(error)) continue;
@@ -645,6 +707,16 @@ public:
             auto uid = std::uint32_t{};
             const auto parsed = std::from_chars(name.data(), name.data() + name.size(), uid);
             if (parsed.ec != std::errc{} || parsed.ptr != name.data() + name.size()) continue;
+            // NSS failure is not evidence of deletion. Clear only when NSS
+            // definitively reports that this UID no longer exists.
+            auto buffer = std::vector<char>(64 * 1024);
+            auto account = passwd{};
+            passwd* found = nullptr;
+            if (::getpwuid_r(uid, &account, buffer.data(), buffer.size(), &found) == 0 && !found) {
+                (void)su::app::clear_authtok((entry.path() / "authtok.s2u").string());
+            }
+            if (!capture_key_)
+                continue;
             (void)capture_key_->with_context(uid, [&](const auto& context) {
                 return su::app::capture_command(context, (entry.path() / "captures").string(), R"({"op":"prune"})");
             });
@@ -653,8 +725,10 @@ public:
 
     bool handle_captures(const su::control::Connection& connection,
         const su::control::PeerCredentials& peer, std::string_view payload) const {
-        const auto request = nlohmann::json::parse(payload, nullptr, false);
-        if (!request.is_object() || request.value("msg_type", nlohmann::json{}) != "captures") return false;
+        const auto request = su::security::SecretJson::parse(payload, nullptr, false);
+        if (!request.is_object() ||
+            request.value("msg_type", su::security::SecretJson{}) != "captures")
+            return false;
         auto result = AttemptResult{su::control::ControlResult::kRejected, "invalid capture request"};
         auto id = std::uint64_t{};
         try {
@@ -688,13 +762,15 @@ public:
             logger().warn("request_receive_failed");
             return;
         }
+        const auto wipe_frame = su::security::ScopedWipe{*payload};
         if (handle_captures(connection, *peer, *payload)) return;
         auto request = su::app::parse_control_request(*payload);
-        std::ranges::fill(*payload, '\0');
+        su::security::wipe_bytes(payload->data(), payload->size());
         if (!request) {
             logger().warn("request_invalid");
             return;
         }
+        const auto wipe_authtok = su::security::ScopedWipe{request->authtok};
 
         if (const auto reason = peer_authorization_error(peer->uid, *request)) {
             logger().warn("peer_rejected", {field("peer_uid", peer->uid),
@@ -727,9 +803,11 @@ public:
         request_logger.info("request_started");
 
         auto response = AttemptResult{};
+        const auto wipe_response_payload = su::security::ScopedWipe{response.payload_json};
         switch (request->type) {
         case su::app::ControlMessageType::kAuthenticate:
-            response = authenticate(request->request_id, request->username);
+            response = authenticate(request->request_id, request->username, peer->uid,
+                                    request->want_authtok);
             break;
         case su::app::ControlMessageType::kStatus: {
             const auto reason = availability_reason();
@@ -753,6 +831,15 @@ public:
                     su::control::ControlResult::kUnavailable,
                     "encrypted storage key unavailable",
                     nlohmann::json{{"protection", "unavailable"}}.dump()};
+            {
+                auto status = nlohmann::json::parse(response.payload_json);
+                const auto enrolled = su::app::authtok_enrolled(
+                    (std::filesystem::path{"/var/lib/smile2unlock/users"} /
+                     std::to_string(peer->uid) / "authtok.s2u")
+                        .string());
+                status["authtok_enrolled"] = enrolled && *enrolled;
+                response.payload_json = status.dump();
+            }
             break;
         case su::app::ControlMessageType::kListProfiles:
             response = list_profiles(request->username);
@@ -775,6 +862,12 @@ public:
             response = issue_management_capability(
                 request->target_uid, request->target_pid, request->management_operation);
             break;
+        case su::app::ControlMessageType::kSetAuthtok:
+            response = set_authtok(request->username, request->authtok);
+            break;
+        case su::app::ControlMessageType::kClearAuthtok:
+            response = clear_authtok(request->username);
+            break;
         }
 
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -788,10 +881,12 @@ public:
             response.reason,
             response.payload_json,
             response.authentication_reason);
+        const auto wipe_response_frame = su::security::ScopedWipe{response_frame};
         const auto sent = connection.send_frame(response_frame);
-        std::ranges::fill(response_frame, '\0');
-        std::ranges::fill(response.payload_json, '\0');
+        su::security::wipe_bytes(response_frame.data(), response_frame.size());
+        su::security::wipe_bytes(response.payload_json.data(), response.payload_json.size());
         response.payload_json.clear();
+        std::ranges::fill(*payload, '\0');
         if (!sent) {
             logger().warn("response_send_failed", {field("request_id", request->request_id)});
         }

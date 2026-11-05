@@ -23,6 +23,99 @@ use crate::protocol::{ControlRequest, parse_control_request};
 static TEMP_PATH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn authtok_protocol_is_opt_in_and_requires_management_capability() {
+    assert!(parse_control_request(br#"{"version":2,"msg_type":"authenticate","request_id":1,"username":"alice","future_auth_option":true}"#).is_ok());
+    assert!(parse_control_request(br#"{"version":2,"msg_type":"clear_authtok","request_id":1,"username":"alice","management_token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","unexpected":true}"#).is_err());
+    let request = parse_control_request(br#"{"version":2,"msg_type":"authenticate","request_id":1,"username":"alice","want_authtok":true}"#).unwrap();
+    assert!(matches!(
+        request,
+        ControlRequest::Authenticate {
+            want_authtok: true,
+            ..
+        }
+    ));
+    for operation in ["set_authtok", "clear_authtok"] {
+        let mut value =
+            serde_json::json!({"version":2,"msg_type":operation,"request_id":2,"username":"alice"});
+        if operation == "set_authtok" {
+            value["authtok"] = "  wallet 密码  ".into();
+        }
+        assert!(parse_control_request(value.to_string().as_bytes()).is_err());
+        value["management_token"] = "a".repeat(64).into();
+        let parsed = parse_control_request(value.to_string().as_bytes()).unwrap();
+        if let ControlRequest::SetAuthtok { authtok, .. } = &parsed {
+            assert_eq!(authtok.as_str(), "  wallet 密码  ");
+        }
+    }
+    assert!(parse_control_request(br#"{"version":2,"msg_type":"authenticate","request_id":1,"username":"alice","want_authtok":"true"}"#).is_err());
+}
+
+#[test]
+fn authtok_envelope_round_trip_clear_and_uid_isolation() {
+    let path = std::env::temp_dir()
+        .join(format!(
+            "s2u-authtok-{}-{}",
+            std::process::id(),
+            TEMP_PATH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+        .join("authtok.s2u");
+    let key = [0x42; 32];
+    let context = EncryptedProfileContext {
+        master_key: &key,
+        key_version: 1,
+        account: AccountId::LinuxUid(1000),
+    };
+    let foreign = EncryptedProfileContext {
+        master_key: &key,
+        key_version: 1,
+        account: AccountId::LinuxUid(1001),
+    };
+    assert!(!crate::authtok::is_enrolled(&path).unwrap());
+    // Worst-case JSON escaping must still be loadable at the 1024-byte limit.
+    let secret = "\u{0001}".repeat(1024);
+    crate::authtok::store(&path, &context, &secret).unwrap();
+    assert!(crate::authtok::is_enrolled(&path).unwrap());
+    assert_eq!(
+        crate::authtok::load(&path, &context).unwrap().as_slice(),
+        secret.as_bytes()
+    );
+    assert!(crate::authtok::load(&path, &foreign).is_err());
+    let ciphertext = fs::read(&path).unwrap();
+    assert!(
+        !ciphertext
+            .windows(secret.len())
+            .any(|window| window == secret.as_bytes())
+    );
+    assert!(crate::authtok::clear(&path).unwrap());
+    assert!(!crate::authtok::clear(&path).unwrap());
+    assert!(crate::authtok::load(&path, &context).is_err());
+    fs::remove_dir(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn authtok_rejects_empty_nul_oversize_and_tampering() {
+    let path = std::env::temp_dir()
+        .join(format!("s2u-authtok-invalid-{}", std::process::id()))
+        .join("authtok.s2u");
+    let key = [0x42; 32];
+    let context = EncryptedProfileContext {
+        master_key: &key,
+        key_version: 1,
+        account: AccountId::LinuxUid(1000),
+    };
+    for secret in [String::new(), "has\0nul".into(), "x".repeat(1025)] {
+        assert!(crate::authtok::store(&path, &context, &secret).is_err());
+    }
+    crate::authtok::store(&path, &context, "wallet-token").unwrap();
+    let mut envelope = fs::read(&path).unwrap();
+    *envelope.last_mut().unwrap() ^= 1;
+    fs::write(&path, envelope).unwrap();
+    assert!(crate::authtok::load(&path, &context).is_err());
+    assert!(crate::authtok::clear(&path).unwrap());
+    fs::remove_dir(path.parent().unwrap()).unwrap();
+}
+
+#[test]
 fn control_protocol_parses_versioned_requests() {
     let auth = parse_control_request(
         br#"{"version":2,"msg_type":"authenticate","request_id":42,"username":" alice "}"#,
@@ -33,6 +126,7 @@ fn control_protocol_parses_versioned_requests() {
         ControlRequest::Authenticate {
             request_id: 42,
             username: "alice".to_owned(),
+            want_authtok: false,
         }
     );
 

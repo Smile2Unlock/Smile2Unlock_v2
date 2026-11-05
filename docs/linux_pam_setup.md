@@ -151,8 +151,12 @@ applications (including KDE's Polkit agent). It authenticates the administrator
 identity chosen by the existing policy, which needs its own enrolled face
 profile. sudo likewise authenticates its configured PAM user; `rootpw`,
 `targetpw` and `runaspw` can select a different account. This integration does
-not decrypt KWallet/GNOME Keyring, SSH private keys or application-specific
-secrets, since those require the actual password or a separate mechanism.
+not unlock SSH private keys or arbitrary application secrets. For login
+services, the optional [wallet authtok feature](linux_desktop_pam_integration_plan.md#sealed-per-user-wallet-token)
+can supply an enrolled GNOME Keyring/KWallet password after accepted face
+authentication. It is off by default, requires host+TPM2 storage, and is refused
+for administrator authorization and lock-only targets. GUI enrollment and stale
+token detection follow in P3, a separate PR.
 
 After applying an entry, test without sudo's cached credentials:
 
