@@ -9,11 +9,14 @@ cadence/size group, the format order is MJPEG, YUY2, then NV12; MJPEG reduces
 USB bandwidth. The next advertised mode is tried if a driver rejects one.
 
 If no supported native candidate can be set, the source reader is recreated
-with `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING = TRUE`. It requests YUY2 at
-1280×720, 640×480, then 320×240, letting Media Foundation convert other source
-formats. Neither this path nor incomplete-descriptor fallback requests an
-arbitrary driver-default resolution. Video processing support still depends
-on the installed driver and MF transforms.
+with `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = TRUE` (Windows 8+).
+It requests YUY2 at 1280×720, 640×480, then 320×240, letting Media Foundation
+convert other YUV source formats and resize. The basic video-processing
+attribute only supports YUV-to-RGB32 conversion and deinterlacing, so it is
+not set alongside the advanced attribute. Neither this path nor
+incomplete-descriptor fallback requests an arbitrary driver-default
+resolution. Conversion support still depends on the installed driver and
+MF transforms.
 
 NV12 is top-down: the Y and interleaved UV planes share a row stride, with UV
 starting at `stride * height`. A contiguous locked buffer preserves
@@ -52,14 +55,22 @@ and the existing 0.8 average reality gate. No detection threshold was lowered.
    system recognition agent logs under `%ProgramData%\Smile2Unlock\Logs`).
    Each open logs `camera.native_type` once per advertised native type with
    `index`, `subtype` fourcc, numeric `subtype_data1`, `width`, `height`, and
-   `fps_numerator`/`fps_denominator`. `camera.native_types` ends the list with
-   `count` and `supported`. No device names, symbolic links, image data, or
+   `fps_numerator`/`fps_denominator`, plus `usable=0/1` for whether the type
+   is a supported, valid candidate. Missing frame rates remain zero; skipped
+   native types do not emit open-failure warnings. `camera.native_types` ends
+   the list with `count`, `supported`, and a hexadecimal `hresult` (zero for
+   complete enumeration). No device names, symbolic links, image data, or
    account information are included in these events.
-   Failed steps emit `camera.open_failed` with `step`, hexadecimal `hresult`,
-   and `permission_or_busy`; rejected attempts may precede a successful open.
-   `camera.open_path path=video_processing` identifies the conversion retry.
+   Steps that abort opening emit `camera.open_failed` with `step`, hexadecimal
+   `hresult`, and `permission_or_busy`. Optional frame-rate attributes and a
+   missing default stride followed by successful stride computation do not
+   emit these warnings. Rejected mode attempts emit debug-level
+   `camera.type_rejected` with `path` and `hresult`; only failure of the last
+   processed candidate emits an open-failure warning. COM/MF initialization
+   failures use `camera.mf_init_failed`, including during device enumeration.
+   `camera.open_path path=advanced_video_processing` identifies the conversion retry.
    A successful `camera.mode` records `format`, size, stride, cadence, and
-   `path=native` or `path=video_processing`. The preview's
+   `path=native` or `path=advanced_video_processing`. The preview's
    `preview.camera_open_failed` includes the distinct `recognizer_error` when
    access is denied or the camera is occupied.
    Every five seconds, debug-level `preview.capture` records `fps`, while
@@ -116,4 +127,5 @@ backend compatibility problem.
 
 References: [SeetaFace input layout](https://github.com/seetafaceengine/SeetaFaceTutorial/blob/master/README.md#211-结构定义),
 [Microsoft capture format selection](https://learn.microsoft.com/en-us/windows/win32/medfound/how-to-set-the-video-capture-format),
+[Microsoft advanced video processing](https://learn.microsoft.com/en-us/windows/win32/medfound/mf-source-reader-enable-advanced-video-processing),
 [Nokhwa Windows backend](https://github.com/l1npengtul/nokhwa/blob/senpai/nokhwa-bindings-windows/src/lib.rs).

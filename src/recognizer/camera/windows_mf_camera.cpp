@@ -74,11 +74,15 @@ bool permission_or_busy(HRESULT hr) {
         ;
 }
 
-void log_open_failure(std::string_view step, HRESULT hr) {
+std::string hresult_hex(HRESULT hr) {
     char hex[11]{};
     std::snprintf(hex, sizeof(hex), "0x%08lX", static_cast<unsigned long>(hr));
-    su::log::process_logger().warn("camera.open_failed", {
-        su::log::field("step", step), su::log::field("hresult", hex),
+    return hex;
+}
+
+void log_camera_failure(std::string_view event, std::string_view step, HRESULT hr) {
+    su::log::process_logger().warn(event, {
+        su::log::field("step", step), su::log::field("hresult", hresult_hex(hr)),
         su::log::field("permission_or_busy", permission_or_busy(hr) ? 1 : 0)});
 }
 
@@ -116,12 +120,12 @@ std::string wide_to_utf8(const wchar_t* wide) {
 bool initialize_mf() {
     const auto com = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(com)) {
-        log_open_failure("co_initialize", com);
+        log_camera_failure("camera.mf_init_failed", "co_initialize", com);
         return false;
     }
     const auto startup = ::MFStartup(MF_VERSION, MFSTARTUP_FULL);
     if (FAILED(startup)) {
-        log_open_failure("mf_startup", startup);
+        log_camera_failure("camera.mf_init_failed", "mf_startup", startup);
         ::CoUninitialize();
         return false;
     }
@@ -447,13 +451,13 @@ private:
         }
     }
 
-    // These checks keep each COM failure attributable without logging device
-    // identifiers, images, or account information.
+    // Use only for terminal failures: optional attributes and rejected modes
+    // must not label an otherwise successful open as failed.
     bool open_step(std::string_view step, HRESULT hr) {
         if (SUCCEEDED(hr)) {
             return true;
         }
-        log_open_failure(step, hr);
+        log_camera_failure("camera.open_failed", step, hr);
         permission_or_busy_ = permission_or_busy_ || permission_or_busy(hr);
         return false;
     }
@@ -463,6 +467,17 @@ private:
         finish_open(false);
     }
 
+    bool try_media_type(IMFMediaType* type, std::string_view path, HRESULT& hr) {
+        hr = reader_->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type);
+        if (SUCCEEDED(hr)) {
+            return true;
+        }
+        permission_or_busy_ = permission_or_busy_ || permission_or_busy(hr);
+        su::log::process_logger().debug("camera.type_rejected", {
+            su::log::field("path", path), su::log::field("hresult", hresult_hex(hr))});
+        return false;
+    }
+
     bool create_reader(bool video_processing) {
         reader_.Reset();
         ComPtr<IMFAttributes> attributes;
@@ -470,11 +485,14 @@ private:
             && open_step("set_async_callback", attributes->SetUnknown(
                 MF_SOURCE_READER_ASYNC_CALLBACK, callback_.Get()))
             // Releasing the native reader must not shut down the source
-            // before the video-processing retry. close_worker owns shutdown.
+            // before the advanced-processing retry. close_worker owns shutdown.
             && open_step("set_source_lifetime", attributes->SetUINT32(
                 MF_SOURCE_READER_DISCONNECT_MEDIASOURCE_ON_SHUTDOWN, TRUE))
-            && open_step("set_video_processing", attributes->SetUINT32(
-                MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, video_processing ? TRUE : FALSE))
+            // The basic processing attribute only supports YUV->RGB32 and
+            // deinterlacing. Advanced processing (Win8+) also handles YUV->YUV
+            // conversion and resizing. Never set both attributes.
+            && open_step("set_advanced_video_processing", attributes->SetUINT32(
+                MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, video_processing ? TRUE : FALSE))
             && open_step("create_source_reader", ::MFCreateSourceReaderFromMediaSource(
                 source_.Get(), attributes.Get(), &reader_))
             && open_step("deselect_streams", reader_->SetStreamSelection(
@@ -491,6 +509,7 @@ private:
     std::vector<Candidate> native_candidates() {
         auto candidates = std::vector<Candidate>{};
         DWORD count = 0;
+        auto enumeration_status = S_OK;
         for (;; ++count) {
             ComPtr<IMFMediaType> type;
             const auto hr = reader_->GetNativeMediaType(
@@ -498,39 +517,41 @@ private:
             if (hr == MF_E_NO_MORE_TYPES) {
                 break;
             }
-            if (!open_step("get_native_media_type", hr)) {
+            if (FAILED(hr)) {
+                // Keep usable types already found and allow the processing
+                // fallback. The summary records incomplete enumeration.
+                enumeration_status = hr;
+                permission_or_busy_ = permission_or_busy_ || permission_or_busy(hr);
                 break;
             }
             GUID subtype{};
             UINT64 size = 0;
             UINT64 rate = 0;
-            const auto subtype_ok = open_step("native_subtype", type->GetGUID(MF_MT_SUBTYPE, &subtype));
-            const auto size_ok = open_step("native_size", type->GetUINT64(MF_MT_FRAME_SIZE, &size));
-            (void)open_step("native_frame_rate", type->GetUINT64(MF_MT_FRAME_RATE, &rate));
-            su::log::process_logger().info("camera.native_type", {
-                su::log::field("index", count), su::log::field("subtype", subtype_fourcc(subtype)),
-                su::log::field("subtype_data1", subtype.Data1),
-                su::log::field("width", static_cast<unsigned>(size >> 32)),
-                su::log::field("height", static_cast<unsigned>(size)),
-                su::log::field("fps_numerator", static_cast<unsigned>(rate >> 32)),
-                su::log::field("fps_denominator", static_cast<unsigned>(rate))});
-            if (!subtype_ok || !size_ok || !is_supported_subtype(subtype)) {
-                continue;
-            }
+            const auto subtype_ok = SUCCEEDED(type->GetGUID(MF_MT_SUBTYPE, &subtype));
+            const auto size_ok = SUCCEEDED(type->GetUINT64(MF_MT_FRAME_SIZE, &size));
+            (void)type->GetUINT64(MF_MT_FRAME_RATE, &rate);
             const auto format = subtype == MFVideoFormat_MJPG ? detail::CaptureFormat::mjpeg
                 : subtype == MFVideoFormat_YUY2 ? detail::CaptureFormat::yuy2
                 : detail::CaptureFormat::nv12;
             const auto mode = detail::CaptureMode{
                 static_cast<std::uint32_t>(size >> 32), static_cast<std::uint32_t>(size),
                 static_cast<std::uint32_t>(rate >> 32), static_cast<std::uint32_t>(rate), format};
-            if (mode.valid()) {
+            const auto usable = subtype_ok && size_ok && is_supported_subtype(subtype) && mode.valid();
+            su::log::process_logger().info("camera.native_type", {
+                su::log::field("index", count), su::log::field("subtype", subtype_fourcc(subtype)),
+                su::log::field("subtype_data1", subtype.Data1),
+                su::log::field("width", static_cast<unsigned>(size >> 32)),
+                su::log::field("height", static_cast<unsigned>(size)),
+                su::log::field("fps_numerator", static_cast<unsigned>(rate >> 32)),
+                su::log::field("fps_denominator", static_cast<unsigned>(rate)),
+                su::log::field("usable", usable ? 1 : 0)});
+            if (usable) {
                 candidates.push_back({mode, std::move(type)});
-            } else {
-                (void)open_step("invalid_native_size", MF_E_INVALIDMEDIATYPE);
             }
         }
         su::log::process_logger().info("camera.native_types", {
-            su::log::field("count", count), su::log::field("supported", candidates.size())});
+            su::log::field("count", count), su::log::field("supported", candidates.size()),
+            su::log::field("hresult", hresult_hex(enumeration_status))});
         std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
             return detail::capture_mode_rank(a.mode) < detail::capture_mode_rank(b.mode);
         });
@@ -538,9 +559,9 @@ private:
     }
 
     bool set_native_type() {
+        HRESULT hr = S_OK;
         for (const auto& candidate : native_candidates()) {
-            if (open_step("set_native_media_type", reader_->SetCurrentMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, candidate.type.Get()))) {
+            if (try_media_type(candidate.type.Get(), "native", hr)) {
                 return true;
             }
         }
@@ -549,21 +570,24 @@ private:
 
     bool set_processed_type() {
         // Some drivers expose only formats libyuv cannot decode, or incomplete
-        // native descriptors. Let MF convert to YUY2, always requesting <=720p.
+        // native descriptors. Advanced MF processing converts to YUY2 and
+        // resizes the output, always requesting <=720p.
+        HRESULT hr = MF_E_INVALIDMEDIATYPE;
         for (const auto& size : {std::pair{1280U, 720U}, std::pair{640U, 480U},
                                 std::pair{320U, 240U}}) {
             ComPtr<IMFMediaType> requested;
-            if (open_step("create_processed_type", ::MFCreateMediaType(&requested))
-                && open_step("processed_major_type", requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
-                && open_step("processed_subtype", requested->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2))
-                && open_step("processed_size", requested->SetUINT64(MF_MT_FRAME_SIZE,
-                    (static_cast<UINT64>(size.first) << 32) | size.second))
-                && open_step("set_processed_media_type", reader_->SetCurrentMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, requested.Get()))) {
+            if (!open_step("create_processed_type", ::MFCreateMediaType(&requested))
+                || !open_step("processed_major_type", requested->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video))
+                || !open_step("processed_subtype", requested->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2))
+                || !open_step("processed_size", requested->SetUINT64(MF_MT_FRAME_SIZE,
+                    (static_cast<UINT64>(size.first) << 32) | size.second))) {
+                return false;
+            }
+            if (try_media_type(requested.Get(), "advanced_video_processing", hr)) {
                 return true;
             }
         }
-        return false;
+        return open_step("set_processed_media_type", hr);
     }
 
     bool read_negotiated_type(bool video_processing) {
@@ -597,7 +621,6 @@ private:
         if (SUCCEEDED(stride_hr)) {
             stride = static_cast<INT32>(raw_stride);
         } else if (subtype != MFVideoFormat_MJPG) {
-            (void)open_step("get_default_stride", stride_hr);
             if (!open_step("default_bitmap_stride", ::MFGetStrideForBitmapInfoHeader(
                     subtype.Data1, width, &stride))) {
                 return false;
@@ -616,12 +639,12 @@ private:
             return open_step("invalid_negotiated_stride", MF_E_INVALIDMEDIATYPE);
         }
         UINT64 rate = 0;
-        (void)open_step("negotiated_frame_rate", type->GetUINT64(MF_MT_FRAME_RATE, &rate));
+        (void)type->GetUINT64(MF_MT_FRAME_RATE, &rate);
         su::log::process_logger().info("camera.mode", {
             su::log::field("format", subtype_fourcc(subtype)),
             su::log::field("width", width_), su::log::field("height", height_),
             su::log::field("stride", stride_),
-            su::log::field("path", video_processing ? "video_processing" : "native"),
+            su::log::field("path", video_processing ? "advanced_video_processing" : "native"),
             su::log::field("fps_numerator", static_cast<unsigned>(rate >> 32)),
             su::log::field("fps_denominator", static_cast<unsigned>(rate))});
         return true;
@@ -654,7 +677,7 @@ private:
         if (!set_native_type()) {
             video_processing = true;
             su::log::process_logger().info("camera.open_path", {
-                su::log::field("path", "video_processing"),
+                su::log::field("path", "advanced_video_processing"),
                 su::log::field("reason", "no_usable_native_type")});
             if (!create_reader(true) || !set_processed_type()) {
                 fail_open();

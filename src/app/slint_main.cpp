@@ -1394,11 +1394,10 @@ int main(int argc, char** argv) try {
         if (!started) {
             (*window)->set_preview_status_text(slint::SharedString(
                 translated(*catalog, *window, "preview.start_failed")));
-            (*window)->set_preview_error_text(slint::SharedString(
-                translated(*catalog, *window,
-                    started.error() == su::recognizer::RecognizerError::kCameraPermissionOrBusy
-                        ? "preview.camera_permission_or_busy"
-                        : "preview.start_failed")));
+            if (started.error() == su::recognizer::RecognizerError::kCameraPermissionOrBusy) {
+                (*window)->set_preview_error_text(slint::SharedString(
+                    translated(*catalog, *window, "preview.camera_permission_or_busy")));
+            }
         }
     });
 
