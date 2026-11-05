@@ -79,20 +79,28 @@ int main() {
     }
     const auto result = su::control::parse_response(*response);
     server.join();
-    return result && result->request_id == 7
-            && result->result == su::control::ControlResult::kAccepted
-            && result->reason == "smoke test"
-            && result->payload_json == R"({"protection":"host-key"})"
-            && su::control::make_enroll_profile_request(
-                8, "test-user", "Front", "embedding:1,0", std::string(64, 'a'))
-                .contains(R"("msg_type":"enroll_profile")")
-            && su::control::make_issue_management_capability_request(
-                10, 1000, static_cast<std::uint32_t>(::getpid()), "enroll_profile")
-                .contains(R"("msg_type":"issue_management_capability")")
-            && su::control::make_verify_profile_request(
-                9, "test-user", "embedding:1,0", false)
-                .contains(R"("liveness_ok":false)")
-            && server_ok.load(std::memory_order_acquire)
-        ? 0
-        : 1;
+    return result && result->request_id == 7 &&
+                   result->result == su::control::ControlResult::kAccepted &&
+                   result->reason == "smoke test" &&
+                   result->payload_json == R"({"protection":"host-key"})" &&
+                   su::control::make_enroll_profile_request(8, "test-user", "Front",
+                                                            "embedding:1,0", std::string(64, 'a'))
+                       .contains(R"("msg_type":"enroll_profile")") &&
+                   su::control::make_issue_management_capability_request(
+                       10, 1000, static_cast<std::uint32_t>(::getpid()), "enroll_profile")
+                       .contains(R"("msg_type":"issue_management_capability")") &&
+                   su::control::make_verify_profile_request(9, "test-user", "embedding:1,0", false)
+                       .contains(R"("liveness_ok":false)") &&
+                   server_ok.load(std::memory_order_acquire) &&
+                   !su::control::make_authenticate_request(11, "test-user")
+                        .contains("want_authtok") &&
+                   su::control::make_authenticate_request(12, "test-user", true)
+                       .contains(R"("want_authtok":true)") &&
+                   su::control::make_set_authtok_request(13, "test-user", "fixture",
+                                                         std::string(64, 'a'))
+                       .contains(R"("msg_type":"set_authtok")") &&
+                   su::control::make_clear_authtok_request(14, "test-user", std::string(64, 'a'))
+                       .contains(R"("msg_type":"clear_authtok")")
+               ? 0
+               : 1;
 }

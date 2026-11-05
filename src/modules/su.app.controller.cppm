@@ -47,6 +47,7 @@ struct DeploymentTargetStatus {
     bool managed = false;
     bool wallet_available = false;
     bool wallet_enabled = false;
+    std::string authtok_source = "none";
 };
 
 struct SystemStatus {

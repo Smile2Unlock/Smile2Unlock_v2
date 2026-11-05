@@ -6,6 +6,7 @@
 //! the FFI layer and the internal modules share a single source of truth.
 
 mod auth;
+mod authtok;
 mod capture;
 mod capture_policy;
 mod config;

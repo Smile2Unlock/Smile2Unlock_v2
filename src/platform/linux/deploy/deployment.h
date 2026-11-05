@@ -37,6 +37,8 @@ enum class TargetState {
     kUnsupported,
 };
 
+enum class AuthtokSource { kNone, kKernelKeyring, kSealed };
+
 struct TargetStatus {
     TargetKind kind;
     TargetRole role;
@@ -46,6 +48,7 @@ struct TargetStatus {
     bool password_fallback = false;
     bool wallet_modules = false;
     bool wallet_token_enabled = false;
+    AuthtokSource authtok_source = AuthtokSource::kNone;
     std::string detail;
 };
 
@@ -68,7 +71,7 @@ struct PamPlan {
     std::string child_source_fingerprint;
     bool destination_existed = false;
     bool child_existed = false;
-    bool wallet_token_requested = false;
+    AuthtokSource authtok_source = AuthtokSource::kNone;
     bool already_managed = false;
 };
 
@@ -80,10 +83,16 @@ struct PamPlan {
 
 [[nodiscard]] std::expected<DeploymentSnapshot, std::string> inspect_deployment(
     const std::filesystem::path& root = "/");
-[[nodiscard]] std::expected<PamPlan, std::string> plan_pam_integration(
-    const std::filesystem::path& root,
-    TargetKind target,
-    bool wallet_token);
+[[nodiscard]] std::expected<PamPlan, std::string>
+plan_pam_integration(const std::filesystem::path& root, TargetKind target,
+                     AuthtokSource authtok_source);
+[[nodiscard]] inline std::expected<PamPlan, std::string>
+plan_pam_integration(const std::filesystem::path& root, TargetKind target, bool wallet_token) {
+    return plan_pam_integration(
+        root, target, wallet_token ? AuthtokSource::kKernelKeyring : AuthtokSource::kNone);
+}
+[[nodiscard]] std::string_view authtok_source_id(AuthtokSource source);
+[[nodiscard]] std::optional<AuthtokSource> authtok_source_from_id(std::string_view id);
 [[nodiscard]] std::expected<void, std::string> apply_pam_plan(
     const std::filesystem::path& root,
     const PamPlan& plan);

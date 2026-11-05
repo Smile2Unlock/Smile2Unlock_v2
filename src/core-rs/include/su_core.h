@@ -62,6 +62,8 @@ typedef enum SuControlMessageType {
     SuControlMessageType_MigrateProfiles = 8,
     SuControlMessageType_VerifyProfile = 9,
     SuControlMessageType_IssueManagementCapability = 10,
+    SuControlMessageType_SetAuthtok = 11,
+    SuControlMessageType_ClearAuthtok = 12,
 } SuControlMessageType;
 
 typedef struct SuControlRequest {
@@ -76,7 +78,9 @@ typedef struct SuControlRequest {
     uint8_t face_sample_source[SuControlSampleSourceCap];
     uint8_t management_operation[32];
     uint8_t management_token[65];
+    uint8_t authtok[1025];
     bool liveness_ok;
+    bool want_authtok;
 } SuControlRequest;
 
 typedef struct SuAuthDecision {
@@ -130,6 +134,12 @@ SuStatus su_core_parse_control_request(
     const uint8_t* input,
     uintptr_t input_len,
     SuControlRequest* out_request);
+SuStatus su_core_store_authtok(const SuEncryptedStoreContext* context, const char* store_path,
+                               const char* secret);
+SuStatus su_core_load_authtok(const SuEncryptedStoreContext* context, const char* store_path,
+                              uint8_t* output, uintptr_t capacity, uintptr_t* written);
+SuStatus su_core_clear_authtok(const char* store_path, bool* out_cleared);
+SuStatus su_core_authtok_enrolled(const char* store_path, bool* out_enrolled);
 SuAuthDecision su_core_evaluate_auth(
     const char* username,
     float similarity,

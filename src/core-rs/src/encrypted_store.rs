@@ -41,6 +41,7 @@ pub(crate) enum DataKind {
     Profile = 1,
     WindowsPassword = 2,
     Capture = 3,
+    Authtok = 4,
 }
 
 impl TryFrom<u8> for DataKind {
@@ -51,6 +52,7 @@ impl TryFrom<u8> for DataKind {
             1 => Ok(Self::Profile),
             2 => Ok(Self::WindowsPassword),
             3 => Ok(Self::Capture),
+            4 => Ok(Self::Authtok),
             _ => Err(EnvelopeError::UnsupportedDataKind),
         }
     }

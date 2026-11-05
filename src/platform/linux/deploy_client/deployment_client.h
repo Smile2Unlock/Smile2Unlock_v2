@@ -19,6 +19,8 @@ public:
     [[nodiscard]] std::expected<std::string, std::string> configure_target(
         std::string_view target,
         bool wallet_token) const;
+    [[nodiscard]] std::expected<std::string, std::string>
+    configure_target_source(std::string_view target, std::string_view authtok_source) const;
     [[nodiscard]] std::expected<std::string, std::string> rollback_target(
         std::string_view target) const;
 };

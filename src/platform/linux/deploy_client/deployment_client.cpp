@@ -10,6 +10,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -203,26 +204,24 @@ std::expected<std::string, std::string> call_target_method(
     return output;
 }
 
-std::expected<std::string, std::string> configure_pam_target(
-    std::string_view target,
-    bool wallet_token) {
+std::expected<std::string, std::string>
+configure_pam_target(std::string_view target, std::string_view authtok_source,
+                     std::optional<bool> legacy_wallet_token = std::nullopt) {
     sd_bus* bus = nullptr;
     sd_bus_error error = SD_BUS_ERROR_NULL;
     sd_bus_message* reply = nullptr;
     if (::sd_bus_open_system(&bus) < 0) {
         return std::unexpected("deployment helper system bus is unavailable");
     }
-    auto result = ::sd_bus_call_method(
-        bus,
-        kBusName.data(),
-        kObjectPath.data(),
-        kInterface.data(),
-        "PlanDesktopIntegration",
-        &error,
-        &reply,
-        "sb",
-        std::string(target).c_str(),
-        wallet_token ? 1 : 0);
+    auto result =
+        legacy_wallet_token
+            ? ::sd_bus_call_method(bus, kBusName.data(), kObjectPath.data(), kInterface.data(),
+                                   "PlanDesktopIntegration", &error, &reply, "sb",
+                                   std::string(target).c_str(), *legacy_wallet_token ? 1 : 0)
+            : ::sd_bus_call_method(bus, kBusName.data(), kObjectPath.data(), kInterface.data(),
+                                   "PlanDesktopIntegrationSource", &error, &reply, "ss",
+                                   std::string(target).c_str(),
+                                   std::string(authtok_source).c_str());
     if (result < 0) {
         const auto message = bus_error(error, "failed to plan desktop integration");
         ::sd_bus_message_unref(reply);
@@ -447,8 +446,20 @@ std::expected<std::string, std::string> DeploymentClient::authorize_profile_mana
 std::expected<std::string, std::string> DeploymentClient::configure_target(
     std::string_view target,
     bool wallet_token) const {
-    return target == "dms" ? configure_dms(true)
-                           : configure_pam_target(target, wallet_token);
+    if (target == "dms" && wallet_token)
+        return std::unexpected("wallet authtok is supported only for login targets");
+    return target == "dms" ? configure_dms(true) : configure_pam_target(target, {}, wallet_token);
+}
+
+std::expected<std::string, std::string>
+DeploymentClient::configure_target_source(std::string_view target,
+                                          std::string_view authtok_source) const {
+    if (authtok_source != "none" && authtok_source != "kernel_keyring" &&
+        authtok_source != "sealed")
+        return std::unexpected("unsupported authtok source");
+    if (target == "dms" && authtok_source != "none")
+        return std::unexpected("wallet authtok is supported only for login targets");
+    return target == "dms" ? configure_dms(true) : configure_pam_target(target, authtok_source);
 }
 
 std::expected<std::string, std::string> DeploymentClient::rollback_target(

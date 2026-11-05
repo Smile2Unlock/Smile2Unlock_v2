@@ -1,6 +1,7 @@
 use std::slice;
 
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 use crate::SuStatus;
 use crate::profile::copy_str_to_fixed;
@@ -12,6 +13,7 @@ pub const CONTROL_PROFILE_LABEL_CAP: usize = 128;
 pub const CONTROL_SAMPLE_SOURCE_CAP: usize = 48 * 1024;
 pub const CONTROL_MANAGEMENT_OPERATION_CAP: usize = 32;
 pub const CONTROL_MANAGEMENT_TOKEN_CAP: usize = 65;
+pub const CONTROL_AUTHTOK_CAP: usize = 1025;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +28,8 @@ pub enum SuControlMessageType {
     MigrateProfiles = 8,
     VerifyProfile = 9,
     IssueManagementCapability = 10,
+    SetAuthtok = 11,
+    ClearAuthtok = 12,
 }
 
 #[repr(C)]
@@ -42,7 +46,9 @@ pub struct SuControlRequest {
     pub face_sample_source: [u8; CONTROL_SAMPLE_SOURCE_CAP],
     pub management_operation: [u8; CONTROL_MANAGEMENT_OPERATION_CAP],
     pub management_token: [u8; CONTROL_MANAGEMENT_TOKEN_CAP],
+    pub authtok: [u8; CONTROL_AUTHTOK_CAP],
     pub liveness_ok: bool,
+    pub want_authtok: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +56,7 @@ pub enum ControlRequest {
     Authenticate {
         request_id: u64,
         username: String,
+        want_authtok: bool,
     },
     Status {
         request_id: u64,
@@ -94,17 +101,23 @@ pub enum ControlRequest {
         target_uid: u32,
         target_pid: u32,
         operation: String,
+    },
+    SetAuthtok {
+        request_id: u64,
+        username: String,
+        authtok: Zeroizing<String>,
+        management_token: String,
+    },
+    ClearAuthtok {
+        request_id: u64,
+        username: String,
+        management_token: String,
     },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "msg_type", rename_all = "snake_case", deny_unknown_fields)]
 enum ControlRequestWire {
-    Authenticate {
-        version: u32,
-        request_id: u64,
-        username: String,
-    },
     Status {
         version: u32,
         request_id: u64,
@@ -157,6 +170,19 @@ enum ControlRequestWire {
         target_uid: u32,
         target_pid: u32,
         operation: String,
+    },
+    SetAuthtok {
+        version: u32,
+        request_id: u64,
+        username: String,
+        authtok: Zeroizing<String>,
+        management_token: String,
+    },
+    ClearAuthtok {
+        version: u32,
+        request_id: u64,
+        username: String,
+        management_token: String,
     },
 }
 
@@ -179,7 +205,7 @@ fn valid_sample_source(value: &str) -> bool {
 fn valid_management_operation(value: &str) -> bool {
     matches!(
         value,
-        "enroll_profile" | "delete_profile" | "migrate_profiles"
+        "enroll_profile" | "delete_profile" | "migrate_profiles" | "set_authtok" | "clear_authtok"
     )
 }
 
@@ -189,23 +215,40 @@ fn valid_management_token(value: &str) -> bool {
 }
 
 pub fn parse_control_request(input: &[u8]) -> Result<ControlRequest, SuStatus> {
+    // Authenticate is extensible: optional wallet fields must not affect the
+    // face decision. Keep management requests strict and capability-bound.
+    #[derive(Deserialize)]
+    struct Header {
+        msg_type: String,
+    }
+    #[derive(Deserialize)]
+    struct AuthenticateWire {
+        version: u32,
+        request_id: u64,
+        username: String,
+        #[serde(default)]
+        want_authtok: bool,
+    }
+    let header = serde_json::from_slice::<Header>(input).map_err(|_| SuStatus::ParseError)?;
+    if header.msg_type == "authenticate" {
+        let auth =
+            serde_json::from_slice::<AuthenticateWire>(input).map_err(|_| SuStatus::ParseError)?;
+        if auth.version != CONTROL_PROTOCOL_VERSION
+            || auth.request_id == 0
+            || !valid_username(auth.username.trim())
+        {
+            return Err(SuStatus::ParseError);
+        }
+        return Ok(ControlRequest::Authenticate {
+            request_id: auth.request_id,
+            username: auth.username.trim().to_owned(),
+            want_authtok: auth.want_authtok,
+        });
+    }
     let wire =
         serde_json::from_slice::<ControlRequestWire>(input).map_err(|_| SuStatus::ParseError)?;
 
     match wire {
-        ControlRequestWire::Authenticate {
-            version,
-            request_id,
-            username,
-        } if version == CONTROL_PROTOCOL_VERSION
-            && request_id != 0
-            && valid_username(username.trim()) =>
-        {
-            Ok(ControlRequest::Authenticate {
-                request_id,
-                username: username.trim().to_owned(),
-            })
-        }
         ControlRequestWire::Status {
             version,
             request_id,
@@ -324,7 +367,6 @@ pub fn parse_control_request(input: &[u8]) -> Result<ControlRequest, SuStatus> {
             operation,
         } if version == CONTROL_PROTOCOL_VERSION
             && request_id != 0
-            && target_uid != 0
             && target_pid != 0
             && valid_management_operation(&operation) =>
         {
@@ -333,6 +375,43 @@ pub fn parse_control_request(input: &[u8]) -> Result<ControlRequest, SuStatus> {
                 target_uid,
                 target_pid,
                 operation,
+            })
+        }
+        ControlRequestWire::SetAuthtok {
+            version,
+            request_id,
+            username,
+            authtok,
+            management_token,
+        } if version == CONTROL_PROTOCOL_VERSION
+            && request_id != 0
+            && valid_username(username.trim())
+            && !authtok.is_empty()
+            && authtok.len() <= 1024
+            && !authtok.as_bytes().contains(&0)
+            && valid_management_token(&management_token) =>
+        {
+            Ok(ControlRequest::SetAuthtok {
+                request_id,
+                username: username.trim().to_owned(),
+                authtok,
+                management_token,
+            })
+        }
+        ControlRequestWire::ClearAuthtok {
+            version,
+            request_id,
+            username,
+            management_token,
+        } if version == CONTROL_PROTOCOL_VERSION
+            && request_id != 0
+            && valid_username(username.trim())
+            && valid_management_token(&management_token) =>
+        {
+            Ok(ControlRequest::ClearAuthtok {
+                request_id,
+                username: username.trim().to_owned(),
+                management_token,
             })
         }
         _ => Err(SuStatus::InvalidArgument),
@@ -370,16 +449,20 @@ impl ControlRequest {
                 face_sample_source,
                 management_operation,
                 management_token,
+                authtok: [0; CONTROL_AUTHTOK_CAP],
                 liveness_ok: false,
+                want_authtok: false,
             }
         };
         match self {
             Self::Authenticate {
                 request_id,
                 username: value,
+                want_authtok,
+                ..
             } => {
                 copy_str_to_fixed(value, &mut username);
-                build(
+                let mut request = build(
                     SuControlMessageType::Authenticate,
                     *request_id,
                     0,
@@ -391,7 +474,9 @@ impl ControlRequest {
                     face_sample_source,
                     management_operation,
                     management_token,
-                )
+                );
+                request.want_authtok = *want_authtok;
+                request
             }
             Self::Status { request_id } => build(
                 SuControlMessageType::Status,
@@ -568,6 +653,81 @@ impl ControlRequest {
                     management_token,
                 )
             }
+            Self::SetAuthtok {
+                request_id,
+                username: user,
+                authtok: secret,
+                management_token: token,
+            } => {
+                copy_str_to_fixed(user, &mut username);
+                copy_str_to_fixed(token, &mut management_token);
+                let mut request = build(
+                    SuControlMessageType::SetAuthtok,
+                    *request_id,
+                    0,
+                    0,
+                    0,
+                    username,
+                    profile_id,
+                    label,
+                    face_sample_source,
+                    management_operation,
+                    management_token,
+                );
+                copy_str_to_fixed(secret, &mut request.authtok);
+                request
+            }
+            Self::ClearAuthtok {
+                request_id,
+                username: user,
+                management_token: token,
+            } => {
+                copy_str_to_fixed(user, &mut username);
+                copy_str_to_fixed(token, &mut management_token);
+                build(
+                    SuControlMessageType::ClearAuthtok,
+                    *request_id,
+                    0,
+                    0,
+                    0,
+                    username,
+                    profile_id,
+                    label,
+                    face_sample_source,
+                    management_operation,
+                    management_token,
+                )
+            }
+        }
+    }
+}
+
+impl Drop for ControlRequest {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        if let Self::SetAuthtok {
+            authtok,
+            management_token,
+            ..
+        } = self
+        {
+            authtok.zeroize();
+            management_token.zeroize();
+        }
+        match self {
+            Self::EnrollProfile {
+                management_token, ..
+            }
+            | Self::DeleteProfile {
+                management_token, ..
+            }
+            | Self::MigrateProfiles {
+                management_token, ..
+            }
+            | Self::ClearAuthtok {
+                management_token, ..
+            } => management_token.zeroize(),
+            _ => {}
         }
     }
 }

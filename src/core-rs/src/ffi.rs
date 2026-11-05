@@ -130,6 +130,113 @@ pub extern "C" fn su_core_parse_control_request(
     protocol::parse_control_request_ffi(input, input_len, out_request)
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_store_authtok(
+    context: *const SuEncryptedStoreContext,
+    store_path: *const c_char,
+    secret: *const c_char,
+) -> SuStatus {
+    let context = match encrypted_context_from_ptr(context) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let path = match profile::path_from_ptr(store_path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    if secret.is_null() {
+        return SuStatus::NullArgument;
+    }
+    let secret = match unsafe { CStr::from_ptr(secret) }.to_str() {
+        Ok(value) => zeroize::Zeroizing::new(value.to_owned()),
+        Err(_) => return SuStatus::InvalidUtf8,
+    };
+    crate::authtok::store(&path, &context, &secret)
+        .map(|_| SuStatus::Ok)
+        .unwrap_or_else(|status| status)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_load_authtok(
+    context: *const SuEncryptedStoreContext,
+    store_path: *const c_char,
+    output: *mut u8,
+    capacity: usize,
+    written: *mut usize,
+) -> SuStatus {
+    if output.is_null() || written.is_null() {
+        return SuStatus::NullArgument;
+    }
+    unsafe {
+        written.write(0);
+    }
+    let context = match encrypted_context_from_ptr(context) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let path = match profile::path_from_ptr(store_path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match crate::authtok::load(&path, &context) {
+        Ok(secret) if secret.len() <= capacity => {
+            unsafe {
+                ptr::copy_nonoverlapping(secret.as_ptr(), output, secret.len());
+                written.write(secret.len());
+            }
+            SuStatus::Ok
+        }
+        Ok(_) => SuStatus::BufferTooSmall,
+        Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_clear_authtok(
+    store_path: *const c_char,
+    out_cleared: *mut bool,
+) -> SuStatus {
+    if out_cleared.is_null() {
+        return SuStatus::NullArgument;
+    }
+    let path = match profile::path_from_ptr(store_path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match crate::authtok::clear(&path) {
+        Ok(cleared) => {
+            unsafe {
+                out_cleared.write(cleared);
+            }
+            SuStatus::Ok
+        }
+        Err(status) => status,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn su_core_authtok_enrolled(
+    store_path: *const c_char,
+    out_enrolled: *mut bool,
+) -> SuStatus {
+    if out_enrolled.is_null() {
+        return SuStatus::NullArgument;
+    }
+    let path = match profile::path_from_ptr(store_path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    match crate::authtok::is_enrolled(&path) {
+        Ok(value) => {
+            unsafe {
+                out_enrolled.write(value);
+            }
+            SuStatus::Ok
+        }
+        Err(status) => status,
+    }
+}
+
 pub(crate) fn write_string_to_buffer(
     value: &str,
     out_buffer: *mut u8,

@@ -607,13 +607,14 @@ SystemStatus AppController::load_system_status() {
                 .detail = target.detail,
                 .password_fallback = target.password_fallback,
                 .configured = configured,
-                .configurable = target.state == su::deploy::TargetState::kSupported
-                    && target.kind != su::deploy::TargetKind::kGreetd,
+                .configurable = target.state == su::deploy::TargetState::kSupported &&
+                                target.kind != su::deploy::TargetKind::kGreetd,
                 .managed = target.state == su::deploy::TargetState::kManaged,
                 // Module presence alone cannot prove that the display manager
                 // inherits a usable boot key from root.
                 .wallet_available = false,
                 .wallet_enabled = target.wallet_token_enabled,
+                .authtok_source = std::string(su::deploy::authtok_source_id(target.authtok_source)),
             });
         }
         status.pam_configured = (!has_login_target || status.login_pam_configured)

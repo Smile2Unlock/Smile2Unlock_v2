@@ -5,6 +5,7 @@ module;
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "common/security/sensitive.h"
 
 #if defined(__linux__)
 #include <cstdlib>
@@ -109,9 +110,66 @@ std::expected<MasterKey, KeyProviderError> load_systemd_key_credential();
 std::string_view key_protection_name(KeyProtection protection);
 std::string_view key_provider_error_message(KeyProviderError error);
 
+// The only token release policy. The accepted flag belongs to this same
+// authenticate call, never a cached authorization or a standalone fetch op.
+std::expected<std::string, su::app::CoreError>
+authenticate_authtok(const MasterKey* key, std::uint32_t uid, const std::string& path,
+                     std::uint32_t peer_uid, bool want_authtok, bool accepted);
+std::expected<void, su::app::CoreError> enroll_authtok(const MasterKey* key, std::uint32_t uid,
+                                                       const std::string& path,
+                                                       std::string_view secret);
+
 } // namespace su::auth
 
 namespace su::auth {
+
+std::expected<void, su::app::CoreError> enroll_authtok(const MasterKey* key, std::uint32_t uid,
+                                                       const std::string& path,
+                                                       std::string_view secret) {
+    if (!key || key->protection() != KeyProtection::kTpm2Bound)
+        return std::unexpected(su::app::CoreError::kKeyUnavailable);
+    return key->with_context(
+        uid, [&](const auto& context) { return su::app::store_authtok(context, path, secret); });
+}
+
+std::expected<std::string, su::app::CoreError>
+authenticate_authtok(const MasterKey* key, std::uint32_t uid, const std::string& path,
+                     std::uint32_t peer_uid, bool want_authtok, bool accepted) {
+    if (peer_uid != 0 || !want_authtok || !accepted)
+        return std::string{};
+    if (!key || key->protection() != KeyProtection::kTpm2Bound)
+        return std::unexpected(su::app::CoreError::kKeyUnavailable);
+    auto secret = key->with_context(
+        uid, [&](const auto& context) { return su::app::load_authtok(context, path); });
+    if (!secret)
+        return std::unexpected(secret.error());
+    const auto wipe_secret = su::security::ScopedWipe{*secret};
+    constexpr auto alphabet =
+        std::string_view{"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"};
+    // Base64 needs no JSON escaping. Build in the final payload buffer to
+    // avoid intermediary encoded copies in JSON objects.
+    auto payload = std::string{};
+    payload.reserve(std::max(std::size_t{64}, 16 + (secret->size() + 2) / 3 * 4));
+    payload = "{\"authtok\":\"";
+    for (auto offset = std::size_t{0}; offset < secret->size(); offset += 3) {
+        const auto remaining = secret->size() - offset;
+        const auto value =
+            (static_cast<std::uint32_t>(static_cast<unsigned char>((*secret)[offset])) << 16) |
+            (remaining > 1
+                 ? static_cast<std::uint32_t>(static_cast<unsigned char>((*secret)[offset + 1]))
+                       << 8
+                 : 0) |
+            (remaining > 2
+                 ? static_cast<std::uint32_t>(static_cast<unsigned char>((*secret)[offset + 2]))
+                 : 0);
+        payload.push_back(alphabet[(value >> 18) & 63]);
+        payload.push_back(alphabet[(value >> 12) & 63]);
+        payload.push_back(remaining > 1 ? alphabet[(value >> 6) & 63] : '=');
+        payload.push_back(remaining > 2 ? alphabet[value & 63] : '=');
+    }
+    payload += "\"}";
+    return payload;
+}
 
 namespace {
 

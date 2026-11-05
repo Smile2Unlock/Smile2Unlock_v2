@@ -58,6 +58,8 @@ enum class ControlMessageType {
     kMigrateProfiles,
     kVerifyProfile,
     kIssueManagementCapability,
+    kSetAuthtok,
+    kClearAuthtok,
 };
 
 struct ControlRequest {
@@ -73,6 +75,8 @@ struct ControlRequest {
     std::string management_operation;
     std::string management_token;
     bool liveness_ok = false;
+    bool want_authtok = false;
+    std::string authtok;
 };
 
 struct FaceAuthDecision {
@@ -100,6 +104,12 @@ struct FaceAuthReport {
 
 std::uint32_t core_version_major();
 std::expected<ControlRequest, CoreError> parse_control_request(std::string_view json);
+std::expected<void, CoreError> store_authtok(const EncryptedStoreContext& context,
+                                             const std::string& path, std::string_view secret);
+std::expected<std::vector<std::uint8_t>, CoreError>
+load_authtok(const EncryptedStoreContext& context, const std::string& path);
+std::expected<bool, CoreError> clear_authtok(const std::string& path);
+std::expected<bool, CoreError> authtok_enrolled(const std::string& path);
 std::expected<float, CoreError> default_threshold();
 CoreConfig default_config();
 std::expected<CoreConfig, CoreError> load_config(const std::string& path);

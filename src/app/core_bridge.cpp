@@ -1,5 +1,6 @@
 module;
 #include "su_core.h"
+#include "common/security/sensitive.h"
 
 module su.core.types;
 import std;
@@ -155,6 +156,8 @@ std::uint32_t core_version_major() {
 
 std::expected<ControlRequest, CoreError> parse_control_request(std::string_view json) {
     SuControlRequest request{};
+    auto request_bytes = std::span{reinterpret_cast<unsigned char*>(&request), sizeof(request)};
+    const auto wipe_request = su::security::ScopedWipe{request_bytes};
     const auto status = su_core_parse_control_request(
         reinterpret_cast<const std::uint8_t*>(json.data()),
         json.size(),
@@ -195,9 +198,15 @@ std::expected<ControlRequest, CoreError> parse_control_request(std::string_view 
     case SuControlMessageType_IssueManagementCapability:
         type = ControlMessageType::kIssueManagementCapability;
         break;
+    case SuControlMessageType_SetAuthtok:
+        type = ControlMessageType::kSetAuthtok;
+        break;
+    case SuControlMessageType_ClearAuthtok:
+        type = ControlMessageType::kClearAuthtok;
+        break;
     }
 
-    return ControlRequest{
+    auto parsed = ControlRequest{
         .type = type,
         .request_id = request.request_id,
         .target_request_id = request.target_request_id,
@@ -206,14 +215,58 @@ std::expected<ControlRequest, CoreError> parse_control_request(std::string_view 
         .username = fixed_string(request.username, SuControlUsernameCap),
         .profile_id = fixed_string(request.profile_id, SuControlProfileIdCap),
         .label = fixed_string(request.label, SuControlProfileLabelCap),
-        .face_sample_source = fixed_string(
-            request.face_sample_source, SuControlSampleSourceCap),
-        .management_operation = fixed_string(
-            request.management_operation, std::size(request.management_operation)),
-        .management_token = fixed_string(
-            request.management_token, std::size(request.management_token)),
+        .face_sample_source = fixed_string(request.face_sample_source, SuControlSampleSourceCap),
+        .management_operation =
+            fixed_string(request.management_operation, std::size(request.management_operation)),
+        .management_token =
+            fixed_string(request.management_token, std::size(request.management_token)),
         .liveness_ok = request.liveness_ok,
+        .want_authtok = request.want_authtok,
+        .authtok = fixed_string(reinterpret_cast<const std::uint8_t*>(request.authtok),
+                                std::size(request.authtok)),
     };
+    const auto wipe_secret = su::security::ScopedWipe{parsed.authtok};
+    return std::expected<ControlRequest, CoreError>{parsed};
+}
+
+std::expected<void, CoreError> store_authtok(const EncryptedStoreContext& context,
+                                             const std::string& path, std::string_view secret) {
+    if (secret.empty() || secret.find('\0') != std::string_view::npos) {
+        return std::unexpected(CoreError::kInvalidArgument);
+    }
+    auto mapped = map_encrypted_context(context);
+    auto owned = std::string(secret);
+    const auto wipe_owned = su::security::ScopedWipe{owned};
+    const auto status = su_core_store_authtok(&mapped, path.c_str(), owned.c_str());
+    return status == SuStatus_Ok ? std::expected<void, CoreError>{}
+                                 : std::unexpected(map_status(status));
+}
+
+std::expected<std::vector<std::uint8_t>, CoreError>
+load_authtok(const EncryptedStoreContext& context, const std::string& path) {
+    auto mapped = map_encrypted_context(context);
+    auto bytes = std::array<std::uint8_t, 1024>{};
+    const auto wipe_buffer = su::security::ScopedWipe{bytes};
+    auto written = std::uintptr_t{0};
+    const auto status =
+        su_core_load_authtok(&mapped, path.c_str(), bytes.data(), bytes.size(), &written);
+    if (status != SuStatus_Ok)
+        return std::unexpected(map_status(status));
+    return std::vector<std::uint8_t>{bytes.begin(), bytes.begin() + written};
+}
+
+std::expected<bool, CoreError> clear_authtok(const std::string& path) {
+    auto cleared = false;
+    const auto status = su_core_clear_authtok(path.c_str(), &cleared);
+    return status == SuStatus_Ok ? std::expected<bool, CoreError>{cleared}
+                                 : std::unexpected(map_status(status));
+}
+
+std::expected<bool, CoreError> authtok_enrolled(const std::string& path) {
+    auto enrolled = false;
+    const auto status = su_core_authtok_enrolled(path.c_str(), &enrolled);
+    return status == SuStatus_Ok ? std::expected<bool, CoreError>{enrolled}
+                                 : std::unexpected(map_status(status));
 }
 
 std::expected<float, CoreError> default_threshold() {

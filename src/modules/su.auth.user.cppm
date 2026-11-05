@@ -39,6 +39,8 @@ enum class ManagementOperation {
     kEnrollProfile,
     kDeleteProfile,
     kMigrateProfiles,
+    kSetAuthtok,
+    kClearAuthtok,
 };
 
 std::optional<ManagementOperation> management_operation_from_name(std::string_view name);
@@ -163,6 +165,10 @@ std::optional<ManagementOperation> management_operation_from_name(std::string_vi
     if (name == "enroll_profile") return ManagementOperation::kEnrollProfile;
     if (name == "delete_profile") return ManagementOperation::kDeleteProfile;
     if (name == "migrate_profiles") return ManagementOperation::kMigrateProfiles;
+    if (name == "set_authtok")
+        return ManagementOperation::kSetAuthtok;
+    if (name == "clear_authtok")
+        return ManagementOperation::kClearAuthtok;
     return std::nullopt;
 }
 
@@ -175,6 +181,10 @@ std::optional<ManagementOperation> management_operation_for_message(
         return ManagementOperation::kDeleteProfile;
     case su::app::ControlMessageType::kMigrateProfiles:
         return ManagementOperation::kMigrateProfiles;
+    case su::app::ControlMessageType::kSetAuthtok:
+        return ManagementOperation::kSetAuthtok;
+    case su::app::ControlMessageType::kClearAuthtok:
+        return ManagementOperation::kClearAuthtok;
     default:
         return std::nullopt;
     }
@@ -186,7 +196,7 @@ std::expected<std::string, std::string> ManagementCapabilityStore::issue(
     std::uint32_t session_id,
     ManagementOperation operation,
     std::chrono::steady_clock::time_point now) {
-    if (uid == 0 || pid == 0 || session_id == 0) {
+    if (pid == 0 || session_id == 0) {
         return std::unexpected("management capability identity is invalid");
     }
     const auto bytes = random_capability_bytes();
@@ -307,9 +317,10 @@ bool peer_request_allowed(
         || message_type == su::app::ControlMessageType::kDeleteProfile
         || message_type == su::app::ControlMessageType::kMigrateProfiles
         || message_type == su::app::ControlMessageType::kVerifyProfile;
-    return account_operation
-        && target_uid.has_value()
-        && *target_uid == peer_uid;
+    const auto authtok_operation = message_type == su::app::ControlMessageType::kSetAuthtok ||
+                                   message_type == su::app::ControlMessageType::kClearAuthtok;
+    return (account_operation || authtok_operation) && target_uid.has_value() &&
+           *target_uid == peer_uid;
 }
 
 namespace {

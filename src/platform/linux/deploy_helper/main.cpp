@@ -223,27 +223,13 @@ int inspect(sd_bus_message* message, void*, sd_bus_error*) {
     return reply_success(message, "s", payload.c_str());
 }
 
-int plan_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
-    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
-    const char* target_text = nullptr;
-    auto wallet_token = 0;
-    if (::sd_bus_message_read(message, "sb", &target_text, &wallet_token) < 0
-        || target_text == nullptr) {
-        return reply_error(message, "invalid desktop integration request");
-    }
-    if (wallet_token != 0) {
-        return reply_error(
-            message,
-            "wallet token deployment requires verified display-manager keyring inheritance");
-    }
+int plan_integration_for_source(sd_bus_message* message, void* userdata, const char* target_text,
+                                su::deploy::AuthtokSource source) {
     const auto target = su::deploy::target_from_id(target_text);
     if (!target) {
         return reply_error(message, "unsupported desktop integration target");
     }
-    if (*target == su::deploy::TargetKind::kGreetd) {
-        return reply_error(message, "desktop integration target has not passed acceptance testing");
-    }
-    auto plan = su::deploy::plan_pam_integration("/", *target, wallet_token != 0);
+    auto plan = su::deploy::plan_pam_integration("/", *target, source);
     if (!plan) {
         return reply_error(message, plan.error());
     }
@@ -271,6 +257,33 @@ int plan_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
         .expires_at = now + kPlanLifetime,
     });
     return reply_success(message, "ss", id.c_str(), payload.c_str());
+}
+
+int plan_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
+    const char* target_text = nullptr;
+    auto wallet_token = 0;
+    if (::sd_bus_message_read(message, "sb", &target_text, &wallet_token) < 0 ||
+        target_text == nullptr)
+        return reply_error(message, "invalid desktop integration request");
+    if (std::string_view{target_text} == "greetd")
+        return reply_error(message, "desktop integration target has not passed acceptance testing");
+    return plan_integration_for_source(message, userdata, target_text,
+                                       wallet_token ? su::deploy::AuthtokSource::kKernelKeyring
+                                                    : su::deploy::AuthtokSource::kNone);
+}
+
+int plan_integration_source(sd_bus_message* message, void* userdata, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
+    const char* target_text = nullptr;
+    const char* source_text = nullptr;
+    if (::sd_bus_message_read(message, "ss", &target_text, &source_text) < 0 ||
+        target_text == nullptr || source_text == nullptr)
+        return reply_error(message, "invalid desktop integration request");
+    const auto source = su::deploy::authtok_source_from_id(source_text);
+    if (!source)
+        return reply_error(message, "unsupported authtok source");
+    return plan_integration_for_source(message, userdata, target_text, *source);
 }
 
 int apply_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
@@ -397,10 +410,12 @@ std::expected<std::pair<std::uint32_t, std::uint32_t>, std::string> sender_ident
 int authorize_profile_management(sd_bus_message* message, void*, sd_bus_error*) {
     logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
     const char* operation = nullptr;
-    if (::sd_bus_message_read(message, "s", &operation) < 0 || operation == nullptr
-        || (std::string_view(operation) != "enroll_profile"
-            && std::string_view(operation) != "delete_profile"
-            && std::string_view(operation) != "migrate_profiles")) {
+    if (::sd_bus_message_read(message, "s", &operation) < 0 || operation == nullptr ||
+        (std::string_view(operation) != "enroll_profile" &&
+         std::string_view(operation) != "delete_profile" &&
+         std::string_view(operation) != "migrate_profiles" &&
+         std::string_view(operation) != "set_authtok" &&
+         std::string_view(operation) != "clear_authtok")) {
         return reply_error(message, "invalid profile management operation");
     }
     const auto identity = sender_identity(message);
@@ -481,18 +496,18 @@ constexpr auto kVtable = std::to_array<sd_bus_vtable>({
     SD_BUS_METHOD("Inspect", "", "s", inspect, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("PlanDesktopIntegration", "sb", "ss", plan_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("PlanDesktopIntegrationSource", "ss", "ss", plan_integration_source,
+                  SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("ApplyDesktopIntegration", "s", "s", apply_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("RollbackDesktopIntegration", "s", "s", rollback_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("RollbackAllDesktopIntegrations", "", "s", rollback_all_integrations,
                   SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("InitializeRuntime", "", "s", initialize_runtime,
-                  SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("InitializeRuntime", "", "s", initialize_runtime, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("AuthorizeProfileManagement", "s", "s", authorize_profile_management,
                   SD_BUS_VTABLE_UNPRIVILEGED),
-    SD_BUS_METHOD("ConfigureDms", "b", "s", configure_dms,
-                  SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_METHOD("ConfigureDms", "b", "s", configure_dms, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_VTABLE_END,
 });
 

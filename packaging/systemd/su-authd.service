@@ -16,6 +16,7 @@ LoadCredentialEncrypted=smile2unlock-master.key
 Environment=SU_SEETAFACE_MODEL_DIR=/usr/share/smile2unlock/models
 UMask=0077
 LimitMEMLOCK=64K
+LimitCORE=0
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/smile2unlock

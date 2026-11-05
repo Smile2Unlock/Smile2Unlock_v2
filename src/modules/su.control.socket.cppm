@@ -11,6 +11,8 @@ module;
 #include <sys/un.h>
 #include <unistd.h>
 #include <nlohmann/json.hpp>
+#include "common/security/sensitive.h"
+#include "common/security/secret_json.h"
 
 export module su.control.socket;
 
@@ -119,10 +121,15 @@ private:
     std::string path_;
 };
 
-std::string make_authenticate_request(std::uint64_t request_id, std::string_view username);
+std::string make_authenticate_request(std::uint64_t request_id, std::string_view username,
+                                      bool want_authtok = false);
 std::string make_status_request(std::uint64_t request_id);
 std::string make_cancel_request(std::uint64_t request_id, std::uint64_t target_request_id);
 std::string make_storage_status_request(std::uint64_t request_id);
+std::string make_set_authtok_request(std::uint64_t request_id, std::string_view username,
+                                     std::string_view secret, std::string_view management_token);
+std::string make_clear_authtok_request(std::uint64_t request_id, std::string_view username,
+                                       std::string_view management_token);
 std::string make_list_profiles_request(std::uint64_t request_id, std::string_view username);
 std::string make_enroll_profile_request(
     std::uint64_t request_id,
@@ -267,11 +274,12 @@ std::expected<void, SocketError> read_all(
 }
 
 std::string request_json(std::string_view type, std::uint64_t request_id) {
-    return nlohmann::json{
+    return su::security::SecretJson{
         {"version", kProtocolVersion},
         {"msg_type", type},
         {"request_id", request_id},
-    }.dump();
+    }
+        .dump();
 }
 
 std::optional<ControlResult> control_result_from_name(std::string_view name) {
@@ -386,6 +394,7 @@ std::expected<std::string, SocketError> Connection::receive_frame(
     }
     auto payload = std::string(length, '\0');
     if (auto body = read_all(fd_, payload.data(), payload.size(), deadline); !body) {
+        su::security::wipe_bytes(payload.data(), payload.size());
         return std::unexpected(body.error());
     }
     return payload;
@@ -478,9 +487,12 @@ std::expected<Connection, SocketError> Listener::accept_one(std::chrono::millise
     return connection;
 }
 
-std::string make_authenticate_request(std::uint64_t request_id, std::string_view username) {
-    auto request = nlohmann::json::parse(request_json("authenticate", request_id));
+std::string make_authenticate_request(std::uint64_t request_id, std::string_view username,
+                                      bool want_authtok) {
+    auto request = su::security::SecretJson::parse(request_json("authenticate", request_id));
     request["username"] = username;
+    if (want_authtok)
+        request["want_authtok"] = true;
     return request.dump();
 }
 
@@ -489,7 +501,7 @@ std::string make_status_request(std::uint64_t request_id) {
 }
 
 std::string make_cancel_request(std::uint64_t request_id, std::uint64_t target_request_id) {
-    auto request = nlohmann::json::parse(request_json("cancel", request_id));
+    auto request = su::security::SecretJson::parse(request_json("cancel", request_id));
     request["target_request_id"] = target_request_id;
     return request.dump();
 }
@@ -498,8 +510,27 @@ std::string make_storage_status_request(std::uint64_t request_id) {
     return request_json("storage_status", request_id);
 }
 
+std::string make_set_authtok_request(std::uint64_t request_id, std::string_view username,
+                                     std::string_view secret, std::string_view management_token) {
+    auto request = su::security::SecretJson::parse(request_json("set_authtok", request_id));
+    const auto wipe_request = su::security::ScopedJsonWipe{request};
+    request["username"] = username;
+    request["authtok"] = secret;
+    request["management_token"] = management_token;
+    return request.dump();
+}
+
+std::string make_clear_authtok_request(std::uint64_t request_id, std::string_view username,
+                                       std::string_view management_token) {
+    auto request = su::security::SecretJson::parse(request_json("clear_authtok", request_id));
+    const auto wipe_request = su::security::ScopedJsonWipe{request};
+    request["username"] = username;
+    request["management_token"] = management_token;
+    return request.dump();
+}
+
 std::string make_list_profiles_request(std::uint64_t request_id, std::string_view username) {
-    auto request = nlohmann::json::parse(request_json("list_profiles", request_id));
+    auto request = su::security::SecretJson::parse(request_json("list_profiles", request_id));
     request["username"] = username;
     return request.dump();
 }
@@ -510,7 +541,7 @@ std::string make_enroll_profile_request(
     std::string_view label,
     std::string_view face_sample_source,
     std::string_view management_token) {
-    auto request = nlohmann::json::parse(request_json("enroll_profile", request_id));
+    auto request = su::security::SecretJson::parse(request_json("enroll_profile", request_id));
     request["username"] = username;
     request["label"] = label;
     request["face_sample_source"] = face_sample_source;
@@ -523,7 +554,7 @@ std::string make_delete_profile_request(
     std::string_view username,
     std::string_view profile_id,
     std::string_view management_token) {
-    auto request = nlohmann::json::parse(request_json("delete_profile", request_id));
+    auto request = su::security::SecretJson::parse(request_json("delete_profile", request_id));
     request["username"] = username;
     request["profile_id"] = profile_id;
     request["management_token"] = management_token;
@@ -534,7 +565,7 @@ std::string make_migrate_profiles_request(
     std::uint64_t request_id,
     std::string_view username,
     std::string_view management_token) {
-    auto request = nlohmann::json::parse(request_json("migrate_profiles", request_id));
+    auto request = su::security::SecretJson::parse(request_json("migrate_profiles", request_id));
     request["username"] = username;
     request["management_token"] = management_token;
     return request.dump();
@@ -545,8 +576,8 @@ std::string make_issue_management_capability_request(
     std::uint32_t target_uid,
     std::uint32_t target_pid,
     std::string_view operation) {
-    auto request = nlohmann::json::parse(
-        request_json("issue_management_capability", request_id));
+    auto request =
+        su::security::SecretJson::parse(request_json("issue_management_capability", request_id));
     request["target_uid"] = target_uid;
     request["target_pid"] = target_pid;
     request["operation"] = operation;
@@ -558,7 +589,7 @@ std::string make_verify_profile_request(
     std::string_view username,
     std::string_view face_sample_source,
     bool liveness_ok) {
-    auto request = nlohmann::json::parse(request_json("verify_profile", request_id));
+    auto request = su::security::SecretJson::parse(request_json("verify_profile", request_id));
     request["username"] = username;
     request["face_sample_source"] = face_sample_source;
     request["liveness_ok"] = liveness_ok;
@@ -571,11 +602,11 @@ std::string make_response(
     std::string_view reason,
     std::string_view payload_json,
     AuthenticationReason authentication_reason) {
-    auto payload = nlohmann::json::parse(payload_json, nullptr, false);
+    auto payload = su::security::SecretJson::parse(payload_json, nullptr, false);
     if (payload.is_discarded()) {
         payload = nullptr;
     }
-    auto response = nlohmann::json{
+    auto response = su::security::SecretJson{
         {"version", kProtocolVersion},
         {"msg_type", "auth_result"},
         {"request_id", request_id},
@@ -583,6 +614,7 @@ std::string make_response(
         {"reason", reason},
         {"payload", std::move(payload)},
     };
+    const auto wipe_response = su::security::ScopedJsonWipe{response};
     if (authentication_reason != AuthenticationReason::kUnknown) {
         response["authentication_reason"] = authentication_reason == AuthenticationReason::kNoFace
             ? "no_face" : "mismatch";
@@ -591,7 +623,8 @@ std::string make_response(
 }
 
 std::expected<ControlResponse, SocketError> parse_response(std::string_view response) try {
-    const auto parsed = nlohmann::json::parse(response, nullptr, false);
+    auto parsed = su::security::SecretJson::parse(response, nullptr, false);
+    const auto wipe_parsed = su::security::ScopedJsonWipe{parsed};
     if (parsed.is_discarded()
         || !parsed.is_object()
         || !parsed.contains("version")
@@ -625,7 +658,7 @@ std::expected<ControlResponse, SocketError> parse_response(std::string_view resp
         .authentication_reason = reason == "no_face" ? AuthenticationReason::kNoFace
             : reason == "mismatch" ? AuthenticationReason::kMismatch : AuthenticationReason::kUnknown,
     };
-} catch (const nlohmann::json::exception&) {
+} catch (const su::security::SecretJson::exception&) {
     return std::unexpected(SocketError::kProtocolError);
 }
 
