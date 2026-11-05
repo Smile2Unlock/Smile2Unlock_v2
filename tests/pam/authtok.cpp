@@ -1,5 +1,6 @@
 #include <security/pam_appl.h>
 #include <unistd.h>
+#include "platform/linux/deploy/deployment.h"
 
 import std;
 import su.control.socket;
@@ -9,7 +10,8 @@ int conversation(int, const pam_message**, pam_response**, void*) { return PAM_C
 
 bool wallet_case(std::string_view name, std::optional<su::control::ControlResult> face,
                  std::string_view payload, std::string_view expected, bool existing = false,
-                 bool fallback_accepts = false, bool opt_in = true, bool slow = false) {
+                 bool fallback_accepts = false, bool opt_in = true, bool slow = false,
+                 bool adopt = false) {
     const auto root = std::filesystem::absolute("build/test-data/pam") /
                       std::format("authtok-{}-{}", ::getpid(), name);
     std::filesystem::remove_all(root);
@@ -31,6 +33,43 @@ bool wallet_case(std::string_view name, std::optional<su::control::ControlResult
             password << "auth required " << SU_PAM_WALLET_MODULE_PATH << " seed=password-token\n";
         password << "auth required " << (fallback_accepts ? "pam_permit.so" : "pam_deny.so")
                  << '\n';
+    }
+    auto config_root = root;
+    auto service = std::string("wallet-test");
+    if (adopt) {
+        config_root = root / "etc/pam.d";
+        service = "greetd";
+        std::filesystem::create_directories(config_root);
+        {
+            auto parent = std::ofstream(config_root / service);
+            parent << "auth sufficient pam_smile2unlock.so\n"
+                      "auth include system-login\n"
+                      "auth required pam_gnome_keyring.so\n";
+            auto password = std::ofstream(config_root / "system-login");
+            if (fallback_accepts)
+                password << "auth required " << SU_PAM_WALLET_MODULE_PATH << " seed=password-token\n";
+            password << "auth required " << (fallback_accepts ? "pam_permit.so" : "pam_deny.so")
+                     << '\n';
+        }
+        auto plan = su::deploy::plan_pam_adoption(
+            root, su::deploy::TargetKind::kGreetd, su::deploy::AuthtokSource::kSealed);
+        if (!plan) return false;
+        // Run the real adopted layout against this build and a private socket/wallet fixture.
+        auto replace = [](std::string& text, std::string_view from, std::string_view to) {
+            const auto pos = text.find(from);
+            if (pos != std::string::npos) text.replace(pos, from.size(), to);
+        };
+        replace(plan->child_content, "pam_smile2unlock.so", SU_PAM_MODULE_PATH);
+        replace(plan->child_content, su::control::kDefaultSocketPath, socket.string());
+        const auto wallet_module = root / "pam_gnome_keyring.so";
+        std::filesystem::copy_file(SU_PAM_WALLET_MODULE_PATH, wallet_module);
+        replace(plan->destination_content, "pam_gnome_keyring.so",
+                wallet_module.string() + " output=" + dump.string());
+        const auto applied = su::deploy::apply_pam_plan(root, *plan);
+        if (!applied) {
+            std::cerr << "FAIL: PAM adoption fixture: " << applied.error() << '\n';
+            return false;
+        }
     }
     auto listener = face ? su::control::Listener::bind_to(socket.string())
                          : std::expected<su::control::Listener, su::control::SocketError>{
@@ -66,7 +105,7 @@ bool wallet_case(std::string_view name, std::optional<su::control::ControlResult
     const auto conv = pam_conv{.conv = conversation, .appdata_ptr = nullptr};
     pam_handle_t* handle = nullptr;
     const auto start =
-        ::pam_start_confdir("wallet-test", "test-user", &conv, root.c_str(), &handle);
+        ::pam_start_confdir(service.c_str(), "test-user", &conv, config_root.c_str(), &handle);
     const auto before = std::chrono::steady_clock::now();
     const auto status = start == PAM_SUCCESS ? ::pam_authenticate(handle, 0) : start;
     const auto elapsed = std::chrono::steady_clock::now() - before;
@@ -92,7 +131,11 @@ bool wallet_case(std::string_view name, std::optional<su::control::ControlResult
 bool pam_authtok_tests() {
     using R = su::control::ControlResult;
     constexpr auto token = R"({"authtok":"d2FsbGV0LXRva2Vu"})";
-    return wallet_case("injected-auth", R::kAccepted, token, "wallet-token") &&
+    return wallet_case("adopt-face", R::kAccepted, token, "wallet-token", false, false, true, false, true) &&
+           wallet_case("adopt-password", R::kRejected, token, "password-token", false, true, true, false, true) &&
+           wallet_case("adopt-unavailable", std::nullopt, "null", "password-token", false, true, true, false, true) &&
+           wallet_case("adopt-password-fails", R::kRejected, token, "", false, false, true, false, true) &&
+           wallet_case("injected-auth", R::kAccepted, token, "wallet-token") &&
            wallet_case("preserve-existing", R::kAccepted, token, "existing-token", true) &&
            wallet_case("daemon-absent", std::nullopt, "null", "password-token", false, true) &&
            wallet_case("slow-3s", R::kAccepted, token, "wallet-token", false, false, true, true) &&

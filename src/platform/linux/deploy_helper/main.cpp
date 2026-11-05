@@ -224,12 +224,13 @@ int inspect(sd_bus_message* message, void*, sd_bus_error*) {
 }
 
 int plan_integration_for_source(sd_bus_message* message, void* userdata, const char* target_text,
-                                su::deploy::AuthtokSource source) {
+                                su::deploy::AuthtokSource source, bool adoption = false) {
     const auto target = su::deploy::target_from_id(target_text);
     if (!target) {
         return reply_error(message, "unsupported desktop integration target");
     }
-    auto plan = su::deploy::plan_pam_integration("/", *target, source);
+    auto plan = adoption ? su::deploy::plan_pam_adoption("/", *target, source)
+                         : su::deploy::plan_pam_integration("/", *target, source);
     if (!plan) {
         return reply_error(message, plan.error());
     }
@@ -284,6 +285,19 @@ int plan_integration_source(sd_bus_message* message, void* userdata, sd_bus_erro
     if (!source)
         return reply_error(message, "unsupported authtok source");
     return plan_integration_for_source(message, userdata, target_text, *source);
+}
+
+int plan_adoption(sd_bus_message* message, void* userdata, sd_bus_error*) {
+    logger().info("deploy.operation", {field("op", sd_bus_message_get_member(message))});
+    const char* target_text = nullptr;
+    const char* source_text = nullptr;
+    if (::sd_bus_message_read(message, "ss", &target_text, &source_text) < 0 ||
+        target_text == nullptr || source_text == nullptr)
+        return reply_error(message, "invalid desktop adoption request");
+    const auto source = su::deploy::authtok_source_from_id(source_text);
+    if (!source)
+        return reply_error(message, "unsupported authtok source");
+    return plan_integration_for_source(message, userdata, target_text, *source, true);
 }
 
 int apply_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
@@ -497,6 +511,10 @@ constexpr auto kVtable = std::to_array<sd_bus_vtable>({
     SD_BUS_METHOD("PlanDesktopIntegration", "sb", "ss", plan_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("PlanDesktopIntegrationSource", "ss", "ss", plan_integration_source,
+                  SD_BUS_VTABLE_UNPRIVILEGED),
+    // Adoption shares ApplyDesktopIntegration, its caller-bound expiring plans,
+    // and the configure-pam Polkit action. Planning never changes PAM files.
+    SD_BUS_METHOD("PlanAdoptDesktopIntegration", "ss", "ss", plan_adoption,
                   SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_METHOD("ApplyDesktopIntegration", "s", "s", apply_integration,
                   SD_BUS_VTABLE_UNPRIVILEGED),

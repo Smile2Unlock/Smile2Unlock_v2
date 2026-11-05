@@ -681,6 +681,14 @@ if is_plat("linux") then
         add_deps("su_deploy")
         add_tests("default")
 
+    target("su_deploy_client_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/deploy_client/*.cpp", "src/platform/linux/deploy_client/*.cpp")
+        add_packages("nlohmann_json")
+        add_syslinks("systemd")
+        add_tests("default")
+
     target("su_multi_user_auth_test")
         set_default(false)
         apply_cpp_target("binary")

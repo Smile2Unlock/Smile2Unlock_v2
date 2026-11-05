@@ -10,6 +10,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -460,6 +461,47 @@ DeploymentClient::configure_target_source(std::string_view target,
     if (target == "dms" && authtok_source != "none")
         return std::unexpected("wallet authtok is supported only for login targets");
     return target == "dms" ? configure_dms(true) : configure_pam_target(target, authtok_source);
+}
+
+std::expected<AdoptionReview, std::string>
+DeploymentClient::plan_adoption(std::string_view target, std::string_view authtok_source) const {
+    if (authtok_source != "none" && authtok_source != "kernel_keyring" &&
+        authtok_source != "sealed")
+        return std::unexpected("unsupported authtok source");
+    sd_bus* raw_bus = nullptr;
+    if (::sd_bus_open_system(&raw_bus) < 0)
+        return std::unexpected("deployment helper system bus is unavailable");
+    auto bus = std::shared_ptr<sd_bus>(raw_bus, ::sd_bus_unref);
+    struct Reply {
+        sd_bus_error error = SD_BUS_ERROR_NULL;
+        sd_bus_message* message = nullptr;
+        ~Reply() { ::sd_bus_message_unref(message); ::sd_bus_error_free(&error); }
+    } reply;
+    if (::sd_bus_call_method(bus.get(), kBusName.data(), kObjectPath.data(), kInterface.data(),
+                            "PlanAdoptDesktopIntegration", &reply.error, &reply.message, "ss",
+                            std::string(target).c_str(), std::string(authtok_source).c_str()) < 0)
+        return std::unexpected(bus_error(reply.error, "failed to plan PAM adoption"));
+    const char* id = nullptr;
+    const char* description = nullptr;
+    if (::sd_bus_message_read(reply.message, "ss", &id, &description) < 0 ||
+        id == nullptr || description == nullptr)
+        return std::unexpected("deployment helper returned an invalid adoption plan");
+    return AdoptionReview{
+        .id = id,
+        .description = description,
+        .apply = [bus = std::move(bus), id = std::string(id)]()
+            -> std::expected<std::string, std::string> {
+            Reply applied;
+            if (::sd_bus_call_method(bus.get(), kBusName.data(), kObjectPath.data(),
+                                    kInterface.data(), "ApplyDesktopIntegration", &applied.error,
+                                    &applied.message, "s", id.c_str()) < 0)
+                return std::unexpected(bus_error(applied.error, "failed to apply PAM adoption"));
+            const char* payload = nullptr;
+            if (::sd_bus_message_read(applied.message, "s", &payload) < 0 || payload == nullptr)
+                return std::unexpected("deployment helper returned an invalid apply result");
+            return std::string(payload);
+        },
+    };
 }
 
 std::expected<std::string, std::string> DeploymentClient::rollback_target(

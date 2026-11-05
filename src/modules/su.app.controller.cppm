@@ -50,6 +50,8 @@ struct DeploymentTargetStatus {
     bool sealed_available = false;
     std::string sealed_unavailable_reason = {};
     std::string authtok_source = "none";
+    bool adoptable = false;
+    std::string adoption_unavailable_reason = {};
 };
 
 struct SystemStatus {
@@ -125,6 +127,11 @@ public:
     std::expected<std::string, std::string>
     configure_desktop_target(std::string_view target, std::string_view authtok_source);
 #ifndef _WIN32
+    // Review returns JSON including plan_id, target, source, and generated substack.
+    // Apply consumes that reviewed plan; the helper checks expiry and file changes.
+    std::expected<std::string, std::string>
+    plan_desktop_adoption(std::string_view target, std::string_view authtok_source = "none");
+    std::expected<std::string, std::string> apply_desktop_adoption(std::string_view plan_id);
     // Consumes the password bytes, wiping them on every exit path.
     std::expected<void, std::string> manage_wallet_authtok(bool clear, std::string& password);
 #endif
@@ -135,6 +142,10 @@ public:
     su::recognizer::RecognizerService& recognizer() { return recognizer_; }
 
 private:
+#ifndef _WIN32
+    std::string adoption_plan_id_;
+    std::function<std::expected<std::string, std::string>()> apply_adoption_;
+#endif
     std::string config_path() const;
     std::string profile_store_path() const;
     su::recognizer::RecognizerService recognizer_{};
