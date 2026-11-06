@@ -8,6 +8,9 @@
 #ifdef _WIN32
 #include "platform/windows/paths.h"
 #endif
+#ifdef __linux__
+#include <fontconfig/fontconfig.h>
+#endif
 
 import std;
 import su.app.controller;
@@ -165,6 +168,38 @@ void update_camera_controls(
     window->set_camera_text(slint::SharedString(
         cameras.size() == 1 ? cameras.front().name : std::string{}));
     window->set_selected_camera(selected_index);
+}
+
+// The family fontconfig resolves for "sans-serif" in the UI language. Slint picks
+// fallback fonts per glyph without language information, so naming one family
+// keeps CJK text in a single face. Empty means "use Slint's default".
+std::string preferred_ui_font_family(std::string_view language_code) {
+#ifdef __linux__
+    const auto* fontconfig_language = language_code.starts_with("zh") ? "zh-cn" : "en";
+    auto* pattern = FcPatternCreate();
+    if (pattern == nullptr) {
+        return {};
+    }
+    FcPatternAddString(pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>("sans-serif"));
+    FcPatternAddString(pattern, FC_LANG, reinterpret_cast<const FcChar8*>(fontconfig_language));
+    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+    auto result = FcResult{};
+    auto* match = FcFontMatch(nullptr, pattern, &result);
+    auto family = std::string{};
+    if (match != nullptr) {
+        FcChar8* name = nullptr;
+        if (FcPatternGetString(match, FC_FAMILY, 0, &name) == FcResultMatch && name != nullptr) {
+            family = reinterpret_cast<const char*>(name);
+        }
+        FcPatternDestroy(match);
+    }
+    FcPatternDestroy(pattern);
+    return family;
+#else
+    (void)language_code;
+    return {};
+#endif
 }
 
 slint::Color slint_color(su::app::ThemeColor color) {
@@ -754,6 +789,8 @@ int main(int argc, char** argv) try {
     window->set_language_names(
         std::make_shared<slint::VectorModel<slint::SharedString>>(std::move(language_names)));
     window->set_language_index(static_cast<int>(selected_language));
+    window->set_ui_font_family(slint::SharedString(
+        preferred_ui_font_family(catalog->language_code(selected_language))));
     setup_about(window, catalog);
     window->set_theme_mode_index(theme_preference_index(preferences->theme));
     window->set_window_controls_index(
@@ -768,6 +805,8 @@ int main(int argc, char** argv) try {
             preferences->language = catalog->language_code(static_cast<std::size_t>(index));
             persist_ui_preferences(preference_path, *preferences);
             if (const auto window = weak_window.lock()) {
+                (*window)->set_ui_font_family(
+                    slint::SharedString(preferred_ui_font_family(catalog->language_code(static_cast<std::size_t>(index)))));
                 if (!preview->is_running()) {
                     set_preview_idle(*window, *catalog);
                 }

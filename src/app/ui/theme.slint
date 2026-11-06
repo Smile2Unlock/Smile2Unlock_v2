@@ -43,6 +43,11 @@ export global UiTheme {
     in-out property <color> preview-text: #e8f6f1;
     in-out property <color> face-indicator: #4dd3a7;
 
+    // ---- font weights (only weights the CJK sans families actually ship) ----
+    out property <int> weight-regular: 400;
+    out property <int> weight-medium: 500;
+    out property <int> weight-bold: 700;
+
     // ---- metrics: everything below derives from `base` ----
     out property <length> base: 14px;
     // One physical image pixel, to size images from their pixel dimensions.

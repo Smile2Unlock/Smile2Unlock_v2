@@ -452,6 +452,9 @@ target("su_recognizer")
         set_policy("check.target_package_licenses", false)
         add_defines("SU_HAS_SLINT=1")
         add_packages("slint")
+        if is_plat("linux") then
+            add_syslinks("fontconfig")
+        end
         add_files("src/app/slint_main.cpp", "src/app/web_link.cpp", "src/app/captures_ui.cpp")
         add_about_content()
         add_files("src/app/preview_controller.cpp")

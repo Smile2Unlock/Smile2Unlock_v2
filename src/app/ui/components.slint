@@ -34,7 +34,7 @@ export component Status inherits HorizontalLayout {
         text: root.text;
         color: root.fg;
         font-size: UiTheme.font-small;
-        font-weight: 600;
+        font-weight: UiTheme.weight-bold;
         vertical-alignment: center;
     }
 }
@@ -79,7 +79,7 @@ export component Button inherits Rectangle {
         Text {
             text: root.text;
             font-size: UiTheme.font-body;
-            font-weight: 600;
+            font-weight: UiTheme.weight-bold;
             horizontal-alignment: center;
             vertical-alignment: center;
             color: root.fg;
@@ -173,7 +173,7 @@ export component Check inherits Rectangle {
     Text {
         text: root.done ? "✓" : root.number;
         color: root.done ? UiTheme.ok : UiTheme.text-dim;
-        font-weight: 700;
+        font-weight: UiTheme.weight-bold;
         font-size: UiTheme.font-small;
     }
 }
@@ -212,7 +212,7 @@ export component Row inherits Rectangle {
                     text: root.title;
                     color: UiTheme.text;
                     font-size: UiTheme.font-row-title;
-                    font-weight: 600;
+                    font-weight: UiTheme.weight-bold;
                     wrap: word-wrap;
                 }
                 if root.subtitle != "": Text {
@@ -246,7 +246,7 @@ export component Group inherits VerticalLayout {
             text: root.title;
             color: UiTheme.text-dim;
             font-size: UiTheme.font-section;
-            font-weight: 700;
+            font-weight: UiTheme.weight-bold;
         }
     }
     Rectangle {
@@ -300,7 +300,7 @@ export component Badge inherits Rectangle {
         text: root.text;
         color: UiTheme.text-dim;
         font-size: UiTheme.font-small;
-        font-weight: 600;
+        font-weight: UiTheme.weight-bold;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -326,7 +326,7 @@ export component NavItem inherits Rectangle {
         Text {
             text: root.text;
             font-size: UiTheme.font-body;
-            font-weight: root.selected ? 700 : 500;
+            font-weight: root.selected ? UiTheme.weight-bold : UiTheme.weight-medium;
             color: root.selected ? UiTheme.on-nav-selected : UiTheme.text-dim;
             vertical-alignment: center;
             overflow: elide;
@@ -355,7 +355,7 @@ export component PageHeader inherits VerticalLayout {
         text: root.title;
         color: UiTheme.text;
         font-size: UiTheme.font-h1;
-        font-weight: 800;
+        font-weight: UiTheme.weight-bold;
     }
     if root.subtitle != "": Text {
         text: root.subtitle;
@@ -404,7 +404,7 @@ export component SegmentedSelector inherits Rectangle {
                     text: option;
                     color: root.current-index == index ? UiTheme.on-nav-selected : UiTheme.text-dim;
                     font-size: UiTheme.font-small;
-                    font-weight: root.current-index == index ? 700 : 500;
+                    font-weight: root.current-index == index ? UiTheme.weight-bold : UiTheme.weight-medium;
                     vertical-alignment: center;
                 }
             }

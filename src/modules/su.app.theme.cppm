@@ -77,7 +77,7 @@ struct AppTheme {
     ThemeColor danger_bg;
     ThemeColor idle;
     ThemeColor idle_bg;
-    // Camera preview; fixed, independent of the palette.
+    // Camera preview; derived from the palette like every other role.
     ThemeColor preview_surface;
     ThemeColor preview_overlay;
     ThemeColor preview_text;

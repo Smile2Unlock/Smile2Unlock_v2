@@ -155,6 +155,9 @@ export component AppWindow inherits Window {
         Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
     }
 
+    // One family for all text so CJK glyphs do not mix faces; empty = Slint default.
+    in property <string> ui_font_family: "";
+    default-font-family: root.ui_font_family;
     title: title_text;
     // NOTE: no `icon:` property here. slint 1.17's compiler never embeds
     // Window.icon images; it generates Image::load_from_path() with the
@@ -218,7 +221,7 @@ export component AppWindow inherits Window {
                     padding-left: UiTheme.s4;
                     padding-bottom: UiTheme.s6;
                     spacing: UiTheme.s1;
-                    Text { text: "Smile2Unlock"; color: UiTheme.text; font-size: UiTheme.font-brand; font-weight: 800; overflow: elide; }
+                    Text { text: "Smile2Unlock"; color: UiTheme.text; font-size: UiTheme.font-brand; font-weight: UiTheme.weight-bold; overflow: elide; }
                     Text { text: Tr.t("app.subtitle"); color: UiTheme.text-faint; font-size: UiTheme.font-small; overflow: elide; }
                 }
 
@@ -239,13 +242,13 @@ export component AppWindow inherits Window {
                         height: self.width;
                         border-radius: self.width / 2;
                         background: UiTheme.tonal;
-                        Text { text: root.username_initial; color: UiTheme.on-tonal; font-weight: 700; font-size: UiTheme.font-row-title; }
+                        Text { text: root.username_initial; color: UiTheme.on-tonal; font-weight: UiTheme.weight-bold; font-size: UiTheme.font-row-title; }
                     }
                     VerticalLayout {
                         alignment: center;
                         spacing: UiTheme.unit / 2;
                         horizontal-stretch: 1;
-                        Text { text: root.username; color: UiTheme.text; font-weight: 600; font-size: UiTheme.font-body; overflow: elide; }
+                        Text { text: root.username; color: UiTheme.text; font-weight: UiTheme.weight-bold; font-size: UiTheme.font-body; overflow: elide; }
                         Text {
                             text: root.profiles.length == 0 ? Tr.t("account.enrollment_required") : Tr.t("account.enabled");
                             color: root.profiles.length == 0 ? UiTheme.warn : UiTheme.ok;
@@ -282,7 +285,7 @@ export component AppWindow inherits Window {
                                 text: root.setup-complete ? "✓" : "!";
                                 color: root.setup-complete ? UiTheme.ok : UiTheme.warn;
                                 font-size: UiTheme.font-stat;
-                                font-weight: 800;
+                                font-weight: UiTheme.weight-bold;
                             }
                         }
                         VerticalLayout {
@@ -293,7 +296,7 @@ export component AppWindow inherits Window {
                                 text: root.setup-complete ? Tr.t("overview.ready") : Tr.t("overview.not_ready");
                                 color: UiTheme.text;
                                 font-size: UiTheme.font-hero;
-                                font-weight: 800;
+                                font-weight: UiTheme.weight-bold;
                                 wrap: word-wrap;
                             }
                             Text { text: root.hero-summary; color: UiTheme.text-dim; font-size: UiTheme.font-body; wrap: word-wrap; }
