@@ -49,28 +49,35 @@ struct ThemeColor {
 
 struct AppTheme {
     ThemeMode mode = ThemeMode::light;
+    // Surfaces: depth by tone, not borders.
     ThemeColor canvas;
-    ThemeColor surface;
-    ThemeColor surface_subtle;
-    ThemeColor surface_selected;
-    ThemeColor border;
+    ThemeColor sidebar;
+    ThemeColor group;
+    ThemeColor group_hover;
+    ThemeColor inset;
+    ThemeColor outline;
     ThemeColor divider;
-    ThemeColor text_primary;
-    ThemeColor text_secondary;
-    ThemeColor text_tertiary;
-    ThemeColor primary;
-    ThemeColor primary_hover;
-    ThemeColor primary_pressed;
-    ThemeColor on_primary;
-    ThemeColor success_surface;
-    ThemeColor success_text;
-    ThemeColor warning_surface;
-    ThemeColor warning_text;
-    ThemeColor danger_surface;
-    ThemeColor danger_hover;
-    ThemeColor danger_text;
-    ThemeColor disabled_surface;
-    ThemeColor disabled_text;
+    // Text.
+    ThemeColor text;
+    ThemeColor text_dim;
+    ThemeColor text_faint;
+    // Accent roles.
+    ThemeColor accent;
+    ThemeColor on_accent;
+    ThemeColor tonal;
+    ThemeColor on_tonal;
+    ThemeColor nav_selected;
+    ThemeColor on_nav_selected;
+    // Status roles; their hues follow the wallpaper palette.
+    ThemeColor ok;
+    ThemeColor ok_bg;
+    ThemeColor warn;
+    ThemeColor warn_bg;
+    ThemeColor danger;
+    ThemeColor danger_bg;
+    ThemeColor idle;
+    ThemeColor idle_bg;
+    // Camera preview; fixed, independent of the palette.
     ThemeColor preview_surface;
     ThemeColor preview_overlay;
     ThemeColor preview_text;
@@ -220,18 +227,6 @@ ThemeColor composite_over(ThemeColor foreground, ThemeColor background) {
         .green = channel(foreground.green, background.green),
         .blue = channel(foreground.blue, background.blue),
     };
-}
-
-ThemeColor safe_foreground(
-    ThemeColor candidate,
-    ThemeColor background,
-    double minimum_ratio) {
-    if (contrast_ratio(candidate, background) >= minimum_ratio) {
-        return candidate;
-    }
-    const auto dark = rgb(0x101114);
-    const auto light = rgb(0xf8f9ff);
-    return contrast_ratio(dark, background) >= contrast_ratio(light, background) ? dark : light;
 }
 
 std::expected<std::string, std::string> read_file_limited(
@@ -629,67 +624,265 @@ std::expected<ThemeMode, std::string> parse_dms_session_mode(std::string_view te
     return document["isLightMode"].get<bool>() ? ThemeMode::light : ThemeMode::dark;
 }
 
+namespace {
+
+// Material 3 roles the UI is derived from. Optional status hints come from
+// the DMS "dank16" palette; without them the status hues are harmonised
+// toward the primary colour.
+struct MaterialRoles {
+    ThemeMode mode = ThemeMode::dark;
+    ThemeColor background;
+    ThemeColor surface_lowest;
+    ThemeColor sidebar;
+    ThemeColor group;
+    ThemeColor group_high;
+    ThemeColor outline;
+    ThemeColor outline_variant;
+    ThemeColor primary;
+    ThemeColor on_primary;
+    ThemeColor primary_container;
+    ThemeColor on_primary_container;
+    ThemeColor secondary_container;
+    ThemeColor on_secondary_container;
+    ThemeColor on_surface;
+    ThemeColor on_surface_variant;
+    ThemeColor error;
+    std::optional<ThemeColor> dank_ok;
+    std::optional<ThemeColor> dank_warn;
+};
+
+constexpr auto status_background_weight = 0.85;
+constexpr std::uint8_t preview_overlay_alpha = 0xcc;
+constexpr auto divider_weight = 0.5;
+constexpr auto text_contrast = 4.5;
+constexpr auto faint_contrast = 3.0;
+// Neon dank16 hues are pulled toward the text colour by this much.
+constexpr auto dank_tone_down = 0.25;
+// Maximum hue rotation toward the palette primary (Material "harmonize").
+constexpr auto harmonize_max_degrees = 15.0;
+constexpr auto harmonize_share = 0.5;
+constexpr auto full_turn = 360.0;
+constexpr auto half_turn = 180.0;
+constexpr auto contrast_step = 0.05;
+
+// Named base hues used when the palette offers no status colours.
+constexpr ThemeColor base_ok_dark = rgb(0x8fd6a6);
+constexpr ThemeColor base_ok_light = rgb(0x1e6b3a);
+constexpr ThemeColor base_warn_dark = rgb(0xecc770);
+constexpr ThemeColor base_warn_light = rgb(0x7a5a00);
+
+// Pushes `color` toward black or white until it meets `ratio` over `background`.
+ThemeColor ensure_contrast(ThemeColor color, ThemeColor background, double ratio) {
+    if (contrast_ratio(color, background) >= ratio) {
+        return color;
+    }
+    const auto black = rgb(0x000000);
+    const auto white = rgb(0xffffff);
+    const auto target = contrast_ratio(black, background) >= contrast_ratio(white, background)
+        ? black
+        : white;
+    for (auto weight = contrast_step; weight < 1.0; weight += contrast_step) {
+        const auto candidate = blend(color, target, weight);
+        if (contrast_ratio(candidate, background) >= ratio) {
+            return candidate;
+        }
+    }
+    return target;
+}
+
+ThemeColor ensure_contrast_all(
+    ThemeColor color,
+    std::initializer_list<ThemeColor> backgrounds,
+    double ratio) {
+    for (const auto background : backgrounds) {
+        color = ensure_contrast(color, background, ratio);
+    }
+    return color;
+}
+
+struct Hsl {
+    double hue = 0;
+    double saturation = 0;
+    double lightness = 0;
+};
+
+Hsl to_hsl(ThemeColor color) {
+    const auto red = color.red / 255.0;
+    const auto green = color.green / 255.0;
+    const auto blue = color.blue / 255.0;
+    const auto high = std::max({red, green, blue});
+    const auto low = std::min({red, green, blue});
+    const auto delta = high - low;
+    auto result = Hsl{.lightness = (high + low) / 2.0};
+    if (delta == 0.0) {
+        return result;
+    }
+    result.saturation = delta / (1.0 - std::abs(2.0 * result.lightness - 1.0));
+    if (high == red) {
+        result.hue = std::fmod((green - blue) / delta, 6.0);
+    } else if (high == green) {
+        result.hue = (blue - red) / delta + 2.0;
+    } else {
+        result.hue = (red - green) / delta + 4.0;
+    }
+    result.hue = std::fmod(result.hue * 60.0 + full_turn, full_turn);
+    return result;
+}
+
+ThemeColor from_hsl(Hsl value) {
+    const auto chroma = (1.0 - std::abs(2.0 * value.lightness - 1.0)) * value.saturation;
+    const auto sector = value.hue / 60.0;
+    const auto second = chroma * (1.0 - std::abs(std::fmod(sector, 2.0) - 1.0));
+    auto red = 0.0;
+    auto green = 0.0;
+    auto blue = 0.0;
+    if (sector < 1.0) {
+        red = chroma;
+        green = second;
+    } else if (sector < 2.0) {
+        red = second;
+        green = chroma;
+    } else if (sector < 3.0) {
+        green = chroma;
+        blue = second;
+    } else if (sector < 4.0) {
+        green = second;
+        blue = chroma;
+    } else if (sector < 5.0) {
+        red = second;
+        blue = chroma;
+    } else {
+        red = chroma;
+        blue = second;
+    }
+    const auto offset = value.lightness - chroma / 2.0;
+    const auto channel = [offset](double part) {
+        return static_cast<std::uint8_t>(
+            std::clamp(std::lround((part + offset) * 255.0), 0L, 255L));
+    };
+    return ThemeColor{.alpha = 255, .red = channel(red), .green = channel(green), .blue = channel(blue)};
+}
+
+// Material "harmonize": rotate the hue of `base` toward `source` by at most 15 degrees.
+ThemeColor harmonize(ThemeColor base, ThemeColor source) {
+    auto hsl = to_hsl(base);
+    const auto source_hue = to_hsl(source).hue;
+    const auto difference =
+        std::fmod(source_hue - hsl.hue + full_turn + half_turn, full_turn) - half_turn;
+    const auto rotation = std::min(std::abs(difference) * harmonize_share, harmonize_max_degrees);
+    hsl.hue = std::fmod(hsl.hue + (difference < 0 ? -rotation : rotation) + full_turn, full_turn);
+    return from_hsl(hsl);
+}
+
+// Calm a status hue: pull it toward the text colour, then guarantee contrast.
+ThemeColor calm_status(
+    ThemeColor candidate,
+    ThemeColor text,
+    double tone_down,
+    std::initializer_list<ThemeColor> backgrounds) {
+    return ensure_contrast_all(blend(candidate, text, tone_down), backgrounds, text_contrast);
+}
+
+AppTheme derive_theme(const MaterialRoles& roles) {
+    const auto dark = roles.mode == ThemeMode::dark;
+    auto theme = AppTheme{.mode = roles.mode};
+    theme.canvas = roles.background;
+    theme.sidebar = roles.sidebar;
+    theme.group = roles.group;
+    theme.group_hover = roles.group_high;
+    theme.inset = roles.group_high;
+    theme.outline = roles.outline_variant;
+    theme.divider = blend(roles.outline_variant, roles.group, divider_weight);
+
+    const auto surfaces = {roles.background, roles.sidebar, roles.group, roles.group_high};
+    theme.text = ensure_contrast_all(roles.on_surface, surfaces, text_contrast);
+    theme.text_dim = ensure_contrast_all(roles.on_surface_variant, surfaces, text_contrast);
+    theme.text_faint = ensure_contrast_all(roles.outline, surfaces, faint_contrast);
+
+    theme.accent = ensure_contrast_all(roles.primary, surfaces, text_contrast);
+    theme.on_accent = ensure_contrast(roles.on_primary, theme.accent, text_contrast);
+    theme.tonal = roles.primary_container;
+    theme.on_tonal = ensure_contrast(roles.on_primary_container, theme.tonal, text_contrast);
+    theme.nav_selected = roles.secondary_container;
+    theme.on_nav_selected = ensure_contrast(
+        roles.on_secondary_container, theme.nav_selected, text_contrast);
+
+    const auto ok_source = roles.dank_ok.value_or(
+        harmonize(dark ? base_ok_dark : base_ok_light, roles.primary));
+    const auto warn_source = roles.dank_warn.value_or(
+        harmonize(dark ? base_warn_dark : base_warn_light, roles.primary));
+    const auto status_surfaces = {roles.group, roles.group_high, roles.background};
+    theme.ok = calm_status(ok_source, theme.text, roles.dank_ok ? dank_tone_down : 0.0, status_surfaces);
+    theme.warn = calm_status(
+        warn_source, theme.text, roles.dank_warn ? dank_tone_down : 0.0, status_surfaces);
+    theme.danger = ensure_contrast_all(roles.error, status_surfaces, text_contrast);
+    theme.idle = ensure_contrast_all(roles.outline, status_surfaces, text_contrast);
+    theme.ok_bg = blend(theme.ok, roles.group, status_background_weight);
+    theme.warn_bg = blend(theme.warn, roles.group, status_background_weight);
+    theme.danger_bg = blend(theme.danger, roles.group, status_background_weight);
+    theme.idle_bg = roles.group_high;
+
+    // Camera preview: the lowest surface, a translucent canvas chip, and the accent
+    // for the face box so it stays visible on any picture.
+    // The lowest surface is white in light palettes and would vanish on the canvas.
+    theme.preview_surface = dark ? roles.surface_lowest : roles.group_high;
+    theme.preview_overlay = ThemeColor{
+        .alpha = preview_overlay_alpha,
+        .red = roles.background.red,
+        .green = roles.background.green,
+        .blue = roles.background.blue,
+    };
+    theme.preview_text = ensure_contrast(
+        roles.on_surface,
+        composite_over(theme.preview_overlay, theme.preview_surface),
+        text_contrast);
+    theme.face_indicator = theme.accent;
+    return theme;
+}
+
+}  // namespace
+
 AppTheme built_in_theme(ThemeMode mode) {
     if (mode == ThemeMode::dark) {
-        return AppTheme{
+        return derive_theme(MaterialRoles{
             .mode = mode,
-            .canvas = rgb(0x121614),
-            .surface = rgb(0x0b0f0e),
-            .surface_subtle = rgb(0x1b2421),
-            .surface_selected = rgb(0x173b32),
-            .border = rgb(0x3c4945),
-            .divider = rgb(0x29332f),
-            .text_primary = rgb(0xe1e8e5),
-            .text_secondary = rgb(0xbdc9c5),
-            .text_tertiary = rgb(0x8f9b97),
+            .background = rgb(0x0e1513),
+            .surface_lowest = rgb(0x090f0d),
+            .sidebar = rgb(0x161d1b),
+            .group = rgb(0x1a211f),
+            .group_high = rgb(0x252b2a),
+            .outline = rgb(0x89938f),
+            .outline_variant = rgb(0x3f4945),
             .primary = rgb(0x84d7bc),
-            .primary_hover = rgb(0x73c5aa),
-            .primary_pressed = rgb(0x5eaa91),
-            .on_primary = rgb(0x0a392e),
-            .success_surface = rgb(0x123c31),
-            .success_text = rgb(0x8fe2c1),
-            .warning_surface = rgb(0x463813),
-            .warning_text = rgb(0xf2d17a),
-            .danger_surface = rgb(0x93000a),
-            .danger_hover = rgb(0xaa1b20),
-            .danger_text = rgb(0xffdad6),
-            .disabled_surface = rgb(0x29332f),
-            .disabled_text = rgb(0x8f9b97),
-            .preview_surface = rgb(0x101816),
-            .preview_overlay = argb(0xcc15201e),
-            .preview_text = rgb(0xe8f6f1),
-            .face_indicator = rgb(0x4dd3a7),
-        };
+            .on_primary = rgb(0x00382b),
+            .primary_container = rgb(0x1d4f42),
+            .on_primary_container = rgb(0xa0f3d8),
+            .secondary_container = rgb(0x354b44),
+            .on_secondary_container = rgb(0xcde9df),
+            .on_surface = rgb(0xdde4e0),
+            .on_surface_variant = rgb(0xbec9c4),
+            .error = rgb(0xffb4ab),
+        });
     }
-    return AppTheme{
+    return derive_theme(MaterialRoles{
         .mode = mode,
-        .canvas = rgb(0xf3f6f5),
-        .surface = rgb(0xffffff),
-        .surface_subtle = rgb(0xedf3f1),
-        .surface_selected = rgb(0xdcece7),
-        .border = rgb(0xd6dfdc),
-        .divider = rgb(0xe2e8e6),
-        .text_primary = rgb(0x182d27),
-        .text_secondary = rgb(0x65746f),
-        .text_tertiary = rgb(0x75827e),
-        .primary = rgb(0x155447),
-        .primary_hover = rgb(0x1c6655),
-        .primary_pressed = rgb(0x0e3a30),
+        .background = rgb(0xf4fbf8),
+        .surface_lowest = rgb(0xffffff),
+        .sidebar = rgb(0xeef5f2),
+        .group = rgb(0xe8efec),
+        .group_high = rgb(0xe3eae7),
+        .outline = rgb(0x6f7975),
+        .outline_variant = rgb(0xbec9c4),
+        .primary = rgb(0x246b59),
         .on_primary = rgb(0xffffff),
-        .success_surface = rgb(0xd8eee5),
-        .success_text = rgb(0x165c46),
-        .warning_surface = rgb(0xf5e7c5),
-        .warning_text = rgb(0x775514),
-        .danger_surface = rgb(0xf5dcdc),
-        .danger_hover = rgb(0xfff1f1),
-        .danger_text = rgb(0x983535),
-        .disabled_surface = rgb(0xe8edeb),
-        .disabled_text = rgb(0x8b9894),
-        .preview_surface = rgb(0x101816),
-        .preview_overlay = argb(0xcc15201e),
-        .preview_text = rgb(0xe8f6f1),
-        .face_indicator = rgb(0x4dd3a7),
-    };
+        .primary_container = rgb(0xa0f3d8),
+        .on_primary_container = rgb(0x00201a),
+        .secondary_container = rgb(0xcde9df),
+        .on_secondary_container = rgb(0x082019),
+        .on_surface = rgb(0x161d1b),
+        .on_surface_variant = rgb(0x3f4945),
+        .error = rgb(0xba1a1a),
+    });
 }
 
 double contrast_ratio(ThemeColor foreground, ThemeColor background) {
@@ -699,6 +892,31 @@ double contrast_ratio(ThemeColor foreground, ThemeColor background) {
     const auto darker = std::min(first, second);
     return (lighter + 0.05) / (darker + 0.05);
 }
+
+namespace {
+
+// Status hint from the DMS "dank16" block (per-mode, already harmonised).
+std::optional<ThemeColor> dank16_color(const Json& document, ThemeMode mode, std::string_view key) {
+    if (!document.contains("dank16") || !document["dank16"].is_object()) {
+        return std::nullopt;
+    }
+    const auto& block = document["dank16"];
+    const auto entry = block.find(std::string(key));
+    if (entry == block.end() || !entry->is_object()) {
+        return std::nullopt;
+    }
+    for (const auto& name : {std::string(mode_name(mode)), std::string("default")}) {
+        const auto value = entry->find(name);
+        if (value != entry->end() && value->is_string()) {
+            if (auto parsed = parse_theme_color(value->get_ref<const std::string&>())) {
+                return *parsed;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+}  // namespace
 
 std::expected<AppTheme, std::string> parse_material_theme(
     std::string_view text,
@@ -720,8 +938,6 @@ std::expected<AppTheme, std::string> parse_material_theme(
     const auto on_surface_variant = required_role(document, mode, "on_surface_variant");
     const auto outline = required_role(document, mode, "outline");
     const auto error = required_role(document, mode, "error");
-    const auto error_container = required_role(document, mode, "error_container");
-    const auto on_error_container = required_role(document, mode, "on_error_container");
     for (const auto* result : {
              &background,
              &surface,
@@ -731,78 +947,60 @@ std::expected<AppTheme, std::string> parse_material_theme(
              &on_surface,
              &on_surface_variant,
              &outline,
-             &error,
-             &error_container,
-             &on_error_container}) {
+             &error}) {
         if (!*result) {
             return std::unexpected(result->error());
         }
     }
 
-    const auto surface_lowest = optional_role(
-        document, mode, "surface_container_lowest", *surface);
-    const auto surface_container = optional_role(
-        document, mode, "surface_container", *surface);
-    if (!surface_lowest) {
-        return std::unexpected(surface_lowest.error());
+    const auto container = optional_role(document, mode, "surface_container", *surface);
+    if (!container) {
+        return std::unexpected(container.error());
     }
-    if (!surface_container) {
-        return std::unexpected(surface_container.error());
-    }
-    const auto surface_high = optional_role(
-        document, mode, "surface_container_high", *surface_container);
+    const auto lowest = optional_role(document, mode, "surface_container_lowest", *surface);
+    const auto low = optional_role(document, mode, "surface_container_low", *container);
+    const auto high = optional_role(document, mode, "surface_container_high", *container);
     const auto outline_variant = optional_role(document, mode, "outline_variant", *outline);
-    if (!surface_high) {
-        return std::unexpected(surface_high.error());
-    }
-    if (!outline_variant) {
-        return std::unexpected(outline_variant.error());
-    }
-
-    const auto fallback = built_in_theme(mode);
-    auto theme = fallback;
-    theme.canvas = *background;
-    theme.surface = *surface_lowest;
-    theme.surface_subtle = *surface_container;
-    theme.surface_selected = *primary_container;
-    theme.border = *outline_variant;
-    theme.divider = blend(*outline_variant, *background, 0.45);
-    theme.text_primary = safe_foreground(*on_surface, *background, 4.5);
-    theme.text_secondary = safe_foreground(*on_surface_variant, *background, 4.5);
-    theme.text_tertiary = safe_foreground(*outline, *background, 3.0);
-    theme.primary = *primary;
-    theme.primary_hover = blend(*primary, *on_primary, 0.08);
-    theme.primary_pressed = blend(*primary, *on_primary, 0.16);
-    theme.on_primary = safe_foreground(*on_primary, *primary, 4.5);
-    theme.danger_surface = *error_container;
-    theme.danger_hover = blend(*error_container, *error, 0.12);
-    theme.danger_text = safe_foreground(*on_error_container, *error_container, 4.5);
-    theme.disabled_surface = *surface_high;
-    theme.disabled_text = safe_foreground(*outline, *surface_high, 3.0);
-
-    const auto success_surface = optional_role(
-        document, mode, "tertiary_container", *primary_container);
-    const auto success_text = optional_role(
-        document, mode, "on_tertiary_container", *on_surface);
-    const auto warning_surface = optional_role(
-        document, mode, "secondary_container", *surface_high);
-    const auto warning_text = optional_role(
+    const auto on_primary_container = optional_role(
+        document, mode, "on_primary_container", *on_surface);
+    const auto secondary_container = optional_role(
+        document, mode, "secondary_container", *container);
+    const auto on_secondary_container = optional_role(
         document, mode, "on_secondary_container", *on_surface_variant);
     for (const auto* result : {
-             &success_surface,
-             &success_text,
-             &warning_surface,
-             &warning_text}) {
+             &lowest,
+             &low,
+             &high,
+             &outline_variant,
+             &on_primary_container,
+             &secondary_container,
+             &on_secondary_container}) {
         if (!*result) {
             return std::unexpected(result->error());
         }
     }
-    theme.success_surface = *success_surface;
-    theme.success_text = safe_foreground(*success_text, *success_surface, 4.5);
-    theme.warning_surface = *warning_surface;
-    theme.warning_text = safe_foreground(*warning_text, *warning_surface, 4.5);
-    theme.face_indicator = fallback.face_indicator;
-    return theme;
+
+    return derive_theme(MaterialRoles{
+        .mode = mode,
+        .background = *background,
+        .surface_lowest = *lowest,
+        .sidebar = *low,
+        .group = *container,
+        .group_high = *high,
+        .outline = *outline,
+        .outline_variant = *outline_variant,
+        .primary = *primary,
+        .on_primary = *on_primary,
+        .primary_container = *primary_container,
+        .on_primary_container = *on_primary_container,
+        .secondary_container = *secondary_container,
+        .on_secondary_container = *on_secondary_container,
+        .on_surface = *on_surface,
+        .on_surface_variant = *on_surface_variant,
+        .error = *error,
+        .dank_ok = dank16_color(document, mode, "color2"),
+        .dank_warn = dank16_color(document, mode, "color3"),
+    });
 }
 
 ThemePaths default_theme_paths() {
