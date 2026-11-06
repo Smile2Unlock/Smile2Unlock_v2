@@ -51,6 +51,8 @@ struct TargetStatus {
     AuthtokSource authtok_source = AuthtokSource::kNone;
     bool sealed_available = false; // Parent AUTH wallet line follows the face/password anchor.
     std::string detail;
+    bool adoptable = false;
+    std::string adoption_unavailable_reason = "target is not externally configured";
 };
 
 struct DeploymentSnapshot {
@@ -74,6 +76,7 @@ struct PamPlan {
     bool child_existed = false;
     AuthtokSource authtok_source = AuthtokSource::kNone;
     bool already_managed = false;
+    bool adoption = false;
 };
 
 [[nodiscard]] std::string_view target_id(TargetKind target);
@@ -87,6 +90,9 @@ struct PamPlan {
 [[nodiscard]] std::expected<PamPlan, std::string>
 plan_pam_integration(const std::filesystem::path& root, TargetKind target,
                      AuthtokSource authtok_source);
+[[nodiscard]] std::expected<PamPlan, std::string>
+plan_pam_adoption(const std::filesystem::path& root, TargetKind target,
+                  AuthtokSource authtok_source = AuthtokSource::kNone);
 [[nodiscard]] inline std::expected<PamPlan, std::string>
 plan_pam_integration(const std::filesystem::path& root, TargetKind target, bool wallet_token) {
     return plan_pam_integration(

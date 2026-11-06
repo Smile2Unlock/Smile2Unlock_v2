@@ -560,6 +560,8 @@ void malformed_journals_are_rejected(const std::filesystem::path& root) {
 
 } // namespace
 
+bool adoption_deployment_tests(const std::filesystem::path& base);
+
 bool sealed_deployment_tests(const std::filesystem::path& base);
 
 int main() {
@@ -585,6 +587,8 @@ int main() {
     administrator_targets_round_trip(root / "administrator");
     malformed_journals_are_rejected(root / "malformed-journal");
     check(sealed_deployment_tests(root / "sealed"), "sealed deployment regressions");
+
+    check(adoption_deployment_tests(root / "adoption"), "adoption deployment regressions");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {

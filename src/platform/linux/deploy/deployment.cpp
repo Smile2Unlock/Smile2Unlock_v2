@@ -183,8 +183,47 @@ std::optional<AuthAnchor> auth_anchor(std::span<const ParsedLine> lines, TargetK
 
 bool contains_module(std::span<const ParsedLine> lines, std::string_view module) {
     return std::ranges::any_of(lines, [module](const auto& line) {
-        return std::ranges::find(line.fields, module) != line.fields.end();
+        return line.fields.size() >= 3
+            && std::filesystem::path(line.fields[2]).filename() == module;
     });
+}
+
+std::expected<std::size_t, std::string> adoption_line(
+    std::span<const ParsedLine> lines, TargetKind target) {
+    auto candidate = std::optional<std::size_t>{};
+    for (auto index = std::size_t{0}; index < lines.size(); ++index) {
+        const auto& fields = lines[index].fields;
+        if ((fields.size() >= 2 && fields[0] == "@include"
+             && std::filesystem::path(fields[1]).filename().string().starts_with("smile2unlock-"))
+            || (fields.size() >= 3 && (fields[1] == "include" || fields[1] == "substack")
+                && std::filesystem::path(fields[2]).filename().string().starts_with("smile2unlock-"))) {
+            return std::unexpected("PAM service includes another Smile2Unlock service");
+        }
+        if (fields.size() >= 3
+            && std::filesystem::path(fields[2]).filename() == kPamModule) {
+            if (candidate) {
+                return std::unexpected("adoption requires exactly one Smile2Unlock line");
+            }
+            candidate = index;
+        }
+    }
+    if (!candidate) {
+        return std::unexpected("adoption requires exactly one Smile2Unlock line");
+    }
+    const auto& fields = lines[*candidate].fields;
+    if (fields[0] != "auth" || fields[1] != "sufficient" || fields[2] != kPamModule
+        || (fields.size() != 3
+            && (fields.size() != 4 || fields[3] != "socket=/run/smile2unlock/control.sock"))) {
+        return std::unexpected(
+            "adoption requires auth sufficient pam_smile2unlock.so with no arguments "
+            "or only socket=/run/smile2unlock/control.sock");
+    }
+    const auto anchor = auth_anchor(lines, target);
+    if (!anchor || *candidate + 1 != anchor->line) {
+        return std::unexpected(
+            "Smile2Unlock line must immediately precede the recognized password-stack anchor");
+    }
+    return *candidate;
 }
 
 bool references_substack(std::span<const ParsedLine> lines, std::string_view service) {
@@ -553,6 +592,7 @@ TargetStatus inspect_target(
     if (!content) {
         status.state = TargetState::kConflict;
         status.detail = content.error();
+        status.adoption_unavailable_reason = content.error();
         return status;
     }
     const auto lines = parse_lines(*content);
@@ -614,6 +654,11 @@ TargetStatus inspect_target(
         status.detail = target.kind == TargetKind::kDms
             ? "dedicated DMS PAM service is installed"
             : "Smile2Unlock is configured outside the deployment helper";
+        if (target.kind != TargetKind::kDms) {
+            const auto adoption = plan_pam_adoption(root, target.kind);
+            status.adoptable = adoption.has_value();
+            status.adoption_unavailable_reason = adoption ? "" : adoption.error();
+        }
         return status;
     }
     if (target.kind == TargetKind::kDms) {
@@ -700,9 +745,11 @@ std::expected<DeploymentSnapshot, std::string> inspect_deployment(
     return snapshot;
 }
 
-std::expected<PamPlan, std::string> plan_pam_integration(const std::filesystem::path& root,
-                                                         TargetKind target,
-                                                         AuthtokSource authtok_source) {
+namespace {
+std::expected<PamPlan, std::string> plan_pam_integration_impl(const std::filesystem::path& root,
+                                                           TargetKind target,
+                                                           AuthtokSource authtok_source,
+                                                           bool adoption) {
     if (authtok_source != AuthtokSource::kNone && definition(target).role != TargetRole::kLogin &&
         definition(target).role != TargetRole::kLoginAndLock) {
         return std::unexpected("wallet authtok is supported only for login targets");
@@ -720,6 +767,15 @@ std::expected<PamPlan, std::string> plan_pam_integration(const std::filesystem::
         return std::unexpected(source.error());
     }
     auto lines = parse_lines(*source);
+    if (adoption) {
+        const auto legacy_line = adoption_line(lines, target);
+        if (!legacy_line) {
+            return std::unexpected(legacy_line.error());
+        }
+        // Keep source_content and its fingerprint intact for the shared transaction
+        // and rollback. Only the input to the normal transformation loses this line.
+        lines.erase(lines.begin() + *legacy_line);
+    }
     const auto child_service = child_service_name(target);
     const auto child_path = pam_path(root, "/etc/pam.d", child_service);
     const auto destination_path = pam_path(root, "/etc/pam.d", service);
@@ -825,7 +881,21 @@ std::expected<PamPlan, std::string> plan_pam_integration(const std::filesystem::
         .destination_existed = *source_path == destination_path,
         .child_existed = child_existed,
         .authtok_source = authtok_source,
+        .adoption = adoption,
     };
+}
+} // namespace
+
+std::expected<PamPlan, std::string> plan_pam_integration(const std::filesystem::path& root,
+                                                       TargetKind target,
+                                                       AuthtokSource authtok_source) {
+    return plan_pam_integration_impl(root, target, authtok_source, false);
+}
+
+std::expected<PamPlan, std::string> plan_pam_adoption(const std::filesystem::path& root,
+                                                    TargetKind target,
+                                                    AuthtokSource authtok_source) {
+    return plan_pam_integration_impl(root, target, authtok_source, true);
 }
 
 std::expected<void, std::string> apply_pam_plan(
@@ -919,7 +989,9 @@ std::expected<void, std::string> apply_pam_plan(
     const auto backup_dir = backup_directory(root);
     const auto parent_backup = backup_dir / (id + ".parent");
     const auto child_backup = backup_dir / (id + ".child");
-    if (plan.destination_existed) {
+    // Adoption also records vendor originals, even though restoring a vendor
+    // target normally only requires removing the administrator override.
+    if (plan.destination_existed || plan.adoption) {
         if (const auto saved = atomic_write(parent_backup, plan.source_content, 0600); !saved) {
             return saved;
         }
@@ -1208,13 +1280,15 @@ std::string snapshot_json(const DeploymentSnapshot& snapshot) {
             {"authtok_source", authtok_source_id(target.authtok_source)},
             {"sealed_available", target.sealed_available},
             {"detail", target.detail},
+            {"adoptable", target.adoptable},
+            {"adoption_unavailable_reason", target.adoption_unavailable_reason},
         });
     }
     return json{{"version", 1}, {"targets", std::move(targets)}}.dump();
 }
 
 std::string plan_json(const PamPlan& plan) {
-    return json{
+    auto description = json{
         {"version", 1},
         {"target", target_id(plan.target)},
         {"service", plan.service},
@@ -1224,8 +1298,15 @@ std::string plan_json(const PamPlan& plan) {
         {"authtok_source", authtok_source_id(plan.authtok_source)},
         {"already_managed", plan.already_managed},
         {"password_fallback", true},
+    };
+    if (plan.adoption) {
+        // Planning is unprivileged. Return only generated content: arbitrary
+        // original PAM options may contain secrets in an administrator-only file.
+        description["operation"] = "adopt";
+        description["replaces_manual_line"] = true;
+        description["child_content"] = plan.child_content;
     }
-        .dump();
+    return description.dump();
 }
 
 } // namespace su::deploy

@@ -1,10 +1,18 @@
 #pragma once
 
 #include <expected>
+#include <functional>
 #include <string>
 #include <string_view>
 
 namespace su::deploy {
+
+struct AdoptionReview {
+    std::string id;
+    std::string description;
+    // Holds the original bus connection: plans are bound to its unique sender.
+    std::function<std::expected<std::string, std::string>()> apply;
+};
 
 class DeploymentClient {
 public:
@@ -21,6 +29,8 @@ public:
         bool wallet_token) const;
     [[nodiscard]] std::expected<std::string, std::string>
     configure_target_source(std::string_view target, std::string_view authtok_source) const;
+    [[nodiscard]] std::expected<AdoptionReview, std::string>
+    plan_adoption(std::string_view target, std::string_view authtok_source = "none") const;
     [[nodiscard]] std::expected<std::string, std::string> rollback_target(
         std::string_view target) const;
 };

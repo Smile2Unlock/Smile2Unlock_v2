@@ -604,7 +604,7 @@ SystemStatus AppController::load_system_status() {
             const auto configurable = target.state == su::deploy::TargetState::kSupported ||
                                       target.state == su::deploy::TargetState::kManaged;
             const auto sealed_reason = wallet::sealed_unavailable_reason(
-                configurable, target.sealed_available,
+                configurable || target.adoptable, target.sealed_available,
                 status.storage_protection == StorageProtection::kHostTpm2);
             has_login_target = has_login_target || login;
             has_lock_target = has_lock_target || lock;
@@ -631,6 +631,8 @@ SystemStatus AppController::load_system_status() {
                 .sealed_available = sealed_reason.empty(),
                 .sealed_unavailable_reason = std::string(sealed_reason),
                 .authtok_source = std::string(su::deploy::authtok_source_id(target.authtok_source)),
+                .adoptable = target.adoptable,
+                .adoption_unavailable_reason = target.adoption_unavailable_reason,
             });
         }
         status.pam_configured = (!has_login_target || status.login_pam_configured)
@@ -655,6 +657,31 @@ std::expected<std::string, std::string> AppController::initialize_system_deploym
 std::expected<std::string, std::string>
 AppController::configure_desktop_target(std::string_view target, std::string_view authtok_source) {
     return su::deploy::DeploymentClient{}.configure_target_source(target, authtok_source);
+}
+
+std::expected<std::string, std::string>
+AppController::plan_desktop_adoption(std::string_view target, std::string_view authtok_source) {
+    adoption_plan_id_.clear();
+    apply_adoption_ = {};
+    auto review = su::deploy::DeploymentClient{}.plan_adoption(target, authtok_source);
+    if (!review)
+        return std::unexpected(review.error());
+    auto description = nlohmann::json::parse(review->description, nullptr, false);
+    if (!description.is_object())
+        return std::unexpected("deployment helper returned an invalid adoption description");
+    description["plan_id"] = review->id;
+    adoption_plan_id_ = std::move(review->id);
+    apply_adoption_ = std::move(review->apply);
+    return description.dump();
+}
+
+std::expected<std::string, std::string>
+AppController::apply_desktop_adoption(std::string_view plan_id) {
+    if (!apply_adoption_ || plan_id != adoption_plan_id_)
+        return std::unexpected("PAM adoption must be reviewed before applying");
+    auto apply = std::exchange(apply_adoption_, {});
+    adoption_plan_id_.clear();
+    return apply();
 }
 
 std::expected<void, std::string> AppController::manage_wallet_authtok(bool clear,

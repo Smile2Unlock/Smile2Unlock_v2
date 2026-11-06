@@ -55,6 +55,10 @@ scope, manual installation and removal.
 
 The install script deliberately does not edit `/etc/pam.d`. A bad PAM stack can
 lock out every login path, and distributions compose these files differently.
+Configure installed PAM targets through **Diagnostics → Desktop integration**
+in the app, using **Review**, then **Apply** and administrator authorization.
+The helper preserves the password fallback and records the original files for
+restore. This is the recommended setup path.
 
 ## Keyring auto-unlock in the app
 
@@ -146,23 +150,51 @@ session remain manual checks.
 
 ## Enable a PAM entry point
 
-Add this before the password module in the PAM service that should allow face
-authentication:
+Use the app's **Desktop integration** setup above. The older manual recipe was
+to add this immediately before the existing password authentication include:
 
 ```text
 auth sufficient pam_smile2unlock.so
 ```
 
-Keep the existing password authentication lines after it. On Arch Linux, console
+**Warning:** a successful face match on this parent-level `sufficient` line ends
+the parent `auth` stack. GNOME Keyring/KWallet `auth` lines after it never run,
+so this recipe blocks keyring auto-unlock even when a saved password is available
+(issue #129). A managed substack lets those parent wallet lines run after face
+authentication. Keyring password delivery still requires an explicitly enabled
+source and user enrollment as described above.
+
+The deployment helper can **adopt** an existing manual setup without first
+removing it by hand. Its backend review/apply API is available for app integration;
+the adoption UI is not yet wired into Desktop integration. Adoption accepts exactly
+one `auth sufficient pam_smile2unlock.so` line, with no arguments or only
+`socket=/run/smile2unlock/control.sock`, immediately before a recognized password
+include/substack. Other Smile2Unlock includes, extra arguments, multiple face
+lines, or a different control/order are refused with a reason. DMS uses its
+separate installer. Keep the existing password authentication lines. On Arch Linux, console
 login commonly includes `system-local-login`; display managers and screen lockers
 usually have their own file under `/etc/pam.d`. Check the actual service before
 editing it and keep a root shell open while validating the first login.
 
-An alternate socket can be supplied for diagnostics:
+The explicit default socket is also accepted for adoption:
 
 ```text
 auth sufficient pam_smile2unlock.so socket=/run/smile2unlock/control.sock
 ```
+
+Adoption creates the same managed layout as normal configuration in one journaled
+transaction. Its token source defaults to `none`; `sealed` requires a parent
+wallet `auth` line after the anchor. Restore returns the exact original manual
+file bytes (or removes the override for a vendor file). Apply refuses files changed
+since review, and restore refuses managed files changed since apply.
+
+For backend callers, `PlanAdoptDesktopIntegration(target_id, authtok_source)` on
+`io.github.smile2unlock.Deployment1` returns a plan id and JSON describing the
+target, token source, and generated substack. Review that result before explicitly calling
+the existing `ApplyDesktopIntegration(plan_id)` on the same D-Bus connection.
+Plans expire after two minutes and use the same `configure-pam` Polkit action as
+normal setup. `AppController::plan_desktop_adoption` and
+`apply_desktop_adoption` provide this two-step flow for the future Linux UI.
 
 ## sudo and desktop administrator authorization
 
