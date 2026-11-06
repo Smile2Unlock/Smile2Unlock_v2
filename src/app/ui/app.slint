@@ -1,18 +1,20 @@
 import { CapturePanel, CaptureRow } from "captures.slint";
 export { CaptureRow } from "captures.slint";
-import { ComboBox, LineEdit, Palette, ScrollView, Slider, SpinBox, Switch } from "std-widgets.slint";
+import { ComboBox, LineEdit, Palette, SpinBox } from "std-widgets.slint";
 export { UiTheme } from "theme.slint";
+export { Tr } from "i18n.slint";
 export { ProfileRow } from "components.slint";
 export { DeploymentTargetRow } from "deployment.slint";
 export { ContributorRow, LicenseSummaryRow } from "about.slint";
-import { AboutPanel, ContributorRow, LicenseSummaryRow } from "about.slint";
+import { AboutContent, ContributorRow, LicenseSummaryRow } from "about.slint";
 import { UiTheme } from "theme.slint";
-import { WalletPanel } from "wallet.slint";
-import { DeploymentPanel, DeploymentTargetRow } from "deployment.slint";
+import { Tr } from "i18n.slint";
+import { KeyringGroup } from "wallet.slint";
+import { CaptureControls, PreviewFrame } from "faces.slint";
+import { DeploymentTargetRow, ModelsGroup, SystemSetupGroup, TargetGroups } from "deployment.slint";
 import {
-    ActionButton, CenteredActionButton, CenteredStatusPill, DiagnosticRow,
-    MetricBlock, NavButton, PageHeader, ProfileRow, RowLabelMeasure, SectionTitle,
-    SegmentedSelector, SetupStep, StatusPill,
+    Badge, Button, ButtonKind, Check, Group, NavItem, Note, Page, PageHeader, ProfileRow, Row,
+    SegmentedSelector, Status, Tone, Toggle, ValueSlider,
 } from "components.slint";
 
 export component AppWindow inherits Window {
@@ -52,6 +54,9 @@ export component AppWindow inherits Window {
     in property <bool> login_pam_configured: false;
     in property <bool> lock_pam_configured: false;
     in property <[DeploymentTargetRow]> deployment_targets;
+    in property <[DeploymentTargetRow]> login_targets;
+    in property <[DeploymentTargetRow]> lock_targets;
+    in property <[DeploymentTargetRow]> privilege_targets;
     in-out property <string> deployment_operation_status: "";
     in-out property <bool> models_present: true;
     in-out property <bool> models_downloading: false;
@@ -73,16 +78,17 @@ export component AppWindow inherits Window {
     in-out property <string> preview_status_text: "";
     in-out property <string> preview_error_text: "";
 
+    // 0 overview, 1 faces, 2 sign-in & unlock (Linux), 3 settings, 4 diagnostics, 5 about.
     in-out property <int> current_page: 0;
     changed current_page => {
-        if root.current_page == 2 { root.capture_refresh(); }
-        if root.current_page == 1 && !root.platform_windows {
+        if root.current_page == 3 { root.capture_refresh(); }
+        if (root.current_page == 1 || root.current_page == 2) && !root.platform_windows {
             root.refresh_system_status_requested();
             root.refresh_profiles_requested();
         }
         root.wallet_password_text = "";
     }
-    in-out property <int> language_index: 0;
+    in-out property <int> language_index <=> Tr.language-index;
     in-out property <int> theme_mode_index: 0;
     in-out property <int> window_controls_index: 0;
     in property <bool> window_frame_visible: true;
@@ -141,8 +147,6 @@ export component AppWindow inherits Window {
     callback license_selected(int);
     callback project_link_requested(int);
     callback contributor_link_requested(int);
-    pure callback translate(string, int) -> string;
-    pure callback translate_value(string, int, string) -> string;
 
     private property <bool> dark-mode: UiTheme.dark-mode;
 
@@ -151,6 +155,9 @@ export component AppWindow inherits Window {
         Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light;
     }
 
+    // One family for all text so CJK glyphs do not mix faces; empty = Slint default.
+    in property <string> ui_font_family: "";
+    default-font-family: root.ui_font_family;
     title: title_text;
     // NOTE: no `icon:` property here. slint 1.17's compiler never embeds
     // Window.icon images; it generates Image::load_from_path() with the
@@ -164,94 +171,92 @@ export component AppWindow inherits Window {
     // non-resizable and oversized on small screens). The initial size is
     // chosen by su_app at startup to fit the desktop; preferred-* only
     // guides the layout.
-    preferred-width: 1200px;
-    preferred-height: 780px;
+    preferred-width: UiTheme.window-width;
+    preferred-height: UiTheme.window-height;
     background: UiTheme.canvas;
 
-    private property <bool> compact-layout: root.width < 1020px;
+    private property <bool> compact-layout: root.width - UiTheme.sidebar-width < UiTheme.compact-width;
     private property <bool> storage-ready: root.storage_protection_index == 1 || root.storage_protection_index == 2;
     private property <bool> auth-ready: root.service_available && root.seetaface_available && root.camera_count > 0;
     private property <bool> runtime-ready: root.auth-ready && root.storage-ready;
+    private property <bool> can-test: !root.busy && root.auth-ready && root.profiles.length > 0;
     private property <bool> setup-complete: root.platform_windows
         ? (root.runtime-ready && root.profiles.length > 0)
         : (root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured);
-    private property <length> page-padding: 18px;
+    private property <bool> step-service: root.service_available && root.storage-ready;
+    private property <bool> step-hardware: root.seetaface_available && root.camera_count > 0;
+    private property <bool> step-enroll: root.profiles.length > 0;
+    private property <bool> step-test: root.desktop_auth_passed;
+    private property <bool> step-pam: root.pam_configured;
+    // The first unfinished setup step (1..5), or 0 when everything is done.
+    private property <int> next-step: !root.step-service ? 1
+        : !root.step-hardware ? 2
+        : !root.step-enroll ? 3
+        : !root.step-test ? 4
+        : !root.platform_windows && !root.step-pam ? 5 : 0;
+    private property <string> faces-text: root.profiles.length == 0 ? Tr.t("overview.faces_none")
+        : root.profiles.length == 1 ? Tr.t("overview.faces_one")
+        : Tr.tv("overview.faces_many", root.profiles.length);
+    private property <string> hero-summary: root.platform_windows ? root.faces-text
+        : root.faces-text
+            + " · " + (root.lock_pam_configured ? Tr.t("overview.lock_on") : Tr.t("overview.lock_off"))
+            + " · " + (root.login_pam_configured ? Tr.t("overview.login_on") : Tr.t("overview.login_off"));
+    private property <string> camera-summary: root.camera_count == 0 ? Tr.t("camera.none")
+        : root.camera_count == 1 ? root.camera_text
+        : Tr.tv("camera.count", root.camera_count);
 
     HorizontalLayout {
-        spacing: 0px;
+        spacing: 0;
 
         Rectangle {
-            width: 176px;
-            background: UiTheme.surface;
-            border-width: 0px;
+            width: UiTheme.sidebar-width;
+            background: UiTheme.sidebar;
 
             VerticalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-top: 24px;
-                padding-bottom: 20px;
-                spacing: 8px;
+                padding: UiTheme.s4;
+                padding-top: UiTheme.s6;
+                spacing: UiTheme.s1;
 
                 VerticalLayout {
-                    height: 72px;
-                    spacing: 4px;
-                    Text { text: "Smile2Unlock"; color: UiTheme.primary; font-size: 19px; font-weight: 800; }
-                    Text { text: root.translate("app.subtitle", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
+                    padding-left: UiTheme.s4;
+                    padding-bottom: UiTheme.s6;
+                    spacing: UiTheme.s1;
+                    Text { text: "Smile2Unlock"; color: UiTheme.text; font-size: UiTheme.font-brand; font-weight: UiTheme.weight-bold; overflow: elide; }
+                    Text { text: Tr.t("app.subtitle"); color: UiTheme.text-faint; font-size: UiTheme.font-small; overflow: elide; }
                 }
 
-                NavButton {
-                    label: root.translate("nav.overview", root.language_index);
-                    selected: root.current_page == 0;
-                    activated => { root.current_page = 0; }
-                }
-                NavButton {
-                    label: root.translate("nav.enrollment", root.language_index);
-                    selected: root.current_page == 1;
-                    activated => { root.current_page = 1; }
-                }
-                NavButton {
-                    label: root.translate("nav.settings", root.language_index);
-                    selected: root.current_page == 2;
-                    activated => { root.current_page = 2; }
-                }
-                NavButton {
-                    label: root.translate("nav.diagnostics", root.language_index);
-                    selected: root.current_page == 3;
-                    activated => { root.current_page = 3; }
-                }
-                NavButton {
-                    label: root.translate("nav.about", root.language_index);
-                    selected: root.current_page == 4;
-                    activated => { root.current_page = 4; }
-                }
+                NavItem { text: Tr.t("nav.overview"); selected: root.current_page == 0; activated => { root.current_page = 0; } }
+                NavItem { text: Tr.t("nav.faces"); selected: root.current_page == 1; activated => { root.current_page = 1; } }
+                if !root.platform_windows: NavItem { text: Tr.t("nav.login"); selected: root.current_page == 2; activated => { root.current_page = 2; } }
+                NavItem { text: Tr.t("nav.settings"); selected: root.current_page == 3; activated => { root.current_page = 3; } }
+                NavItem { text: Tr.t("nav.diagnostics"); selected: root.current_page == 4; activated => { root.current_page = 4; } }
+                NavItem { text: Tr.t("nav.about"); selected: root.current_page == 5; activated => { root.current_page = 5; } }
 
-                Rectangle { vertical-stretch: 1; background: transparent; }
+                Rectangle { vertical-stretch: 1; }
 
-                Rectangle {
-                    border-radius: 6px;
-                    background: UiTheme.surface-subtle;
-
+                HorizontalLayout {
+                    padding: UiTheme.s3;
+                    spacing: UiTheme.s3;
+                    Rectangle {
+                        width: UiTheme.avatar;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: UiTheme.tonal;
+                        Text { text: root.username_initial; color: UiTheme.on-tonal; font-weight: UiTheme.weight-bold; font-size: UiTheme.font-row-title; }
+                    }
                     VerticalLayout {
-                        padding: 12px;
-                        spacing: 3px;
-                        Text { text: root.username; color: UiTheme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
+                        alignment: center;
+                        spacing: UiTheme.unit / 2;
+                        horizontal-stretch: 1;
+                        Text { text: root.username; color: UiTheme.text; font-weight: UiTheme.weight-bold; font-size: UiTheme.font-body; overflow: elide; }
                         Text {
-                            text: root.profiles.length == 0
-                                ? root.translate("account.enrollment_required", root.language_index)
-                                : root.translate("account.enabled", root.language_index);
-                            color: root.profiles.length == 0 ? UiTheme.warning-text : UiTheme.success-text;
-                            font-size: 11px;
+                            text: root.profiles.length == 0 ? Tr.t("account.enrollment_required") : Tr.t("account.enabled");
+                            color: root.profiles.length == 0 ? UiTheme.warn : UiTheme.ok;
+                            font-size: UiTheme.font-small;
                             wrap: word-wrap;
                         }
                     }
                 }
-            }
-
-            Rectangle {
-                x: parent.width - 1px;
-                width: 1px;
-                height: parent.height;
-                background: UiTheme.border;
             }
         }
 
@@ -259,1039 +264,597 @@ export component AppWindow inherits Window {
             horizontal-stretch: 1;
             background: UiTheme.canvas;
 
-            if root.current_page == 4: AboutPanel {
-                app-version: root.app_version;
-                language-index: root.language_index;
-                contributors: root.contributors;
-                components: root.open_source_components;
-                license-names: root.license_names;
-                license-index <=> root.license_index;
-                license-text: root.license_text;
-                link-status: root.about_link_status;
-                translate(key, index) => { root.translate(key, index) }
-                license-selected(index) => { root.license_selected(index); }
-                project-link-requested(index) => { root.project_link_requested(index); }
-                contributor-link-requested(index) => { root.contributor_link_requested(index); }
-            }
-
-            if root.current_page == 0: ScrollView {
-                viewport-width: self.width;
-
-                overview-content := VerticalLayout {
-                    width: parent.width;
-                    padding: root.page-padding;
-                    spacing: 20px;
-
-                    PageHeader {
-                        title: root.translate("nav.overview", root.language_index);
-                        detail: root.translate_value("overview.status_for", root.language_index, root.username);
-                    }
-
-                    if !root.compact-layout: HorizontalLayout {
-                        height: 100px;
-                        spacing: 12px;
-                        MetricBlock {
-                            horizontal-stretch: 1;
-                            label: root.translate("overview.system_auth", root.language_index);
-                            value: root.service_available
-                                ? root.translate("status.online", root.language_index)
-                                : root.translate("status.offline", root.language_index);
-                            detail: root.service_available
-                                ? root.translate("overview.service_available", root.language_index)
-                                : root.translate("overview.service_unavailable", root.language_index);
-                        }
-                        MetricBlock {
-                            horizontal-stretch: 1;
-                            label: root.translate("overview.face_samples", root.language_index);
-                            value: root.profiles.length;
-                            detail: root.profiles.length == 1
-                                ? root.translate("overview.one_sample", root.language_index)
-                                : root.translate_value("overview.sample_count", root.language_index, root.profiles.length);
-                        }
-                        MetricBlock {
-                            horizontal-stretch: 1;
-                            label: root.translate("overview.recognizer", root.language_index);
-                            value: root.seetaface_available
-                                ? root.translate("status.ready", root.language_index)
-                                : root.translate("status.unavailable", root.language_index);
-                            detail: root.camera_count == 0
-                                ? root.translate("camera.none", root.language_index)
-                                : root.camera_count == 1
-                                    ? root.camera_text
-                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
-                        }
-                    }
-
-                    if root.compact-layout: VerticalLayout {
-                        height: 312px;
-                        spacing: 6px;
-                        MetricBlock {
-                            label: root.translate("overview.system_auth", root.language_index);
-                            value: root.service_available
-                                ? root.translate("status.online", root.language_index)
-                                : root.translate("status.offline", root.language_index);
-                            detail: root.service_available
-                                ? root.translate("overview.service_available", root.language_index)
-                                : root.translate("overview.service_unavailable", root.language_index);
-                        }
-                        MetricBlock {
-                            label: root.translate("overview.face_samples", root.language_index);
-                            value: root.profiles.length;
-                            detail: root.profiles.length == 1
-                                ? root.translate("overview.one_sample", root.language_index)
-                                : root.translate_value("overview.sample_count", root.language_index, root.profiles.length);
-                        }
-                        MetricBlock {
-                            label: root.translate("overview.recognizer", root.language_index);
-                            value: root.seetaface_available
-                                ? root.translate("status.ready", root.language_index)
-                                : root.translate("status.unavailable", root.language_index);
-                            detail: root.camera_count == 0
-                                ? root.translate("camera.none", root.language_index)
-                                : root.camera_count == 1
-                                    ? root.camera_text
-                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
-                        }
-                    }
-
-                    if !root.setup-complete: Rectangle {
-                        // Auto-sized: the PAM step is Linux-only, so a fixed
-                        // height would leave blank space on Windows.
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        VerticalLayout {
-                            padding: 18px;
-                            spacing: 6px;
-                            SectionTitle {
-                                title: root.translate("onboarding.title", root.language_index);
-                                detail: root.translate("onboarding.subtitle", root.language_index);
-                            }
-                            SetupStep {
-                                number: "1";
-                                title: root.translate("onboarding.service", root.language_index);
-                                detail: root.service_available && root.storage-ready
-                                    ? root.translate("onboarding.service_ready", root.language_index)
-                                    : root.translate("onboarding.service_action", root.language_index);
-                                status: root.service_available && root.storage-ready
-                                    ? root.translate("status.ready", root.language_index)
-                                    : root.translate("status.action_required", root.language_index);
-                                tone: root.service_available && root.storage-ready ? "good" : "warn";
-                                action-label: root.translate("action.review", root.language_index);
-                                activated => { root.current_page = 3; }
-                            }
-                            SetupStep {
-                                number: "2";
-                                title: root.translate("onboarding.hardware", root.language_index);
-                                detail: root.seetaface_available && root.camera_count > 0
-                                    ? root.translate("onboarding.hardware_ready", root.language_index)
-                                    : root.translate("onboarding.hardware_action", root.language_index);
-                                status: root.seetaface_available && root.camera_count > 0
-                                    ? root.translate("status.ready", root.language_index)
-                                    : root.translate("status.action_required", root.language_index);
-                                tone: root.seetaface_available && root.camera_count > 0 ? "good" : "warn";
-                                action-label: root.translate("action.review", root.language_index);
-                                activated => { root.current_page = 3; }
-                            }
-                            SetupStep {
-                                number: "3";
-                                title: root.translate("onboarding.enrollment", root.language_index);
-                                detail: root.profiles.length > 0
-                                    ? root.translate("onboarding.enrollment_ready", root.language_index)
-                                    : root.translate("onboarding.enrollment_action", root.language_index);
-                                status: root.profiles.length > 0
-                                    ? root.translate("status.ready", root.language_index)
-                                    : root.translate("status.action_required", root.language_index);
-                                tone: root.profiles.length > 0 ? "good" : "warn";
-                                action-label: root.translate("action.enroll_face", root.language_index);
-                                activated => { root.current_page = 1; }
-                            }
-                            SetupStep {
-                                number: "4";
-                                title: root.translate("onboarding.desktop_test", root.language_index);
-                                detail: root.desktop_auth_passed
-                                    ? root.translate("onboarding.desktop_test_ready", root.language_index)
-                                    : root.translate("onboarding.desktop_test_action", root.language_index);
-                                status: root.desktop_auth_passed
-                                    ? root.translate("status.passed", root.language_index)
-                                    : root.translate("status.not_tested", root.language_index);
-                                tone: root.desktop_auth_passed ? "good" : "warn";
-                                action-label: root.translate("action.test_auth", root.language_index);
-                                action-enabled: root.auth-ready && root.profiles.length > 0 && !root.busy;
-                                activated => { root.current_frame_auth_requested(); }
-                            }
-                            if !root.platform_windows : SetupStep {
-                                number: "5";
-                                title: root.translate("onboarding.pam", root.language_index);
-                                detail: root.pam_configured
-                                    ? root.translate_value("onboarding.pam_ready", root.language_index, root.pam_service)
-                                    : root.translate("onboarding.pam_action", root.language_index);
-                                status: root.pam_configured
-                                    ? root.translate("status.configured", root.language_index)
-                                    : root.translate("status.not_configured", root.language_index);
-                                tone: root.pam_configured ? "good" : "warn";
-                                action-label: root.translate("action.review", root.language_index);
-                                activated => { root.current_page = 3; }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        height: 196px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-
-                        VerticalLayout {
-                            padding-left: 20px;
-                            padding-right: 20px;
-                            padding-top: 16px;
-                            padding-bottom: 16px;
-                            spacing: 12px;
-                            SectionTitle {
-                                title: root.translate("account.current", root.language_index);
-                                detail: root.translate("account.protected_detail", root.language_index);
-                            }
-
-                            HorizontalLayout {
-                                height: 52px;
-                                spacing: 16px;
-                                Rectangle {
-                                    width: 52px;
-                                    height: 52px;
-                                    border-radius: 6px;
-                                    background: UiTheme.surface-selected;
-                                    Text {
-                                        width: parent.width;
-                                        height: parent.height;
-                                        text: root.username_initial;
-                                        color: UiTheme.primary;
-                                        font-size: 22px;
-                                        font-weight: 800;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    spacing: 4px;
-                                    Text { text: root.username; color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
-                                    Text {
-                                        text: root.profiles.length == 0
-                                            ? root.translate("account.no_samples", root.language_index)
-                                            : root.translate_value("account.sample_count", root.language_index, root.profiles.length);
-                                        color: UiTheme.text-secondary;
-                                        font-size: 13px;
-                                    }
-                                }
-                                CenteredStatusPill {
-                                    width: root.profiles.length == 0 ? 132px : 92px;
-                                    label: root.profiles.length == 0
-                                        ? root.translate("status.action_required", root.language_index)
-                                        : root.translate("status.protected", root.language_index);
-                                    tone: root.profiles.length == 0 ? "warn" : "good";
-                                }
-                                CenteredActionButton {
-                                    width: 124px;
-                                    label: root.profiles.length == 0
-                                        ? root.translate("action.enroll_face", root.language_index)
-                                        : root.translate("action.manage_faces", root.language_index);
-                                    primary: root.profiles.length == 0;
-                                    activated => { root.current_page = 1; }
-                                }
-                            }
-
-                            Rectangle { height: 1px; background: UiTheme.divider; }
-
-                            HorizontalLayout {
-                                height: 26px;
-                                spacing: 12px;
-                                Text { text: root.translate("overview.last_check", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                Text { text: root.activity_title; color: UiTheme.text-primary; font-size: 13px; font-weight: 600; vertical-alignment: center; overflow: elide; }
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
-                                StatusPill {
-                                    width: 92px;
-                                    label: root.busy
-                                        ? root.translate("status.working", root.language_index)
-                                        : root.activity_tone == "good"
-                                            ? root.translate("status.passed", root.language_index)
-                                            : root.activity_tone == "bad"
-                                                ? root.translate("status.failed", root.language_index)
-                                                : root.translate("status.idle", root.language_index);
-                                    tone: root.busy ? "warn" : root.activity_tone;
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        height: 144px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-
-                        HorizontalLayout {
-                            padding: 20px;
-                            spacing: 20px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                                VerticalLayout {
-                                    spacing: 7px;
-                                    Text { text: root.translate("overview.verify_account", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; }
-                                    Text {
-                                        text: root.activity_detail == ""
-                                            ? root.translate("overview.verify_hint", root.language_index)
-                                            : root.activity_detail;
-                                        color: UiTheme.text-secondary;
-                                        font-size: 13px;
-                                        wrap: word-wrap;
-                                    }
-                                }
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                            }
-                            CenteredActionButton {
-                                width: 150px;
-                                label: root.busy
-                                    ? root.translate("status.checking", root.language_index)
-                                    : root.translate("action.test_auth", root.language_index);
-                                primary: true;
-                                enabled: !root.busy && root.auth-ready && root.profiles.length > 0;
-                                activated => { root.current_frame_auth_requested(); }
-                            }
-                        }
-                    }
+            if root.current_page == 0: Page {
+                PageHeader {
+                    title: Tr.t("nav.overview");
+                    subtitle: Tr.tv("overview.status_for", root.username);
                 }
-            }
-
-            if root.current_page == 1: ScrollView {
-                viewport-width: self.width;
-
-                enrollment-content := VerticalLayout {
-                    width: parent.width;
-                    padding: root.page-padding;
-                    spacing: 20px;
-
-                    PageHeader {
-                        title: root.translate("nav.enrollment", root.language_index);
-                        detail: root.translate_value("enrollment.manage_for", root.language_index, root.username);
-                    }
-
-                    if root.platform_windows: Rectangle {
-                        height: 124px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-
-                        HorizontalLayout {
-                            padding: 18px;
-                            spacing: 18px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                spacing: 7px;
-                                Text {
-                                    text: root.translate("account.credential_title", root.language_index);
-                                    color: UiTheme.text-primary;
-                                    font-size: 15px;
-                                    font-weight: 700;
-                                }
-                                Text {
-                                    text: root.translate("account.credential_detail", root.language_index);
-                                    color: UiTheme.text-secondary;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: root.account_credential_configured
-                                        ? root.translate("account.credential_configured", root.language_index)
-                                        : root.translate("account.credential_missing", root.language_index);
-                                    color: root.account_credential_configured
-                                        ? UiTheme.success-text : UiTheme.warning-text;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                }
-                            }
-                            VerticalLayout {
-                                width: 300px;
-                                spacing: 8px;
-                                Text {
-                                    text: root.translate("account.windows_password", root.language_index);
-                                    color: UiTheme.text-secondary;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                }
-                                LineEdit {
-                                    text <=> root.account_password_text;
-                                    input-type: password;
-                                    enabled: !root.busy;
-                                }
-                                ActionButton {
-                                    label: root.account_credential_configured
-                                        ? root.translate("account.update_credential", root.language_index)
-                                        : root.translate("account.set_credential", root.language_index);
-                                    primary: !root.account_credential_configured;
-                                    enabled: !root.busy && root.account_password_text != "" && root.service_available;
-                                    activated => {
-                                        root.configure_account_credential_requested(root.account_password_text);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
+                // Hero: overall state and the one main action.
+                Rectangle {
+                    background: UiTheme.group;
+                    border-radius: UiTheme.radius-group;
                     HorizontalLayout {
-                        height: 352px;
-                        spacing: 18px;
-
-                        preview-frame := Rectangle {
-                            horizontal-stretch: 1;
-                            border-radius: 6px;
-                            background: UiTheme.preview-surface;
-                            clip: true;
-                            property <length> fitted_width: root.preview_source_width > 0 && root.preview_source_height > 0
-                                ? Math.min(self.width, self.height * root.preview_source_width / root.preview_source_height)
-                                : self.width;
-                            property <length> fitted_height: root.preview_source_width > 0 && root.preview_source_height > 0
-                                ? Math.min(self.height, self.width * root.preview_source_height / root.preview_source_width)
-                                : self.height;
-                            property <float> source_scale: root.preview_source_width > 0
-                                ? self.fitted_width / 1px / root.preview_source_width
-                                : 1;
-
-                            Image {
-                                width: parent.width;
-                                height: parent.height;
-                                source: root.preview_image;
-                                image-fit: contain;
-                            }
-                            Rectangle {
-                                x: (preview-frame.width - preview-frame.fitted_width) / 2
-                                    + root.face_box_x * preview-frame.source_scale * 1px;
-                                y: (preview-frame.height - preview-frame.fitted_height) / 2
-                                    + root.face_box_y * preview-frame.source_scale * 1px;
-                                width: root.face_box_w * preview-frame.source_scale * 1px;
-                                height: root.face_box_h * preview-frame.source_scale * 1px;
-                                visible: root.face_box_visible;
-                                border-color: UiTheme.face-indicator;
-                                border-width: 2px;
-                                background: transparent;
-                            }
-                            Rectangle {
-                                x: 14px;
-                                y: parent.height - 42px;
-                                width: Math.min(220px, parent.width - 28px);
-                                height: 28px;
-                                border-radius: 4px;
-                                background: UiTheme.preview-overlay;
-                                Text {
-                                    x: 10px;
-                                    width: parent.width - 20px;
-                                    height: parent.height;
-                                    text: root.preview_status_text;
-                                    color: UiTheme.preview-text;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                            }
-                        }
-
+                        padding: UiTheme.s6;
+                        spacing: UiTheme.s5;
                         Rectangle {
-                            width: 284px;
-                            border-radius: 6px;
-                            border-width: 1px;
-                            border-color: UiTheme.border;
-                            background: UiTheme.surface;
-
-                            VerticalLayout {
-                                padding: 20px;
-                                spacing: 14px;
-                                SectionTitle {
-                                    title: root.translate("enrollment.capture", root.language_index);
-                                    detail: root.camera_count == 0
-                                        ? root.translate("camera.none", root.language_index)
-                                        : root.camera_count == 1
-                                            ? root.camera_text
-                                            : root.translate_value("camera.count", root.language_index, root.camera_count);
-                                }
-                                Text { text: root.translate("enrollment.sample_name", root.language_index); color: UiTheme.text-secondary; font-size: 12px; font-weight: 600; }
-                                LineEdit { text <=> root.enroll_label_text; enabled: !root.busy; }
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.start_camera", root.language_index); enabled: !root.busy && root.camera_count > 0; activated => { root.start_preview_requested(); } }
-                                    ActionButton { horizontal-stretch: 1; label: root.translate("action.stop", root.language_index); enabled: !root.busy; activated => { root.stop_preview_requested(); } }
-                                }
-                                if root.preview_error_text != "": Text {
-                                    text: root.preview_error_text;
-                                    color: UiTheme.warning-text;
-                                    wrap: word-wrap;
-                                }
-                                ActionButton {
-                                    label: root.busy
-                                        ? root.translate("status.capturing", root.language_index)
-                                        : root.translate("action.capture_sample", root.language_index);
-                                    primary: true;
-                                    enabled: !root.busy && root.auth-ready
-                                        && (!root.platform_windows || root.account_credential_configured);
-                                    activated => { root.enroll_current_frame_requested(root.enroll_label_text); }
-                                }
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                                Text { text: root.activity_detail; color: root.activity_tone == "bad" ? UiTheme.danger-text : UiTheme.text-secondary; font-size: 12px; wrap: word-wrap; }
+                            width: UiTheme.hero-badge;
+                            height: self.width;
+                            border-radius: self.width / 2;
+                            background: root.setup-complete ? UiTheme.ok-bg : UiTheme.warn-bg;
+                            Text {
+                                text: root.setup-complete ? "✓" : "!";
+                                color: root.setup-complete ? UiTheme.ok : UiTheme.warn;
+                                font-size: UiTheme.font-stat;
+                                font-weight: UiTheme.weight-bold;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: UiTheme.s1;
+                            horizontal-stretch: 1;
+                            Text {
+                                text: root.setup-complete ? Tr.t("overview.ready") : Tr.t("overview.not_ready");
+                                color: UiTheme.text;
+                                font-size: UiTheme.font-hero;
+                                font-weight: UiTheme.weight-bold;
+                                wrap: word-wrap;
+                            }
+                            Text { text: root.hero-summary; color: UiTheme.text-dim; font-size: UiTheme.font-body; wrap: word-wrap; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Button {
+                                text: root.busy ? Tr.t("status.checking") : Tr.t("action.test_auth");
+                                kind: ButtonKind.filled;
+                                enabled: root.can-test;
+                                clicked => { root.current_frame_auth_requested(); }
                             }
                         }
                     }
-
-                    SectionTitle {
-                        title: root.translate("enrollment.enrolled_samples", root.language_index);
-                        detail: root.profiles.length == 0
-                            ? root.translate("enrollment.no_samples", root.language_index)
-                            : root.translate_value("enrollment.sample_count", root.language_index, root.profiles.length);
+                }
+                Group {
+                    title: Tr.t("onboarding.title");
+                    Row {
+                        title: Tr.t("onboarding.service");
+                        subtitle: root.step-service ? Tr.t("onboarding.service_ready") : Tr.t("onboarding.service_action");
+                        if root.next-step == 1: Button { text: Tr.t("action.review"); clicked => { root.current_page = 4; } }
+                        Check { done: root.step-service; number: "1"; }
                     }
-
-                    if root.profiles.length == 0: Rectangle {
-                        height: 92px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        Text { width: parent.width; height: parent.height; text: root.translate("enrollment.empty", root.language_index); color: UiTheme.text-tertiary; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                    Row {
+                        title: Tr.t("onboarding.hardware");
+                        subtitle: root.step-hardware ? Tr.t("onboarding.hardware_ready") : Tr.t("onboarding.hardware_action");
+                        if root.next-step == 2: Button { text: Tr.t("action.review"); clicked => { root.current_page = 4; } }
+                        Check { done: root.step-hardware; number: "2"; }
                     }
-
-                    for profile in root.profiles: Rectangle {
-                        height: 64px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-
-                        HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 12px;
-                            spacing: 14px;
-                            VerticalLayout {
-                                width: 8px;
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: UiTheme.success-text; }
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                            }
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                                VerticalLayout {
-                                    height: 37px;
-                                    spacing: 3px;
-                                    Text { text: profile.label; color: UiTheme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
-                                    Text { text: root.translate_value("enrollment.enrolled_at", root.language_index, profile.enrolled_at); color: UiTheme.text-tertiary; font-size: 11px; }
-                                }
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                            }
-                            CenteredActionButton {
-                                width: 86px;
-                                label: root.translate("action.remove", root.language_index);
-                                danger: true;
-                                enabled: !root.busy;
-                                activated => { root.delete_profile_requested(profile.id); }
-                            }
+                    Row {
+                        title: Tr.t("onboarding.enrollment");
+                        subtitle: root.step-enroll ? Tr.t("onboarding.enrollment_ready") : Tr.t("onboarding.enrollment_action");
+                        if root.next-step == 3: Button { text: Tr.t("action.enroll_face"); clicked => { root.current_page = 1; } }
+                        Check { done: root.step-enroll; number: "3"; }
+                    }
+                    Row {
+                        title: Tr.t("onboarding.desktop_test");
+                        subtitle: root.step-test ? Tr.t("onboarding.desktop_test_ready") : Tr.t("onboarding.desktop_test_action");
+                        if root.next-step == 4: Button {
+                            text: Tr.t("action.test_auth");
+                            enabled: root.can-test;
+                            clicked => { root.current_frame_auth_requested(); }
+                        }
+                        Check { done: root.step-test; number: "4"; }
+                    }
+                    if !root.platform_windows: Row {
+                        title: Tr.t("onboarding.pam");
+                        subtitle: root.step-pam
+                            ? Tr.tv("onboarding.pam_ready", root.pam_service)
+                            : Tr.t("onboarding.pam_action");
+                        if root.next-step == 5: Button { text: Tr.t("onboarding.pam_go"); clicked => { root.current_page = 2; } }
+                        Check { done: root.step-pam; number: "5"; }
+                    }
+                }
+                Group {
+                    title: Tr.t("overview.system");
+                    Row {
+                        title: Tr.t("diagnostics.auth_service");
+                        Status {
+                            text: root.service_available ? Tr.t("status.online") : Tr.t("status.offline");
+                            tone: root.service_available ? Tone.ok : Tone.danger;
                         }
                     }
-                    if !root.platform_windows: WalletPanel {
-                        enrolled: root.authtok_enrolled;
-                        status_known: root.authtok_status_known;
-                        unavailable_reason: root.wallet_use_reason(root.service_available, root.authtok_status_known,
-                            root.profiles.length > 0, root.storage_protection_index == 2, root.sealed_login_deployed);
-                        management_available: root.service_available && root.deployment_helper_available;
-                        busy: root.busy;
-                        password <=> root.wallet_password_text;
-                        operation_status: root.wallet_operation_status;
-                        language_index: root.language_index;
-                        translate(key, language) => { root.translate(key, language) }
-                        save_requested(password) => { root.save_wallet_password_requested(password); }
-                        clear_requested => { root.clear_wallet_password_requested(); }
+                    Row {
+                        title: Tr.t("diagnostics.storage");
+                        Status {
+                            text: root.storage_protection_index == 2 ? Tr.t("diagnostics.storage_tpm")
+                                : root.storage_protection_index == 1 ? Tr.t("diagnostics.storage_host")
+                                : root.storage_protection_index == 3 ? Tr.t("status.unknown")
+                                : Tr.t("status.unavailable");
+                            tone: root.storage_protection_index == 2 ? Tone.ok
+                                : root.storage_protection_index == 1 ? Tone.warn : Tone.danger;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("diagnostics.recognizer");
+                        Status {
+                            text: root.seetaface_available ? Tr.t("status.ready") : Tr.t("status.unavailable");
+                            tone: root.seetaface_available ? Tone.ok : Tone.danger;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("settings.camera");
+                        Status {
+                            text: root.camera-summary;
+                            tone: root.camera_count > 0 ? Tone.ok : Tone.danger;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("settings.liveness_short");
+                        Status {
+                            text: root.liveness_enabled ? Tr.t("status.on") : Tr.t("status.off");
+                            tone: root.liveness_enabled ? Tone.ok : Tone.idle;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("overview.last_check");
+                        subtitle: root.activity_detail == "" ? root.activity_title : root.activity_title + " · " + root.activity_detail;
+                        Status {
+                            text: root.busy ? Tr.t("status.working")
+                                : root.activity_tone == "good" ? Tr.t("status.passed")
+                                : root.activity_tone == "bad" ? Tr.t("status.failed") : Tr.t("status.idle");
+                            tone: root.busy ? Tone.warn
+                                : root.activity_tone == "good" ? Tone.ok
+                                : root.activity_tone == "bad" ? Tone.danger : Tone.idle;
+                        }
                     }
                 }
             }
 
-            if root.current_page == 2: ScrollView {
-                viewport-width: self.width;
-
-                settings-content := VerticalLayout {
-                    width: parent.width;
-                    padding: root.page-padding;
-                    spacing: 20px;
-
-                    PageHeader {
-                        title: root.translate("nav.settings", root.language_index);
-                        detail: root.translate("settings.subtitle", root.language_index);
-                    }
-
-                    Rectangle {
-                        height: 214px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        VerticalLayout {
-                            padding: 20px;
-                            spacing: 12px;
-                            SectionTitle {
-                                title: root.translate("settings.camera", root.language_index);
-                                detail: root.translate("settings.camera_detail", root.language_index);
-                            }
-                            HorizontalLayout {
-                                spacing: 12px;
-                                ComboBox { horizontal-stretch: 1; model: root.camera_options; current-index <=> root.selected_camera; }
-                                Text { width: 84px; text: root.translate("settings.preview_fps", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                SpinBox { width: 100px; minimum: 1; maximum: 60; value <=> root.preview_fps; }
-                            }
-                            Rectangle { height: 1px; background: UiTheme.divider; }
-                            HorizontalLayout {
-                                spacing: 12px;
-                                Text { width: 84px; text: root.translate("settings.language", root.language_index); color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                                ComboBox {
-                                    horizontal-stretch: 1;
-                                    model: root.language_names;
-                                    current-index <=> root.language_index;
-                                    selected(_) => {
-                                        root.activity_title = root.translate("activity.not_checked", root.language_index);
-                                        root.activity_detail = "";
-                                        root.settings_status = root.translate("settings.saved", root.language_index);
-                                        root.language_selected(root.language_index);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        height: 184px;
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        VerticalLayout {
-                            padding: 20px;
-                            spacing: 12px;
-                            SectionTitle {
-                                title: root.translate("settings.appearance", root.language_index);
-                                detail: root.translate("settings.appearance_detail", root.language_index);
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                Text {
-                                    width: 132px;
-                                    text: root.translate("settings.theme_mode", root.language_index);
-                                    color: UiTheme.text-secondary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
-                                SegmentedSelector {
-                                    horizontal-stretch: 1;
-                                    options: [
-                                        root.translate("settings.theme_system", root.language_index),
-                                        root.translate("settings.theme_light", root.language_index),
-                                        root.translate("settings.theme_dark", root.language_index),
-                                    ];
-                                    current-index <=> root.theme_mode_index;
-                                    selected(index) => { root.theme_mode_selected(index); }
-                                }
-                            }
-                            HorizontalLayout {
-                                spacing: 14px;
-                                Text {
-                                    width: 132px;
-                                    text: root.translate("settings.window_controls", root.language_index);
-                                    color: UiTheme.text-secondary;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                }
-                                SegmentedSelector {
-                                    horizontal-stretch: 1;
-                                    options: [
-                                        root.translate("settings.window_controls_auto", root.language_index),
-                                        root.translate("settings.window_controls_show", root.language_index),
-                                        root.translate("settings.window_controls_hide", root.language_index),
-                                    ];
-                                    current-index <=> root.window_controls_index;
-                                    selected(index) => { root.window_controls_selected(index); }
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        // No fixed height: the Windows-only auto-unlock block
-                        // (+~120px) overflows a fixed 260px card and visually
-                        // overlaps the save-status row below it. The page is
-                        // a ScrollView, so sizing to content is safe.
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        VerticalLayout {
-                            padding: 20px;
-                            spacing: 14px;
-                            SectionTitle {
-                                title: root.translate("settings.recognition_policy", root.language_index);
-                                detail: root.translate("settings.policy_detail", root.language_index);
-                            }
-                            HorizontalLayout {
-                                spacing: 16px;
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    spacing: 6px;
-                                    Text { text: root.translate("settings.recognition_threshold", root.language_index); color: UiTheme.text-primary; font-size: 13px; font-weight: 600; }
-                                    Slider { minimum: 0.35; maximum: 0.95; value <=> root.recognition_threshold; }
-                                }
-                                StatusPill { width: 70px; label: Math.round(root.recognition_threshold * 100) + "%"; tone: root.recognition_threshold < 0.5 ? "warn" : "neutral"; }
-                            }
-                            Rectangle { height: 1px; background: UiTheme.divider; }
-                            Switch {
-                                text: root.translate("settings.liveness_enabled", root.language_index);
-                                checked <=> root.liveness_enabled;
-                                toggled => { root.settings_status = root.translate("settings.unsaved", root.language_index); }
-                            }
-                            HorizontalLayout {
-                                spacing: 16px;
-                                VerticalLayout {
-                                    horizontal-stretch: 1;
-                                    spacing: 6px;
-                                    Text { text: root.translate("settings.liveness_threshold", root.language_index); color: root.liveness_enabled ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
-                                    Slider { enabled: root.liveness_enabled; minimum: 0.2; maximum: 0.95; value <=> root.liveness_threshold; }
-                                }
-                                StatusPill { width: 70px; label: Math.round(root.liveness_threshold * 100) + "%"; tone: "neutral"; }
-                            }
-                            if root.platform_windows: VerticalLayout {
-                                spacing: 10px;
-                                Rectangle { height: 1px; background: UiTheme.divider; }
-                                Switch {
-                                    text: root.translate("settings.auto_recognition", root.language_index);
-                                    checked: root.recognition_mode == 1;
-                                    toggled => {
-                                        root.recognition_mode = self.checked ? 1 : 0;
-                                        root.settings_status = root.translate("settings.unsaved", root.language_index);
-                                    }
-                                }
-                                HorizontalLayout {
-                                    spacing: 16px;
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 6px;
-                                        Text { text: root.translate("settings.auto_delay", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
-                                        SpinBox { enabled: root.recognition_mode == 1; width: 110px; minimum: 0; maximum: 60; value <=> root.auto_delay_sec; }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 6px;
-                                        Text { text: root.translate("settings.retry_delay", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
-                                        SpinBox { enabled: root.recognition_mode == 1; width: 110px; minimum: 1; maximum: 60; value <=> root.retry_delay_sec; }
-                                    }
-                                    VerticalLayout {
-                                        horizontal-stretch: 1;
-                                        spacing: 6px;
-                                        Text { text: root.translate("settings.auto_timeout", root.language_index); color: root.recognition_mode == 1 ? UiTheme.text-primary : UiTheme.disabled-text; font-size: 13px; font-weight: 600; }
-                                        SpinBox { enabled: root.recognition_mode == 1; width: 110px; minimum: 5; maximum: 600; value <=> root.timeout_sec; }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    CapturePanel {
-                        capture-enabled <=> root.capture_enabled;
-                        days <=> root.capture_days;
-                        max-count <=> root.capture_max_count;
-                        records: root.captures;
-                        selected-image: root.capture_selected_image;
-                        selected: root.capture_selected;
-                        status: root.capture_status;
-                        language-index: root.language_index;
-                        translate(key, lang) => { root.translate(key, lang) }
-                        translate-value(key, lang, value) => { root.translate_value(key, lang, value) }
-                        refresh => { root.capture_refresh(); }
-                        open(id) => { root.capture_open(id); }
-                        close => { root.capture_selected = false; }
-                        remove(id) => { root.capture_delete(id); }
-                        remove-all => { root.capture_delete_all(); }
-                    }
-                    HorizontalLayout {
-                        height: 44px;
-                        spacing: 12px;
-                        Text { text: root.settings_status; color: UiTheme.text-secondary; font-size: 12px; vertical-alignment: center; }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                        ActionButton {
-                            width: 128px;
-                            label: root.translate("action.save_settings", root.language_index);
-                            primary: true;
+            if root.current_page == 1: Page {
+                PageHeader {
+                    title: Tr.t("nav.faces");
+                    subtitle: Tr.tv("enrollment.manage_for", root.username);
+                }
+                if root.platform_windows: Group {
+                    title: Tr.t("account.credential_title");
+                    hint: Tr.t("account.credential_detail");
+                    Row {
+                        title: Tr.t("account.windows_password");
+                        subtitle: root.account_credential_configured
+                            ? Tr.t("account.credential_configured") : Tr.t("account.credential_missing");
+                        LineEdit {
+                            width: UiTheme.field-width;
+                            text <=> root.account_password_text;
+                            input-type: InputType.password;
                             enabled: !root.busy;
-                            activated => {
-                                root.save_settings_requested(
-                                    root.selected_camera,
-                                    root.recognition_threshold,
-                                    root.liveness_enabled,
-                                    root.liveness_threshold,
-                                    root.preview_fps,
-                                    root.recognition_mode,
-                                    root.auto_delay_sec,
-                                    root.retry_delay_sec,
-                                    root.timeout_sec);
-                            }
+                        }
+                        Button {
+                            text: root.account_credential_configured
+                                ? Tr.t("account.update_credential") : Tr.t("account.set_credential");
+                            kind: root.account_credential_configured ? ButtonKind.tonal : ButtonKind.filled;
+                            enabled: !root.busy && root.account_password_text != "" && root.service_available;
+                            clicked => { root.configure_account_credential_requested(root.account_password_text); }
+                        }
+                    }
+                }
+
+                if !root.compact-layout: HorizontalLayout {
+                    spacing: UiTheme.s5;
+                    PreviewFrame {
+                        image: root.preview_image;
+                        box-x: root.face_box_x;
+                        box-y: root.face_box_y;
+                        box-w: root.face_box_w;
+                        box-h: root.face_box_h;
+                        box-visible: root.face_box_visible;
+                        source-width: root.preview_source_width;
+                        source-height: root.preview_source_height;
+                        status-text: root.preview_status_text;
+                    }
+                    CaptureControls {
+                        width: UiTheme.preview-side;
+                        busy: root.busy;
+                        camera-available: root.camera_count > 0;
+                        can-capture: root.auth-ready && (!root.platform_windows || root.account_credential_configured);
+                        camera-summary: root.camera-summary;
+                        activity-detail: root.activity_detail;
+                        error-text: root.preview_error_text;
+                        label <=> root.enroll_label_text;
+                        start => { root.start_preview_requested(); }
+                        stop => { root.stop_preview_requested(); }
+                        capture(label) => { root.enroll_current_frame_requested(label); }
+                    }
+                }
+                if root.compact-layout: VerticalLayout {
+                    spacing: UiTheme.s5;
+                    PreviewFrame {
+                        image: root.preview_image;
+                        box-x: root.face_box_x;
+                        box-y: root.face_box_y;
+                        box-w: root.face_box_w;
+                        box-h: root.face_box_h;
+                        box-visible: root.face_box_visible;
+                        source-width: root.preview_source_width;
+                        source-height: root.preview_source_height;
+                        status-text: root.preview_status_text;
+                    }
+                    CaptureControls {
+                        busy: root.busy;
+                        camera-available: root.camera_count > 0;
+                        can-capture: root.auth-ready && (!root.platform_windows || root.account_credential_configured);
+                        camera-summary: root.camera-summary;
+                        activity-detail: root.activity_detail;
+                        error-text: root.preview_error_text;
+                        label <=> root.enroll_label_text;
+                        start => { root.start_preview_requested(); }
+                        stop => { root.stop_preview_requested(); }
+                        capture(label) => { root.enroll_current_frame_requested(label); }
+                    }
+                }
+
+                Group {
+                    title: Tr.t("enrollment.enrolled_samples");
+                    hint: root.profiles.length == 0 ? "" : root.profiles.length == 1
+                        ? Tr.t("enrollment.one_sample") : Tr.tv("enrollment.sample_count", root.profiles.length);
+                    if root.profiles.length == 0: Row { title: Tr.t("enrollment.empty"); }
+                    for profile in root.profiles: Row {
+                        title: profile.label;
+                        subtitle: Tr.tv("enrollment.enrolled_at", profile.enrolled_at);
+                        Button {
+                            text: Tr.t("action.remove");
+                            kind: ButtonKind.danger;
+                            enabled: !root.busy;
+                            clicked => { root.delete_profile_requested(profile.id); }
                         }
                     }
                 }
             }
 
-            if root.current_page == 3: ScrollView {
-                viewport-width: self.width;
+            if root.current_page == 2 && !root.platform_windows: Page {
+                PageHeader {
+                    title: Tr.t("nav.login");
+                    subtitle: Tr.t("login.subtitle");
+                }
+                SystemSetupGroup {
+                    helper-available: root.deployment_helper_available;
+                    installer-available: root.deployment_installer_available;
+                    runtime-ready: root.runtime-ready;
+                    busy: root.busy;
+                    install-helper => { root.install_deployment_helper_requested(); }
+                    initialize => { root.initialize_system_deployment_requested(); }
+                }
+                KeyringGroup {
+                    enrolled: root.authtok_enrolled;
+                    status-known: root.authtok_status_known;
+                    unavailable-reason: root.wallet_use_reason(root.service_available, root.authtok_status_known,
+                        root.profiles.length > 0, root.storage_protection_index == 2, root.sealed_login_deployed);
+                    management-available: root.service_available && root.deployment_helper_available;
+                    busy: root.busy;
+                    password <=> root.wallet_password_text;
+                    operation-status: root.wallet_operation_status;
+                    save-requested(password) => { root.save_wallet_password_requested(password); }
+                    clear-requested => { root.clear_wallet_password_requested(); }
+                }
+                TargetGroups {
+                    targets: root.deployment_targets;
+                    login-targets: root.login_targets;
+                    lock-targets: root.lock_targets;
+                    privilege-targets: root.privilege_targets;
+                    helper-available: root.deployment_helper_available;
+                    busy: root.busy;
+                    windows: false;
+                    operation-status: root.deployment_operation_status;
+                    configure-requested(target, source) => { root.configure_desktop_target_requested(target, source); }
+                    rollback-requested(target) => { root.rollback_desktop_target_requested(target); }
+                }
+            }
 
-                diagnostics-content := VerticalLayout {
-                    width: parent.width;
-                    padding: root.page-padding;
-                    spacing: 20px;
-
-                    PageHeader {
-                        title: root.translate("nav.diagnostics", root.language_index);
-                        detail: root.translate("diagnostics.subtitle", root.language_index);
+            if root.current_page == 3: Page {
+                PageHeader {
+                    title: Tr.t("nav.settings");
+                    subtitle: Tr.t("settings.subtitle");
+                }
+                Group {
+                    title: Tr.t("settings.camera");
+                    hint: Tr.t("settings.camera_detail");
+                    Row {
+                        title: Tr.t("settings.camera_device");
+                        ComboBox { width: UiTheme.field-width * 1.5; model: root.camera_options; current-index <=> root.selected_camera; }
                     }
-
-                    // Deployment panel on both platforms: Linux shows the
-                    // PAM/display-manager targets (via su_authd), Windows
-                    // shows the credential provider and auth service (via
-                    // su_deploy_helper with UAC).
-                    DeploymentPanel {
-                        targets: root.deployment_targets;
-                        helper_available: root.deployment_helper_available;
-                        installer_available: root.deployment_installer_available;
-                        runtime_ready: root.runtime-ready;
-                        busy: root.busy;
-                        platform_windows: root.platform_windows;
-                        language_index: root.language_index;
-                        operation_status: root.deployment_operation_status;
-                        models_present: root.models_present;
-                        models_downloading: root.models_downloading;
-                        models_progress: root.models_progress;
-                        models_status_text: root.models_status_text;
-                        translate(key, index) => { root.translate(key, index) }
-                        translate_value(key, index, value) => { root.translate_value(key, index, value) }
-                        initialize_requested => { root.initialize_system_deployment_requested(); }
-                        models_download_requested(accelerated, prefix) => {
-                            root.models_download_requested(accelerated, prefix);
-                        }
-                        install_helper_requested => { root.install_deployment_helper_requested(); }
-                        configure_requested(target, source) => {
-                            root.configure_desktop_target_requested(target, source);
-                        }
-                        rollback_requested(target) => {
-                            root.rollback_desktop_target_requested(target);
-                        }
+                    Row {
+                        title: Tr.t("settings.preview_fps");
+                        SpinBox { width: UiTheme.field-narrow * 1.4; minimum: 1; maximum: 60; value <=> root.preview_fps; }
                     }
-
-                    // Runtime card: auto-sized so the PAM rows (Linux only)
-                    // do not leave blank space on Windows.
-                    runtime-card := Rectangle {
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        // Rows share the widest label so their status columns line up.
-                        property <length> row-label-width: max(
-                            label-auth.preferred-width, label-storage.preferred-width,
-                            label-recognizer.preferred-width, label-camera.preferred-width,
-                            label-samples.preferred-width,
-                            root.platform_windows ? 0px : max(label-login-pam.preferred-width, label-lock-pam.preferred-width));
-                        label-auth := RowLabelMeasure { text: root.translate("diagnostics.auth_service", root.language_index); }
-                        label-storage := RowLabelMeasure { text: root.translate("diagnostics.storage", root.language_index); }
-                        label-recognizer := RowLabelMeasure { text: root.translate("diagnostics.recognizer", root.language_index); }
-                        label-camera := RowLabelMeasure { text: root.translate("settings.camera", root.language_index); }
-                        label-samples := RowLabelMeasure { text: root.translate("overview.face_samples", root.language_index); }
-                        label-login-pam := RowLabelMeasure { text: root.translate("diagnostics.login_pam", root.language_index); }
-                        label-lock-pam := RowLabelMeasure { text: root.translate("diagnostics.lock_pam", root.language_index); }
-                        VerticalLayout {
-                            padding: 20px;
-                            spacing: 6px;
-                            HorizontalLayout {
-                                spacing: 16px;
-                                SectionTitle { horizontal-stretch: 1; title: root.translate("diagnostics.runtime", root.language_index); detail: root.core_version; }
-                                CenteredActionButton {
-                                    label: root.translate("action.refresh", root.language_index);
-                                    enabled: !root.busy;
-                                    activated => { root.refresh_system_status_requested(); }
-                                }
-                            }
-                            DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("diagnostics.auth_service", root.language_index);
-                                status: root.service_available ? root.translate("status.online", root.language_index) : root.translate("status.offline", root.language_index);
-                                detail: root.service_available ? root.translate("diagnostics.service_ready_detail", root.language_index) : root.translate("diagnostics.service_action", root.language_index);
-                                tone: root.service_available ? "good" : "bad";
-                            }
-                            DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("diagnostics.storage", root.language_index);
-                                status: root.storage_protection_index == 2
-                                    ? root.translate("diagnostics.storage_tpm", root.language_index)
-                                    : root.storage_protection_index == 1
-                                        ? root.translate("diagnostics.storage_host", root.language_index)
-                                        : root.storage_protection_index == 3
-                                            ? root.translate("status.unknown", root.language_index)
-                                            : root.translate("status.unavailable", root.language_index);
-                                detail: root.storage-ready ? root.translate("diagnostics.storage_ready_detail", root.language_index) : root.translate("diagnostics.storage_action", root.language_index);
-                                tone: root.storage-ready ? "good" : "bad";
-                            }
-                            DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("diagnostics.recognizer", root.language_index);
-                                status: root.seetaface_available ? root.translate("status.available", root.language_index) : root.translate("status.unavailable", root.language_index);
-                                detail: root.seetaface_available ? root.translate("diagnostics.recognizer_ready_detail", root.language_index) : root.translate("diagnostics.recognizer_action", root.language_index);
-                                tone: root.seetaface_available ? "good" : "bad";
-                            }
-                            DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("settings.camera", root.language_index);
-                                status: root.camera_count == 0 ? root.translate("camera.none", root.language_index)
-                                    : root.camera_text != "" ? root.camera_text
-                                    : root.translate_value("camera.count", root.language_index, root.camera_count);
-                                detail: root.camera_count == 0 ? root.translate("diagnostics.camera_action", root.language_index) : root.translate("diagnostics.camera_ready_detail", root.language_index);
-                                tone: root.camera_count > 0 ? "good" : "bad";
-                            }
-                            DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("overview.face_samples", root.language_index);
-                                status: root.profiles.length == 0 ? root.translate("enrollment.no_samples", root.language_index) : root.translate_value("enrollment.sample_count", root.language_index, root.profiles.length);
-                                detail: root.profiles.length == 0 ? root.translate("diagnostics.profiles_action", root.language_index) : root.translate("diagnostics.profiles_ready_detail", root.language_index);
-                                tone: root.profiles.length > 0 ? "good" : "warn";
-                            }
-                            if !root.platform_windows : DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("diagnostics.login_pam", root.language_index);
-                                status: !root.pam_status_known
-                                    ? root.translate("status.unknown", root.language_index)
-                                    : root.login_pam_configured
-                                        ? root.translate("status.configured", root.language_index)
-                                        : root.translate("status.not_configured", root.language_index);
-                                detail: root.login_pam_configured
-                                    ? root.translate("diagnostics.login_pam_ready", root.language_index)
-                                    : root.translate("diagnostics.login_pam_action", root.language_index);
-                                tone: root.login_pam_configured ? "good" : "warn";
-                            }
-                            if !root.platform_windows : DiagnosticRow {
-                                label-width: runtime-card.row-label-width;
-                                label: root.translate("diagnostics.lock_pam", root.language_index);
-                                status: !root.pam_status_known
-                                    ? root.translate("status.unknown", root.language_index)
-                                    : root.lock_pam_configured
-                                        ? root.translate("status.configured", root.language_index)
-                                        : root.translate("status.not_configured", root.language_index);
-                                detail: root.lock_pam_configured
-                                    ? root.translate("diagnostics.lock_pam_ready", root.language_index)
-                                    : root.translate("diagnostics.lock_pam_action", root.language_index);
-                                tone: root.lock_pam_configured ? "good" : "warn";
+                }
+                Group {
+                    title: Tr.t("settings.appearance");
+                    hint: Tr.t("settings.appearance_detail");
+                    Row {
+                        title: Tr.t("settings.language");
+                        ComboBox {
+                            width: UiTheme.field-width * 1.5;
+                            model: root.language_names;
+                            current-index <=> root.language_index;
+                            selected(_) => {
+                                root.activity_title = Tr.t("activity.not_checked");
+                                root.activity_detail = "";
+                                root.settings_status = Tr.t("settings.saved");
+                                root.language_selected(root.language_index);
                             }
                         }
                     }
-
-                    Rectangle {
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        VerticalLayout {
-                            padding-left: 20px;
-                            padding-right: 20px;
-                            padding-top: 16px;
-                            padding-bottom: 16px;
-                            spacing: 10px;
-                            SectionTitle { title: root.translate("diagnostics.local_data", root.language_index); detail: root.translate("diagnostics.local_data_detail", root.language_index); }
-                            VerticalLayout {
-                                spacing: 3px;
-                                Text { text: root.translate("diagnostics.configuration", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
-                                Text { text: root.config_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
-                            }
-                            VerticalLayout {
-                                spacing: 3px;
-                                Text { text: root.translate("overview.face_samples", root.language_index); color: UiTheme.text-secondary; font-size: 11px; font-weight: 600; }
-                                Text { text: root.profile_store_path_text; color: UiTheme.text-primary; font-size: 12px; overflow: elide; }
+                    Row {
+                        title: Tr.t("settings.theme_mode");
+                        SegmentedSelector {
+                            options: [Tr.t("settings.theme_system"), Tr.t("settings.theme_light"), Tr.t("settings.theme_dark")];
+                            current-index <=> root.theme_mode_index;
+                            selected(index) => { root.theme_mode_selected(index); }
+                        }
+                    }
+                    Row {
+                        title: Tr.t("settings.window_controls");
+                        SegmentedSelector {
+                            options: [Tr.t("settings.window_controls_auto"), Tr.t("settings.window_controls_show"), Tr.t("settings.window_controls_hide")];
+                            current-index <=> root.window_controls_index;
+                            selected(index) => { root.window_controls_selected(index); }
+                        }
+                    }
+                }
+                Group {
+                    title: Tr.t("settings.recognition_policy");
+                    hint: Tr.t("settings.policy_detail");
+                    Row {
+                        title: Tr.t("settings.recognition_threshold");
+                        ValueSlider { width: UiTheme.slider-width; minimum: 0.35; maximum: 0.95; value <=> root.recognition_threshold; }
+                        Badge { text: Math.round(root.recognition_threshold * 100) + "%"; }
+                    }
+                    Row {
+                        title: Tr.t("settings.liveness_enabled");
+                        Toggle {
+                            on: root.liveness_enabled;
+                            toggled(value) => {
+                                root.liveness_enabled = value;
+                                root.settings_status = Tr.t("settings.unsaved");
                             }
                         }
                     }
-
-                    Rectangle {
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        vertical-stretch: 0;
-                        HorizontalLayout {
-                            padding: 20px;
-                            spacing: 16px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                alignment: center;
-                                spacing: 3px;
-                                Text { text: root.translate("diagnostics.bundle_title", root.language_index); color: UiTheme.text-primary; font-size: 16px; font-weight: 700; overflow: elide; }
-                                Text { text: root.translate("diagnostics.bundle_detail", root.language_index); color: UiTheme.text-tertiary; font-size: 12px; overflow: elide; }
-                                // Path on one line; reasons wrap so they are never elided away.
-                                if root.diagnostics_error == "" && root.diagnostics_archive != "" : Text {
-                                    text: root.diagnostics_archive;
-                                    color: UiTheme.text-secondary;
-                                    font-size: 12px;
-                                    overflow: elide;
-                                }
-                                if root.diagnostics_error == "" && root.diagnostics_system_unavailable != "" : Text {
-                                    text: root.translate("diagnostics.system_unavailable", root.language_index)
-                                        + root.diagnostics_system_unavailable;
-                                    color: UiTheme.warning-text;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                                if root.diagnostics_error != "" : Text {
-                                    text: root.diagnostics_error;
-                                    color: UiTheme.danger-text;
-                                    font-size: 12px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                            if root.diagnostics_archive != "" : CenteredActionButton {
-                                label: root.translate("diagnostics.show_folder", root.language_index);
-                                activated => { root.show_diagnostics_requested(); }
-                            }
-                            CenteredActionButton {
-                                label: root.translate(root.diagnostics_exporting ? "diagnostics.exporting" : "diagnostics.export", root.language_index);
-                                primary: true;
-                                enabled: !root.diagnostics_exporting;
-                                activated => { root.export_diagnostics_requested(); }
+                    Row {
+                        title: Tr.t("settings.liveness_threshold");
+                        ValueSlider { enabled: root.liveness_enabled; width: UiTheme.slider-width; minimum: 0.2; maximum: 0.95; value <=> root.liveness_threshold; }
+                        Badge { text: Math.round(root.liveness_threshold * 100) + "%"; }
+                    }
+                }
+                if root.platform_windows: Group {
+                    title: Tr.t("settings.recognition_trigger");
+                    hint: Tr.t("settings.trigger_detail");
+                    Row {
+                        title: Tr.t("settings.auto_recognition");
+                        Toggle {
+                            on: root.recognition_mode == 1;
+                            toggled(value) => {
+                                root.recognition_mode = value ? 1 : 0;
+                                root.settings_status = Tr.t("settings.unsaved");
                             }
                         }
                     }
-
-                    if !root.platform_windows : Rectangle {
-                        border-radius: 6px;
-                        border-width: 1px;
-                        border-color: UiTheme.border;
-                        background: UiTheme.surface;
-                        HorizontalLayout {
-                            padding: 20px;
-                            spacing: 16px;
-                            VerticalLayout {
-                                horizontal-stretch: 1;
-                                alignment: center;
-                                spacing: 6px;
-                                Text { text: root.translate("diagnostics.desktop_auth_check", root.language_index); color: UiTheme.text-primary; font-size: 15px; font-weight: 700; }
-                                Text { text: root.translate("diagnostics.desktop_auth_detail", root.language_index); color: UiTheme.text-secondary; font-size: 12px; overflow: elide; }
-                            }
-                            CenteredActionButton {
-                                label: root.busy
-                                    ? root.translate("status.checking", root.language_index)
-                                    : root.translate("action.run_check", root.language_index);
-                                primary: true;
-                                enabled: !root.busy && root.auth-ready && root.profiles.length > 0;
-                                activated => { root.current_frame_auth_requested(); }
-                            }
+                    Row {
+                        title: Tr.t("settings.auto_delay");
+                        subtitle: Tr.t("settings.auto_delay_detail");
+                        SpinBox { enabled: root.recognition_mode == 1; width: UiTheme.field-narrow * 1.4; minimum: 0; maximum: 60; value <=> root.auto_delay_sec; }
+                    }
+                    Row {
+                        title: Tr.t("settings.retry_delay");
+                        subtitle: Tr.t("settings.retry_delay_detail");
+                        SpinBox { enabled: root.recognition_mode == 1; width: UiTheme.field-narrow * 1.4; minimum: 1; maximum: 60; value <=> root.retry_delay_sec; }
+                    }
+                    Row {
+                        title: Tr.t("settings.auto_timeout");
+                        subtitle: Tr.t("settings.timeout_detail");
+                        SpinBox { enabled: root.recognition_mode == 1; width: UiTheme.field-narrow * 1.4; minimum: 5; maximum: 600; value <=> root.timeout_sec; }
+                    }
+                }
+                CapturePanel {
+                    capture-enabled <=> root.capture_enabled;
+                    days <=> root.capture_days;
+                    max-count <=> root.capture_max_count;
+                    records: root.captures;
+                    selected-image: root.capture_selected_image;
+                    selected: root.capture_selected;
+                    status: root.capture_status;
+                    refresh => { root.capture_refresh(); }
+                    open(id) => { root.capture_open(id); }
+                    close => { root.capture_selected = false; }
+                    remove(id) => { root.capture_delete(id); }
+                    remove-all => { root.capture_delete_all(); }
+                }
+                HorizontalLayout {
+                    spacing: UiTheme.s4;
+                    Text {
+                        text: root.settings_status;
+                        color: UiTheme.text-dim;
+                        font-size: UiTheme.font-small;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                    Button {
+                        text: Tr.t("action.save_settings");
+                        kind: ButtonKind.filled;
+                        enabled: !root.busy;
+                        clicked => {
+                            root.save_settings_requested(
+                                root.selected_camera,
+                                root.recognition_threshold,
+                                root.liveness_enabled,
+                                root.liveness_threshold,
+                                root.preview_fps,
+                                root.recognition_mode,
+                                root.auto_delay_sec,
+                                root.retry_delay_sec,
+                                root.timeout_sec);
                         }
                     }
+                }
+            }
+
+            if root.current_page == 4: Page {
+                PageHeader {
+                    title: Tr.t("nav.diagnostics");
+                    subtitle: Tr.t("diagnostics.subtitle");
+                }
+                if root.platform_windows: SystemSetupGroup {
+                    helper-available: root.deployment_helper_available;
+                    installer-available: root.deployment_installer_available;
+                    runtime-ready: root.runtime-ready;
+                    busy: root.busy;
+                    install-helper => { root.install_deployment_helper_requested(); }
+                    initialize => { root.initialize_system_deployment_requested(); }
+                }
+                if root.platform_windows: TargetGroups {
+                    targets: root.deployment_targets;
+                    login-targets: root.login_targets;
+                    lock-targets: root.lock_targets;
+                    privilege-targets: root.privilege_targets;
+                    helper-available: root.deployment_helper_available;
+                    busy: root.busy;
+                    windows: true;
+                    operation-status: root.deployment_operation_status;
+                    configure-requested(target, source) => { root.configure_desktop_target_requested(target, source); }
+                    rollback-requested(target) => { root.rollback_desktop_target_requested(target); }
+                }
+                ModelsGroup {
+                    present: root.models_present;
+                    downloading: root.models_downloading;
+                    progress: root.models_progress;
+                    status-text: root.models_status_text;
+                    download(accelerated, prefix) => { root.models_download_requested(accelerated, prefix); }
+                }
+                Group {
+                    title: Tr.t("diagnostics.runtime");
+                    hint: root.core_version;
+                    Row {
+                        title: Tr.t("diagnostics.auth_service");
+                        subtitle: root.service_available ? Tr.t("diagnostics.service_ready_detail") : Tr.t("diagnostics.service_action");
+                        Status {
+                            text: root.service_available ? Tr.t("status.online") : Tr.t("status.offline");
+                            tone: root.service_available ? Tone.ok : Tone.danger;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("diagnostics.storage");
+                        subtitle: root.storage-ready ? Tr.t("diagnostics.storage_ready_detail") : Tr.t("diagnostics.storage_action");
+                        Status {
+                            text: root.storage_protection_index == 2 ? Tr.t("diagnostics.storage_tpm")
+                                : root.storage_protection_index == 1 ? Tr.t("diagnostics.storage_host")
+                                : root.storage_protection_index == 3 ? Tr.t("status.unknown")
+                                : Tr.t("status.unavailable");
+                            tone: root.storage_protection_index == 2 ? Tone.ok
+                                : root.storage_protection_index == 1 ? Tone.warn : Tone.danger;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("diagnostics.recognizer");
+                        subtitle: root.seetaface_available ? Tr.t("diagnostics.recognizer_ready_detail") : Tr.t("diagnostics.recognizer_action");
+                        Status {
+                            text: root.seetaface_available ? Tr.t("status.available") : Tr.t("status.unavailable");
+                            tone: root.seetaface_available ? Tone.ok : Tone.danger;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("settings.camera");
+                        subtitle: root.camera_count == 0 ? Tr.t("diagnostics.camera_action") : Tr.t("diagnostics.camera_ready_detail");
+                        Status { text: root.camera-summary; tone: root.camera_count > 0 ? Tone.ok : Tone.danger; }
+                    }
+                    Row {
+                        title: Tr.t("overview.face_samples");
+                        subtitle: root.profiles.length == 0 ? Tr.t("diagnostics.profiles_action") : Tr.t("diagnostics.profiles_ready_detail");
+                        Status {
+                            text: root.profiles.length == 0 ? Tr.t("enrollment.no_samples")
+                                : root.profiles.length == 1 ? Tr.t("enrollment.one_sample")
+                                : Tr.tv("enrollment.sample_count", root.profiles.length);
+                            tone: root.profiles.length > 0 ? Tone.ok : Tone.warn;
+                        }
+                    }
+                    if !root.platform_windows: Row {
+                        title: Tr.t("diagnostics.login_pam");
+                        subtitle: root.login_pam_configured ? Tr.t("diagnostics.login_pam_ready") : Tr.t("diagnostics.login_pam_action");
+                        Status {
+                            text: !root.pam_status_known ? Tr.t("status.unknown")
+                                : root.login_pam_configured ? Tr.t("status.configured") : Tr.t("status.not_configured");
+                            tone: root.login_pam_configured ? Tone.ok : Tone.warn;
+                        }
+                    }
+                    if !root.platform_windows: Row {
+                        title: Tr.t("diagnostics.lock_pam");
+                        subtitle: root.lock_pam_configured ? Tr.t("diagnostics.lock_pam_ready") : Tr.t("diagnostics.lock_pam_action");
+                        Status {
+                            text: !root.pam_status_known ? Tr.t("status.unknown")
+                                : root.lock_pam_configured ? Tr.t("status.configured") : Tr.t("status.not_configured");
+                            tone: root.lock_pam_configured ? Tone.ok : Tone.warn;
+                        }
+                    }
+                    Row {
+                        title: Tr.t("diagnostics.refresh_title");
+                        Button {
+                            text: Tr.t("action.refresh");
+                            enabled: !root.busy;
+                            clicked => { root.refresh_system_status_requested(); }
+                        }
+                    }
+                }
+                Group {
+                    title: Tr.t("diagnostics.local_data");
+                    hint: Tr.t("diagnostics.local_data_detail");
+                    Row { title: Tr.t("diagnostics.configuration"); subtitle: root.config_path_text; }
+                    Row { title: Tr.t("overview.face_samples"); subtitle: root.profile_store_path_text; }
+                }
+                Group {
+                    title: Tr.t("diagnostics.bundle_title");
+                    hint: Tr.t("diagnostics.bundle_detail");
+                    Row {
+                        title: Tr.t("diagnostics.export_title");
+                        subtitle: root.diagnostics_error != "" ? root.diagnostics_error
+                            : root.diagnostics_archive;
+                        if root.diagnostics_archive != "": Button {
+                            text: Tr.t("diagnostics.show_folder");
+                            clicked => { root.show_diagnostics_requested(); }
+                        }
+                        Button {
+                            text: root.diagnostics_exporting ? Tr.t("diagnostics.exporting") : Tr.t("diagnostics.export");
+                            kind: ButtonKind.filled;
+                            enabled: !root.diagnostics_exporting;
+                            clicked => { root.export_diagnostics_requested(); }
+                        }
+                    }
+                }
+                if root.diagnostics_error == "" && root.diagnostics_system_unavailable != "": Note {
+                    text: Tr.t("diagnostics.system_unavailable") + root.diagnostics_system_unavailable;
+                    tone: Tone.warn;
+                }
+                if !root.platform_windows: Group {
+                    title: Tr.t("diagnostics.desktop_auth_check");
+                    hint: Tr.t("diagnostics.desktop_auth_detail");
+                    Row {
+                        title: Tr.t("diagnostics.desktop_auth_run");
+                        Button {
+                            text: root.busy ? Tr.t("status.checking") : Tr.t("action.run_check");
+                            kind: ButtonKind.filled;
+                            enabled: root.can-test;
+                            clicked => { root.current_frame_auth_requested(); }
+                        }
+                    }
+                }
+            }
+
+            if root.current_page == 5: Page {
+                AboutContent {
+                    app-version: root.app_version;
+                    contributors: root.contributors;
+                    components: root.open_source_components;
+                    license-names: root.license_names;
+                    license-index <=> root.license_index;
+                    license-text: root.license_text;
+                    link-status: root.about_link_status;
+                    license-selected(index) => { root.license_selected(index); }
+                    project-link-requested(index) => { root.project_link_requested(index); }
+                    contributor-link-requested(index) => { root.contributor_link_requested(index); }
                 }
             }
         }

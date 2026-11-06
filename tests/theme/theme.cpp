@@ -154,40 +154,135 @@ void test_color_and_mode_parsing() {
         "session mode should parse");
 }
 
+std::string with_dank16(std::string palette) {
+    const auto block = std::string{
+        "\"dank16\":{"
+        "\"color2\":{\"dark\":\"#7fff95\",\"light\":\"#266d32\"},"
+        "\"color3\":{\"dark\":\"#ffd772\",\"light\":\"#8d6c04\"}},"};
+    palette.insert(1, block);
+    return palette;
+}
+
+void require_readable_roles(const su::app::AppTheme& theme, std::string_view label) {
+    const auto readable = [&](ThemeColor foreground, ThemeColor background, double ratio) {
+        return su::app::contrast_ratio(foreground, background) >= ratio;
+    };
+    const auto text_roles = {theme.text, theme.text_dim, theme.accent, theme.ok, theme.warn, theme.danger, theme.idle};
+    for (const auto background : {theme.canvas, theme.group, theme.group_hover}) {
+        for (const auto foreground : text_roles) {
+            require(readable(foreground, background, 4.5), std::format("{}: text role must reach 4.5:1", label));
+        }
+    }
+    require(readable(theme.text, theme.sidebar, 4.5), std::format("{}: sidebar text contrast", label));
+    require(readable(theme.text_dim, theme.sidebar, 4.5), std::format("{}: sidebar dim text contrast", label));
+    require(readable(theme.text_faint, theme.group, 3.0), std::format("{}: faint text contrast", label));
+    require(readable(theme.on_accent, theme.accent, 4.5), std::format("{}: on-accent contrast", label));
+    require(readable(theme.on_tonal, theme.tonal, 4.5), std::format("{}: on-tonal contrast", label));
+    require(readable(theme.on_nav_selected, theme.nav_selected, 4.5), std::format("{}: nav contrast", label));
+    require(readable(theme.ok, theme.ok_bg, 3.0), std::format("{}: ok on its tint", label));
+    require(readable(theme.danger, theme.danger_bg, 3.0), std::format("{}: danger on its tint", label));
+}
+
+// Every role must come from the palette: with a palette unlike the built-in one,
+// no AppTheme field may still equal its built-in fallback value.
+void test_no_role_keeps_builtin_fallback() {
+    const auto members = std::array{
+        &su::app::AppTheme::canvas, &su::app::AppTheme::sidebar, &su::app::AppTheme::group,
+        &su::app::AppTheme::group_hover, &su::app::AppTheme::inset, &su::app::AppTheme::outline,
+        &su::app::AppTheme::divider, &su::app::AppTheme::text, &su::app::AppTheme::text_dim,
+        &su::app::AppTheme::text_faint, &su::app::AppTheme::accent, &su::app::AppTheme::on_accent,
+        &su::app::AppTheme::tonal, &su::app::AppTheme::on_tonal, &su::app::AppTheme::nav_selected,
+        &su::app::AppTheme::on_nav_selected, &su::app::AppTheme::ok, &su::app::AppTheme::ok_bg,
+        &su::app::AppTheme::warn, &su::app::AppTheme::warn_bg, &su::app::AppTheme::danger,
+        &su::app::AppTheme::danger_bg, &su::app::AppTheme::idle, &su::app::AppTheme::idle_bg,
+        &su::app::AppTheme::preview_surface, &su::app::AppTheme::preview_overlay,
+        &su::app::AppTheme::preview_text, &su::app::AppTheme::face_indicator};
+    constexpr auto field_count = sizeof(su::app::AppTheme) - sizeof(ThemeMode);
+    static_assert(
+        members.size() * sizeof(ThemeColor) == field_count,
+        "a new AppTheme color must be added to the unmapped-role test");
+    const auto palette = [](std::string_view a, std::string_view b, std::string_view c) {
+        auto roles = std::string{};
+        for (const auto mode : {"dark", "light"}) {
+            if (!roles.empty()) {
+                roles += ',';
+            }
+            roles += std::format(
+                "\"{}\":{{\"background\":\"{}\",\"surface\":\"{}\","
+                "\"surface_container_lowest\":\"{}\",\"surface_container_low\":\"{}\","
+                "\"surface_container\":\"{}\",\"surface_container_high\":\"{}\","
+                "\"outline\":\"#8a6f9a\",\"outline_variant\":\"#5a3f6a\","
+                "\"primary\":\"#d27be3\",\"on_primary\":\"#3a0a4a\","
+                "\"primary_container\":\"#6a2a7a\",\"on_primary_container\":\"#f6d6ff\","
+                "\"secondary_container\":\"#4a3a6a\",\"on_secondary_container\":\"#e6d6ff\","
+                "\"on_surface\":\"{}\",\"on_surface_variant\":\"#d9c6e3\","
+                "\"error\":\"#ff8aa0\"}}",
+                mode, a, a, b, b, c, c, "#f1e4f7");
+        }
+        return std::format("{{\"colors\":{{{}}}}}", roles);
+    };
+    for (const auto mode : {ThemeMode::dark, ThemeMode::light}) {
+        const auto theme = su::app::parse_material_theme(
+            palette("#1a0f20", "#241830", "#2f2140"), mode);
+        require(theme.has_value(), "synthetic palette should parse");
+        const auto fallback = su::app::built_in_theme(mode);
+        for (const auto member : members) {
+            require(
+                theme.value().*member != fallback.*member,
+                "an AppTheme role still equals the built-in fallback instead of the palette");
+        }
+    }
+}
+
 void test_palette_mapping_and_validation() {
     const auto dark = su::app::parse_material_theme(dms_palette(), ThemeMode::dark);
     require(dark.has_value(), "DMS palette should parse");
     require(dark->canvas == color("#131318"), "background role should map to canvas");
-    require(dark->surface == color("#0d0e13"), "lowest surface should map to panel surface");
-    require(dark->primary == color("#bbc3ff"), "primary role should map to accent");
-    require(
-        dark->success_surface == color("#5b3f5f"),
-        "tertiary container should map to the success surface");
-    require(
-        dark->success_text == color("#f9d8ff"),
-        "tertiary container text should map to the success foreground");
-    require(
-        dark->warning_surface == color("#45465f"),
-        "secondary container should map to the warning surface");
+    require(dark->group == color("#1f1f25"), "surface container should map to group");
+    require(dark->group_hover == color("#29292f"), "high container should map to group hover");
+    require(dark->sidebar == color("#1f1f25"), "missing low container falls back to container");
+    require(dark->accent == color("#bbc3ff"), "primary role should map to accent");
+    require(dark->tonal == color("#3a4379"), "primary container should map to tonal");
+    require(dark->nav_selected == color("#45465f"), "secondary container should map to nav selection");
+    require(dark->outline == color("#46464f"), "outline variant should map to outline");
+    require(dark->idle_bg == dark->group_hover, "idle background follows the elevated surface");
+    require(dark->ok != color("#bbc3ff") && dark->ok != dark->warn, "status hues must be distinct");
+    require_readable_roles(*dark, "dark");
 
     const auto light = su::app::parse_material_theme(dms_palette(), ThemeMode::light);
     require(light.has_value() && light->mode == ThemeMode::light, "light scheme should parse");
-    require(light->primary == color("#525a92"), "light primary should be selected");
+    require(light->accent == color("#525a92"), "light primary should be selected");
+    require_readable_roles(*light, "light");
+
+    // dank16: per-mode status hues are toned down, never the raw neon value.
+    const auto dank_dark = su::app::parse_material_theme(with_dank16(dms_palette()), ThemeMode::dark);
+    require(dank_dark.has_value(), "palette with dank16 should parse");
+    require(dank_dark->ok != color("#7fff95"), "neon dank16 green must be toned down");
+    require(dank_dark->ok.green > dank_dark->ok.red && dank_dark->ok.green > dank_dark->ok.blue,
+            "dank16 green must stay green");
+    require(dank_dark->warn.red > dank_dark->warn.blue, "dank16 yellow must stay warm");
+    require(dank_dark->ok != dark->ok, "dank16 should change the status hue");
+    require_readable_roles(*dank_dark, "dank16 dark");
+    const auto dank_light = su::app::parse_material_theme(with_dank16(dms_palette()), ThemeMode::light);
+    require(dank_light.has_value(), "light palette with dank16 should parse");
+    require_readable_roles(*dank_light, "dank16 light");
+
+    // Without dank16 the base hues are harmonised toward the primary.
+    const auto blue = su::app::parse_material_theme(dms_palette("#6677ff"), ThemeMode::dark);
+    const auto red = su::app::parse_material_theme(dms_palette("#ff5566"), ThemeMode::dark);
+    require(blue.has_value() && red.has_value(), "recoloured palettes should parse");
+    require(blue->ok != red->ok, "harmonised status colours follow the palette hue");
+    require(blue->ok.green > blue->ok.red, "harmonised green stays greenish");
+    require_readable_roles(*blue, "harmonised blue");
 
     const auto fallback = su::app::parse_material_theme(
         dms_palette("#bbc3ff", false), ThemeMode::dark);
     require(fallback.has_value(), "optional Material roles should have same-level fallbacks");
-    require(fallback->surface == color("#131318"), "surface fallback should use Material surface");
+    require(fallback->group == color("#131318"), "container fallback should use Material surface");
 
-    const auto sparse = su::app::parse_material_theme(
-        dms_palette("#bbc3ff", true, false), ThemeMode::dark);
-    require(sparse.has_value(), "status roles should have palette-derived fallbacks");
-    require(
-        sparse->success_surface == color("#3a4379"),
-        "success fallback should use the primary container");
-    require(
-        sparse->warning_surface == color("#29292f"),
-        "warning fallback should use the elevated surface");
+    for (const auto mode : {ThemeMode::dark, ThemeMode::light}) {
+        require_readable_roles(su::app::built_in_theme(mode), "built-in");
+    }
 
     require(
         !su::app::parse_material_theme(R"({"colors":{"dark":{}}})", ThemeMode::dark),
@@ -204,12 +299,12 @@ void test_palette_mapping_and_validation() {
     const auto corrected = su::app::parse_material_theme(low_contrast, ThemeMode::dark);
     require(corrected.has_value(), "low contrast palette should be corrected, not rejected");
     require(
-        su::app::contrast_ratio(corrected->text_primary, corrected->canvas) >= 4.5,
+        su::app::contrast_ratio(corrected->text, corrected->canvas) >= 4.5,
         "corrected primary text should meet contrast requirements");
 
     const auto matugen = su::app::parse_material_theme(matugen_palette(), ThemeMode::dark);
     require(matugen.has_value(), "Matugen 4 palette structure should parse");
-    require(matugen->primary == dark->primary, "DMS and Matugen mappings should agree");
+    require(matugen->accent == dark->accent, "DMS and Matugen mappings should agree");
 }
 
 void test_ui_preferences(const std::filesystem::path& root) {
@@ -306,7 +401,7 @@ void test_explicit_theme_mode(const std::filesystem::path& root) {
 
     const auto light = su::app::load_desktop_theme(paths, runner, ThemePreference::light);
     require(light.snapshot.theme.mode == ThemeMode::light, "explicit light should select the light scheme");
-    require(light.snapshot.theme.primary == color("#525a92"), "explicit light should use light colors");
+    require(light.snapshot.theme.accent == color("#525a92"), "explicit light should use light colors");
     require(mode_calls == 1, "explicit mode should not query the desktop mode");
 }
 
@@ -461,7 +556,7 @@ void test_live_refresh(const std::filesystem::path& root) {
             changed.wait_for(lock, std::chrono::seconds{2}, [&] { return update.has_value(); }),
             "valid atomic replacement should refresh the theme");
         require(update->snapshot.source == ThemeSource::dms_cache, "refresh should stay on DMS");
-        require(update->snapshot.theme.primary == color("#aabbff"), "refresh should apply new colors");
+        require(update->snapshot.theme.accent == color("#aabbff"), "refresh should apply new colors");
     }
 }
 
@@ -514,6 +609,7 @@ int main() {
     try {
         test_color_and_mode_parsing();
         test_palette_mapping_and_validation();
+        test_no_role_keeps_builtin_fallback();
         test_ui_preferences(root / "preferences");
         test_window_controls_policy();
         test_explicit_theme_mode(root / "explicit-mode");

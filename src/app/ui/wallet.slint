@@ -1,112 +1,117 @@
 import { LineEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
-import { ActionButton, SectionTitle } from "components.slint";
+import { Tr } from "i18n.slint";
+import { Button, ButtonKind, Group, Note, Row, Toggle } from "components.slint";
 
-export component WalletPanel inherits Rectangle {
+// Keyring auto-unlock: one master switch. Turning it on asks for the sign-in
+// password inline; turning it off asks for confirmation first. The password is
+// cleared from the field as soon as it is submitted or dismissed.
+export component KeyringGroup inherits VerticalLayout {
     in property <bool> enrolled;
-    in property <bool> status_known;
-    in property <string> unavailable_reason;
-    in property <bool> management_available;
+    in property <bool> status-known;
+    // Translation key of the single reason the feature is unavailable, or "".
+    in property <string> unavailable-reason;
+    in property <bool> management-available;
     in property <bool> busy;
-    in property <int> language_index;
-    in property <string> operation_status;
+    in property <string> operation-status;
     in-out property <string> password;
-    callback save_requested(string);
-    callback clear_requested();
-    pure callback translate(string, int) -> string;
-    private property <bool> confirming_off: false;
-    changed busy => { root.confirming_off = false; }
+    callback save-requested(string);
+    callback clear-requested();
 
-    vertical-stretch: 0;
-    background: UiTheme.surface;
-    border-color: UiTheme.border;
-    border-width: UiTheme.card-border;
-    border-radius: UiTheme.card-radius;
-    VerticalLayout {
-        alignment: start;
-        padding: UiTheme.card-padding;
-        spacing: UiTheme.content-gap;
-        SectionTitle {
-            title: root.translate("wallet.title", root.language_index);
-            title-only: true;
-        }
-        Text {
-            text: root.translate("wallet.password_help", root.language_index);
-            color: UiTheme.text-secondary;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.translate(!root.status_known ? "wallet.status_unavailable"
-                : root.enrolled ? "wallet.enrolled" : "wallet.not_enrolled", root.language_index);
-            color: root.enrolled ? UiTheme.success-text : UiTheme.text-secondary;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
-        }
-        if root.unavailable_reason != "": Text {
-            text: root.translate(root.unavailable_reason, root.language_index);
-            color: UiTheme.warning-text;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
-        }
-        if !root.management_available: Text {
-            text: root.translate("wallet.management_required", root.language_index);
-            color: UiTheme.warning-text;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.translate("wallet.password_label", root.language_index);
-            color: UiTheme.text-secondary;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
-        }
-        LineEdit {
-            vertical-stretch: 0;
-            text <=> root.password;
-            input-type: InputType.password;
-            enabled: !root.busy && root.status_known && root.management_available && root.unavailable_reason == "";
-        }
-        HorizontalLayout {
-            spacing: UiTheme.content-gap;
-            ActionButton {
-                horizontal-stretch: 1;
-                label: root.translate(root.enrolled ? "wallet.update" : "wallet.save", root.language_index);
-                primary: true;
-                enabled: !root.busy && root.status_known && root.management_available && root.unavailable_reason == "" && root.password != "";
-                activated => {
-                    root.confirming_off = false;
-                    root.save_requested(root.password);
+    property <bool> entering: false;
+    property <bool> confirming-off: false;
+    property <bool> usable: status-known && management-available && unavailable-reason == "";
+    property <string> blocked-reason: !status-known ? Tr.t("wallet.status_unavailable")
+        : !management-available ? Tr.t("wallet.management_required")
+        : unavailable-reason != "" ? Tr.t(unavailable-reason) : "";
+
+    changed busy => {
+        root.confirming-off = false;
+        root.entering = false;
+        root.password = "";
+    }
+
+    spacing: UiTheme.s2;
+
+    Group {
+        title: Tr.t("wallet.title");
+        hint: Tr.t("wallet.hint");
+        Row {
+            title: Tr.t("wallet.toggle");
+            subtitle: root.enrolled || root.usable ? Tr.t("wallet.toggle_detail") : root.blocked-reason;
+            Toggle {
+                on: root.enrolled || root.entering;
+                enabled: !root.busy && root.status-known && root.management-available
+                    && (root.enrolled || root.usable);
+                toggled(value) => {
                     root.password = "";
-                }
-            }
-            ActionButton {
-                horizontal-stretch: 1;
-                label: root.translate(root.confirming_off ? "wallet.confirm_off" : "wallet.turn_off", root.language_index);
-                danger: true;
-                enabled: !root.busy && root.management_available && root.status_known && root.enrolled;
-                activated => {
-                    root.password = "";
-                    if root.confirming_off {
-                        root.confirming_off = false;
-                        root.clear_requested();
+                    if value {
+                        root.confirming-off = false;
+                        root.entering = true;
                     } else {
-                        root.confirming_off = true;
+                        root.entering = false;
+                        root.confirming-off = root.enrolled;
                     }
                 }
             }
         }
-        if root.confirming_off: Text {
-            text: root.translate("wallet.review_off", root.language_index);
-            color: UiTheme.warning-text;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
+        if root.enrolled && !root.entering && !root.confirming-off: Row {
+            title: Tr.t("wallet.enrolled");
+            subtitle: Tr.t("wallet.enrolled_detail");
+            Button {
+                text: Tr.t("wallet.update");
+                kind: ButtonKind.text;
+                enabled: !root.busy && root.usable;
+                clicked => { root.entering = true; }
+            }
         }
-        if root.operation_status != "": Text {
-            text: root.operation_status;
-            color: UiTheme.text-secondary;
-            font-size: UiTheme.row-label-font-size;
-            wrap: word-wrap;
+        if root.entering: Row {
+            title: Tr.t("wallet.password_label");
+            subtitle: Tr.t("wallet.password_detail");
+            LineEdit {
+                width: UiTheme.field-width;
+                text <=> root.password;
+                input-type: InputType.password;
+                enabled: !root.busy && root.usable;
+            }
+            Button {
+                text: Tr.t("action.cancel");
+                kind: ButtonKind.text;
+                clicked => {
+                    root.password = "";
+                    root.entering = false;
+                }
+            }
+            Button {
+                text: Tr.t("wallet.save");
+                kind: ButtonKind.filled;
+                enabled: !root.busy && root.usable && root.password != "";
+                clicked => {
+                    root.save-requested(root.password);
+                    root.password = "";
+                    root.entering = false;
+                }
+            }
+        }
+        if root.confirming-off: Row {
+            title: Tr.t("wallet.confirm_title");
+            subtitle: Tr.t("wallet.review_off");
+            Button {
+                text: Tr.t("action.cancel");
+                kind: ButtonKind.text;
+                clicked => { root.confirming-off = false; }
+            }
+            Button {
+                text: Tr.t("wallet.confirm_off");
+                kind: ButtonKind.danger;
+                enabled: !root.busy && root.management-available && root.status-known && root.enrolled;
+                clicked => {
+                    root.confirming-off = false;
+                    root.password = "";
+                    root.clear-requested();
+                }
+            }
         }
     }
+    if root.operation-status != "": Note { text: root.operation-status; }
 }

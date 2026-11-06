@@ -1,0 +1,16 @@
+// Translation entry points. su_app wires the callbacks to the language catalog
+// and keeps `language-index` in step with the selected language, so any
+// binding that calls Tr.t(...) re-evaluates when the language changes.
+export global Tr {
+    in-out property <int> language-index: 0;
+    pure callback translate(string, int) -> string;
+    pure callback translate-value(string, int, string) -> string;
+
+    pure public function t(key: string) -> string {
+        return self.translate(key, self.language-index);
+    }
+
+    pure public function tv(key: string, value: string) -> string {
+        return self.translate-value(key, self.language-index, value);
+    }
+}

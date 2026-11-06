@@ -1,45 +1,97 @@
+// Theme tokens. Colour roles are filled at runtime from the wallpaper palette
+// (DMS / matugen) by su.app.theme + apply_theme(); the defaults below are only
+// what shows before the first palette is applied. Every metric derives from
+// `base`, the single length literal of the UI.
 export global UiTheme {
-    in-out property <bool> dark-mode: false;
-    in-out property <color> canvas: #f3f6f5;
-    in-out property <color> surface: #ffffff;
-    in-out property <color> surface-subtle: #edf3f1;
-    in-out property <color> surface-selected: #dcece7;
-    in-out property <color> border: #d6dfdc;
-    in-out property <color> divider: #e2e8e6;
+    in-out property <bool> dark-mode: true;
 
-    in-out property <color> text-primary: #182d27;
-    in-out property <color> text-secondary: #65746f;
-    in-out property <color> text-tertiary: #75827e;
+    // ---- surfaces (depth by tone, not by borders) ----
+    in-out property <color> canvas: #131318;
+    in-out property <color> sidebar: #1f1f25;
+    in-out property <color> group: #1f1f25;
+    in-out property <color> group-hover: #29292f;
+    in-out property <color> inset: #29292f;
+    in-out property <color> outline: #46464f;
+    in-out property <color> divider: #2c2c33;
 
-    in-out property <color> primary: #155447;
-    in-out property <color> primary-hover: #1c6655;
-    in-out property <color> primary-pressed: #0e3a30;
-    in-out property <color> on-primary: #ffffff;
+    // ---- text ----
+    in-out property <color> text: #e4e1e9;
+    in-out property <color> text-dim: #c7c5d0;
+    in-out property <color> text-faint: #90909a;
 
-    in-out property <color> success-surface: #d8eee5;
-    in-out property <color> success-text: #165c46;
-    in-out property <color> warning-surface: #f5e7c5;
-    in-out property <color> warning-text: #775514;
-    in-out property <color> danger-surface: #f5dcdc;
-    in-out property <color> danger-hover: #fff1f1;
-    in-out property <color> danger-text: #983535;
-    in-out property <color> disabled-surface: #e8edeb;
-    in-out property <color> disabled-text: #8b9894;
+    // ---- accent ----
+    in-out property <color> accent: #bbc3ff;
+    in-out property <color> on-accent: #232c61;
+    in-out property <color> tonal: #3a4379;
+    in-out property <color> on-tonal: #dee0ff;
+    in-out property <color> nav-selected: #434559;
+    in-out property <color> on-nav-selected: #e0e1f9;
 
+    // ---- status ----
+    in-out property <color> ok: #8fd6a6;
+    in-out property <color> ok-bg: #1d3326;
+    in-out property <color> warn: #ecc770;
+    in-out property <color> warn-bg: #3a3020;
+    in-out property <color> danger: #ffb4ab;
+    in-out property <color> danger-bg: #3d1d1b;
+    in-out property <color> idle: #90909a;
+    in-out property <color> idle-bg: #29292f;
+
+    // ---- camera preview (fixed) ----
     in-out property <color> preview-surface: #101816;
     in-out property <color> preview-overlay: #15201ecc;
     in-out property <color> preview-text: #e8f6f1;
     in-out property <color> face-indicator: #4dd3a7;
 
-    out property <length> card-padding: 18px;
-    out property <length> content-gap: 12px;
-    out property <length> card-border: 1px;
-    out property <length> card-radius: 6px;
-    out property <length> capture-thumbnail-edge: row-label-font-size * 6;
-    // Button metrics: buttons size to their label plus this horizontal padding.
-    out property <length> button-padding: 14px;
-    out property <length> button-min-width: 104px;
-    out property <length> button-font-size: 14px;
-    // Label style of DiagnosticRow; RowLabelMeasure must match it.
-    out property <length> row-label-font-size: 13px;
+    // ---- font weights (only weights the CJK sans families actually ship) ----
+    out property <int> weight-regular: 400;
+    out property <int> weight-medium: 500;
+    out property <int> weight-bold: 700;
+
+    // ---- metrics: everything below derives from `base` ----
+    out property <length> base: 14px;
+    // One physical image pixel, to size images from their pixel dimensions.
+    out property <length> pixel: 1px;
+    out property <length> unit: base * 0.29;
+    out property <length> s1: unit;
+    out property <length> s2: unit * 2;
+    out property <length> s3: unit * 3;
+    out property <length> s4: unit * 4;
+    out property <length> s5: unit * 5;
+    out property <length> s6: unit * 6;
+    out property <length> s8: unit * 8;
+    out property <length> hairline: unit / 4;
+    out property <length> stroke: unit / 2;
+
+    out property <length> font-body: base;
+    out property <length> font-small: base * 0.86;
+    out property <length> font-row-title: base * 1.07;
+    out property <length> font-section: base * 0.93;
+    out property <length> font-brand: base * 1.23;
+    out property <length> font-h1: base * 1.86;
+    out property <length> font-hero: base * 1.43;
+    out property <length> font-stat: base * 1.7;
+
+    out property <length> radius-group: unit * 3;
+    out property <length> radius-control: unit * 2;
+    out property <length> radius-small: unit;
+    out property <length> content-max: base * 62;
+    out property <length> sidebar-width: base * 16;
+    out property <length> dot: unit * 2;
+    out property <length> avatar: base * 2.6;
+    out property <length> check: base * 1.8;
+    out property <length> hero-badge: base * 3.7;
+    out property <length> field-width: base * 16;
+    out property <length> field-narrow: base * 7;
+    out property <length> slider-width: base * 14;
+    out property <length> toggle-height: base * 1.7;
+    out property <length> thumbnail: base * 6;
+    out property <length> license-height: base * 24;
+    out property <length> preview-height: base * 25;
+    out property <length> preview-side: base * 30;
+    out property <length> overlay-width: base * 16;
+    out property <length> window-width: base * 86;
+    out property <length> window-height: base * 56;
+    // Below this window width the preview and capture panel stack vertically.
+    out property <length> compact-width: base * 66;
 }

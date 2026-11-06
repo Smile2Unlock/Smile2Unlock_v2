@@ -1,8 +1,7 @@
-import { LineEdit, ProgressIndicator } from "std-widgets.slint";
+import { LineEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
-import {
-    ActionButton, ActionLabelMeasure, CenteredActionButton, InlineStatus, SectionTitle, SegmentedSelector,
-} from "components.slint";
+import { Tr } from "i18n.slint";
+import { Button, ButtonKind, Chevron, Group, Note, ProgressBar, Row, Status, Tone, Toggle } from "components.slint";
 
 export struct DeploymentTargetRow {
     id: string,
@@ -21,397 +20,330 @@ export struct DeploymentTargetRow {
     authtok_source: int,
 }
 
-export component DeploymentPanel inherits Rectangle {
+// Keyring source indices shared with the C++ side (wallet::sources).
+// 0 = off, 1 = kernel keyring (legacy, no longer offered), 2 = saved password.
+component TargetItem inherits VerticalLayout {
+    in property <DeploymentTargetRow> target;
+    in property <bool> helper-available;
+    in property <bool> busy;
+    in property <bool> windows;
+    // "", "configure" or "rollback" when this target awaits confirmation.
+    in property <string> pending-action;
+    callback begin(string);
+    callback cancel();
+    callback confirm(string, int);
+
+    property <bool> expanded;
+    property <int> selected: target.authtok-source;
+    property <bool> changed: target.managed && selected != target.authtok-source;
+    property <bool> login-capable: target.role == "login" || target.role == "login-and-lock";
+    property <bool> actionable: helper-available && target.configurable;
+    property <bool> repair: target.id == "auth-service";
+    property <bool> details: windows || expanded || pending-action != "" || changed;
+    property <bool> show-turn-on: actionable && pending-action != "configure"
+        && (repair || !target.managed);
+    property <bool> keyring-row: !windows && login-capable && (target.managed || target.configurable);
+    property <string> path-line: target.effective-path == "" ? "" : target.effective-path;
+
+    changed target => { self.selected = target.authtok-source; }
+
+    Row {
+        title: Tr.t("target." + target.id);
+        subtitle: target.id == "credential-provider"
+            ? (target.configured ? Tr.t("deployment.cp_registered") : Tr.t("deployment.cp_incomplete"))
+            : target.id == "auth-service"
+                ? (target.configured ? Tr.t("deployment.service_running")
+                    : target.state == "conflict" ? Tr.t("deployment.service_legacy_path")
+                    : target.state == "supported" ? Tr.t("deployment.service_stopped")
+                    : Tr.t("deployment.service_missing"))
+                : target.managed
+                    ? (target.authtok-source == 0 ? Tr.t("target.face_on")
+                        : target.authtok-source == 1 ? Tr.t("target.face_kernel") : Tr.t("target.face_keyring"))
+                    : target.state == "external" ? Tr.t("target.external")
+                    : target.state == "conflict" ? Tr.t("target.conflict")
+                    : target.state == "unsupported" ? Tr.t("target.unsupported")
+                    : Tr.t("target.off");
+        interactive: !root.windows;
+        clicked => { root.expanded = !root.expanded; }
+        if root.show-turn-on: Button {
+            text: root.repair ? Tr.t("deployment.repair_service") : Tr.t("target.turn_on");
+            kind: ButtonKind.tonal;
+            enabled: !root.busy;
+            clicked => {
+                root.expanded = true;
+                root.begin("configure");
+            }
+        }
+        if (target.managed && !root.repair) || (root.repair && target.configured): Status {
+            text: Tr.t("status.on");
+            tone: Tone.ok;
+        }
+        if !target.managed && target.state == "external": Status { text: Tr.t("status.manual"); tone: Tone.idle; }
+        if target.state == "conflict": Status { text: Tr.t("status.conflict"); tone: Tone.warn; }
+        if target.state == "unsupported": Status { text: Tr.t("status.unavailable"); tone: Tone.idle; }
+        if !root.helper-available && (target.managed || target.configurable): Status {
+            text: Tr.t("deployment.helper_required");
+            tone: Tone.warn;
+        }
+        if !root.windows: VerticalLayout {
+            alignment: center;
+            Chevron { open: root.details; }
+        }
+    }
+
+    if root.details && root.keyring-row: Row {
+        nested: true;
+        title: Tr.t("target.keyring");
+        subtitle: root.selected == 1 ? Tr.t("target.keyring_kernel")
+            : root.selected == 0 && !target.sealed-available ? Tr.t(target.sealed-unavailable-reason)
+            : Tr.t("target.keyring_hint");
+        Toggle {
+            on: root.selected != 0;
+            enabled: !root.busy && root.actionable && (root.selected != 0 || target.sealed-available);
+            toggled(value) => {
+                root.selected = value ? 2 : 0;
+                root.cancel();
+            }
+        }
+    }
+
+    if root.details && root.changed: Row {
+        nested: true;
+        title: Tr.t("target.apply_title");
+        subtitle: Tr.t("target.apply_detail");
+        Button {
+            text: Tr.t("action.cancel");
+            kind: ButtonKind.text;
+            clicked => { root.selected = target.authtok-source; }
+        }
+        Button {
+            text: Tr.t("deployment.apply");
+            kind: ButtonKind.filled;
+            enabled: !root.busy && root.actionable;
+            clicked => { root.confirm("configure", root.selected); }
+        }
+    }
+
+    if root.pending-action == "configure": Row {
+        nested: true;
+        title: root.repair ? Tr.t("target.review_repair") : Tr.t("target.review_on");
+        subtitle: root.repair ? Tr.t("deployment.review_detail") : Tr.tv("target.review_on_detail", target.effective-path);
+        Button { text: Tr.t("action.cancel"); kind: ButtonKind.text; clicked => { root.cancel(); } }
+        Button {
+            text: root.repair ? Tr.t("deployment.confirm_repair") : Tr.t("target.confirm_on");
+            kind: ButtonKind.filled;
+            enabled: !root.busy;
+            clicked => { root.confirm("configure", root.selected); }
+        }
+    }
+
+    if root.details && root.path-line != "": Row {
+        nested: true;
+        title: Tr.t("target.file");
+        subtitle: root.path-line + (target.password-fallback ? " · " + Tr.t("target.fallback_kept") : "");
+        if root.helper-available && target.managed && !root.repair && root.pending-action != "rollback": Button {
+            text: Tr.t("target.turn_off");
+            kind: ButtonKind.danger;
+            enabled: !root.busy;
+            clicked => { root.begin("rollback"); }
+        }
+    }
+
+    if root.pending-action == "rollback": Row {
+        nested: true;
+        title: Tr.t("target.review_off");
+        subtitle: Tr.t("deployment.review_rollback_detail");
+        Button { text: Tr.t("action.cancel"); kind: ButtonKind.text; clicked => { root.cancel(); } }
+        Button {
+            text: Tr.t("target.confirm_off");
+            kind: ButtonKind.danger;
+            enabled: !root.busy;
+            clicked => { root.confirm("rollback", 0); }
+        }
+    }
+}
+
+// Owns the single pending review/confirm so only one entry awaits a decision.
+export component TargetGroups inherits VerticalLayout {
     in property <[DeploymentTargetRow]> targets;
-    in property <bool> helper_available: false;
-    in property <bool> installer_available: false;
-    in property <bool> runtime_ready: false;
-    in property <bool> busy: false;
-    in property <bool> platform_windows: false;
-    in property <int> language_index: 0;
-    in property <string> operation_status: "";
-    // Face-model download card state.
-    in property <bool> models_present: true;
-    in property <string> models_dir: "";
-    in property <bool> models_downloading: false;
-    in property <float> models_progress: 0;
-    in property <string> models_status_text: "";
-    in-out property <string> models_mirror_default: "https://ghproxy.com/";
+    in property <[DeploymentTargetRow]> login-targets;
+    in property <[DeploymentTargetRow]> lock-targets;
+    in property <[DeploymentTargetRow]> privilege-targets;
+    in property <bool> helper-available;
+    in property <bool> busy;
+    in property <bool> windows;
+    in property <string> operation-status;
+    callback configure-requested(string, int);
+    callback rollback-requested(string);
 
-    callback initialize_requested();
-    callback models_download_requested(bool, string);
-    callback install_helper_requested();
-    callback configure_requested(string, int);
-    callback rollback_requested(string);
-    pure callback translate(string, int) -> string;
-    pure callback translate_value(string, int, string) -> string;
+    property <string> pending-target;
+    property <string> pending-action;
 
-    private property <string> pending_target: "";
-    private property <string> pending_action: "";
-    private property <string> status_line: root.pending_target != ""
-        ? root.pending_action == "rollback"
-            ? root.translate("deployment.review_rollback_detail", root.language_index)
-            : root.translate("deployment.review_detail", root.language_index)
-        : root.operation_status;
-    // Every target card reserves the width of its widest possible action label
-    // so the action column lines up across cards in every language.
-    private property <length> action_width: max(UiTheme.button-min-width, max(
-        measure-review.preferred-width, measure-rollback.preferred-width,
-        measure-repair.preferred-width, measure-confirm-rollback.preferred-width,
-        measure-confirm-repair.preferred-width, measure-apply.preferred-width)
-        + 2 * UiTheme.button-padding);
+    spacing: UiTheme.s6;
 
-    background: transparent;
+    if root.windows && root.targets.length > 0: Group {
+        title: Tr.t("deployment.windows_title");
+        for target in root.targets: TargetItem {
+            target: target;
+            helper-available: root.helper-available;
+            busy: root.busy;
+            windows: true;
+            pending-action: root.pending-target == target.id ? root.pending-action : "";
+            begin(action) => { root.pending-target = target.id; root.pending-action = action; }
+            cancel() => { root.pending-target = ""; root.pending-action = ""; }
+            confirm(action, source) => { root.finish(target.id, action, source); }
+        }
+    }
 
-    measure-review := ActionLabelMeasure { text: root.translate("deployment.review", root.language_index); }
-    measure-rollback := ActionLabelMeasure { text: root.translate("deployment.review_rollback", root.language_index); }
-    measure-repair := ActionLabelMeasure { text: root.translate("deployment.repair_service", root.language_index); }
-    measure-confirm-rollback := ActionLabelMeasure { text: root.translate("deployment.confirm_rollback", root.language_index); }
-    measure-confirm-repair := ActionLabelMeasure { text: root.translate("deployment.confirm_repair", root.language_index); }
-    measure-apply := ActionLabelMeasure { text: root.translate("deployment.apply", root.language_index); }
-
-    VerticalLayout {
-        spacing: 10px;
-
-        HorizontalLayout {
-            spacing: 20px;
-            SectionTitle {
-                horizontal-stretch: 1;
-                title: root.translate("deployment.title", root.language_index);
-                detail: root.helper_available
-                    ? root.translate("deployment.helper_ready", root.language_index)
-                    : root.installer_available
-                        ? root.translate("deployment.helper_installable", root.language_index)
-                        : root.translate("deployment.helper_missing", root.language_index);
+    if !root.windows: VerticalLayout {
+        spacing: UiTheme.s6;
+        if root.targets.length == 0: Group {
+            Row { title: Tr.t("deployment.no_targets"); }
+        }
+        if root.login-targets.length > 0: Group {
+            title: Tr.t("deployment.login_group");
+            hint: Tr.t("deployment.login_hint");
+            for target in root.login-targets: TargetItem {
+                target: target;
+                helper-available: root.helper-available;
+                busy: root.busy;
+                windows: false;
+                pending-action: root.pending-target == target.id ? root.pending-action : "";
+                begin(action) => { root.pending-target = target.id; root.pending-action = action; }
+                cancel() => { root.pending-target = ""; root.pending-action = ""; }
+                confirm(action, source) => { root.finish(target.id, action, source); }
             }
-            if root.runtime_ready: InlineStatus {
-                label: root.translate("status.ready", root.language_index);
-                tone: "accent";
+        }
+        if root.lock-targets.length > 0: Group {
+            title: Tr.t("deployment.lock_group");
+            for target in root.lock-targets: TargetItem {
+                target: target;
+                helper-available: root.helper-available;
+                busy: root.busy;
+                windows: false;
+                pending-action: root.pending-target == target.id ? root.pending-action : "";
+                begin(action) => { root.pending-target = target.id; root.pending-action = action; }
+                cancel() => { root.pending-target = ""; root.pending-action = ""; }
+                confirm(action, source) => { root.finish(target.id, action, source); }
             }
-            if !root.runtime_ready && !root.helper_available && !root.installer_available: InlineStatus {
-                label: root.translate("deployment.helper_required", root.language_index);
-                tone: "warn";
+        }
+        if root.privilege-targets.length > 0: Group {
+            title: Tr.t("deployment.privilege_group");
+            hint: Tr.t("deployment.privilege_hint");
+            for target in root.privilege-targets: TargetItem {
+                target: target;
+                helper-available: root.helper-available;
+                busy: root.busy;
+                windows: false;
+                pending-action: root.pending-target == target.id ? root.pending-action : "";
+                begin(action) => { root.pending-target = target.id; root.pending-action = action; }
+                cancel() => { root.pending-target = ""; root.pending-action = ""; }
+                confirm(action, source) => { root.finish(target.id, action, source); }
             }
-            if !root.helper_available && root.installer_available: CenteredActionButton {
-                label: root.translate("deployment.install_helper", root.language_index);
-                primary: true;
+        }
+    }
+
+    if root.operation-status != "": Note { text: root.operation-status; }
+
+    function finish(target: string, action: string, source: int) {
+        root.pending-target = "";
+        root.pending-action = "";
+        if (action == "rollback") {
+            root.rollback-requested(target);
+        } else {
+            root.configure-requested(target, source);
+        }
+    }
+}
+
+// Shown only while the helper or the runtime still needs setting up.
+export component SystemSetupGroup inherits VerticalLayout {
+    in property <bool> helper-available;
+    in property <bool> installer-available;
+    in property <bool> runtime-ready;
+    in property <bool> busy;
+    callback install-helper();
+    callback initialize();
+
+    if !root.helper-available || !root.runtime-ready: Group {
+        title: Tr.t("deployment.setup_title");
+        Row {
+            title: Tr.t("deployment.helper_title");
+            subtitle: root.helper-available ? Tr.t("deployment.helper_ready")
+                : root.installer-available ? Tr.t("deployment.helper_installable")
+                : Tr.t("deployment.helper_missing");
+            if root.helper-available: Status { text: Tr.t("status.ready"); tone: Tone.ok; }
+            if !root.helper-available && root.installer-available: Button {
+                text: Tr.t("deployment.install_helper");
+                kind: ButtonKind.filled;
                 enabled: !root.busy;
-                activated => { root.install_helper_requested(); }
+                clicked => { root.install-helper(); }
             }
-            if !root.runtime_ready && root.helper_available: CenteredActionButton {
-                label: root.translate("deployment.initialize", root.language_index);
-                primary: true;
-                enabled: !root.busy;
-                activated => { root.initialize_requested(); }
+            if !root.helper-available && !root.installer-available: Status {
+                text: Tr.t("deployment.helper_required");
+                tone: Tone.warn;
             }
         }
-
-        if !root.models_present || root.models_downloading: Rectangle {
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: root.models_present ? UiTheme.border : UiTheme.danger-text;
-            background: UiTheme.surface;
-
-            VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-
-                HorizontalLayout {
-                    spacing: 12px;
-                    Text {
-                        text: root.translate("models.title", root.language_index);
-                        color: UiTheme.text-primary;
-                        font-size: 14px;
-                        font-weight: 700;
-                        vertical-alignment: center;
-                    }
-                    Text {
-                        horizontal-stretch: 1;
-                        text: root.models_present
-                            ? root.translate("models.ok", root.language_index)
-                            : root.translate("models.missing", root.language_index);
-                        color: root.models_present ? UiTheme.text-secondary : UiTheme.danger-text;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                }
-
-                if !root.models_downloading: HorizontalLayout {
-                    spacing: 10px;
-                    Text {
-                        text: root.translate("models.mirror_hint", root.language_index);
-                        color: UiTheme.text-secondary;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
-                    LineEdit {
-                        horizontal-stretch: 1;
-                        text <=> root.models_mirror_default;
-                        font-size: 12px;
-                    }
-                    CenteredActionButton {
-                        label: root.translate("models.download_mirror", root.language_index);
-                        enabled: !root.models_downloading;
-                        activated => { root.models_download_requested(true, root.models_mirror_default); }
-                    }
-                    CenteredActionButton {
-                        label: root.translate("models.download_direct", root.language_index);
-                        primary: true;
-                        enabled: !root.models_downloading;
-                        activated => { root.models_download_requested(false, ""); }
-                    }
-                }
-
-                if root.models_downloading: ProgressIndicator {
-                    progress: min(1, max(0, root.models_progress));
-                }
-                if root.models_downloading: Text {
-                    text: root.models_status_text;
-                    color: UiTheme.text-secondary;
-                    font-size: 12px;
-                    overflow: elide;
-                }
+        Row {
+            title: Tr.t("deployment.runtime_title");
+            subtitle: Tr.t("deployment.runtime_detail");
+            if root.runtime-ready: Status { text: Tr.t("status.ready"); tone: Tone.ok; }
+            if !root.runtime-ready: Button {
+                text: Tr.t("deployment.initialize");
+                kind: root.helper-available ? ButtonKind.filled : ButtonKind.tonal;
+                enabled: !root.busy && root.helper-available;
+                clicked => { root.initialize(); }
             }
         }
+    }
+}
 
-        if root.targets.length == 0: Rectangle {
-            background: UiTheme.surface-subtle;
-            border-width: 1px;
-            border-color: UiTheme.border;
-            border-radius: 4px;
-            VerticalLayout {
-                padding: 20px;
-                Text {
-                    text: root.translate("deployment.no_targets", root.language_index);
-                    color: UiTheme.text-secondary;
-                    font-size: 12px;
-                    overflow: elide;
-                }
+// Face-model download (SeetaFace6), shown while models are missing or downloading.
+export component ModelsGroup inherits VerticalLayout {
+    in property <bool> present: true;
+    in property <bool> downloading: false;
+    in property <float> progress: 0;
+    in property <string> status-text;
+    in-out property <string> mirror: "https://ghproxy.com/";
+    callback download(bool, string);
+
+    if !root.present || root.downloading: Group {
+        title: Tr.t("models.title");
+        Row {
+            title: Tr.t("models.recognition");
+            subtitle: root.present ? Tr.t("models.ok") : Tr.t("models.missing");
+            Status {
+                text: root.present ? Tr.t("status.ready") : Tr.t("status.action_required");
+                tone: root.present ? Tone.ok : Tone.danger;
             }
         }
-
-        for target in root.targets: Rectangle {
-            vertical-stretch: 0;
-            border-radius: 6px;
-            border-width: 1px;
-            border-color: root.pending_target == target.id ? UiTheme.primary : UiTheme.border;
-            background: root.pending_target == target.id ? UiTheme.surface-selected : UiTheme.surface;
-            property <int> source_selected: target.authtok_source;
-            property <bool> source_changed: source_selected != target.authtok_source;
-            property <bool> source_valid: source_selected == 0 ||
-                (source_selected == 1 && target.wallet_available) ||
-                (source_selected == 2 && target.sealed_available);
-
-            VerticalLayout {
-                padding: UiTheme.card-padding;
-                spacing: UiTheme.content-gap;
-
-                HorizontalLayout {
-                    spacing: UiTheme.content-gap;
-                    // Text column: three rows whose items share a baseline.
-                    VerticalLayout {
-                        horizontal-stretch: 1;
-                        spacing: 6px;
-
-                        HorizontalLayout {
-                            spacing: 12px;
-                            Text {
-                                horizontal-stretch: 1;
-                                text: target.id == "credential-provider"
-                                    ? root.translate("deployment.target_credential_provider", root.language_index)
-                                    : target.id == "auth-service"
-                                        ? root.translate("deployment.target_auth_service", root.language_index)
-                                        : target.id == "sudo-i"
-                                            ? "sudo -i"
-                                            : target.id == "polkit"
-                                                ? root.translate("deployment.target_polkit", root.language_index)
-                                                : target.service;
-                                color: UiTheme.text-primary;
-                                font-size: 14px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: target.role == "login"
-                                    ? root.translate("deployment.role_login", root.language_index)
-                                    : target.role == "lock"
-                                        ? root.translate("deployment.role_lock", root.language_index)
-                                        : target.role == "privilege"
-                                            ? root.translate("deployment.role_privilege", root.language_index)
-                                            : root.translate("deployment.role_both", root.language_index);
-                                color: UiTheme.text-tertiary;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                            }
-                            InlineStatus {
-                                horizontal-stretch: 0;
-                                label: target.state == "supported"
-                                    ? root.translate("deployment.state_supported", root.language_index)
-                                    : target.state == "managed"
-                                        ? root.translate("deployment.state_managed", root.language_index)
-                                        : target.state == "external"
-                                            ? root.translate("deployment.state_external", root.language_index)
-                                            : target.state == "conflict"
-                                                ? root.translate("deployment.state_conflict", root.language_index)
-                                                : root.translate("deployment.state_unsupported", root.language_index);
-                                tone: target.managed ? "accent"
-                                    : target.state == "conflict" ? "bad"
-                                    : target.configurable || target.state == "external" ? "neutral"
-                                    : "warn";
-                            }
-                        }
-
-                        Text {
-                            text: target.effective_path;
-                            color: UiTheme.text-secondary;
-                            font-size: 12px;
-                            overflow: elide;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 12px;
-                            InlineStatus {
-                                horizontal-stretch: 1;
-                                label: target.id == "credential-provider"
-                                    ? target.configured
-                                        ? root.translate("deployment.cp_registered", root.language_index)
-                                        : root.translate("deployment.cp_incomplete", root.language_index)
-                                    : target.id == "auth-service"
-                                        ? target.configured
-                                            ? root.translate("deployment.service_running", root.language_index)
-                                            : target.state == "conflict"
-                                                ? root.translate("deployment.service_legacy_path", root.language_index)
-                                                : target.state == "supported"
-                                                ? root.translate("deployment.service_stopped", root.language_index)
-                                                : root.translate("deployment.service_missing", root.language_index)
-                                        : target.password_fallback
-                                            ? root.translate("deployment.password_fallback_ready", root.language_index)
-                                            : root.translate("deployment.password_fallback_unknown", root.language_index);
-                                tone: target.configured ? "good" : "warn";
-                            }
-                        }
-                    }
-
-                    // Action column, vertically centred on the target details.
-                    VerticalLayout {
-                        width: root.action_width;
-                        spacing: UiTheme.content-gap;
-                        alignment: center;
-
-                        // A source edit uses review/apply; rollback has its own review.
-                        if root.helper_available && target.configurable && (!target.managed || source_changed || target.id == "auth-service"): ActionButton {
-                            label: root.pending_target == target.id && root.pending_action == "configure"
-                                ? target.id == "auth-service"
-                                    ? root.translate("deployment.confirm_repair", root.language_index)
-                                    : root.translate("deployment.apply", root.language_index)
-                                : target.id == "auth-service"
-                                    ? root.translate("deployment.repair_service", root.language_index)
-                                    : root.translate("deployment.review", root.language_index);
-                            primary: true;
-                            enabled: !root.busy && source_valid;
-                            activated => {
-                                if (root.pending_target != target.id || root.pending_action != "configure") {
-                                    root.pending_target = target.id;
-                                    root.pending_action = "configure";
-                                } else {
-                                    root.pending_target = "";
-                                    root.pending_action = "";
-                                    root.configure_requested(target.id, source_selected);
-                                }
-                            }
-                        }
-                        if root.helper_available && target.managed && target.id != "auth-service": ActionButton {
-                            label: root.pending_target == target.id && root.pending_action == "rollback"
-                                ? root.translate("deployment.confirm_rollback", root.language_index)
-                                : root.translate("deployment.review_rollback", root.language_index);
-                            danger: true;
-                            enabled: !root.busy;
-                            activated => {
-                                if (root.pending_target != target.id || root.pending_action != "rollback") {
-                                    root.pending_target = target.id;
-                                    root.pending_action = "rollback";
-                                } else {
-                                    root.pending_target = "";
-                                    root.pending_action = "";
-                                    root.rollback_requested(target.id);
-                                }
-                            }
-                        }
-                        if !root.helper_available && (target.managed || target.configurable): Text {
-                            text: root.translate("deployment.helper_required", root.language_index);
-                            color: UiTheme.warning-text;
-                            font-size: 11px;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                        if !target.managed && !target.configurable: Text {
-                            text: target.state == "external"
-                                ? root.translate("deployment.external_read_only", root.language_index)
-                                : root.translate("deployment.not_available", root.language_index);
-                            color: UiTheme.text-tertiary;
-                            font-size: 11px;
-                            horizontal-alignment: center;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-                if !root.platform_windows && (target.configurable || target.managed)
-                    && (target.role == "login" || target.role == "login-and-lock"): VerticalLayout {
-                    alignment: start;
-                    spacing: UiTheme.content-gap;
-                    Text {
-                        text: root.translate("deployment.wallet_source", root.language_index);
-                        color: UiTheme.text-primary;
-                        font-size: UiTheme.row-label-font-size;
-                        wrap: word-wrap;
-                    }
-                    if target.managed: Text {
-                        text: root.translate_value("deployment.wallet_deployed", root.language_index,
-                            root.translate(target.authtok_source == 1 ? "deployment.source_kernel"
-                                : target.authtok_source == 2 ? "deployment.source_sealed"
-                                : "deployment.source_off", root.language_index));
-                        color: UiTheme.text-secondary;
-                        font-size: UiTheme.row-label-font-size;
-                        wrap: word-wrap;
-                    }
-                    SegmentedSelector {
-                        options: [root.translate("deployment.source_off", root.language_index),
-                            root.translate("deployment.source_kernel", root.language_index),
-                            root.translate("deployment.source_sealed", root.language_index)];
-                        option-enabled: [!root.busy && root.helper_available && target.configurable,
-                            !root.busy && root.helper_available && target.configurable && target.wallet_available,
-                            !root.busy && root.helper_available && target.configurable && target.sealed_available];
-                        current-index <=> source_selected;
-                        selected(index) => {
-                            root.pending_target = "";
-                            root.pending_action = "";
-                        }
-                    }
-                    if !target.wallet_available: Text {
-                        text: root.translate_value("deployment.kernel_unavailable", root.language_index,
-                            root.translate(target.wallet_unavailable_reason, root.language_index));
-                        color: UiTheme.text-tertiary;
-                        font-size: UiTheme.row-label-font-size;
-                        wrap: word-wrap;
-                    }
-                    if !target.sealed_available: Text {
-                        text: root.translate_value("deployment.sealed_unavailable", root.language_index,
-                            root.translate(target.sealed_unavailable_reason, root.language_index));
-                        color: UiTheme.text-tertiary;
-                        font-size: UiTheme.row-label-font-size;
-                        wrap: word-wrap;
-                    }
-                }
+        if !root.downloading: Row {
+            title: Tr.t("models.mirror_title");
+            subtitle: Tr.t("models.mirror_hint");
+            LineEdit {
+                width: UiTheme.field-width * 1.5;
+                text <=> root.mirror;
             }
         }
-
-        if root.status_line != "": Text {
-            text: root.status_line;
-            color: UiTheme.text-secondary;
-            font-size: 11px;
-            overflow: elide;
+        if !root.downloading: Row {
+            title: Tr.t("models.download");
+            Button {
+                text: Tr.t("models.download_mirror");
+                kind: ButtonKind.tonal;
+                clicked => { root.download(true, root.mirror); }
+            }
+            Button {
+                text: Tr.t("models.download_direct");
+                kind: ButtonKind.filled;
+                clicked => { root.download(false, ""); }
+            }
+        }
+        if root.downloading: Row {
+            title: root.status-text;
+            ProgressBar {
+                width: UiTheme.field-width;
+                progress: root.progress;
+            }
         }
     }
 }
