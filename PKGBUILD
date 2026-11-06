@@ -1,5 +1,5 @@
 pkgname=smile2unlock
-pkgver=2.4.0
+pkgver=2.4.1
 pkgrel=1
 pkgdesc='Local face authentication (upstream release binaries)'
 arch=('x86_64')
@@ -11,8 +11,8 @@ optdepends=('sudo: command-line administrator authentication')
 conflicts=('smile2unlock-bin' 'smile2unlock-git')
 options=('!strip' '!debug' '!lto')
 install=smile2unlock.install
-source=('smile2unlock_2.4.0.orig.tar.gz' 'prepare-payload.py' 'smile2unlock-remove.hook')
-sha256sums=('8a739cc128187cdda1e85cab938b2e9338e9dd5916fd85b2c5148d73b52b55b6' 'fae7079b0bfd85cdbf5e85a97a194472ea682a76f835dc0ea40aa4d285f482cd' '88cf60bd10fc6483a35fe14e150ed531f63534696dfda021ead7562af3e4107a')
+source=('smile2unlock_2.4.1.orig.tar.gz' 'prepare-payload.py' 'smile2unlock-remove.hook')
+sha256sums=('283f153b72495743419c49bc8858e09058d286547323676613b8a0a34a6e151f' 'fae7079b0bfd85cdbf5e85a97a194472ea682a76f835dc0ea40aa4d285f482cd' '2d3e6188baa0404c6c4a5156bf26de869296a43c2d91dfba3848f97dc1f59aa3')
 
 package() {
     python "$srcdir/prepare-payload.py" "$srcdir/smile2unlock-$pkgver" "$pkgdir" /usr/lib/security --remove-hook "$srcdir/smile2unlock-remove.hook"

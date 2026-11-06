@@ -5,12 +5,12 @@
 %global __os_install_post %{nil}
 %global _build_id_links none
 Name:           smile2unlock
-Version:        2.4.0
+Version:        2.4.1
 Release:        1
 Summary:        Local face authentication with desktop, sudo and Polkit integration
 License:        MIT AND GPL-3.0-only AND LGPL-2.1-or-later
 URL:            https://github.com/Smile2Unlock/Smile2Unlock_v2
-Source0:        smile2unlock_2.4.0.orig.tar.gz
+Source0:        smile2unlock_2.4.1.orig.tar.gz
 Source1:        prepare-payload.py
 ExclusiveArch:  x86_64
 AutoReqProv:    no
@@ -34,7 +34,7 @@ checksum-verified upstream x86_64 release, including its private runtime
 and recognition models. Configure authentication explicitly in the GUI.
 
 %prep
-echo '8a739cc128187cdda1e85cab938b2e9338e9dd5916fd85b2c5148d73b52b55b6  %{SOURCE0}' | sha256sum -c -
+echo '283f153b72495743419c49bc8858e09058d286547323676613b8a0a34a6e151f  %{SOURCE0}' | sha256sum -c -
 %setup -q -n smile2unlock-%{version}
 
 %build
@@ -56,6 +56,9 @@ if [ "$1" -eq 0 ]; then
     /usr/libexec/smile2unlock/su_deploy_helper --rollback-all || exit 1
     if command -v systemctl >/dev/null 2>&1; then
         systemctl disable --now su-authd.service >/dev/null 2>&1 || :
+    fi
+    if [ -d /var/lib/smile2unlock/users ]; then
+        find /var/lib/smile2unlock/users -mindepth 2 -maxdepth 2 -type f -name 'authtok.s2u' -delete
     fi
     /usr/libexec/smile2unlock/manage-selinux-policy remove || exit 1
 fi
