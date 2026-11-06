@@ -1,8 +1,12 @@
-import { Switch, SpinBox } from "std-widgets.slint";
+import { SpinBox } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
-import { ActionButton, RowLabelMeasure } from "components.slint";
+import { Tr } from "i18n.slint";
+import { Button, ButtonKind, Group, Row, Toggle } from "components.slint";
+
 export struct CaptureRow { id: string, time: string, reason: string, thumbnail: image, ratio: float }
-export component CapturePanel inherits Rectangle {
+
+// Opt-in encrypted capture of failed unlock attempts (settings page section).
+export component CapturePanel inherits VerticalLayout {
     in-out property <bool> capture-enabled: false;
     in-out property <int> days: 7;
     in-out property <int> max-count: 50;
@@ -10,99 +14,108 @@ export component CapturePanel inherits Rectangle {
     in property <image> selected-image;
     in property <bool> selected: false;
     in property <string> status;
-    in property <int> language-index;
-    pure callback translate(string, int) -> string;
-    pure callback translate-value(string, int, string) -> string;
     callback refresh();
     callback open(string);
     callback close();
     callback remove(string);
     callback remove-all();
-    vertical-stretch: 0;
-    background: UiTheme.surface;
-    border-color: UiTheme.border;
-    border-width: UiTheme.card-border;
-    border-radius: UiTheme.card-radius;
-    property <length> label-width: max(days-label.preferred-width, count-label.preferred-width);
-    days-label := RowLabelMeasure { text: root.translate("capture.days", root.language-index); }
-    count-label := RowLabelMeasure { text: root.translate("capture.count", root.language-index); }
-    VerticalLayout {
-        alignment: start;
-        padding: UiTheme.card-padding;
-        spacing: UiTheme.content-gap;
-        Text {
-            text: root.translate("capture.title", root.language-index);
-            color: UiTheme.text-primary;
-            font-size: 16px;
-            font-weight: 700;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.translate-value("capture.privacy", root.language-index, root.days);
-            wrap: word-wrap;
-            color: UiTheme.text-secondary;
-            font-size: UiTheme.row-label-font-size;
-        }
-        Switch {
-            text: root.translate("capture.enable", root.language-index);
-            checked <=> root.capture-enabled;
-        }
-        HorizontalLayout {
-            spacing: UiTheme.content-gap;
-            Text { vertical-alignment: center; text: days-label.text; width: root.label-width; color: UiTheme.text-primary; font-size: UiTheme.row-label-font-size; }
-            SpinBox { value <=> root.days; minimum: 1; maximum: 90; }
-        }
-        HorizontalLayout {
-            spacing: UiTheme.content-gap;
-            Text { vertical-alignment: center; text: count-label.text; width: root.label-width; color: UiTheme.text-primary; font-size: UiTheme.row-label-font-size; }
-            SpinBox { value <=> root.max-count; minimum: 1; maximum: 200; }
-        }
-        HorizontalLayout {
-            spacing: UiTheme.content-gap;
-            ActionButton { label: root.translate("capture.refresh", root.language-index); activated => { root.refresh(); } }
-            ActionButton { label: root.translate("capture.delete_all", root.language-index); enabled: root.records.length > 0; activated => { root.remove-all(); } }
-            Rectangle { horizontal-stretch: 1; background: transparent; }
-        }
-        if root.status != "": Text { text: root.status; wrap: word-wrap; color: UiTheme.text-secondary; font-size: UiTheme.row-label-font-size; }
-        if root.records.length == 0: Text {
-            text: root.translate("capture.empty", root.language-index);
-            wrap: word-wrap;
-            color: UiTheme.text-secondary;
-            font-size: UiTheme.row-label-font-size;
-        }
-        for record in root.records: HorizontalLayout {
-            spacing: UiTheme.content-gap;
-            Rectangle {
-                width: UiTheme.capture-thumbnail-edge;
-                height: self.width * record.ratio;
-                clip: true;
-                Image { width: parent.width; height: parent.height; source: record.thumbnail; image-fit: contain; }
-                TouchArea { clicked => { root.open(record.id); } }
+
+    spacing: UiTheme.s6;
+
+    Group {
+        title: Tr.t("capture.title");
+        hint: Tr.tv("capture.privacy", root.days);
+        Row {
+            title: Tr.t("capture.enable");
+            Toggle {
+                on: root.capture-enabled;
+                toggled(value) => { root.capture-enabled = value; }
             }
+        }
+        Row {
+            title: Tr.t("capture.days");
+            SpinBox { width: UiTheme.field-narrow; value <=> root.days; minimum: 1; maximum: 90; }
+        }
+        Row {
+            title: Tr.t("capture.count");
+            SpinBox { width: UiTheme.field-narrow; value <=> root.max-count; minimum: 1; maximum: 200; }
+        }
+    }
+
+    Group {
+        title: Tr.t("capture.photos");
+        hint: root.status;
+        Row {
+            title: root.records.length == 0
+                ? Tr.t("capture.empty")
+                : Tr.tv(root.records.length == 1 ? "capture.one" : "capture.many", root.records.length);
+            Button { text: Tr.t("capture.refresh"); kind: ButtonKind.tonal; clicked => { root.refresh(); } }
+            Button {
+                text: Tr.t("capture.delete_all");
+                kind: ButtonKind.danger;
+                enabled: root.records.length > 0;
+                clicked => { root.remove-all(); }
+            }
+        }
+        for record in root.records: Rectangle {
             VerticalLayout {
-                alignment: center;
-                horizontal-stretch: 1;
-                Text { text: record.time; color: UiTheme.text-primary; font-size: UiTheme.row-label-font-size; wrap: word-wrap; }
-                Text { text: root.translate("capture." + record.reason, root.language-index); color: UiTheme.text-secondary; font-size: UiTheme.row-label-font-size; wrap: word-wrap; }
-            }
-            ActionButton { horizontal-stretch: 0; label: root.translate("capture.open", root.language-index); activated => { root.open(record.id); } }
-            ActionButton { horizontal-stretch: 0; danger: true; label: root.translate("capture.delete", root.language-index); activated => { root.remove(record.id); } }
-        }
-        if root.selected: VerticalLayout {
-            spacing: UiTheme.content-gap;
-            HorizontalLayout {
-                alignment: center;
-                Image {
-                    source: root.selected-image;
-                    image-fit: contain;
-                    horizontal-stretch: 0;
-                    min-width: 0px;
-                    max-width: root.selected-image.width * 2px;
-                    preferred-width: root.selected-image.width * 1px;
-                    height: self.width * root.selected-image.height / max(1, root.selected-image.width);
+                Rectangle { height: UiTheme.hairline; background: UiTheme.divider; }
+                HorizontalLayout {
+                    padding: UiTheme.s4;
+                    padding-left: UiTheme.s5;
+                    padding-right: UiTheme.s5;
+                    spacing: UiTheme.s4;
+                    Rectangle {
+                        width: UiTheme.thumbnail;
+                        height: self.width * record.ratio;
+                        border-radius: UiTheme.radius-control;
+                        clip: true;
+                        Image { width: parent.width; height: parent.height; source: record.thumbnail; image-fit: contain; }
+                        TouchArea { clicked => { root.open(record.id); } }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        spacing: UiTheme.s1;
+                        Text { text: record.time; color: UiTheme.text; font-size: UiTheme.font-row-title; font-weight: 600; wrap: word-wrap; }
+                        Text { text: Tr.t("capture." + record.reason); color: UiTheme.text-dim; font-size: UiTheme.font-small; wrap: word-wrap; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: UiTheme.s3;
+                            Button { text: Tr.t("capture.open"); kind: ButtonKind.tonal; clicked => { root.open(record.id); } }
+                            Button { text: Tr.t("capture.delete"); kind: ButtonKind.danger; clicked => { root.remove(record.id); } }
+                        }
+                    }
                 }
             }
-            ActionButton { label: root.translate("capture.close", root.language-index); activated => { root.close(); } }
+        }
+    }
+
+    if root.selected: Group {
+        title: Tr.t("capture.preview");
+        Rectangle {
+            VerticalLayout {
+                padding: UiTheme.s5;
+                spacing: UiTheme.s4;
+                HorizontalLayout {
+                    alignment: center;
+                    Image {
+                        source: root.selected-image;
+                        image-fit: contain;
+                        horizontal-stretch: 0;
+                        min-width: 0;
+                        max-width: root.selected-image.width * UiTheme.pixel * 2;
+                        preferred-width: root.selected-image.width * UiTheme.pixel;
+                        height: self.width * root.selected-image.height / max(1, root.selected-image.width);
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button { text: Tr.t("capture.close"); kind: ButtonKind.tonal; clicked => { root.close(); } }
+                }
+            }
         }
     }
 }

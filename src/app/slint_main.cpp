@@ -174,27 +174,29 @@ slint::Color slint_color(su::app::ThemeColor color) {
 void apply_theme(const WindowHandle& window, const su::app::AppTheme& snapshot) {
     const auto& theme = window->global<ui::UiTheme>();
     theme.set_canvas(slint_color(snapshot.canvas));
-    theme.set_surface(slint_color(snapshot.surface));
-    theme.set_surface_subtle(slint_color(snapshot.surface_subtle));
-    theme.set_surface_selected(slint_color(snapshot.surface_selected));
-    theme.set_border(slint_color(snapshot.border));
+    theme.set_sidebar(slint_color(snapshot.sidebar));
+    theme.set_group(slint_color(snapshot.group));
+    theme.set_group_hover(slint_color(snapshot.group_hover));
+    theme.set_inset(slint_color(snapshot.inset));
+    theme.set_outline(slint_color(snapshot.outline));
     theme.set_divider(slint_color(snapshot.divider));
-    theme.set_text_primary(slint_color(snapshot.text_primary));
-    theme.set_text_secondary(slint_color(snapshot.text_secondary));
-    theme.set_text_tertiary(slint_color(snapshot.text_tertiary));
-    theme.set_primary(slint_color(snapshot.primary));
-    theme.set_primary_hover(slint_color(snapshot.primary_hover));
-    theme.set_primary_pressed(slint_color(snapshot.primary_pressed));
-    theme.set_on_primary(slint_color(snapshot.on_primary));
-    theme.set_success_surface(slint_color(snapshot.success_surface));
-    theme.set_success_text(slint_color(snapshot.success_text));
-    theme.set_warning_surface(slint_color(snapshot.warning_surface));
-    theme.set_warning_text(slint_color(snapshot.warning_text));
-    theme.set_danger_surface(slint_color(snapshot.danger_surface));
-    theme.set_danger_hover(slint_color(snapshot.danger_hover));
-    theme.set_danger_text(slint_color(snapshot.danger_text));
-    theme.set_disabled_surface(slint_color(snapshot.disabled_surface));
-    theme.set_disabled_text(slint_color(snapshot.disabled_text));
+    theme.set_text(slint_color(snapshot.text));
+    theme.set_text_dim(slint_color(snapshot.text_dim));
+    theme.set_text_faint(slint_color(snapshot.text_faint));
+    theme.set_accent(slint_color(snapshot.accent));
+    theme.set_on_accent(slint_color(snapshot.on_accent));
+    theme.set_tonal(slint_color(snapshot.tonal));
+    theme.set_on_tonal(slint_color(snapshot.on_tonal));
+    theme.set_nav_selected(slint_color(snapshot.nav_selected));
+    theme.set_on_nav_selected(slint_color(snapshot.on_nav_selected));
+    theme.set_ok(slint_color(snapshot.ok));
+    theme.set_ok_bg(slint_color(snapshot.ok_bg));
+    theme.set_warn(slint_color(snapshot.warn));
+    theme.set_warn_bg(slint_color(snapshot.warn_bg));
+    theme.set_danger(slint_color(snapshot.danger));
+    theme.set_danger_bg(slint_color(snapshot.danger_bg));
+    theme.set_idle(slint_color(snapshot.idle));
+    theme.set_idle_bg(slint_color(snapshot.idle_bg));
     theme.set_preview_surface(slint_color(snapshot.preview_surface));
     theme.set_preview_overlay(slint_color(snapshot.preview_overlay));
     theme.set_preview_text(slint_color(snapshot.preview_text));
@@ -734,11 +736,11 @@ int main(int argc, char** argv) try {
             });
         });
 
-    window->on_translate([catalog](slint::SharedString key, int index) {
+    window->global<ui::Tr>().on_translate([catalog](slint::SharedString key, int index) {
         return slint::SharedString(catalog->translate(
             static_cast<std::size_t>(std::max(index, 0)), std::string_view(key)));
     });
-    window->on_translate_value(
+    window->global<ui::Tr>().on_translate_value(
         [catalog](slint::SharedString key, int index, slint::SharedString value) {
             return slint::SharedString(catalog->translate_value(
                 static_cast<std::size_t>(std::max(index, 0)),
@@ -831,6 +833,19 @@ int main(int argc, char** argv) try {
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profiles(profiles);
     window->set_deployment_targets(deployment_targets);
+    const auto targets_with_role = [&deployment_targets](auto role_matches) {
+        return std::make_shared<slint::FilterModel<ui::DeploymentTargetRow>>(
+            deployment_targets,
+            [role_matches](const ui::DeploymentTargetRow& row) {
+                return role_matches(std::string_view(row.role));
+            });
+    };
+    window->set_login_targets(targets_with_role([](std::string_view role) {
+        return role == "login" || role == "login-and-lock";
+    }));
+    window->set_lock_targets(targets_with_role([](std::string_view role) { return role == "lock"; }));
+    window->set_privilege_targets(
+        targets_with_role([](std::string_view role) { return role == "privilege"; }));
     window->set_camera_options(camera_model);
     update_camera_controls(
         window, snapshot->cameras, camera_model, camera_indices, snapshot->config.selected_camera);

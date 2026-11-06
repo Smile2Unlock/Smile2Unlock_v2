@@ -1,0 +1,105 @@
+import { LineEdit } from "std-widgets.slint";
+import { UiTheme } from "theme.slint";
+import { Tr } from "i18n.slint";
+import { Button, ButtonKind, Group, Note, Row, Tone } from "components.slint";
+
+// Live camera preview with the detected face box and a status chip.
+export component PreviewFrame inherits Rectangle {
+    in property <image> image;
+    in property <float> box-x;
+    in property <float> box-y;
+    in property <float> box-w;
+    in property <float> box-h;
+    in property <bool> box-visible;
+    in property <int> source-width;
+    in property <int> source-height;
+    in property <string> status-text;
+
+    property <bool> sized: root.source-width > 0 && root.source-height > 0;
+    property <length> fitted-width: sized
+        ? Math.min(self.width, self.height * root.source-width / root.source-height) : self.width;
+    property <length> fitted-height: sized
+        ? Math.min(self.height, self.width * root.source-height / root.source-width) : self.height;
+    property <float> source-scale: root.source-width > 0
+        ? self.fitted-width / UiTheme.pixel / root.source-width : 1;
+
+    background: UiTheme.preview-surface;
+    border-radius: UiTheme.radius-group;
+    clip: true;
+    min-height: UiTheme.preview-height;
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.image;
+        image-fit: contain;
+    }
+    Rectangle {
+        x: (root.width - root.fitted-width) / 2 + root.box-x * root.source-scale * UiTheme.pixel;
+        y: (root.height - root.fitted-height) / 2 + root.box-y * root.source-scale * UiTheme.pixel;
+        width: root.box-w * root.source-scale * UiTheme.pixel;
+        height: root.box-h * root.source-scale * UiTheme.pixel;
+        visible: root.box-visible;
+        border-color: UiTheme.face-indicator;
+        border-width: UiTheme.stroke;
+        background: transparent;
+    }
+    Rectangle {
+        x: UiTheme.s4;
+        y: parent.height - self.height - UiTheme.s4;
+        width: Math.min(UiTheme.overlay-width, parent.width - UiTheme.s4 * 2);
+        height: overlay-label.preferred-height + UiTheme.s4;
+        border-radius: UiTheme.radius-control;
+        background: UiTheme.preview-overlay;
+        overlay-label := Text {
+            x: UiTheme.s3;
+            width: parent.width - UiTheme.s3 * 2;
+            height: parent.height;
+            text: root.status-text;
+            color: UiTheme.preview-text;
+            font-size: UiTheme.font-small;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+// Sample name, camera start/stop and the capture action.
+export component CaptureControls inherits VerticalLayout {
+    in property <bool> busy;
+    in property <bool> camera-available;
+    in property <bool> can-capture;
+    in property <string> camera-summary;
+    in property <string> activity-detail;
+    in property <string> error-text;
+    in-out property <string> label;
+    callback start();
+    callback stop();
+    callback capture(string);
+
+    spacing: UiTheme.s2;
+    Group {
+        title: Tr.t("enrollment.capture");
+        hint: root.activity-detail;
+        Row {
+            title: Tr.t("enrollment.sample_name");
+            LineEdit { width: UiTheme.field-width * 0.8; text <=> root.label; enabled: !root.busy; }
+        }
+        Row {
+            title: Tr.t("settings.camera");
+            subtitle: root.camera-summary;
+            Button { text: Tr.t("action.start_camera"); enabled: !root.busy && root.camera-available; clicked => { root.start(); } }
+            Button { text: Tr.t("action.stop"); kind: ButtonKind.text; enabled: !root.busy; clicked => { root.stop(); } }
+        }
+        Row {
+            title: Tr.t("enrollment.new_sample");
+            Button {
+                text: root.busy ? Tr.t("status.capturing") : Tr.t("action.capture_sample");
+                kind: ButtonKind.filled;
+                enabled: !root.busy && root.can-capture;
+                clicked => { root.capture(root.label); }
+            }
+        }
+    }
+    if root.error-text != "": Note { text: root.error-text; tone: Tone.warn; }
+}

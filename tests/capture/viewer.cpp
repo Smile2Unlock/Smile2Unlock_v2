@@ -18,10 +18,10 @@ int main(int argc, char** argv) {
     std::ifstream pack(argv[1]);
     const auto strings = nlohmann::json::parse(pack).at("strings");
     auto window = ui::CaptureTestWindow::create();
-    window->on_translate([strings](slint::SharedString key, int) {
+    window->global<ui::Tr>().on_translate([strings](slint::SharedString key, int) {
         return slint::SharedString(strings.value(std::string(key), std::string(key)));
     });
-    window->on_translate_value([strings](slint::SharedString key, int, slint::SharedString value) {
+    window->global<ui::Tr>().on_translate_value([strings](slint::SharedString key, int, slint::SharedString value) {
         auto text = strings.value(std::string(key), std::string(key));
         if (const auto at = text.find("{value}"); at != std::string::npos) text.replace(at, 7, std::string(value));
         return slint::SharedString(text);
