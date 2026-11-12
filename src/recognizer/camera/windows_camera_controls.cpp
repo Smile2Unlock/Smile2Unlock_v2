@@ -1,4 +1,3 @@
-#include "common/log/logger.h"
 // DirectShow-style camera controls (IAMVideoProcAmp / IAMCameraControl) for
 // the backlight exposure loop (issue #137). Plain TU; see the header for the
 // mechanism list and the threading contract (MF worker thread only).
@@ -23,16 +22,21 @@
 #include <string_view>
 #include <utility>
 
+#include "common/log/logger.h"
+#include "windows_hresult.h"
+
 using Microsoft::WRL::ComPtr;
 
 namespace su::recognizer {
 
 namespace {
 
+using detail::ExposureWriteError;
+using HrStatus = std::expected<void, HRESULT>;
+using WriteResult = std::expected<void, ExposureWriteError>;
+
 constexpr long kBacklightProperty = VideoProcAmp_BacklightCompensation;
 constexpr long kExposureProperty = CameraControl_Exposure;
-
-using HrStatus = std::expected<void, HRESULT>;
 
 [[nodiscard]] HrStatus check(const HRESULT hr) {
     return SUCCEEDED(hr) ? HrStatus{} : std::unexpected(hr);
@@ -49,6 +53,13 @@ struct ProbedControl {
     SavedControl original;
 };
 
+// What was attempted when a call failed, for the log line.
+struct ControlOp {
+    std::string_view name;
+    long property = 0;
+    long value = 0;
+};
+
 std::string hresult_text(const HRESULT hr) {
     char hex[11]{};
     std::snprintf(hex, sizeof(hex), "0x%08lX", static_cast<unsigned long>(hr));
@@ -56,9 +67,13 @@ std::string hresult_text(const HRESULT hr) {
 }
 
 void log_control_failure(
-    const std::string_view event, const std::string_view step, const HRESULT hr) {
+    const std::string_view event, const ControlOp& op, const HRESULT hr) {
     su::log::process_logger().warn(event, {
-        su::log::field("step", step), su::log::field("hresult", hresult_text(hr))});
+        su::log::field("step", op.name),
+        su::log::field("property", static_cast<int>(op.property)),
+        su::log::field("value", static_cast<int>(op.value)),
+        su::log::field("hresult", hresult_text(hr)),
+        su::log::field("error", to_string(detail::classify_hresult(hr)))});
 }
 
 // Manual flag, even for a driver that reported no flag bits at all.
@@ -82,132 +97,173 @@ template <typename Interface>
         .and_then([&] {
             return check(control->Get(property, &probed.original.value, &probed.original.flags));
         })
-        .transform([&] { return probed; })
-        .or_else([&](const HRESULT hr) -> std::expected<ProbedControl, HRESULT> {
-            log_control_failure("camera.control_probe_failed", name, hr);
-            return std::unexpected(hr);
+        .transform([&] { return std::optional{probed}; })
+        .or_else([&](const HRESULT hr) -> std::expected<std::optional<ProbedControl>, HRESULT> {
+            log_control_failure("camera.control_probe_failed", {name, property, 0}, hr);
+            return std::nullopt;
         })
-        .transform([](const ProbedControl& value) { return std::optional{value}; })
         .value_or(std::nullopt);
 }
 
+// One Set call with the failure logged and mapped to the loop's error type.
 template <typename Interface>
-[[nodiscard]] bool restore_control(Interface* const control, const long property,
-                     const SavedControl& original, const std::string_view name) {
+[[nodiscard]] WriteResult write_control(Interface* const control, const std::string_view event,
+    const ControlOp& op, const long flags) {
     if (control == nullptr) {
-        return false;
+        return std::unexpected(ExposureWriteError::unsupported);
     }
-    return check(control->Set(property, original.value, restore_flags(original)))
-        .or_else([&](const HRESULT hr) -> HrStatus {
-            log_control_failure("camera.control_restore_failed", name, hr);
-            return std::unexpected(hr);
-        })
-        .has_value();
+    return check(control->Set(op.property, op.value, flags))
+        .transform_error([&](const HRESULT hr) {
+            log_control_failure(event, op, hr);
+            return detail::classify_hresult(hr);
+        });
 }
+
+// A control plus the bookkeeping to undo what the loop did to it.
+template <typename Interface>
+struct Tracked {
+    ComPtr<Interface> control;
+    long property = 0;
+    std::string_view name;
+    std::optional<ProbedControl> probed;
+    std::optional<detail::ExposureKnob> knob;
+    // Set before the first write so a partially applied change is undone too;
+    // cleared only after a successful restore.
+    bool changed = false;
+
+    void attach(Interface* const raw, std::optional<ProbedControl> read) {
+        control = raw;
+        probed = std::move(read);
+    }
+
+    void clear() {
+        control.Reset();
+        probed.reset();
+        knob.reset();
+        changed = false;
+    }
+
+    [[nodiscard]] WriteResult write(const long value, const long flags) {
+        changed = true;
+        return write_control(control.Get(), "camera.control_set_failed",
+            {name, property, value}, flags);
+    }
+
+    [[nodiscard]] WriteResult restore() {
+        if (!probed || !control) {
+            return std::unexpected(ExposureWriteError::unsupported);
+        }
+        if (!changed) {
+            return {};
+        }
+        const auto& original = probed->original;
+        return write_control(control.Get(), "camera.control_restore_failed",
+                   {name, property, original.value}, restore_flags(original))
+            .transform([this] { changed = false; });
+    }
+};
 
 } // namespace
 
 class CameraExposureControls::Impl {
 public:
+    Impl() {
+        backlight_.property = kBacklightProperty;
+        backlight_.name = "backlight";
+        exposure_.property = kExposureProperty;
+        exposure_.name = "exposure";
+    }
+
     [[nodiscard]] detail::ExposureCapabilities probe(IMFMediaSource* const source) {
-        release();
-        if (source == nullptr) {
-            return {};
+        ComPtr<IAMVideoProcAmp> proc_amp;
+        ComPtr<IAMCameraControl> camera_control;
+        if (source != nullptr) {
+            (void)source->QueryInterface(IID_PPV_ARGS(&proc_amp));
+            (void)source->QueryInterface(IID_PPV_ARGS(&camera_control));
         }
-        (void)source->QueryInterface(IID_PPV_ARGS(&proc_amp_));
-        (void)source->QueryInterface(IID_PPV_ARGS(&camera_control_));
-        backlight_ = probe_control(proc_amp_.Get(), kBacklightProperty, "backlight");
-        exposure_ = probe_control(camera_control_.Get(), kExposureProperty, "exposure");
-        backlight_knob_ = backlight_.and_then([](const ProbedControl& probed) {
+        return probe(proc_amp.Get(), camera_control.Get());
+    }
+
+    [[nodiscard]] detail::ExposureCapabilities probe(
+        IAMVideoProcAmp* const proc_amp, IAMCameraControl* const camera_control) {
+        release();
+        backlight_.attach(proc_amp, probe_control(proc_amp, kBacklightProperty, "backlight"));
+        exposure_.attach(
+            camera_control, probe_control(camera_control, kExposureProperty, "exposure"));
+        backlight_.knob = backlight_.probed.and_then([](const ProbedControl& probed) {
             return detail::make_backlight_knob(probed.range, probed.original.value);
         });
-        exposure_knob_ = exposure_.and_then([](const ProbedControl& probed) {
+        exposure_.knob = exposure_.probed.and_then([](const ProbedControl& probed) {
             return detail::make_manual_exposure_knob(probed.range, probed.original.value);
         });
-        const auto chain = detail::make_knob_chain({}, backlight_knob_, exposure_knob_);
+        const auto chain = detail::make_knob_chain({}, backlight_.knob, exposure_.knob);
         log_knob_chain(chain);
         return {.metering_region = false, .knobs = chain};
     }
 
-    [[nodiscard]] bool set_level(const detail::ExposureKnobKind kind, const int level) {
+    [[nodiscard]] std::expected<int, ExposureWriteError> set_level(
+        const detail::ExposureKnobKind kind, const int level) {
         switch (kind) {
         case detail::ExposureKnobKind::backlight_compensation:
-            return backlight_knob_ && set_backlight(level);
+            return backlight_.knob ? set_backlight(level)
+                                   : std::unexpected(ExposureWriteError::unsupported);
         case detail::ExposureKnobKind::manual_exposure:
-            return exposure_knob_ && set_manual_exposure(level);
+            return exposure_.knob ? set_manual_exposure(level)
+                                  : std::unexpected(ExposureWriteError::unsupported);
         case detail::ExposureKnobKind::ev_bias:
-            return false;  // no verified mechanism on Windows
+            return std::unexpected(ExposureWriteError::unsupported);  // no verified mechanism
         }
         std::unreachable();
     }
 
-    [[nodiscard]] bool reset(const detail::ExposureKnobKind kind) {
+    [[nodiscard]] WriteResult reset(const detail::ExposureKnobKind kind) {
         switch (kind) {
         case detail::ExposureKnobKind::backlight_compensation:
-            return restore_if_changed(backlight_changed_, proc_amp_.Get(), kBacklightProperty,
-                backlight_, "backlight");
+            return backlight_.restore();
         case detail::ExposureKnobKind::manual_exposure:
-            return restore_if_changed(exposure_changed_, camera_control_.Get(), kExposureProperty,
-                exposure_, "exposure");
+            return exposure_.restore();
         case detail::ExposureKnobKind::ev_bias:
-            return false;
+            return std::unexpected(ExposureWriteError::unsupported);
         }
         std::unreachable();
     }
 
-    // Reverse of the escalation order, like the V4L2 backend.
-    void restore() {
-        (void)reset(detail::ExposureKnobKind::manual_exposure);
-        (void)reset(detail::ExposureKnobKind::backlight_compensation);
+    // Reverse of the escalation order, like the V4L2 backend. Both restores
+    // always run: a failing one must not leave the other control changed.
+    [[nodiscard]] bool restore() {
+        const auto exposure = exposure_.restore();
+        const auto backlight = backlight_.restore();
+        return !pending(exposure) && !pending(backlight);
     }
 
     void release() {
-        restore();
-        proc_amp_.Reset();
-        camera_control_.Reset();
-        backlight_.reset();
-        exposure_.reset();
-        backlight_knob_.reset();
-        exposure_knob_.reset();
+        for (auto attempt = 0; attempt < kRestoreAttempts && !restore(); ++attempt) {
+        }
+        backlight_.clear();
+        exposure_.clear();
     }
 
 private:
-    [[nodiscard]] static bool report(const HrStatus& status, const std::string_view step) {
-        if (!status) {
-            log_control_failure("camera.control_set_failed", step, status.error());
-        }
-        return status.has_value();
+    // A control that is merely not present has nothing left to restore.
+    [[nodiscard]] static bool pending(const WriteResult& result) {
+        return !result && result.error() != ExposureWriteError::unsupported;
     }
 
-    [[nodiscard]] bool set_backlight(const int level) {
-        const auto value = detail::snap_level_to_range(
-            level, backlight_knob_->min, backlight_knob_->max, backlight_knob_->step);
-        // Mark dirty before the call so a partially applied change is still
-        // undone on close.
-        backlight_changed_ = true;
-        return report(check(proc_amp_->Set(kBacklightProperty, value, VideoProcAmp_Flags_Manual)),
-            "backlight");
+    [[nodiscard]] std::expected<int, ExposureWriteError> set_backlight(const int level) {
+        const auto& knob = *backlight_.knob;
+        const auto value = static_cast<int>(
+            detail::snap_level_to_range(level, knob.min, knob.max, knob.step));
+        return backlight_.write(value, VideoProcAmp_Flags_Manual).transform([value] {
+            return value;
+        });
     }
 
-    [[nodiscard]] bool set_manual_exposure(const int level) {
-        const auto& range = exposure_->range;
-        const auto value = detail::exposure_units_to_log2(level, range.min, range.max, range.step);
-        // The first call switches the camera from auto to manual exposure.
-        exposure_changed_ = true;
-        return report(check(camera_control_->Set(
-                kExposureProperty, value, CameraControl_Flags_Manual)), "exposure");
-    }
-
-    // Undoes one control if the loop changed it. The flag is cleared first so
-    // a failed undo is not retried on every later call.
-    template <typename Interface>
-    [[nodiscard]] static bool restore_if_changed(bool& changed, Interface* const control,
-        const long property, const std::optional<ProbedControl>& probed,
-        const std::string_view name) {
-        if (!std::exchange(changed, false) || !probed) {
-            return true;
-        }
-        return restore_control(control, property, probed->original, name);
+    // The first call switches the camera from auto to manual exposure.
+    [[nodiscard]] std::expected<int, ExposureWriteError> set_manual_exposure(const int level) {
+        const auto& range = exposure_.probed->range;
+        const auto snapped = detail::snap_exposure(level, range.min, range.max, range.step);
+        return exposure_.write(snapped.log2_seconds, CameraControl_Flags_Manual)
+            .transform([snapped] { return snapped.units; });
     }
 
     static void log_knob_chain(const detail::ExposureKnobChain& chain) {
@@ -221,14 +277,8 @@ private:
             su::log::field("chain_length", static_cast<int>(chain.size()))});
     }
 
-    ComPtr<IAMVideoProcAmp> proc_amp_;
-    ComPtr<IAMCameraControl> camera_control_;
-    std::optional<ProbedControl> backlight_;
-    std::optional<ProbedControl> exposure_;
-    std::optional<detail::ExposureKnob> backlight_knob_;
-    std::optional<detail::ExposureKnob> exposure_knob_;
-    bool backlight_changed_ = false;
-    bool exposure_changed_ = false;
+    Tracked<IAMVideoProcAmp> backlight_;
+    Tracked<IAMCameraControl> exposure_;
 };
 
 CameraExposureControls::CameraExposureControls() : impl_(std::make_unique<Impl>()) {}
@@ -238,16 +288,23 @@ detail::ExposureCapabilities CameraExposureControls::probe(IMFMediaSource* const
     return impl_->probe(source);
 }
 
-bool CameraExposureControls::set_level(const detail::ExposureKnobKind kind, const int level) {
+detail::ExposureCapabilities CameraExposureControls::probe(
+    IAMVideoProcAmp* const proc_amp, IAMCameraControl* const camera_control) {
+    return impl_->probe(proc_amp, camera_control);
+}
+
+std::expected<int, detail::ExposureWriteError> CameraExposureControls::set_level(
+    const detail::ExposureKnobKind kind, const int level) {
     return impl_->set_level(kind, level);
 }
 
-bool CameraExposureControls::reset(const detail::ExposureKnobKind kind) {
+std::expected<void, detail::ExposureWriteError> CameraExposureControls::reset(
+    const detail::ExposureKnobKind kind) {
     return impl_->reset(kind);
 }
 
-void CameraExposureControls::restore() {
-    impl_->restore();
+bool CameraExposureControls::restore() {
+    return impl_->restore();
 }
 
 void CameraExposureControls::release() {

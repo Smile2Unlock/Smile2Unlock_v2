@@ -61,14 +61,19 @@ public:
     [[nodiscard]] bool is_open() const;
 
     // Backlight-aware exposure (issue #137). Capabilities are probed at open;
-    // the setters return false when unsupported or rejected. close() restores
-    // every control changed to its value at open. Like grab(), the setters
-    // must be called from a single caller thread.
+    // set_exposure_level returns the level the driver applied (it snaps to its
+    // step grid), errors are classified (a control op that outlasts its
+    // deadline is `transient`). close() restores every control changed to its
+    // value at open. Like grab(), the setters must be called from a single
+    // caller thread.
     [[nodiscard]] detail::ExposureCapabilities exposure_capabilities() const;
     bool set_metering_region(const detail::PixelRegion& region);
-    bool set_exposure_level(detail::ExposureKnobKind kind, int level);
-    // Puts one knob back to its value at open (manual exposure goes back to auto).
-    bool reset_exposure_knob(detail::ExposureKnobKind kind);
+    [[nodiscard]] std::expected<int, detail::ExposureWriteError> set_exposure_level(
+        detail::ExposureKnobKind kind, int level);
+    // Puts one knob back to its value at open (manual exposure goes back to
+    // its original auto flag and value).
+    [[nodiscard]] std::expected<void, detail::ExposureWriteError> reset_exposure_knob(
+        detail::ExposureKnobKind kind);
 
 private:
     class Impl;

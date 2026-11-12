@@ -15,12 +15,15 @@
 #pragma once
 
 #include <algorithm>
+#include <expected>
 #include <memory>
 #include <optional>
 
 #include "recognizer/exposure/exposure_control.h"
 
 struct IMFMediaSource;
+struct IAMVideoProcAmp;
+struct IAMCameraControl;
 
 namespace su::recognizer::detail {
 
@@ -96,6 +99,28 @@ struct ProcAmpRange {
     return snap_level_to_range(exponent, min_log2, max_log2, step_log2);
 }
 
+// A manual exposure as the driver will really apply it: the DirectShow value
+// to write and the same value in linear loop units, which is what the loop
+// must remember (its anti-flip-flop compares levels).
+struct SnappedExposure {
+    long log2_seconds = 0;
+    int units = 0;
+};
+
+// Nearest exposure on the driver's step grid that still respects the 1/30 s
+// cap: a coarse grid could otherwise round a capped request up past it.
+[[nodiscard]] constexpr SnappedExposure snap_exposure(
+    const int units, const long min_log2, const long max_log2, const long step_log2) {
+    const auto stride = std::max<long>(step_log2, 1);
+    auto log2_seconds = exposure_units_to_log2(units, min_log2, max_log2, step_log2);
+    auto applied = exposure_log2_to_units(log2_seconds);
+    while (applied > kMaxManualExposureUnits && log2_seconds - stride >= min_log2) {
+        log2_seconds -= stride;
+        applied = exposure_log2_to_units(log2_seconds);
+    }
+    return {.log2_seconds = log2_seconds, .units = applied};
+}
+
 [[nodiscard]] constexpr std::optional<ExposureKnob> make_backlight_knob(
     const ProcAmpRange& range, const long current) {
     if (range.max <= range.min || (range.caps_flags & kProcAmpCapsManual) == 0) {
@@ -139,6 +164,7 @@ static_assert(exposure_log2_to_units(-30) == kMinExposureUnits);
 static_assert(exposure_units_to_log2(200, -11, -2, 1) == -6);  // 1/50 s is nearer 1/64
 static_assert(exposure_units_to_log2(250, -11, -2, 1) == -5);
 static_assert(exposure_units_to_log2(1, -8, -2, 1) == -8);
+static_assert(snap_exposure(200, -11, -2, 1).units == 156);
 static_assert(snap_level_to_range(99, 0, 10, 4) == 8);
 static_assert(make_manual_exposure_knob({-11, -2, 1, -5, kProcAmpCapsManual}, -6)->max
     == kMaxManualExposureUnits);
@@ -146,6 +172,10 @@ static_assert(make_manual_exposure_knob({-11, -2, 1, -5, kProcAmpCapsManual}, -6
 }  // namespace su::recognizer::detail
 
 namespace su::recognizer {
+
+// How many times release() tries to put a control back before giving up, so a
+// permanently failing driver cannot hold the worker (and close()) forever.
+inline constexpr int kRestoreAttempts = 3;
 
 // Owns the DirectShow control interfaces of one camera source. Every method
 // must run on the MF worker thread that owns the source.
@@ -160,15 +190,25 @@ public:
     // Reads ranges and current values. Never fails: problems are logged and
     // leave the capabilities empty.
     [[nodiscard]] detail::ExposureCapabilities probe(IMFMediaSource* source);
-    // Applies a loop level to one knob; false when unsupported or rejected by
-    // the driver. The first manual exposure write switches auto -> manual.
-    [[nodiscard]] bool set_level(detail::ExposureKnobKind kind, int level);
+    // Same, for already obtained control interfaces (either may be null).
+    // The seam the COM fakes in the tests use.
+    [[nodiscard]] detail::ExposureCapabilities probe(
+        IAMVideoProcAmp* proc_amp, IAMCameraControl* camera_control);
+    // Applies a loop level to one knob and returns the level the driver
+    // applied (it snaps to its own step grid). The first manual exposure
+    // write switches auto -> manual.
+    [[nodiscard]] std::expected<int, detail::ExposureWriteError> set_level(
+        detail::ExposureKnobKind kind, int level);
     // Puts one knob back to its value at probe() (manual exposure returns to
-    // its original auto/manual mode). True when nothing needed undoing.
-    [[nodiscard]] bool reset(detail::ExposureKnobKind kind);
-    // Puts every control changed since probe() back to its value at probe().
-    void restore();
-    // restore() plus dropping the interfaces; call before the source shuts down.
+    // its original auto/manual mode). A control not marked changed succeeds
+    // without a write; one that fails stays marked for a retry.
+    [[nodiscard]] std::expected<void, detail::ExposureWriteError> reset(
+        detail::ExposureKnobKind kind);
+    // Puts every control changed since probe() back, attempting all of them
+    // even if one fails. True when none is left marked.
+    [[nodiscard]] bool restore();
+    // restore() (retried up to kRestoreAttempts) plus dropping the interfaces;
+    // call before the source shuts down.
     void release();
 
 private:

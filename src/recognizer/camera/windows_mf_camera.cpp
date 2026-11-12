@@ -15,6 +15,7 @@
 #include "windows_mf_camera.h"
 #include "capture_mode.h"
 #include "windows_camera_controls.h"
+#include "windows_hresult.h"
 
 #include <windows.h>
 #include <mfapi.h>
@@ -64,15 +65,7 @@ std::uint32_t v4l2_format_for(const GUID& subtype) {
 }
 
 bool permission_or_busy(HRESULT hr) {
-    return hr == E_ACCESSDENIED
-        || hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION)
-        || hr == HRESULT_FROM_WIN32(ERROR_BUSY)
-        || hr == MF_E_VIDEO_DEVICE_LOCKED
-        || hr == MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED
-#ifdef MF_E_VIDEO_RECORDING_DEVICE_LOCKED
-        || hr == MF_E_VIDEO_RECORDING_DEVICE_LOCKED
-#endif
-        ;
+    return detail::is_permission_or_busy(hr);
 }
 
 std::string hresult_hex(HRESULT hr) {
@@ -301,6 +294,9 @@ struct ExposureRequest {
     std::optional<int> level;
 };
 
+// Level the driver applied (0 for a reset) or why the write failed.
+using ExposureOutcome = std::expected<int, detail::ExposureWriteError>;
+
 }  // namespace
 
 class MfCameraStream::Impl final : public MfGrabSink {
@@ -327,7 +323,7 @@ public:
     bool open(int index) {
         std::unique_lock lock(mutex_);
         permission_or_busy_ = false;
-        if (quit_pending_ || !ensure_worker(lock)) {
+        if (quit_pending_ || control_in_flight_ || !ensure_worker(lock)) {
             return false;
         }
         op_ = Op::Open;
@@ -340,7 +336,9 @@ public:
 
     bool grab(MfCameraFrame& out) {
         std::unique_lock lock(mutex_);
-        if (!worker_alive_ || !open_ || quit_pending_) {
+        // A timed-out control op may still be running on the worker: a second
+        // op would share its done_ flag and be completed by the wrong result.
+        if (!worker_alive_ || !open_ || quit_pending_ || control_in_flight_) {
             return false;
         }
         op_ = Op::Grab;
@@ -359,26 +357,39 @@ public:
         return worker_alive_ && open_ ? exposure_capabilities_ : detail::ExposureCapabilities{};
     }
 
-    bool set_exposure_level(const detail::ExposureKnobKind kind, const int level) {
+    ExposureOutcome set_exposure_level(const detail::ExposureKnobKind kind, const int level) {
         return submit_exposure({.kind = kind, .level = level});
     }
 
-    bool reset_exposure_knob(const detail::ExposureKnobKind kind) {
-        return submit_exposure({.kind = kind, .level = std::nullopt});
+    std::expected<void, detail::ExposureWriteError> reset_exposure_knob(
+        const detail::ExposureKnobKind kind) {
+        return submit_exposure({.kind = kind, .level = std::nullopt}).transform([](int) {});
     }
 
     // Runs one exposure request on the worker (every COM call stays on that
-    // thread) and waits for the driver's answer.
-    bool submit_exposure(const ExposureRequest& request) {
+    // thread) and waits a bounded time for the driver's answer: the caller
+    // holds the service's camera mutex, so a wedged driver must not freeze it.
+    ExposureOutcome submit_exposure(const ExposureRequest& request) {
         std::unique_lock lock(mutex_);
         if (!worker_alive_ || !open_ || quit_pending_) {
-            return false;
+            return std::unexpected(detail::ExposureWriteError::unsupported);
+        }
+        if (control_in_flight_) {
+            return std::unexpected(detail::ExposureWriteError::transient);
         }
         op_ = Op::SetExposure;
         exposure_request_ = request;
+        control_in_flight_ = true;
+        control_abandoned_ = false;
         done_ = false;
         cv_.notify_all();
-        cv_.wait(lock, [this] { return done_; });
+        if (!cv_.wait_for(lock, kControlDeadline, [this] { return done_; })) {
+            // finish_control() sees the flag under the same mutex: it clears
+            // control_in_flight_ without touching done_, which a later op or
+            // a Quit owns by then.
+            control_abandoned_ = true;
+            return std::unexpected(detail::ExposureWriteError::transient);
+        }
         return control_result_;
     }
 
@@ -419,6 +430,9 @@ private:
     // Flush() is shorter: MF completes a flushed request promptly.
     static constexpr auto kReadDeadline = std::chrono::milliseconds(500);
     static constexpr auto kCancelDrain = std::chrono::milliseconds(200);
+    // Per-control-op cap, same reasoning as kReadDeadline: a driver stuck in a
+    // property write must cost the caller one second, not forever.
+    static constexpr auto kControlDeadline = std::chrono::seconds(1);
 
     bool ensure_worker(std::unique_lock<std::mutex>& lock) {
         if (worker_alive_) {
@@ -462,6 +476,15 @@ private:
                     // and a subsequent open() may start a fresh worker.
                     quit_pending_ = false;
                     worker_alive_ = false;
+                    // A control op the Quit overwrote before it ran (or one
+                    // that timed out) will never finish: a stale in-flight
+                    // flag would block every later open().
+                    if (control_in_flight_ && !control_abandoned_) {
+                        control_result_ =
+                            std::unexpected(detail::ExposureWriteError::unsupported);
+                    }
+                    control_in_flight_ = false;
+                    control_abandoned_ = false;
                     cv_.notify_all();
                 }
                 if (mf_ok) {
@@ -475,7 +498,7 @@ private:
                 } else if (op == Op::Grab) {
                     finish_grab(false);
                 } else if (op == Op::SetExposure) {
-                    finish_control(false);
+                    finish_control(std::unexpected(detail::ExposureWriteError::unsupported));
                 }
                 continue;
             }
@@ -487,7 +510,8 @@ private:
                 grab_worker();
                 break;
             case Op::SetExposure:
-                finish_control(open_ && apply_exposure_request());
+                finish_control(open_ ? apply_exposure_request()
+                                     : std::unexpected(detail::ExposureWriteError::unsupported));
                 break;
             case Op::None:
             case Op::Quit:
@@ -930,22 +954,28 @@ private:
         cv_.notify_all();
     }
 
-    bool apply_exposure_request() {
+    ExposureOutcome apply_exposure_request() {
         const auto request = [this] {
             const std::lock_guard lock(mutex_);
             return exposure_request_;
         }();
         return request.level ? controls_.set_level(request.kind, *request.level)
-                             : controls_.reset(request.kind);
+                             : controls_.reset(request.kind).transform([] { return 0; });
     }
 
-    void finish_control(bool ok) {
+    void finish_control(const ExposureOutcome& outcome) {
         std::lock_guard lock(mutex_);
-        control_result_ = ok;
+        control_in_flight_ = false;
         // Same guard as finish_open: never clobber a Quit posted meanwhile.
         if (op_ == Op::SetExposure) {
             op_ = Op::None;
         }
+        if (control_abandoned_) {
+            // The submitter gave up: done_ now belongs to whatever it waits
+            // on next (a Quit, say), so a late result must not signal it.
+            return;
+        }
+        control_result_ = outcome;
         done_ = true;
         cv_.notify_all();
     }
@@ -977,7 +1007,11 @@ private:
     std::atomic<bool> permission_or_busy_{false};
     bool open_result_ = false;
     bool grab_result_ = false;
-    bool control_result_ = false;
+    ExposureOutcome control_result_ = std::unexpected(detail::ExposureWriteError::unsupported);
+    // True from submit until finish_control() ran; control_abandoned_ marks a
+    // submit that timed out, so nothing waits for that op any more.
+    bool control_in_flight_ = false;
+    bool control_abandoned_ = false;
     ExposureRequest exposure_request_;
     detail::ExposureCapabilities exposure_capabilities_;
     bool done_ = false;
@@ -1052,12 +1086,20 @@ bool MfCameraStream::set_metering_region(const detail::PixelRegion&) {
     return false;
 }
 
-bool MfCameraStream::set_exposure_level(const detail::ExposureKnobKind kind, const int level) {
-    return impl_ && impl_->set_exposure_level(kind, level);
+std::expected<int, detail::ExposureWriteError> MfCameraStream::set_exposure_level(
+    const detail::ExposureKnobKind kind, const int level) {
+    if (!impl_) {
+        return std::unexpected(detail::ExposureWriteError::unsupported);
+    }
+    return impl_->set_exposure_level(kind, level);
 }
 
-bool MfCameraStream::reset_exposure_knob(const detail::ExposureKnobKind kind) {
-    return impl_ && impl_->reset_exposure_knob(kind);
+std::expected<void, detail::ExposureWriteError> MfCameraStream::reset_exposure_knob(
+    const detail::ExposureKnobKind kind) {
+    if (!impl_) {
+        return std::unexpected(detail::ExposureWriteError::unsupported);
+    }
+    return impl_->reset_exposure_knob(kind);
 }
 
 } // namespace su::recognizer
