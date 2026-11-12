@@ -351,8 +351,16 @@ target("su_capture_pipeline_test")
     if not is_plat("linux") then
         -- Focused local tests can compile the actual MF backend without the SDK.
         add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_files("src/recognizer/camera/windows_camera_controls.cpp")
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
     end
+    add_tests("default")
+    on_test(wine_on_test)
+
+target("su_windows_camera_controls_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/recognizer/windows_camera_controls.cpp")
     add_tests("default")
     on_test(wine_on_test)
 
@@ -385,6 +393,7 @@ target("su_recognizer")
     else
         add_files("src/recognizer/camera/windows_camera.cpp")
         add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_files("src/recognizer/camera/windows_camera_controls.cpp")
         add_files("src/platform/windows/paths.cpp")
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
         add_syslinks("shell32", "uuid")

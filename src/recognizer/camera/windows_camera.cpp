@@ -69,6 +69,18 @@ public:
         return stream_.is_open();
     }
 
+    ExposureCapabilities exposure_capabilities() const {
+        return stream_.exposure_capabilities();
+    }
+
+    bool set_metering_region(const PixelRegion& region) {
+        return stream_.set_metering_region(region);
+    }
+
+    bool set_exposure_level(int level) {
+        return stream_.set_exposure_level(level);
+    }
+
 private:
     MfCameraStream stream_;
     std::vector<std::byte> buffer_;
@@ -106,17 +118,16 @@ bool V4L2Camera::is_open() const {
     return impl_ != nullptr && impl_->is_open();
 }
 
-// TODO(#137): probe and drive exposure controls.
 ExposureCapabilities V4L2Camera::exposure_capabilities() const {
-    return {};
+    return impl_ ? impl_->exposure_capabilities() : ExposureCapabilities{};
 }
 
-bool V4L2Camera::set_metering_region(PixelRegion) {
-    return false;
+bool V4L2Camera::set_metering_region(PixelRegion region) {
+    return impl_ && impl_->set_metering_region(region);
 }
 
-bool V4L2Camera::set_exposure_level(int) {
-    return false;
+bool V4L2Camera::set_exposure_level(int level) {
+    return impl_ && impl_->set_exposure_level(level);
 }
 
 } // namespace su::recognizer
