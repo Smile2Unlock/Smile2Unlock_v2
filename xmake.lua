@@ -368,6 +368,13 @@ target("su_pixel_convert_test")
     add_tests("default")
     on_test(wine_on_test)
 
+target("su_low_light_enhance_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/recognizer/low_light_enhance.cpp")
+    add_tests("default")
+    on_test(wine_on_test)
+
 target("su_recognizer")
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
