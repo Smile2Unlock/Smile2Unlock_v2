@@ -46,6 +46,16 @@ constexpr ExposureLoopState settled(ExposureLoopState state) {
     return state;
 }
 
+// A time far past any settle or flip-flop window, for decisions that are not
+// about timing.
+constexpr ExposureTime kLater{3600 * 1000};
+
+constexpr ExposureStep decide(const ExposureLoopState& state, const LumaStats& observed,
+    const ExposureKnobChain& chain, const ExposureTime now = kLater,
+    const ExposureTuning& tuning = {}) {
+    return next_exposure_step(state, observed, chain, now, tuning);
+}
+
 constexpr LumaStats dark{.mean = 12.0, .clipped_fraction = 0.0, .samples = 10};
 constexpr LumaStats bright{.mean = 250.0, .clipped_fraction = 0.0, .samples = 10};
 constexpr LumaStats in_band{.mean = 120.0, .clipped_fraction = 0.0, .samples = 10};
@@ -67,16 +77,28 @@ constexpr auto kSaturated = [] {
     auto state = make_exposure_state(chain_of({kBacklightKnob, kManualKnob}));
     state.levels[std::to_underlying(ExposureKnobKind::backlight_compensation)] = 2;
     state.active = ExposureKnobKind::backlight_compensation;
-    return next_exposure_step(settled(state), dark, chain_of({kBacklightKnob, kManualKnob}));
+    return decide(settled(state), dark, chain_of({kBacklightKnob, kManualKnob}));
 }();
 static_assert(kSaturated.change
     == ExposureChange{.kind = ExposureKnobKind::manual_exposure,
-                      .action = ExposureAction::set, .level = 200});
+                      .action = ExposureAction::set, .level = 100});  // engage: initial, unscaled
+static_assert(kSaturated.next.manual_engaged);
 static_assert(kSaturated.next.active == ExposureKnobKind::manual_exposure);
 // Nothing happens in band or with nothing to drive.
-static_assert(!next_exposure_step(settled(make_exposure_state(chain_of({kEvKnob}))), in_band,
+static_assert(!decide(settled(make_exposure_state(chain_of({kEvKnob}))), in_band,
     chain_of({kEvKnob})).change);
-static_assert(!next_exposure_step(settled({}), dark, chain_of({})).change);
+static_assert(!decide(settled({}), dark, chain_of({})).change);
+// Wall time gates a decision even when enough observations have passed.
+static_assert(!next_exposure_step([] {
+    auto state = settled({});
+    state.last_change_at = ExposureTime{1000};
+    return state;
+}(), dark, chain_of({kEvKnob}), ExposureTime{1200}).change);
+// Reversing onto the level just left is held.
+static_assert(!decide(settled(decide(settled(make_exposure_state(chain_of({kEvKnob}))), dark,
+    chain_of({kEvKnob}), ExposureTime{1000}).next), bright, chain_of({kEvKnob}),
+    ExposureTime{3000}).change);
+static_assert(!chain_of({ExposureKnob{.kind = ExposureKnobKind::ev_bias, .min = 2, .max = 1}}).size());
 
 std::vector<std::byte> solid_image(
     int width, int height, int channels, std::uint8_t value) {
@@ -88,12 +110,13 @@ std::vector<std::byte> solid_image(
 ExposureLoopState ready(const ExposureKnob& knob, int level) {
     auto state = make_exposure_state(chain_of({knob}));
     state.levels[std::to_underlying(knob.kind)] = level;
+    state.manual_engaged = knob.kind == ExposureKnobKind::manual_exposure;
     return settled(state);
 }
 
 ExposureStep step_for(const ExposureLoopState& state, const LumaStats& observed,
     const ExposureKnob& knob) {
-    return next_exposure_step(state, observed, chain_of({knob}));
+    return decide(state, observed, chain_of({knob}));
 }
 
 std::optional<int> applied(const ExposureStep& step) {
@@ -196,7 +219,8 @@ void test_step_settle_and_samples() {
     const auto knob = kEvKnob;
     const auto tuning = ExposureTuning{};
     auto state = make_exposure_state(chain_of({knob}));
-    for (int i = 1; i < tuning.settle_observations; ++i) {
+    // Waits settle_observations observations, then the next one decides.
+    for (int i = 1; i <= tuning.settle_observations; ++i) {
         const auto step = step_for(state, stats(12.0), knob);
         assert(!step.change);
         assert(step.next.observations_since_change == i);
@@ -234,14 +258,14 @@ void test_step_manual_exposure() {
     step = step_for(ready(knob, 100), stats(85.0, 0.0), knob);
     assert(applied(step) && *applied(step) > 100);
     // Bright: halves at most.
-    step = step_for(ready(knob, 100), stats(250.0), knob);
-    assert(applied(step) == 50);
+    step = step_for(ready(knob, 300), stats(250.0), knob);
+    assert(applied(step) == 150);
     // Slightly too bright still moves down by at least one step.
-    step = step_for(ready(knob, 100), stats(151.0), knob);
-    assert(applied(step) && *applied(step) < 100);
+    step = step_for(ready(knob, 300), stats(151.0), knob);
+    assert(applied(step) && *applied(step) < 300);
     // Clipped with in-band mean moves down at least one step.
-    step = step_for(ready(knob, 100), stats(120.0, 0.3), knob);
-    assert(applied(step) && *applied(step) < 100);
+    step = step_for(ready(knob, 300), stats(120.0, 0.3), knob);
+    assert(applied(step) && *applied(step) < 300);
     // Never above max.
     step = step_for(ready(knob, 300), stats(10.0), knob);
     assert(applied(step) == 333);
@@ -252,9 +276,10 @@ void test_step_manual_exposure() {
     coarse.step = 10;
     step = step_for(ready(coarse, 100), stats(10.0), coarse);
     assert(applied(step) && *applied(step) % 10 == 0);
-    // Cannot go below min.
-    step = step_for(ready(knob, 1), stats(250.0), knob);
-    assert(!step.change);
+    // Falling to the initial level or below hands control back to auto.
+    step = step_for(ready(knob, 100), stats(250.0), knob);
+    assert(step.change && step.change->action == ExposureAction::restore
+        && step.change->level == knob.initial);
 }
 
 // Drives the chain like the service does: apply the change, keep the state,
@@ -262,13 +287,24 @@ void test_step_manual_exposure() {
 struct Driven {
     ExposureLoopState state;
     std::vector<ExposureChange> changes;
+    ExposureTime now{0};
 };
+
+constexpr ExposureTime kObservationInterval{2000};
+constexpr ExposureTime kPastFlipFlopMemory{60000};
+
+// The next phase of a scenario, once the anti flip-flop memory has lapsed.
+Driven later(Driven driven) {
+    driven.changes.clear();
+    driven.now += kPastFlipFlopMemory;
+    return driven;
+}
 
 Driven drive(Driven driven, const ExposureKnobChain& chain, const LumaStats& observed,
     const int observations) {
     for (int i = 0; i < observations; ++i) {
-        const auto step = next_exposure_step(
-            settled(driven.state), observed, chain);
+        driven.now += kObservationInterval;
+        const auto step = decide(settled(driven.state), observed, chain, driven.now);
         driven.state = step.next;
         if (step.change) {
             driven.changes.push_back(*step.change);
@@ -282,21 +318,23 @@ constexpr auto level_index(const ExposureKnobKind kind) { return std::to_underly
 void test_escalation_when_saturated() {
     const auto chain = chain_of({kBacklightKnob, kManualKnob});
     const auto driven = drive({make_exposure_state(chain), {}}, chain, dark, 8);
-    // Backlight 0 -> 1 -> 2, then manual exposure 100 -> 200 -> 333 (capped), then idle.
-    assert(driven.changes.size() == 4);
+    // Backlight 0 -> 1 -> 2, then manual exposure engaged at its initial 100,
+    // then 200 -> 333 (capped), then idle.
+    assert(driven.changes.size() == 5);
     assert((driven.changes[0] == ExposureChange{ExposureKnobKind::backlight_compensation,
         ExposureAction::set, 1}));
     assert(driven.changes[1].level == 2);
     assert((driven.changes[2] == ExposureChange{ExposureKnobKind::manual_exposure,
-        ExposureAction::set, 200}));
-    assert(driven.changes[3].level == 333);
+        ExposureAction::set, 100}));
+    assert(driven.changes[3].level == 200);
+    assert(driven.changes[4].level == 333);
     assert(driven.state.active == ExposureKnobKind::manual_exposure);
 }
 
 void test_deescalation_order_and_restore() {
     const auto chain = chain_of({kBacklightKnob, kManualKnob});
     const auto up = drive({make_exposure_state(chain), {}}, chain, dark, 8);
-    const auto down = drive({up.state, {}}, chain, bright, 12);
+    const auto down = drive(later(up), chain, bright, 12);
     // Manual 333 -> 167 -> 84 (<= initial 100) is a restore, not a set; then backlight 2 -> 1 -> 0.
     assert(down.changes.size() == 4);
     assert(down.changes[0].level == 167 && down.changes[0].action == ExposureAction::set);
@@ -313,7 +351,7 @@ void test_three_knob_chain_unwinds_in_reverse() {
     const auto chain = chain_of({kEvKnob, kBacklightKnob, kManualKnob});
     const auto up = drive({make_exposure_state(chain), {}}, chain, dark, 40);
     assert(up.state.active == ExposureKnobKind::manual_exposure);
-    const auto down = drive({up.state, {}}, chain, bright, 60);
+    const auto down = drive(later(up), chain, bright, 60);
     const auto restores = down.changes | std::views::filter([](const ExposureChange& change) {
         return change.action == ExposureAction::restore;
     }) | std::views::transform(&ExposureChange::kind) | std::ranges::to<std::vector>();
@@ -328,13 +366,13 @@ void test_disabled_knob_is_skipped() {
     const auto chain = chain_of({kEvKnob, kManualKnob});
     auto state = make_exposure_state(chain);
     state.levels[level_index(ExposureKnobKind::ev_bias)] = kEvKnob.max;
-    auto step = next_exposure_step(settled(state), dark, chain);
+    auto step = decide(settled(state), dark, chain);
     assert(step.change && step.change->kind == ExposureKnobKind::manual_exposure);
 
     // The active knob itself was dropped: carry on with what remains.
     auto stale = make_exposure_state(chain_of({kBacklightKnob, kManualKnob}));
     stale.active = ExposureKnobKind::backlight_compensation;
-    step = next_exposure_step(settled(stale), dark, chain_of({kManualKnob}));
+    step = decide(settled(stale), dark, chain_of({kManualKnob}));
     assert(step.change && step.change->kind == ExposureKnobKind::manual_exposure);
 }
 
@@ -343,12 +381,20 @@ void test_single_knob_and_empty_chains() {
         const auto chain = chain_of({knob});
         const auto up = drive({make_exposure_state(chain), {}}, chain, dark, 60);
         assert(up.state.levels[level_index(knob.kind)] == knob.max);
-        const auto down = drive({up.state, {}}, chain, bright, 60);
-        // A lone knob is never "left": it is lowered in place, never restored.
-        assert(std::ranges::none_of(down.changes, [](const ExposureChange& change) {
+        const auto down = drive(later(up), chain, bright, 60);
+        const auto restores = std::ranges::count_if(down.changes, [](const ExposureChange& change) {
             return change.action == ExposureAction::restore;
-        }));
-        assert(down.state.levels[level_index(knob.kind)] == knob.min);
+        });
+        if (knob.kind == ExposureKnobKind::manual_exposure) {
+            // Manual exposure has nothing below auto: it hands control back.
+            assert(restores == 1);
+            assert(down.state.levels[level_index(knob.kind)] == knob.initial);
+            assert(!down.state.manual_engaged);
+        } else {
+            // A lone additive knob is lowered in place, never restored.
+            assert(restores == 0);
+            assert(down.state.levels[level_index(knob.kind)] == knob.min);
+        }
     }
     const auto empty = drive({make_exposure_state({}), {}}, {}, dark, 20);
     assert(empty.changes.empty());
@@ -377,6 +423,120 @@ void test_pixel_order() {
         == measure_luma(grey, 8, 8, 3, all).mean);
 }
 
+
+// Applies one decision the way the service does: the camera applies `snap`
+// of the requested level.
+ExposureStep apply(const ExposureStep& step, const int applied_level) {
+    auto result = step;
+    if (step.change && step.change->action == ExposureAction::set) {
+        result.next = with_applied_level(step.next, step.change->kind, applied_level);
+    }
+    return result;
+}
+
+void test_anti_flip_flop() {
+    const auto chain = chain_of({kEvKnob});
+    // Too dark: 0 -> 1. Too bright right after: lowering would land on 0, the
+    // level just left, so the loop holds instead of hunting.
+    const auto up = decide(ready(kEvKnob, 0), dark, chain, ExposureTime{1000});
+    assert(applied(up) == 1);
+    const auto back = decide(settled(up.next), bright, chain, ExposureTime{3000});
+    assert(!back.change);
+    assert(back.next.levels[level_index(kEvKnob.kind)] == 1);
+    // Same direction is never held.
+    assert(applied(decide(settled(up.next), dark, chain, ExposureTime{3000})) == 2);
+    // The memory lapses: a scene that really changed gets corrected.
+    assert(applied(decide(settled(up.next), bright, chain, ExposureTime{40000})) == 0);
+}
+
+void test_anti_flip_flop_clip_cycle_and_snapping() {
+    // Backlight 1 -> 2, then clipped: lowering would land back on 1, hold.
+    const auto chain = chain_of({kBacklightKnob});
+    const auto up = decide(ready(kBacklightKnob, 1), dark, chain, ExposureTime{1000});
+    assert(applied(up) == 2);
+    const auto clipped = LumaStats{.mean = 120.0, .clipped_fraction = 0.3, .samples = 10};
+    assert(!decide(settled(up.next), clipped, chain, ExposureTime{3000}).change);
+
+    // The camera snaps 150 to 160, then 300 to 320. The level left by the
+    // second move is the APPLIED 160, so a drop back to 160 is a reversal.
+    const auto manual = chain_of({kManualKnob});
+    const auto first = apply(decide(ready(kManualKnob, 100), stats(80.0), manual,
+        ExposureTime{1000}), 160);
+    assert(first.next.levels[level_index(kManualKnob.kind)] == 160);
+    const auto second = apply(decide(settled(first.next), stats(10.0), manual,
+        ExposureTime{3000}), 320);
+    assert(second.next.last_move && second.next.last_move->from_level == 160);
+    assert(!decide(settled(second.next), stats(250.0), manual, ExposureTime{5000}).change);
+}
+
+void test_wall_time_settle() {
+    const auto chain = chain_of({kEvKnob});
+    auto state = ready(kEvKnob, 0);
+    state.last_change_at = ExposureTime{1000};
+    // Enough observations, too little time.
+    assert(!decide(state, dark, chain, ExposureTime{1499}).change);
+    assert(applied(decide(state, dark, chain, ExposureTime{1500})) == 1);
+    // Enough time, too few observations.
+    state.observations_since_change = 0;
+    assert(!decide(state, dark, chain, ExposureTime{9000}).change);
+    // The step records when it changed.
+    const auto step = decide(ready(kEvKnob, 0), dark, chain, ExposureTime{7000});
+    assert(step.next.last_change_at == ExposureTime{7000});
+}
+
+void test_manual_first_write_is_unscaled() {
+    const auto chain = chain_of({kManualKnob});
+    const auto engage = decide(settled(make_exposure_state(chain)), stats(10.0), chain,
+        ExposureTime{1000});
+    assert((engage.change == ExposureChange{ExposureKnobKind::manual_exposure,
+        ExposureAction::set, 100}));
+    assert(engage.next.manual_engaged);
+    // Proportional from then on (ratio capped at 2x).
+    assert(applied(decide(settled(engage.next), stats(10.0), chain, ExposureTime{3000})) == 200);
+    // Too bright while auto still rules: nothing to lower.
+    assert(!decide(settled(make_exposure_state(chain)), bright, chain).change);
+}
+
+void test_single_manual_knob_restores_to_auto() {
+    const auto chain = chain_of({kManualKnob});
+    auto state = ready(kManualKnob, 200);
+    state.manual_engaged = true;
+    const auto down = decide(state, bright, chain);  // 200 * 0.5 = 100 == initial
+    assert((down.change == ExposureChange{ExposureKnobKind::manual_exposure,
+        ExposureAction::restore, 100}));
+    assert(!down.next.manual_engaged);
+    assert(down.next.levels[level_index(kManualKnob.kind)] == 100);
+}
+
+void test_applied_level_bookkeeping() {
+    const auto chain = chain_of({kManualKnob});
+    const auto step = decide(ready(kManualKnob, 100), stats(10.0), chain);
+    assert(applied(step) == 200);
+    const auto snapped = with_applied_level(step.next, ExposureKnobKind::manual_exposure, 180);
+    assert(snapped.levels[level_index(kManualKnob.kind)] == 180);
+    // The next step starts from 180: doubling gives 360, capped at the maximum.
+    assert(applied(decide(settled(snapped), stats(10.0), chain, kLater + ExposureTime{10000})) == 333);
+}
+
+void test_chain_rejects_invalid_knobs() {
+    auto chain = ExposureKnobChain{};
+    assert(!chain.push_back({.kind = ExposureKnobKind::ev_bias, .min = 3, .max = 1}));
+    assert(chain.empty());
+    assert(chain.push_back(kEvKnob));
+    assert(!chain.push_back(kEvKnob));  // one knob per kind
+    assert(chain.size() == 1);
+}
+
+void test_region_math_survives_extreme_geometry() {
+    constexpr auto huge = 2'000'000'000;
+    const auto region = metering_region(640, 480, PixelRegion{huge, huge, huge, huge});
+    assert(region.x >= 0 && region.y >= 0 && region.x + region.width <= 640
+        && region.y + region.height <= 480);
+    const auto wide = metering_region(640, 480, PixelRegion{-huge, -huge, huge, huge});
+    assert(wide.x + wide.width <= 640 && wide.y + wide.height <= 480);
+    assert(measure_luma(solid_image(2, 2, 3, 10), 2, 2, 3, PixelRegion{huge, 0, huge, 1}).samples == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -393,5 +553,13 @@ int main() {
     test_single_knob_and_empty_chains();
     test_in_band_touches_nothing();
     test_pixel_order();
+    test_anti_flip_flop();
+    test_anti_flip_flop_clip_cycle_and_snapping();
+    test_wall_time_settle();
+    test_manual_first_write_is_unscaled();
+    test_single_manual_knob_restores_to_auto();
+    test_applied_level_bookkeeping();
+    test_chain_rejects_invalid_knobs();
+    test_region_math_survives_extreme_geometry();
     return 0;
 }

@@ -16,7 +16,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
+#include <expected>
 #include <mdspan>
 #include <optional>
 #include <ranges>
@@ -55,6 +57,23 @@ enum class ExposureKnobKind { ev_bias, backlight_compensation, manual_exposure }
 
 inline constexpr std::size_t kExposureKnobKindCount = 3;
 
+// Why a camera write failed, from the loop's point of view.
+// unsupported: the camera has no such control; transient: busy or a hiccup,
+// worth retrying; rejected: the camera refuses this control or value for good.
+enum class ExposureWriteError { unsupported, transient, rejected };
+
+[[nodiscard]] constexpr std::string_view to_string(const ExposureWriteError error) {
+    switch (error) {
+    case ExposureWriteError::unsupported: return "unsupported";
+    case ExposureWriteError::transient: return "transient";
+    case ExposureWriteError::rejected: return "rejected";
+    }
+    std::unreachable();
+}
+
+// Monotonic time since an arbitrary epoch, passed in so the loop stays pure.
+using ExposureTime = std::chrono::milliseconds;
+
 struct ExposureKnob {
     ExposureKnobKind kind = ExposureKnobKind::backlight_compensation;
     int min = 0;
@@ -73,10 +92,18 @@ struct ExposureKnob {
 // module, plain-TU and mingw builds.
 class ExposureKnobChain {
 public:
-    constexpr void push_back(const ExposureKnob& knob) {
-        if (count_ < items_.size()) {
-            items_[count_++] = knob;
+    // Rejects (returns false) a knob with min > max, a second knob of the same
+    // kind, or one beyond capacity: a bad range would make the loop clamp
+    // into an empty interval.
+    constexpr bool push_back(const ExposureKnob& knob) {
+        const auto held = std::span<const ExposureKnob>(items_.data(), count_);
+        const auto duplicate = std::ranges::any_of(
+            held, [&](const ExposureKnob& other) { return other.kind == knob.kind; });
+        if (knob.min > knob.max || duplicate || count_ >= items_.size()) {
+            return false;
         }
+        items_[count_++] = knob;
+        return true;
     }
     [[nodiscard]] constexpr std::size_t size() const { return count_; }
     [[nodiscard]] constexpr bool empty() const { return count_ == 0; }
@@ -136,9 +163,14 @@ struct ExposureTuning {
     double target_high = 150.0;
     std::uint8_t clip_level = 250;
     double max_clipped_fraction = 0.05;
-    // Observations to wait after a change so the camera can settle before
-    // the next decision (prevents oscillation).
+    // Observations to skip after a change so the camera can settle before
+    // the next decision, and the least wall time that must also pass (frame
+    // rate varies, exposure latency does not).
     int settle_observations = 4;
+    ExposureTime min_settle_time{500};
+    // How long a reversal onto the level just left is held (anti flip-flop);
+    // after that the scene is assumed to have really changed.
+    ExposureTime flip_flop_memory{30000};
 };
 
 // What the loop asks of the camera for one knob.
@@ -155,14 +187,32 @@ struct ExposureChange {
     bool operator==(const ExposureChange&) const = default;
 };
 
+// Which way a decision moves the camera control; hold is "no direction".
+// The underlying value is the sign applied to the step.
+enum class ExposureDirection : int { lower = -1, raise = 1 };
+
+// The last change, remembered to refuse an immediate reversal onto the level
+// it just left (the loop would otherwise hunt between two levels).
+struct ExposureMove {
+    ExposureKnobKind kind = ExposureKnobKind::backlight_compensation;
+    ExposureDirection direction = ExposureDirection::raise;
+    int from_level = 0;
+};
+
 struct ExposureLoopState {
-    // Current level per knob, indexed by std::to_underlying(kind). Knobs the
-    // loop has not touched sit at their initial level.
+    // Level per knob as APPLIED by the camera (it may snap a request to its
+    // own grid), indexed by std::to_underlying(kind). Knobs the loop has not
+    // touched sit at their initial level.
     std::array<int, kExposureKnobKindCount> levels{};
     // Highest knob the loop has escalated to; nullopt until it moves one, in
     // which case the first knob of the chain is the active one.
     std::optional<ExposureKnobKind> active;
+    // Observations seen since the last change.
     int observations_since_change = 0;
+    std::optional<ExposureTime> last_change_at;
+    std::optional<ExposureMove> last_move;
+    // Manual exposure has been switched on (auto exposure is off).
+    bool manual_engaged = false;
 };
 
 struct ExposureStep {
@@ -189,19 +239,25 @@ struct ExposureStep {
     if (width <= 0 || height <= 0) {
         return {};
     }
-    const auto clamp_to_frame = [&](int x0, int y0, int x1, int y1) {
-        x0 = std::clamp(x0, 0, width);
-        y0 = std::clamp(y0, 0, height);
-        x1 = std::clamp(x1, 0, width);
-        y1 = std::clamp(y1, 0, height);
-        return PixelRegion{.x = x0, .y = y0, .width = std::max(0, x1 - x0),
-                           .height = std::max(0, y1 - y0)};
+    // 64-bit throughout: the face box comes from a detector, so its geometry
+    // is external input and int sums could overflow.
+    const auto clamp_to_frame = [&](const long long x0, const long long y0,
+                                    const long long x1, const long long y1) {
+        const auto left = std::clamp<long long>(x0, 0, width);
+        const auto top = std::clamp<long long>(y0, 0, height);
+        const auto right = std::clamp<long long>(x1, 0, width);
+        const auto bottom = std::clamp<long long>(y1, 0, height);
+        return PixelRegion{.x = static_cast<int>(left), .y = static_cast<int>(top),
+            .width = static_cast<int>(std::max(0LL, right - left)),
+            .height = static_cast<int>(std::max(0LL, bottom - top))};
     };
     const auto inner_face = [&](const PixelRegion& box) {
-        const auto inset_x = box.width * kFaceInsetPercent / 100;
-        const auto inset_y = box.height * kFaceInsetPercent / 100;
-        return clamp_to_frame(box.x + inset_x, box.y + inset_y,
-            box.x + box.width - inset_x, box.y + box.height - inset_y);
+        const auto inset_x = static_cast<long long>(box.width) * kFaceInsetPercent / 100;
+        const auto inset_y = static_cast<long long>(box.height) * kFaceInsetPercent / 100;
+        const auto left = static_cast<long long>(box.x);
+        const auto top = static_cast<long long>(box.y);
+        return clamp_to_frame(left + inset_x, top + inset_y,
+            left + box.width - inset_x, top + box.height - inset_y);
     };
     const auto is_usable = [](const PixelRegion& region) {
         return region.width > 0 && region.height > 0;
@@ -243,7 +299,8 @@ enum class PixelOrder { rgb, bgr };
     constexpr auto kMaxSamples = 4096;
     if (width <= 0 || height <= 0 || (channels != 1 && channels != 3 && channels != 4)
         || region.width <= 0 || region.height <= 0 || region.x < 0 || region.y < 0
-        || region.x + region.width > width || region.y + region.height > height) {
+        || static_cast<long long>(region.x) + region.width > width
+        || static_cast<long long>(region.y) + region.height > height) {
         return {};
     }
     const auto needed = static_cast<std::size_t>(width) * static_cast<std::size_t>(height)
@@ -286,10 +343,6 @@ enum class PixelOrder { rgb, bgr };
     };
 }
 
-// Which way a decision moves the camera control; hold is "no direction".
-// The underlying value is the sign applied to the step.
-enum class ExposureDirection : int { lower = -1, raise = 1 };
-
 // Largest single multiplicative move of a manual exposure time, and the extra
 // back-off applied when the face clips (a mean-based ratio alone would not
 // lower a clipped but mid-bright face).
@@ -331,15 +384,39 @@ inline constexpr double kClipBackoffRatio = 0.8;
                                                  : std::min(rounded, level - step);
 }
 
-// Move `kind` to `level` (or back to its initial on restore) and make
-// `active` the escalated knob.
-[[nodiscard]] constexpr ExposureStep exposure_change_step(const ExposureLoopState& state,
-    const ExposureChange& change, const ExposureKnobKind active) {
+
+// Result of moving one knob: where the loop goes next and what to write.
+// `active` is the escalated knob afterwards; `engaged` the manual-exposure flag.
+struct ExposureEdit {
+    ExposureChange change;
+    ExposureDirection direction;
+    ExposureKnobKind active;
+    bool manual_engaged;
+};
+
+[[nodiscard]] constexpr ExposureStep exposure_change_step(
+    const ExposureLoopState& state, const ExposureEdit& edit) {
     auto levels = state.levels;
-    levels[std::to_underlying(change.kind)] = change.level;
+    levels[std::to_underlying(edit.change.kind)] = edit.change.level;
     return ExposureStep{
-        .next = {.levels = levels, .active = active, .observations_since_change = 0},
-        .change = change};
+        .next = {.levels = levels,
+                 .active = edit.active,
+                 .observations_since_change = 0,
+                 .last_change_at = state.last_change_at,
+                 .last_move = ExposureMove{.kind = edit.change.kind,
+                     .direction = edit.direction,
+                     .from_level = state.levels[std::to_underlying(edit.change.kind)]},
+                 .manual_engaged = edit.manual_engaged},
+        .change = edit.change};
+}
+
+// Records the level the camera really applied for `kind` (drivers snap
+// requests to their own grid); later decisions step from it, not from the
+// request. The caller invokes this after a successful write.
+[[nodiscard]] constexpr ExposureLoopState with_applied_level(
+    ExposureLoopState state, const ExposureKnobKind kind, const int applied) {
+    state.levels[std::to_underlying(kind)] = applied;
+    return state;
 }
 
 // Position in `chain` of the knob the loop currently drives: the highest
@@ -353,10 +430,21 @@ inline constexpr double kClipBackoffRatio = 0.8;
     return std::max<std::size_t>(not_above, 1) - 1;
 }
 
-// Level `knob` would move to in `direction`, clamped to its range.
+// Switching auto exposure off happens with the first manual write.
+[[nodiscard]] constexpr bool needs_manual_engagement(
+    const ExposureLoopState& state, const ExposureKnob& knob) {
+    return knob.kind == ExposureKnobKind::manual_exposure && !state.manual_engaged;
+}
+
+// Level `knob` would move to in `direction`, clamped to its range. Engaging
+// manual exposure writes the level auto exposure already chose, unscaled: the
+// face luma says nothing about the ratio until manual is actually in effect.
 [[nodiscard]] constexpr int exposure_wanted_level(const ExposureLoopState& state,
     const ExposureKnob& knob, const ExposureDirection direction, const LumaStats& stats,
     const ExposureTuning& tuning) {
+    if (needs_manual_engagement(state, knob)) {
+        return knob.initial;
+    }
     const auto level = state.levels[std::to_underlying(knob.kind)];
     return std::clamp(exposure_candidate_level(level, direction, stats, knob, tuning),
         knob.min, knob.max);
@@ -370,11 +458,15 @@ inline constexpr double kClipBackoffRatio = 0.8;
     const auto try_knob = [&](const ExposureKnob& knob) -> std::optional<ExposureStep> {
         const auto wanted = exposure_wanted_level(
             state, knob, ExposureDirection::raise, stats, tuning);
-        if (wanted == state.levels[std::to_underlying(knob.kind)]) {
+        const auto engaging = needs_manual_engagement(state, knob);
+        if (!engaging && wanted == state.levels[std::to_underlying(knob.kind)]) {
             return std::nullopt;
         }
-        return exposure_change_step(state,
-            {.kind = knob.kind, .action = ExposureAction::set, .level = wanted}, knob.kind);
+        return exposure_change_step(state, {
+            .change = {.kind = knob.kind, .action = ExposureAction::set, .level = wanted},
+            .direction = ExposureDirection::raise,
+            .active = knob.kind,
+            .manual_engaged = state.manual_engaged || engaging});
     };
     const auto current = try_knob(chain[position]);
     if (current || position + 1 >= chain.size()) {
@@ -383,48 +475,84 @@ inline constexpr double kClipBackoffRatio = 0.8;
     return try_knob(chain[position + 1]);
 }
 
-// Too bright (or clipped): step the highest escalated knob down. An escalated
-// knob that gets back to its initial level is left: it is restored (a manual
-// exposure hands control back to the camera's auto exposure) and the knob
-// before it becomes active. The first knob may go below its initial level.
+// Too bright (or clipped): step the highest escalated knob down. A knob that
+// gets back to its initial level is left: it is restored (manual exposure
+// hands control back to the camera's auto exposure) and the knob before it
+// becomes active. Only the first knob of a chain may go below its initial
+// level, and never manual exposure: that has nothing below auto.
 [[nodiscard]] constexpr std::optional<ExposureStep> darken_step(const ExposureLoopState& state,
     const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTuning& tuning) {
     const auto position = active_position(chain, state);
     const auto& knob = chain[position];
+    if (needs_manual_engagement(state, knob)) {
+        return std::nullopt;  // auto exposure is still in charge: nothing to lower
+    }
     const auto level = state.levels[std::to_underlying(knob.kind)];
     const auto wanted = exposure_wanted_level(state, knob, ExposureDirection::lower, stats, tuning);
-    if (position > 0 && wanted <= knob.initial) {
-        return exposure_change_step(state,
-            {.kind = knob.kind, .action = ExposureAction::restore, .level = knob.initial},
-            chain[position - 1].kind);
+    const auto is_manual = knob.kind == ExposureKnobKind::manual_exposure;
+    if ((position > 0 || is_manual) && wanted <= knob.initial) {
+        return exposure_change_step(state, {
+            .change = {.kind = knob.kind, .action = ExposureAction::restore, .level = knob.initial},
+            .direction = ExposureDirection::lower,
+            .active = position > 0 ? chain[position - 1].kind : knob.kind,
+            .manual_engaged = state.manual_engaged && !is_manual});
     }
     if (wanted == level) {
         return std::nullopt;
     }
-    return exposure_change_step(state,
-        {.kind = knob.kind, .action = ExposureAction::set, .level = wanted}, knob.kind);
+    return exposure_change_step(state, {
+        .change = {.kind = knob.kind, .action = ExposureAction::set, .level = wanted},
+        .direction = ExposureDirection::lower,
+        .active = knob.kind,
+        .manual_engaged = state.manual_engaged});
 }
 
-// One decision of the exposure loop. Pure: the caller applies `change` to the
-// camera and keeps `next` for the following observation. An empty chain never
-// acts.
+// The loop would turn straight around onto the level it just left.
+[[nodiscard]] constexpr bool is_flip_flop(const ExposureLoopState& state,
+    const ExposureStep& candidate, const ExposureDirection direction,
+    const ExposureTime now, const ExposureTuning& tuning) {
+    const auto remembered = state.last_move && state.last_change_at
+        && now - *state.last_change_at < tuning.flip_flop_memory;
+    return remembered && candidate.change
+        && state.last_move->kind == candidate.change->kind
+        && state.last_move->direction != direction
+        && state.last_move->from_level == candidate.change->level;
+}
+
+// True once both the observation count and the wall time allow a decision.
+[[nodiscard]] constexpr bool has_settled(
+    const ExposureLoopState& state, const ExposureTime now, const ExposureTuning& tuning) {
+    return state.observations_since_change >= tuning.settle_observations
+        && (!state.last_change_at || now - *state.last_change_at >= tuning.min_settle_time);
+}
+
+// One decision of the exposure loop at monotonic time `now`. Pure: the caller
+// applies `change` to the camera, then keeps `next` (with the applied level,
+// see with_applied_level) for the following observation. An empty chain never
+// acts. After a change the loop skips `settle_observations` observations and
+// at least `min_settle_time`; it holds rather than reversing onto the level it
+// just left, accepting a slightly out-of-band face over oscillating.
 [[nodiscard]] constexpr ExposureStep next_exposure_step(const ExposureLoopState& state,
-    const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTuning& tuning = {}) {
-    const auto observations = state.observations_since_change + 1;
-    const auto unchanged = ExposureStep{
-        .next = {.levels = state.levels, .active = state.active,
-                 .observations_since_change = observations},
-        .change = std::nullopt};
-    if (chain.empty() || stats.samples == 0 || observations < tuning.settle_observations) {
+    const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTime now,
+    const ExposureTuning& tuning = {}) {
+    auto held = state;
+    held.observations_since_change = state.observations_since_change + 1;
+    const auto unchanged = ExposureStep{.next = held, .change = std::nullopt};
+    if (chain.empty() || stats.samples == 0 || !has_settled(state, now, tuning)) {
         return unchanged;
     }
-    return exposure_direction(stats, tuning)
-        .and_then([&](const ExposureDirection direction) {
-            return direction == ExposureDirection::raise
-                ? brighten_step(state, stats, chain, tuning)
-                : darken_step(state, stats, chain, tuning);
-        })
-        .value_or(unchanged);
+    const auto direction = exposure_direction(stats, tuning);
+    if (!direction) {
+        return unchanged;
+    }
+    auto candidate = *direction == ExposureDirection::raise
+        ? brighten_step(state, stats, chain, tuning)
+        : darken_step(state, stats, chain, tuning);
+    if (!candidate || is_flip_flop(state, *candidate, *direction, now, tuning)) {
+        return unchanged;
+    }
+    candidate->next.last_change_at = now;
+    return *candidate;
 }
 
 }  // namespace su::recognizer::detail
