@@ -12,8 +12,9 @@
 // Plain header (no module, no windows.h) so it is shared by the camera module,
 // the Media Foundation TU and the unit tests.
 
-#include <cstddef>
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -156,6 +157,68 @@ inline LumaStats measure_luma(const std::span<const std::byte> pixels, const int
         .clipped_fraction = static_cast<double>(clipped) / static_cast<double>(samples),
         .samples = samples,
     };
+}
+
+enum class ExposureDirection { raise, lower, hold };
+
+// Largest single multiplicative move of a manual exposure time, and the extra
+// back-off applied when the face clips (a mean-based ratio alone would not
+// lower a clipped but mid-bright face).
+inline constexpr double kMaxExposureRatio = 2.0;
+inline constexpr double kMinExposureRatio = 0.5;
+inline constexpr double kClipBackoffRatio = 0.8;
+
+inline ExposureDirection exposure_direction(const LumaStats& stats, const ExposureTuning& tuning) {
+    if (stats.clipped_fraction > tuning.max_clipped_fraction || stats.mean > tuning.target_high) {
+        return ExposureDirection::lower;
+    }
+    return stats.mean < tuning.target_low ? ExposureDirection::raise : ExposureDirection::hold;
+}
+
+// Level the loop wants next, before clamping. Additive knobs move one step;
+// exposure time is linear in brightness, so it moves proportionally toward
+// the middle of the band, but always by at least one step so it cannot stall.
+inline int exposure_candidate_level(const int level, const ExposureDirection direction,
+    const LumaStats& stats, const ExposureKnob& knob, const ExposureTuning& tuning) {
+    const auto step = std::max(1, knob.step);
+    const auto sign = direction == ExposureDirection::raise ? 1 : -1;
+    if (knob.kind != ExposureKnobKind::manual_exposure) {
+        return level + sign * step;
+    }
+    const auto target_mid = (tuning.target_low + tuning.target_high) / 2.0;
+    auto ratio = std::clamp(
+        target_mid / std::max(stats.mean, 1.0), kMinExposureRatio, kMaxExposureRatio);
+    if (direction == ExposureDirection::lower) {
+        ratio = std::min(ratio, kClipBackoffRatio);
+    }
+    const auto scaled = static_cast<double>(level) * ratio / static_cast<double>(step);
+    const auto rounded = static_cast<int>(std::llround(scaled)) * step;
+    return direction == ExposureDirection::raise ? std::max(rounded, level + step)
+                                                 : std::min(rounded, level - step);
+}
+
+// One decision of the exposure loop. Pure: the caller applies `apply_level`
+// to the camera and keeps `next` for the following observation.
+inline ExposureStep next_exposure_step(const ExposureLoopState& state, const LumaStats& stats,
+    const ExposureKnob& knob, const ExposureTuning& tuning = {}) {
+    const auto observations = state.observations_since_change + 1;
+    const auto unchanged = ExposureStep{
+        .next = {.level = state.level, .observations_since_change = observations},
+        .apply_level = std::nullopt};
+    if (stats.samples == 0 || observations < tuning.settle_observations) {
+        return unchanged;
+    }
+    const auto direction = exposure_direction(stats, tuning);
+    if (direction == ExposureDirection::hold) {
+        return unchanged;
+    }
+    const auto wanted = std::clamp(
+        exposure_candidate_level(state.level, direction, stats, knob, tuning), knob.min, knob.max);
+    if (wanted == state.level) {
+        return unchanged;
+    }
+    return ExposureStep{
+        .next = {.level = wanted, .observations_since_change = 0}, .apply_level = wanted};
 }
 
 }  // namespace su::recognizer::detail
