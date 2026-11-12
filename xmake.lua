@@ -357,18 +357,19 @@ target("su_capture_pipeline_test")
     add_tests("default")
     on_test(wine_on_test)
 
-target("su_windows_camera_controls_test")
-    set_default(false)
-    apply_cpp_target("binary")
-    add_files("tests/recognizer/windows_camera_controls.cpp")
-    if not is_plat("linux") then
-        -- The COM fakes drive the real CameraExposureControls implementation.
+if is_plat("windows", "mingw") then
+    -- The COM fakes drive the real CameraExposureControls implementation, so
+    -- the test needs the Windows SDK headers and only exists on Windows.
+    target("su_windows_camera_controls_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/recognizer/windows_camera_controls.cpp")
         add_files("src/recognizer/camera/windows_camera_controls.cpp")
         add_syslinks("ole32", "oleaut32", "uuid")
         add_ldflags("-static", {force = true})
-    end
-    add_tests("default")
-    on_test(wine_on_test)
+        add_tests("default")
+        on_test(wine_on_test)
+end
 
 target("su_pixel_convert_test")
     set_default(false)
