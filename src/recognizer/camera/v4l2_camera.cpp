@@ -282,11 +282,15 @@ public:
     [[nodiscard]] ExposureCapabilities exposure_capabilities() const {
         return exposure_.capabilities();
     }
-    bool set_metering_region(PixelRegion region) { return exposure_.set_region(region); }
-    bool set_exposure_level(ExposureKnobKind kind, int level) {
+    std::expected<void, ExposureWriteError> set_metering_region(PixelRegion region) {
+        return exposure_.set_region(region);
+    }
+    std::expected<int, ExposureWriteError> set_exposure_level(ExposureKnobKind kind, int level) {
         return exposure_.set_level(kind, level);
     }
-    bool reset_exposure_knob(ExposureKnobKind kind) { return exposure_.reset_knob(kind); }
+    std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind kind) {
+        return exposure_.reset_knob(kind);
+    }
 
 private:
     struct MmapBuffer {
@@ -348,16 +352,26 @@ ExposureCapabilities V4L2Camera::exposure_capabilities() const {
     return impl_ ? impl_->exposure_capabilities() : ExposureCapabilities{};
 }
 
-bool V4L2Camera::set_metering_region(PixelRegion region) {
-    return impl_ && impl_->set_metering_region(region);
+std::expected<void, ExposureWriteError> V4L2Camera::set_metering_region(PixelRegion region) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_metering_region(region);
 }
 
-bool V4L2Camera::set_exposure_level(ExposureKnobKind kind, int level) {
-    return impl_ && impl_->set_exposure_level(kind, level);
+std::expected<int, ExposureWriteError> V4L2Camera::set_exposure_level(
+    ExposureKnobKind kind, int level) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_exposure_level(kind, level);
 }
 
-bool V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
-    return impl_ && impl_->reset_exposure_knob(kind);
+std::expected<void, ExposureWriteError> V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->reset_exposure_knob(kind);
 }
 
 }  // namespace su::recognizer

@@ -12,6 +12,7 @@ using detail::ExposureCapabilities;
 using detail::ExposureKnobChain;
 using detail::ExposureKnob;
 using detail::ExposureKnobKind;
+using detail::ExposureWriteError;
 using detail::PixelRegion;
 
 // A discovered V4L2 capture device.
@@ -41,15 +42,18 @@ public:
     [[nodiscard]] bool is_open() const;
 
     // Exposure control (issue #137). Capabilities are probed by open().
-    // Setters return false when the control is unsupported or the device
-    // rejects the value. release() (and the destructor) restore every
-    // control changed through these calls to its value at open().
+    // Setters report why a write failed (unsupported / transient / rejected).
+    // release() (and the destructor) restore every control changed through
+    // these calls to its value at open().
     [[nodiscard]] ExposureCapabilities exposure_capabilities() const;
-    bool set_metering_region(PixelRegion region);
-    bool set_exposure_level(ExposureKnobKind kind, int level);
+    [[nodiscard]] std::expected<void, ExposureWriteError> set_metering_region(PixelRegion region);
+    // Returns the level the camera actually applied (drivers snap requests).
+    [[nodiscard]] std::expected<int, ExposureWriteError> set_exposure_level(
+        ExposureKnobKind kind, int level);
     // Puts one knob back to its value at open() right away; for manual
     // exposure that hands control back to the camera's auto exposure.
-    bool reset_exposure_knob(ExposureKnobKind kind);
+    [[nodiscard]] std::expected<void, ExposureWriteError> reset_exposure_knob(
+        ExposureKnobKind kind);
 
 private:
     class Impl;

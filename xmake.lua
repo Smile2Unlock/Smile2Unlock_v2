@@ -384,6 +384,17 @@ target("su_exposure_control_test")
     add_tests("default")
     on_test(wine_on_test)
 
+if is_plat("linux") then
+    -- Runs the V4L2 exposure controls against a fake device (injected ioctl).
+    target("su_v4l2_exposure_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/recognizer/v4l2_exposure.cpp")
+        add_deps("su_log")
+        add_includedirs("src")
+        add_tests("default")
+end
+
 target("su_low_light_enhance_test")
     set_default(false)
     apply_cpp_target("binary")

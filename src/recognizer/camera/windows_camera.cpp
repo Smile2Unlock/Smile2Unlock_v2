@@ -73,16 +73,28 @@ public:
         return stream_.exposure_capabilities();
     }
 
-    bool set_metering_region(const PixelRegion& region) {
-        return stream_.set_metering_region(region);
+    // The MF stream still reports success as a bool; a failed HRESULT maps to
+    // rejected and the requested level is assumed applied. Refining both
+    // (transient errors, the driver's snapped level) is Windows follow-up work.
+    std::expected<void, ExposureWriteError> set_metering_region(const PixelRegion& region) {
+        if (stream_.set_metering_region(region)) {
+            return {};
+        }
+        return std::unexpected(ExposureWriteError::unsupported);
     }
 
-    bool set_exposure_level(ExposureKnobKind kind, int level) {
-        return stream_.set_exposure_level(kind, level);
+    std::expected<int, ExposureWriteError> set_exposure_level(ExposureKnobKind kind, int level) {
+        if (stream_.set_exposure_level(kind, level)) {
+            return level;
+        }
+        return std::unexpected(ExposureWriteError::rejected);
     }
 
-    bool reset_exposure_knob(ExposureKnobKind kind) {
-        return stream_.reset_exposure_knob(kind);
+    std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind kind) {
+        if (stream_.reset_exposure_knob(kind)) {
+            return {};
+        }
+        return std::unexpected(ExposureWriteError::rejected);
     }
 
 private:
@@ -126,16 +138,26 @@ ExposureCapabilities V4L2Camera::exposure_capabilities() const {
     return impl_ ? impl_->exposure_capabilities() : ExposureCapabilities{};
 }
 
-bool V4L2Camera::set_metering_region(PixelRegion region) {
-    return impl_ && impl_->set_metering_region(region);
+std::expected<void, ExposureWriteError> V4L2Camera::set_metering_region(PixelRegion region) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_metering_region(region);
 }
 
-bool V4L2Camera::set_exposure_level(ExposureKnobKind kind, int level) {
-    return impl_ && impl_->set_exposure_level(kind, level);
+std::expected<int, ExposureWriteError> V4L2Camera::set_exposure_level(
+    ExposureKnobKind kind, int level) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_exposure_level(kind, level);
 }
 
-bool V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
-    return impl_ && impl_->reset_exposure_knob(kind);
+std::expected<void, ExposureWriteError> V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->reset_exposure_knob(kind);
 }
 
 } // namespace su::recognizer
