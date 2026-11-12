@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <vector>
 
@@ -37,9 +38,23 @@ inline constexpr double kLowLightMaxGamma = 1.0;
 inline constexpr double kLowLightMinMean = 1.0;
 inline constexpr double kLumaMax = 255.0;
 
+// Output level of `gamma` at input level `index`, rounded to 0..255.
+[[nodiscard]] constexpr std::uint8_t gamma_level(const int index, const double gamma) {
+    const auto mapped = std::pow(static_cast<double>(index) / kLumaMax, gamma) * kLumaMax;
+    return static_cast<std::uint8_t>(std::clamp(mapped + 0.5, 0.0, kLumaMax));
+}
+
+[[nodiscard]] constexpr LowLightLut gamma_lut(const double gamma) {
+    auto lut = LowLightLut{};
+    std::ranges::copy(std::views::iota(0, static_cast<int>(lut.size()))
+            | std::views::transform([gamma](const int i) { return gamma_level(i, gamma); }),
+        lut.begin());
+    return lut;
+}
+
 // Gamma LUT lifting `centre.mean` toward `target_mean`, or nullopt when the
 // centre is bright enough (or unmeasured) and enhancement would only add risk.
-inline std::optional<LowLightLut> low_light_lut(const LumaStats& centre,
+[[nodiscard]] constexpr std::optional<LowLightLut> low_light_lut(const LumaStats& centre,
     const double mean_threshold = kLowLightMeanThreshold,
     const double target_mean = kLowLightTargetMean) {
     if (centre.samples == 0 || !(centre.mean < mean_threshold)) {
@@ -48,22 +63,30 @@ inline std::optional<LowLightLut> low_light_lut(const LumaStats& centre,
     const auto mean = std::max(centre.mean, kLowLightMinMean);
     const auto gamma = std::clamp(std::log(target_mean / kLumaMax) / std::log(mean / kLumaMax),
         kLowLightMinGamma, kLowLightMaxGamma);
-    auto lut = LowLightLut{};
-    for (auto i = std::size_t{}; i < lut.size(); ++i) {
-        const auto mapped = std::pow(static_cast<double>(i) / kLumaMax, gamma) * kLumaMax;
-        lut[i] = static_cast<std::uint8_t>(std::clamp(std::lround(mapped), 0L, 255L));
-    }
-    return lut;
+    return gamma_lut(gamma);
 }
 
 // Returns a remapped copy; the input is never modified.
-inline std::vector<unsigned char> apply_lut(
+[[nodiscard]] inline std::vector<unsigned char> apply_lut(
     const std::span<const unsigned char> pixels, const LowLightLut& lut) {
-    auto out = std::vector<unsigned char>(pixels.size());
-    std::ranges::transform(pixels, out.begin(), [&](const unsigned char value) {
-        return static_cast<unsigned char>(lut[value]);
-    });
-    return out;
+    return pixels
+        | std::views::transform([&lut](const unsigned char value) {
+              return static_cast<unsigned char>(lut[value]);
+          })
+        | std::ranges::to<std::vector>();
 }
+
+// Compile-time guarantees every generated LUT relies on.
+namespace low_light_checks {
+inline constexpr auto kDarkest = low_light_lut(LumaStats{.mean = 0.0, .samples = 1});
+inline constexpr auto kDark = low_light_lut(LumaStats{.mean = 12.0, .samples = 1});
+static_assert(kDarkest && kDark);
+static_assert(std::ranges::is_sorted(*kDarkest) && std::ranges::is_sorted(*kDark));
+static_assert((*kDarkest)[0] == 0 && (*kDarkest)[255] == 255);
+static_assert((*kDark)[0] == 0 && (*kDark)[255] == 255);
+static_assert((*kDark)[12] > 12);
+static_assert(!low_light_lut(LumaStats{.mean = kLowLightMeanThreshold, .samples = 1}));
+static_assert(!low_light_lut(LumaStats{}));
+}  // namespace low_light_checks
 
 }  // namespace su::recognizer::detail
