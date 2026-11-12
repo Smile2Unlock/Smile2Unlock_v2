@@ -24,6 +24,10 @@ struct PreviewFrame {
     int width = 0;
     int height = 0;
     std::vector<std::byte> rgba_or_rgb;
+    // Camera session this frame was captured in (RecognizerService bumps it
+    // on every open and close). Exposure control ignores frames of a past
+    // session, whose size and brightness say nothing about the current one.
+    std::uint64_t camera_generation = 0;
 };
 
 struct FaceBox {

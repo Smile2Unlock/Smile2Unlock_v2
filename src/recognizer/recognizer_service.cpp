@@ -28,6 +28,7 @@ std::vector<CameraInfo> RecognizerService::enumerate_cameras() const {
 std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_index) {
     std::lock_guard lock(camera_mutex_);
     close_camera_unlocked();
+    ++camera_generation_;
 
     camera_ = std::make_unique<V4L2Camera>();
     auto opened = camera_->open(camera_index);
@@ -44,15 +45,10 @@ std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_i
     return std::unexpected(error);
 }
 
-std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_frame() const {
-    std::lock_guard lock(camera_mutex_);
-    if (!active_camera_) {
+std::expected<PreviewFrame, RecognizerError> RecognizerService::grab_rgb_frame_locked() const {
+    if (!active_camera_ || !camera_) {
         return std::unexpected(RecognizerError::kCameraUnavailable);
     }
-    if (!camera_) {
-        return std::unexpected(RecognizerError::kCameraUnavailable);
-    }
-
     auto frame = camera_->grab_frame();
     if (!frame) {
         return std::unexpected(frame.error());
@@ -61,62 +57,49 @@ std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_
     if (!rgb) {
         return std::unexpected(rgb.error());
     }
+    exposure_.frame_width = frame->width;
+    exposure_.frame_height = frame->height;
     return PreviewFrame{
         .width = frame->width,
         .height = frame->height,
         .rgba_or_rgb = std::move(*rgb),
+        .camera_generation = camera_generation_,
     };
+}
+
+std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_frame() const {
+    std::lock_guard lock(camera_mutex_);
+    return grab_rgb_frame_locked();
 }
 
 std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
 RecognizerService::capture_and_extract(bool liveness_enabled) const {
-    auto preview = PreviewFrame{};
-    {
+    // Copy the mmap-backed frame while holding the camera lock. SeetaFace
+    // runs after the copy, so camera control does not stay blocked during
+    // model inference.
+    auto grabbed = [&] {
         std::lock_guard lock(camera_mutex_);
-        if (!active_camera_) {
-            return std::unexpected(RecognizerError::kCameraUnavailable);
-        }
-
-        if (!camera_) {
-            return std::unexpected(RecognizerError::kCameraUnavailable);
-        }
-
-        // Copy the mmap-backed frame while holding the camera lock. SeetaFace
-        // runs after the copy, so camera control does not stay blocked during
-        // model inference.
-        auto frame = camera_->grab_frame();
-        if (!frame) {
-            return std::unexpected(frame.error());
-        }
-        auto rgb = v4l2_frame_to_rgb(*frame);
-        if (!rgb) {
-            return std::unexpected(rgb.error());
-        }
-        preview = PreviewFrame{
-            .width = frame->width,
-            .height = frame->height,
-            .rgba_or_rgb = std::move(*rgb),
-        };
+        return grab_rgb_frame_locked();
+    }();
+    if (!grabbed) {
+        return std::unexpected(grabbed.error());
     }
-    auto result = extract_from_image(
-        ImageView{
-            .width = preview.width,
-            .height = preview.height,
-            .channels = 3,
-            .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
-        },
-        liveness_enabled);
+    auto preview = std::move(*grabbed);
+    const auto view = ImageView{
+        .width = preview.width,
+        .height = preview.height,
+        .channels = 3,
+        .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
+    };
+    auto result = extract_from_image(view, liveness_enabled);
     if (!result) {
         return std::unexpected(result.error());
     }
-    observe_exposure(
-        ImageView{
-            .width = preview.width,
-            .height = preview.height,
-            .channels = 3,
-            .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
-        },
-        result->face_box);
+    // A brightness step changes what liveness sees frame to frame, so start
+    // its window over (failure just means liveness is unavailable).
+    if (observe_exposure(view, result->face_box, preview.camera_generation)) {
+        (void)reset_liveness();
+    }
     return std::make_pair(std::move(preview), std::move(*result));
 }
 
@@ -176,6 +159,7 @@ void RecognizerService::close_camera_unlocked() {
     }
     active_camera_.reset();
     exposure_ = {};
+    ++camera_generation_;
 }
 
 std::string embedding_sample_source(std::span<const float> feature) {

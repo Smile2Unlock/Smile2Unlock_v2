@@ -124,12 +124,18 @@ public:
                     .channels = 3,
                     .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
                 }, liveness_enabled);
-                recognizer.observe_exposure(su::recognizer::ImageView{
-                    .width = frame->width,
-                    .height = frame->height,
-                    .channels = 3,
-                    .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
-                }, result && result->has_face ? result->face_box : std::nullopt);
+                // The box is also usable without has_face: a face found only by
+                // the low-light retry is reported as a metering-only result.
+                // A brightness step restarts the liveness window.
+                if (recognizer.observe_exposure(su::recognizer::ImageView{
+                        .width = frame->width,
+                        .height = frame->height,
+                        .channels = 3,
+                        .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
+                    }, result ? result->face_box : std::nullopt, frame->camera_generation)
+                    && liveness_enabled) {
+                    (void)recognizer.reset_liveness();
+                }
                 const auto finished = std::chrono::steady_clock::now();
                 if (finished >= next_log) {
                     su::log::process_logger().debug("preview.inference", {
