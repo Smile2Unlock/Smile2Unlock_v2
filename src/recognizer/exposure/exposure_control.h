@@ -16,8 +16,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <mdspan>
 #include <optional>
+#include <ranges>
 #include <span>
+#include <string_view>
+#include <tuple>
+#include <utility>
 
 namespace su::recognizer::detail {
 
@@ -36,6 +41,15 @@ struct PixelRegion {
 // still follows lighting changes); manual_exposure turns it off, so the loop
 // must keep tracking the scene itself.
 enum class ExposureKnobKind { ev_bias, backlight_compensation, manual_exposure };
+
+[[nodiscard]] constexpr std::string_view to_string(const ExposureKnobKind kind) {
+    switch (kind) {
+    case ExposureKnobKind::ev_bias: return "ev_bias";
+    case ExposureKnobKind::backlight_compensation: return "backlight_compensation";
+    case ExposureKnobKind::manual_exposure: return "manual_exposure";
+    }
+    std::unreachable();
+}
 
 struct ExposureKnob {
     ExposureKnobKind kind = ExposureKnobKind::backlight_compensation;
@@ -86,8 +100,9 @@ struct ExposureStep {
 // hair and the background at the box edges), clamped to the frame. Without
 // one: a centred window where a seated user's face normally is, so a bright
 // window at the frame edge does not dominate.
-inline PixelRegion metering_region(
+[[nodiscard]] constexpr PixelRegion metering_region(
     const int width, const int height, const std::optional<PixelRegion> face) {
+    constexpr auto kFaceInsetPercent = 15;
     if (width <= 0 || height <= 0) {
         return {};
     }
@@ -99,27 +114,43 @@ inline PixelRegion metering_region(
         return PixelRegion{.x = x0, .y = y0, .width = std::max(0, x1 - x0),
                            .height = std::max(0, y1 - y0)};
     };
-    if (face && face->width > 0 && face->height > 0) {
-        const auto inset_x = face->width * 15 / 100;
-        const auto inset_y = face->height * 15 / 100;
-        const auto inner = clamp_to_frame(face->x + inset_x, face->y + inset_y,
-            face->x + face->width - inset_x, face->y + face->height - inset_y);
-        if (inner.width > 0 && inner.height > 0) {
-            return inner;
-        }
-    }
-    const auto region_width = width * 2 / 5;
-    const auto region_height = height / 2;
-    const auto x0 = (width - region_width) / 2;
-    const auto y0 = (height - region_height) / 2;
-    return clamp_to_frame(x0, y0, x0 + region_width, y0 + region_height);
+    const auto inner_face = [&](const PixelRegion& box) {
+        const auto inset_x = box.width * kFaceInsetPercent / 100;
+        const auto inset_y = box.height * kFaceInsetPercent / 100;
+        return clamp_to_frame(box.x + inset_x, box.y + inset_y,
+            box.x + box.width - inset_x, box.y + box.height - inset_y);
+    };
+    const auto is_usable = [](const PixelRegion& region) {
+        return region.width > 0 && region.height > 0;
+    };
+    const auto centre = [&] {
+        const auto region_width = width * 2 / 5;
+        const auto region_height = height / 2;
+        const auto x0 = (width - region_width) / 2;
+        const auto y0 = (height - region_height) / 2;
+        return clamp_to_frame(x0, y0, x0 + region_width, y0 + region_height);
+    };
+    return face.and_then([&](const PixelRegion& box) {
+                   return is_usable(box) ? std::optional(inner_face(box)) : std::nullopt;
+               })
+        .and_then([&](const PixelRegion& inner) {
+            return is_usable(inner) ? std::optional(inner) : std::nullopt;
+        })
+        .value_or(centre());
 }
+
+// Running totals while scanning the metered region.
+struct LumaTotals {
+    std::uint64_t sum = 0;
+    std::size_t clipped = 0;
+    std::size_t samples = 0;
+};
 
 // Rec.601 luma statistics over `region` of a packed RGB/RGBA (or 1-channel)
 // image, subsampled to at most ~kMaxSamples pixels. Returns samples == 0 for
 // an empty region or a buffer too small for the claimed geometry.
-inline LumaStats measure_luma(const std::span<const std::byte> pixels, const int width,
-    const int height, const int channels, const PixelRegion region,
+[[nodiscard]] constexpr LumaStats measure_luma(const std::span<const std::byte> pixels,
+    const int width, const int height, const int channels, const PixelRegion region,
     const std::uint8_t clip_level = ExposureTuning{}.clip_level) {
     constexpr auto kMaxSamples = 4096;
     if (width <= 0 || height <= 0 || (channels != 1 && channels != 3 && channels != 4)
@@ -137,29 +168,37 @@ inline LumaStats measure_luma(const std::span<const std::byte> pixels, const int
     while (area / (static_cast<long long>(stride) * stride) > kMaxSamples) {
         ++stride;
     }
-    auto sum = std::uint64_t{};
-    auto clipped = std::size_t{};
-    auto samples = std::size_t{};
-    for (auto y = region.y; y < region.y + region.height; y += stride) {
-        for (auto x = region.x; x < region.x + region.width; x += stride) {
-            const auto offset = (static_cast<std::size_t>(y) * width + x) * channels;
-            const auto r = std::to_integer<unsigned>(pixels[offset]);
-            const auto g = channels == 1 ? r : std::to_integer<unsigned>(pixels[offset + 1]);
-            const auto b = channels == 1 ? r : std::to_integer<unsigned>(pixels[offset + 2]);
-            const auto luma = (77U * r + 150U * g + 29U * b) >> 8U;
-            sum += luma;
-            clipped += luma >= clip_level ? 1U : 0U;
-            ++samples;
-        }
-    }
+    // Row-major [row, column, channel] view of the packed buffer.
+    const auto image = std::mdspan(pixels.data(), static_cast<std::size_t>(height),
+        static_cast<std::size_t>(width), static_cast<std::size_t>(channels));
+    const auto luma_at = [&](const int y, const int x) {
+        const auto row = static_cast<std::size_t>(y);
+        const auto column = static_cast<std::size_t>(x);
+        const auto red = std::to_integer<unsigned>(image[row, column, 0]);
+        const auto green = channels == 1 ? red : std::to_integer<unsigned>(image[row, column, 1]);
+        const auto blue = channels == 1 ? red : std::to_integer<unsigned>(image[row, column, 2]);
+        return (77U * red + 150U * green + 29U * blue) >> 8U;
+    };
+    const auto rows = std::views::iota(region.y, region.y + region.height) | std::views::stride(stride);
+    const auto columns = std::views::iota(region.x, region.x + region.width) | std::views::stride(stride);
+    const auto totals = std::ranges::fold_left(std::views::cartesian_product(rows, columns),
+        LumaTotals{}, [&](const LumaTotals& so_far, const auto position) {
+            const auto [y, x] = position;
+            const auto luma = luma_at(y, x);
+            return LumaTotals{.sum = so_far.sum + luma,
+                .clipped = so_far.clipped + (luma >= clip_level ? 1U : 0U),
+                .samples = so_far.samples + 1};
+        });
     return LumaStats{
-        .mean = static_cast<double>(sum) / static_cast<double>(samples),
-        .clipped_fraction = static_cast<double>(clipped) / static_cast<double>(samples),
-        .samples = samples,
+        .mean = static_cast<double>(totals.sum) / static_cast<double>(totals.samples),
+        .clipped_fraction = static_cast<double>(totals.clipped) / static_cast<double>(totals.samples),
+        .samples = totals.samples,
     };
 }
 
-enum class ExposureDirection { raise, lower, hold };
+// Which way a decision moves the camera control; hold is "no direction".
+// The underlying value is the sign applied to the step.
+enum class ExposureDirection : int { lower = -1, raise = 1 };
 
 // Largest single multiplicative move of a manual exposure time, and the extra
 // back-off applied when the face clips (a mean-based ratio alone would not
@@ -168,30 +207,35 @@ inline constexpr double kMaxExposureRatio = 2.0;
 inline constexpr double kMinExposureRatio = 0.5;
 inline constexpr double kClipBackoffRatio = 0.8;
 
-inline ExposureDirection exposure_direction(const LumaStats& stats, const ExposureTuning& tuning) {
+[[nodiscard]] constexpr std::optional<ExposureDirection> exposure_direction(
+    const LumaStats& stats, const ExposureTuning& tuning) {
     if (stats.clipped_fraction > tuning.max_clipped_fraction || stats.mean > tuning.target_high) {
         return ExposureDirection::lower;
     }
-    return stats.mean < tuning.target_low ? ExposureDirection::raise : ExposureDirection::hold;
+    if (stats.mean < tuning.target_low) {
+        return ExposureDirection::raise;
+    }
+    return std::nullopt;
 }
 
 // Level the loop wants next, before clamping. Additive knobs move one step;
 // exposure time is linear in brightness, so it moves proportionally toward
 // the middle of the band, but always by at least one step so it cannot stall.
-inline int exposure_candidate_level(const int level, const ExposureDirection direction,
-    const LumaStats& stats, const ExposureKnob& knob, const ExposureTuning& tuning) {
+[[nodiscard]] constexpr int exposure_candidate_level(const int level,
+    const ExposureDirection direction, const LumaStats& stats, const ExposureKnob& knob,
+    const ExposureTuning& tuning) {
     const auto step = std::max(1, knob.step);
-    const auto sign = direction == ExposureDirection::raise ? 1 : -1;
+    const auto signed_step = std::to_underlying(direction) * step;
     if (knob.kind != ExposureKnobKind::manual_exposure) {
-        return level + sign * step;
+        return level + signed_step;
     }
     const auto target_mid = (tuning.target_low + tuning.target_high) / 2.0;
-    auto ratio = std::clamp(
+    const auto ratio = std::clamp(
         target_mid / std::max(stats.mean, 1.0), kMinExposureRatio, kMaxExposureRatio);
-    if (direction == ExposureDirection::lower) {
-        ratio = std::min(ratio, kClipBackoffRatio);
-    }
-    const auto scaled = static_cast<double>(level) * ratio / static_cast<double>(step);
+    const auto directed_ratio = direction == ExposureDirection::lower
+        ? std::min(ratio, kClipBackoffRatio)
+        : ratio;
+    const auto scaled = static_cast<double>(level) * directed_ratio / static_cast<double>(step);
     const auto rounded = static_cast<int>(std::llround(scaled)) * step;
     return direction == ExposureDirection::raise ? std::max(rounded, level + step)
                                                  : std::min(rounded, level - step);
@@ -199,8 +243,8 @@ inline int exposure_candidate_level(const int level, const ExposureDirection dir
 
 // One decision of the exposure loop. Pure: the caller applies `apply_level`
 // to the camera and keeps `next` for the following observation.
-inline ExposureStep next_exposure_step(const ExposureLoopState& state, const LumaStats& stats,
-    const ExposureKnob& knob, const ExposureTuning& tuning = {}) {
+[[nodiscard]] constexpr ExposureStep next_exposure_step(const ExposureLoopState& state,
+    const LumaStats& stats, const ExposureKnob& knob, const ExposureTuning& tuning = {}) {
     const auto observations = state.observations_since_change + 1;
     const auto unchanged = ExposureStep{
         .next = {.level = state.level, .observations_since_change = observations},
@@ -208,17 +252,19 @@ inline ExposureStep next_exposure_step(const ExposureLoopState& state, const Lum
     if (stats.samples == 0 || observations < tuning.settle_observations) {
         return unchanged;
     }
-    const auto direction = exposure_direction(stats, tuning);
-    if (direction == ExposureDirection::hold) {
-        return unchanged;
-    }
-    const auto wanted = std::clamp(
-        exposure_candidate_level(state.level, direction, stats, knob, tuning), knob.min, knob.max);
-    if (wanted == state.level) {
-        return unchanged;
-    }
-    return ExposureStep{
-        .next = {.level = wanted, .observations_since_change = 0}, .apply_level = wanted};
+    return exposure_direction(stats, tuning)
+        .transform([&](const ExposureDirection direction) {
+            return std::clamp(exposure_candidate_level(state.level, direction, stats, knob, tuning),
+                knob.min, knob.max);
+        })
+        .and_then([&](const int wanted) {
+            return wanted == state.level ? std::nullopt : std::optional(wanted);
+        })
+        .transform([](const int wanted) {
+            return ExposureStep{
+                .next = {.level = wanted, .observations_since_change = 0}, .apply_level = wanted};
+        })
+        .value_or(unchanged);
 }
 
 }  // namespace su::recognizer::detail

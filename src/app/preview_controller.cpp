@@ -124,6 +124,12 @@ public:
                     .channels = 3,
                     .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
                 }, liveness_enabled);
+                recognizer.observe_exposure(su::recognizer::ImageView{
+                    .width = frame->width,
+                    .height = frame->height,
+                    .channels = 3,
+                    .bytes = std::span<const std::byte>(frame->rgba_or_rgb),
+                }, result && result->has_face ? result->face_box : std::nullopt);
                 const auto finished = std::chrono::steady_clock::now();
                 if (finished >= next_log) {
                     su::log::process_logger().debug("preview.inference", {

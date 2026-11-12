@@ -15,6 +15,20 @@ using namespace su::recognizer::detail;
 
 namespace {
 
+// Compile-time checks: the decision logic is constexpr end to end.
+static_assert(metering_region(640, 480, std::nullopt) == PixelRegion{192, 120, 256, 240});
+static_assert(metering_region(640, 480, PixelRegion{100, 100, 200, 200})
+    == PixelRegion{130, 130, 140, 140});
+static_assert(next_exposure_step(ExposureLoopState{.level = 0, .observations_since_change = 9},
+    LumaStats{.mean = 12.0, .clipped_fraction = 0.0, .samples = 10},
+    ExposureKnob{.kind = ExposureKnobKind::ev_bias, .min = -6, .max = 6, .step = 1, .initial = 0})
+    .apply_level == 1);
+static_assert(next_exposure_step(ExposureLoopState{.level = 0, .observations_since_change = 9},
+    LumaStats{.mean = 120.0, .clipped_fraction = 0.0, .samples = 10},
+    ExposureKnob{.kind = ExposureKnobKind::ev_bias, .min = -6, .max = 6, .step = 1, .initial = 0})
+    .apply_level == std::nullopt);
+static_assert(to_string(ExposureKnobKind::manual_exposure) == "manual_exposure");
+
 std::vector<std::byte> solid_image(
     int width, int height, int channels, std::uint8_t value) {
     return std::vector<std::byte>(

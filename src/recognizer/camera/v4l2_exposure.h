@@ -257,19 +257,10 @@ private:
         const auto knob = caps_.knob;
         su::log::process_logger().info("camera.exposure_probe", {
             su::log::field("metering_region", caps_.metering_region ? 1 : 0),
-            su::log::field("knob", knob ? kind_name(knob->kind) : "none"),
+            su::log::field("knob", knob ? to_string(knob->kind) : std::string_view{"none"}),
             su::log::field("min", knob ? knob->min : 0),
             su::log::field("max", knob ? knob->max : 0),
             su::log::field("initial", knob ? knob->initial : 0)});
-    }
-
-    static const char* kind_name(const ExposureKnobKind kind) {
-        switch (kind) {
-        case ExposureKnobKind::ev_bias: return "ev_bias";
-        case ExposureKnobKind::backlight_compensation: return "backlight_compensation";
-        case ExposureKnobKind::manual_exposure: return "manual_exposure";
-        }
-        return "unknown";
     }
 
     int fd_ = -1;

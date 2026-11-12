@@ -1,3 +1,7 @@
+module;
+#include "common/log/logger.h"
+#include "recognizer/exposure/exposure_control.h"
+
 module su.recognizer.service;
 import std;
 import su.recognizer.camera;
@@ -29,6 +33,11 @@ std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_i
     auto opened = camera_->open(camera_index);
     if (opened) {
         active_camera_ = camera_index;
+        exposure_ = {};
+        exposure_.caps = camera_->exposure_capabilities();
+        if (exposure_.caps.knob) {
+            exposure_.loop.level = exposure_.caps.knob->initial;
+        }
         return {};
     }
 
@@ -102,6 +111,14 @@ RecognizerService::capture_and_extract(bool liveness_enabled) const {
     if (!result) {
         return std::unexpected(result.error());
     }
+    observe_exposure(
+        ImageView{
+            .width = preview.width,
+            .height = preview.height,
+            .channels = 3,
+            .bytes = std::span<const std::byte>(preview.rgba_or_rgb),
+        },
+        result->face_box);
     return std::make_pair(std::move(preview), std::move(*result));
 }
 
@@ -160,6 +177,7 @@ void RecognizerService::close_camera_unlocked() {
         camera_.reset();
     }
     active_camera_.reset();
+    exposure_ = {};
 }
 
 std::string embedding_sample_source(std::span<const float> feature) {

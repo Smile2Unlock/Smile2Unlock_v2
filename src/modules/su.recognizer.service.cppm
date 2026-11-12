@@ -1,3 +1,6 @@
+module;
+#include "recognizer/exposure/exposure_control.h"
+
 export module su.recognizer.service;
 
 import std;
@@ -5,6 +8,19 @@ import su.recognizer.types;
 import su.recognizer.backend;
 import su.recognizer.camera;
 import su.recognizer.image;
+
+namespace su::recognizer::detail {
+
+// Per-open-camera state of the backlight-aware exposure loop (issue #137).
+struct ExposureSession {
+    ExposureCapabilities caps;
+    ExposureLoopState loop;
+    std::optional<PixelRegion> applied_region;
+    std::chrono::steady_clock::time_point last_region_change{};
+    std::chrono::steady_clock::time_point next_log{};
+};
+
+}  // namespace su::recognizer::detail
 
 export namespace su::recognizer {
 
@@ -38,6 +54,10 @@ public:
         ImageView image, bool liveness_enabled = true) const;
     std::expected<void, RecognizerError> reset_liveness() const;
 
+    // Feeds one preview frame (and the face found in it, if any) to the
+    // backlight-aware exposure loop. No-op without an open camera.
+    void observe_exposure(ImageView frame, std::optional<FaceBox> face) const;
+
     bool seetaface_available() const;
 
 private:
@@ -46,6 +66,8 @@ private:
 
     mutable std::mutex camera_mutex_;
     std::optional<int> active_camera_;
+    // Guarded by camera_mutex_.
+    mutable detail::ExposureSession exposure_;
 #if SU_HAS_SEETAFACE
     mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;
     mutable std::mutex seetaface_mutex_;
