@@ -35,9 +35,7 @@ std::expected<void, RecognizerError> RecognizerService::open_camera(int camera_i
         active_camera_ = camera_index;
         exposure_ = {};
         exposure_.caps = camera_->exposure_capabilities();
-        if (exposure_.caps.knob) {
-            exposure_.loop.level = exposure_.caps.knob->initial;
-        }
+        exposure_.loop = detail::make_exposure_state(exposure_.caps.knobs);
         return {};
     }
 

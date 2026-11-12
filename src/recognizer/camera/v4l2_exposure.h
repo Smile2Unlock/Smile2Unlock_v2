@@ -15,7 +15,10 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <ranges>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "common/log/logger.h"
@@ -36,7 +39,7 @@ public:
         frame_width_ = frame_width;
         frame_height_ = frame_height;
         probe_roi();
-        probe_knob();
+        probe_knobs();
         log_probe();
     }
 
@@ -54,20 +57,35 @@ public:
             && write_int(V4L2_CID_UVC_REGION_OF_INTEREST_AUTO, static_cast<int>(wanted_auto));
     }
 
-    bool set_level(const int level) {
-        if (!caps_.knob) {
+    bool set_level(const ExposureKnobKind kind, const int level) {
+        auto& slot = slots_[std::to_underlying(kind)];
+        if (!slot) {
             return false;
         }
-        if (caps_.knob->kind == ExposureKnobKind::manual_exposure && !manual_engaged_) {
+        if (kind == ExposureKnobKind::manual_exposure && !slot->touched) {
             // Switching auto exposure off is deferred to the first change so a
-            // user who never needs it keeps the camera's own exposure.
-            manual_engaged_ = true;
+            // user who never needs it keeps the camera's own exposure. Marked
+            // touched first so a half-applied switch is still undone.
+            slot->touched = true;
             if (!write_int(V4L2_CID_EXPOSURE_AUTO, V4L2_EXPOSURE_MANUAL)) {
                 return false;
             }
         }
-        level_touched_ = true;
-        return write_int(level_cid_, level);
+        slot->touched = true;
+        return write_int(slot->cid, level);
+    }
+
+    // Puts one knob back to its value at open (for manual exposure that
+    // re-enables the camera's auto exposure). No-op when it was never touched.
+    bool reset_knob(const ExposureKnobKind kind) {
+        auto& slot = slots_[std::to_underlying(kind)];
+        if (!slot) {
+            return false;
+        }
+        if (!std::exchange(slot->touched, false)) {
+            return true;
+        }
+        return restore_slot(*slot);
     }
 
     // Restores everything touched, in reverse order. Safe to call repeatedly.
@@ -75,22 +93,18 @@ public:
         if (fd_ < 0) {
             return;
         }
-        if (manual_engaged_) {
-            // Absolute exposure is only writable while auto is off.
-            restore_int("exposure_absolute", V4L2_CID_EXPOSURE_ABSOLUTE, exposure_original_);
-            restore_int("exposure_auto", V4L2_CID_EXPOSURE_AUTO, exposure_auto_original_);
-        } else if (level_touched_ && caps_.knob) {
-            restore_int("level", level_cid_, caps_.knob->initial);
+        for (const auto kind : {ExposureKnobKind::manual_exposure,
+                 ExposureKnobKind::backlight_compensation, ExposureKnobKind::ev_bias}) {
+            (void)reset_knob(kind);
         }
         if (roi_touched_) {
             restore_int("roi_auto", V4L2_CID_UVC_REGION_OF_INTEREST_AUTO,
                 static_cast<int>(roi_auto_original_));
             restore_rect();
         }
-        manual_engaged_ = false;
-        level_touched_ = false;
         roi_touched_ = false;
         fd_ = -1;
+        slots_ = {};
         caps_ = {};
     }
 
@@ -101,6 +115,24 @@ private:
         int step = 1;
         int current = 0;
     };
+
+    // One drivable knob and whether the loop changed it (so it needs undoing).
+    struct KnobSlot {
+        ExposureKnob knob;
+        std::uint32_t cid = 0;
+        bool touched = false;
+    };
+
+    bool restore_slot(const KnobSlot& slot) const {
+        if (slot.knob.kind != ExposureKnobKind::manual_exposure) {
+            return restore_int("level", slot.cid, slot.knob.initial);
+        }
+        // Absolute exposure is only writable while auto is off, so it goes first.
+        const auto exposure_ok =
+            restore_int("exposure_absolute", V4L2_CID_EXPOSURE_ABSOLUTE, exposure_original_);
+        return restore_int("exposure_auto", V4L2_CID_EXPOSURE_AUTO, exposure_auto_original_)
+            && exposure_ok;
+    }
 
     void probe_roi() {
         auto query = v4l2_query_ext_ctrl{};
@@ -128,29 +160,38 @@ private:
         caps_.metering_region = true;
     }
 
-    void probe_knob() {
+    // Every usable knob, so the loop can escalate when one saturates.
+    void probe_knobs() {
         if (const auto bias = query_range(V4L2_CID_AUTO_EXPOSURE_BIAS)) {
             use_knob(ExposureKnobKind::ev_bias, V4L2_CID_AUTO_EXPOSURE_BIAS, *bias);
-        } else if (const auto backlight = query_range(V4L2_CID_BACKLIGHT_COMPENSATION)) {
+        }
+        if (const auto backlight = query_range(V4L2_CID_BACKLIGHT_COMPENSATION)) {
             use_knob(ExposureKnobKind::backlight_compensation,
                 V4L2_CID_BACKLIGHT_COMPENSATION, *backlight);
-        } else {
-            probe_manual_exposure();
         }
+        probe_manual_exposure();
+        const auto knob_of = [&](const ExposureKnobKind kind) {
+            return slots_[std::to_underlying(kind)].transform(
+                [](const KnobSlot& slot) { return slot.knob; });
+        };
+        caps_.knobs = make_knob_chain(knob_of(ExposureKnobKind::ev_bias),
+            knob_of(ExposureKnobKind::backlight_compensation),
+            knob_of(ExposureKnobKind::manual_exposure));
     }
 
     void use_knob(const ExposureKnobKind kind, const std::uint32_t cid, const Range& range) {
-        level_cid_ = cid;
-        caps_.knob = ExposureKnob{.kind = kind, .min = range.min, .max = range.max,
-            .step = std::max(1, range.step), .initial = range.current};
+        slots_[std::to_underlying(kind)] = KnobSlot{
+            .knob = {.kind = kind, .min = range.min, .max = range.max,
+                     .step = std::max(1, range.step), .initial = range.current},
+            .cid = cid};
     }
 
-    bool probe_manual_exposure() {
+    void probe_manual_exposure() {
         const auto mode = query_range(V4L2_CID_EXPOSURE_AUTO, /*require_active=*/false);
         const auto exposure = query_range(V4L2_CID_EXPOSURE_ABSOLUTE, /*require_active=*/false);
         if (!mode || !exposure || mode->min > V4L2_EXPOSURE_MANUAL
             || mode->max < V4L2_EXPOSURE_MANUAL) {
-            return false;
+            return;
         }
         exposure_auto_original_ = mode->current;
         exposure_original_ = exposure->current;
@@ -159,7 +200,6 @@ private:
         use_knob(ExposureKnobKind::manual_exposure, V4L2_CID_EXPOSURE_ABSOLUTE,
             Range{.min = min, .max = max, .step = exposure->step,
                   .current = std::clamp(exposure->current, min, max)});
-        return true;
     }
 
     // Range of an integer control, or nullopt when it is missing, disabled
@@ -236,10 +276,12 @@ private:
         };
     }
 
-    void restore_int(const char* what, const std::uint32_t cid, const int value) const {
-        if (!write_int(cid, value)) {
-            log_restore_failed(what, errno);
+    bool restore_int(const char* what, const std::uint32_t cid, const int value) const {
+        if (write_int(cid, value)) {
+            return true;
         }
+        log_restore_failed(what, errno);
+        return false;
     }
 
     void restore_rect() const {
@@ -254,28 +296,28 @@ private:
     }
 
     void log_probe() const {
-        const auto knob = caps_.knob;
+        const auto knob_text = [](const ExposureKnob& knob) {
+            return std::string{to_string(knob.kind)} + ":" + std::to_string(knob.min) + ".."
+                + std::to_string(knob.max) + "@" + std::to_string(knob.initial);
+        };
+        const auto chain = caps_.knobs | std::views::transform(knob_text)
+            | std::views::join_with(std::string_view{" > "}) | std::ranges::to<std::string>();
         su::log::process_logger().info("camera.exposure_probe", {
             su::log::field("metering_region", caps_.metering_region ? 1 : 0),
-            su::log::field("knob", knob ? to_string(knob->kind) : std::string_view{"none"}),
-            su::log::field("min", knob ? knob->min : 0),
-            su::log::field("max", knob ? knob->max : 0),
-            su::log::field("initial", knob ? knob->initial : 0)});
+            su::log::field("knobs", chain.empty() ? std::string{"none"} : chain)});
     }
 
     int fd_ = -1;
     int frame_width_ = 0;
     int frame_height_ = 0;
     ExposureCapabilities caps_{};
-    std::uint32_t level_cid_ = 0;
+    std::array<std::optional<KnobSlot>, kExposureKnobKindCount> slots_{};
     std::optional<v4l2_rect> roi_space_;
     v4l2_rect roi_rect_original_{};
     unsigned roi_auto_original_ = 0;
     int exposure_auto_original_ = 0;
     int exposure_original_ = 0;
     bool roi_touched_ = false;
-    bool level_touched_ = false;
-    bool manual_engaged_ = false;
 };
 
 }  // namespace su::recognizer::detail

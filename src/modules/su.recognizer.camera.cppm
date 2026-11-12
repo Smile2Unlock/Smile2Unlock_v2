@@ -9,6 +9,7 @@ import su.recognizer.types;
 export namespace su::recognizer {
 
 using detail::ExposureCapabilities;
+using detail::ExposureKnobChain;
 using detail::ExposureKnob;
 using detail::ExposureKnobKind;
 using detail::PixelRegion;
@@ -45,7 +46,10 @@ public:
     // control changed through these calls to its value at open().
     [[nodiscard]] ExposureCapabilities exposure_capabilities() const;
     bool set_metering_region(PixelRegion region);
-    bool set_exposure_level(int level);
+    bool set_exposure_level(ExposureKnobKind kind, int level);
+    // Puts one knob back to its value at open() right away; for manual
+    // exposure that hands control back to the camera's auto exposure.
+    bool reset_exposure_knob(ExposureKnobKind kind);
 
 private:
     class Impl;

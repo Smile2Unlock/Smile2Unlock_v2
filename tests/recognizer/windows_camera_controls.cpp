@@ -65,15 +65,21 @@ void manual_exposure_knob_is_linear_and_capped() {
     assert(!d::make_manual_exposure_knob({-2, -1, 1, -2, d::kProcAmpCapsManual}, -2));
 }
 
-void knob_preference_order() {
+void knob_chain_keeps_preference_order() {
     const auto ev = d::ExposureKnob{.kind = d::ExposureKnobKind::ev_bias};
     const auto bl = d::ExposureKnob{.kind = d::ExposureKnobKind::backlight_compensation};
     const auto man = d::ExposureKnob{.kind = d::ExposureKnobKind::manual_exposure};
-    assert(d::select_exposure_knob(ev, bl, man)->kind == d::ExposureKnobKind::ev_bias);
-    assert(d::select_exposure_knob({}, bl, man)->kind
-        == d::ExposureKnobKind::backlight_compensation);
-    assert(d::select_exposure_knob({}, {}, man)->kind == d::ExposureKnobKind::manual_exposure);
-    assert(!d::select_exposure_knob({}, {}, {}));
+    const auto all = d::make_knob_chain(ev, bl, man);
+    assert(all.size() == 3);
+    assert(all[0].kind == d::ExposureKnobKind::ev_bias);
+    assert(all[1].kind == d::ExposureKnobKind::backlight_compensation);
+    assert(all[2].kind == d::ExposureKnobKind::manual_exposure);
+
+    // What the Windows backend reports: backlight first, manual as escalation.
+    const auto windows = d::make_knob_chain({}, bl, man);
+    assert(windows.size() == 2 && windows[0].kind == bl.kind && windows[1].kind == man.kind);
+    assert(d::make_knob_chain({}, {}, man).size() == 1);
+    assert(d::make_knob_chain({}, {}, {}).empty());
 }
 
 }  // namespace
@@ -84,6 +90,6 @@ int main() {
     snap_level_respects_step_and_range();
     backlight_knob_needs_manual_range();
     manual_exposure_knob_is_linear_and_capped();
-    knob_preference_order();
+    knob_chain_keeps_preference_order();
     return 0;
 }

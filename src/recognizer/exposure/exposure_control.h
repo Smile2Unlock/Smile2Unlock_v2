@@ -13,6 +13,7 @@
 // the Media Foundation TU and the unit tests.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -36,10 +37,11 @@ struct PixelRegion {
     bool operator==(const PixelRegion&) const = default;
 };
 
-// Camera control the closed loop drives, in order of preference. ev_bias and
-// backlight_compensation keep the camera's own auto exposure running (it
-// still follows lighting changes); manual_exposure turns it off, so the loop
-// must keep tracking the scene itself.
+// Camera controls the closed loop drives, in order of preference (and so of
+// escalation). ev_bias and backlight_compensation keep the camera's own auto
+// exposure running (it still follows lighting changes); manual_exposure turns
+// it off, so the loop must keep tracking the scene itself. The underlying
+// value indexes ExposureLoopState::levels.
 enum class ExposureKnobKind { ev_bias, backlight_compensation, manual_exposure };
 
 [[nodiscard]] constexpr std::string_view to_string(const ExposureKnobKind kind) {
@@ -51,22 +53,76 @@ enum class ExposureKnobKind { ev_bias, backlight_compensation, manual_exposure }
     std::unreachable();
 }
 
+inline constexpr std::size_t kExposureKnobKindCount = 3;
+
 struct ExposureKnob {
     ExposureKnobKind kind = ExposureKnobKind::backlight_compensation;
     int min = 0;
     int max = 0;
     int step = 1;
-    // Level the loop starts from. For ev_bias / backlight this is the value
-    // read at open (restored on release).
+    // Level the loop starts from: the value read at open (restored on
+    // release), or for manual exposure the camera's auto exposure at open.
     int initial = 0;
+};
+
+// Every supported knob in preference order (at most one per kind); the loop
+// escalates along it when a knob saturates. A small fixed-capacity value type
+// rather than std::inplace_vector: GCC 16's inplace_vector only works in
+// constant expressions for trivial elements (ExposureKnob has default member
+// initialisers), and this keeps the header trivially portable across the
+// module, plain-TU and mingw builds.
+class ExposureKnobChain {
+public:
+    constexpr void push_back(const ExposureKnob& knob) {
+        if (count_ < items_.size()) {
+            items_[count_++] = knob;
+        }
+    }
+    [[nodiscard]] constexpr std::size_t size() const { return count_; }
+    [[nodiscard]] constexpr bool empty() const { return count_ == 0; }
+    [[nodiscard]] constexpr const ExposureKnob& operator[](const std::size_t index) const {
+        return items_[index];
+    }
+    [[nodiscard]] constexpr const ExposureKnob& front() const { return items_[0]; }
+    [[nodiscard]] constexpr auto begin() const { return items_.begin(); }
+    [[nodiscard]] constexpr auto end() const { return items_.begin() + count_; }
+
+    // Copy without the knob of `kind` (a knob the camera rejected).
+    [[nodiscard]] constexpr ExposureKnobChain without(const ExposureKnobKind kind) const {
+        auto kept = ExposureKnobChain{};
+        for (const auto& knob : *this) {
+            if (knob.kind != kind) {
+                kept.push_back(knob);
+            }
+        }
+        return kept;
+    }
+
+private:
+    std::array<ExposureKnob, kExposureKnobKindCount> items_{};
+    std::size_t count_ = 0;
 };
 
 // Probed once when the camera opens.
 struct ExposureCapabilities {
     // Camera auto exposure accepts a metering region of interest.
     bool metering_region = false;
-    std::optional<ExposureKnob> knob;
+    ExposureKnobChain knobs;
 };
+
+// Chain in preference order from the per-kind probe results.
+[[nodiscard]] constexpr ExposureKnobChain make_knob_chain(
+    const std::optional<ExposureKnob>& ev_bias,
+    const std::optional<ExposureKnob>& backlight,
+    const std::optional<ExposureKnob>& manual) {
+    auto chain = ExposureKnobChain{};
+    for (const auto& candidate : {ev_bias, backlight, manual}) {
+        if (candidate) {
+            chain.push_back(*candidate);
+        }
+    }
+    return chain;
+}
 
 // Luma statistics of the metered region.
 struct LumaStats {
@@ -85,16 +141,43 @@ struct ExposureTuning {
     int settle_observations = 4;
 };
 
+// What the loop asks of the camera for one knob.
+enum class ExposureAction {
+    set,      // write `level`
+    restore,  // the loop left this knob: put the camera back to its value at open
+};
+
+struct ExposureChange {
+    ExposureKnobKind kind;
+    ExposureAction action;
+    int level;  // for restore: the knob's initial level
+
+    bool operator==(const ExposureChange&) const = default;
+};
+
 struct ExposureLoopState {
-    int level = 0;
+    // Current level per knob, indexed by std::to_underlying(kind). Knobs the
+    // loop has not touched sit at their initial level.
+    std::array<int, kExposureKnobKindCount> levels{};
+    // Highest knob the loop has escalated to; nullopt until it moves one, in
+    // which case the first knob of the chain is the active one.
+    std::optional<ExposureKnobKind> active;
     int observations_since_change = 0;
 };
 
 struct ExposureStep {
     ExposureLoopState next;
-    // Set only when the camera control must change.
-    std::optional<int> apply_level;
+    // Set only when a camera control must change.
+    std::optional<ExposureChange> change;
 };
+
+[[nodiscard]] constexpr ExposureLoopState make_exposure_state(const ExposureKnobChain& chain) {
+    auto state = ExposureLoopState{};
+    for (const auto& knob : chain) {
+        state.levels[std::to_underlying(knob.kind)] = knob.initial;
+    }
+    return state;
+}
 
 // Region the loop meters. With a face: the inner part of the face box (drops
 // hair and the background at the box edges), clamped to the frame. Without
@@ -146,11 +229,16 @@ struct LumaTotals {
     std::size_t samples = 0;
 };
 
-// Rec.601 luma statistics over `region` of a packed RGB/RGBA (or 1-channel)
-// image, subsampled to at most ~kMaxSamples pixels. Returns samples == 0 for
+// Byte order of the colour channels in a packed 3/4-channel buffer. The luma
+// weights differ per channel, so reading BGR data as RGB skews the result.
+enum class PixelOrder { rgb, bgr };
+
+// Rec.601 luma statistics over `region` of a packed RGB/RGBA (or BGR/BGRA, see
+// `order`, or 1-channel) image, subsampled to at most ~kMaxSamples pixels. Returns samples == 0 for
 // an empty region or a buffer too small for the claimed geometry.
 [[nodiscard]] constexpr LumaStats measure_luma(const std::span<const std::byte> pixels,
     const int width, const int height, const int channels, const PixelRegion region,
+    const PixelOrder order = PixelOrder::rgb,
     const std::uint8_t clip_level = ExposureTuning{}.clip_level) {
     constexpr auto kMaxSamples = 4096;
     if (width <= 0 || height <= 0 || (channels != 1 && channels != 3 && channels != 4)
@@ -174,9 +262,11 @@ struct LumaTotals {
     const auto luma_at = [&](const int y, const int x) {
         const auto row = static_cast<std::size_t>(y);
         const auto column = static_cast<std::size_t>(x);
-        const auto red = std::to_integer<unsigned>(image[row, column, 0]);
-        const auto green = channels == 1 ? red : std::to_integer<unsigned>(image[row, column, 1]);
-        const auto blue = channels == 1 ? red : std::to_integer<unsigned>(image[row, column, 2]);
+        const auto first = std::to_integer<unsigned>(image[row, column, 0]);
+        const auto green = channels == 1 ? first : std::to_integer<unsigned>(image[row, column, 1]);
+        const auto third = channels == 1 ? first : std::to_integer<unsigned>(image[row, column, 2]);
+        const auto red = order == PixelOrder::rgb ? first : third;
+        const auto blue = order == PixelOrder::rgb ? third : first;
         return (77U * red + 150U * green + 29U * blue) >> 8U;
     };
     const auto rows = std::views::iota(region.y, region.y + region.height) | std::views::stride(stride);
@@ -241,28 +331,98 @@ inline constexpr double kClipBackoffRatio = 0.8;
                                                  : std::min(rounded, level - step);
 }
 
-// One decision of the exposure loop. Pure: the caller applies `apply_level`
-// to the camera and keeps `next` for the following observation.
+// Move `kind` to `level` (or back to its initial on restore) and make
+// `active` the escalated knob.
+[[nodiscard]] constexpr ExposureStep exposure_change_step(const ExposureLoopState& state,
+    const ExposureChange& change, const ExposureKnobKind active) {
+    auto levels = state.levels;
+    levels[std::to_underlying(change.kind)] = change.level;
+    return ExposureStep{
+        .next = {.levels = levels, .active = active, .observations_since_change = 0},
+        .change = change};
+}
+
+// Position in `chain` of the knob the loop currently drives: the highest
+// chain entry not above the escalated kind. A knob dropped from the chain
+// (write failure) simply falls back to the one below it.
+[[nodiscard]] constexpr std::size_t active_position(
+    const ExposureKnobChain& chain, const ExposureLoopState& state) {
+    const auto limit = state.active.value_or(chain.front().kind);
+    const auto not_above = static_cast<std::size_t>(std::ranges::distance(
+        chain | std::views::take_while([&](const ExposureKnob& knob) { return knob.kind <= limit; })));
+    return std::max<std::size_t>(not_above, 1) - 1;
+}
+
+// Level `knob` would move to in `direction`, clamped to its range.
+[[nodiscard]] constexpr int exposure_wanted_level(const ExposureLoopState& state,
+    const ExposureKnob& knob, const ExposureDirection direction, const LumaStats& stats,
+    const ExposureTuning& tuning) {
+    const auto level = state.levels[std::to_underlying(knob.kind)];
+    return std::clamp(exposure_candidate_level(level, direction, stats, knob, tuning),
+        knob.min, knob.max);
+}
+
+// Too dark: step the active knob; once it is at its maximum, escalate to the
+// next knob of the chain and step that one from where it stands.
+[[nodiscard]] constexpr std::optional<ExposureStep> brighten_step(const ExposureLoopState& state,
+    const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTuning& tuning) {
+    const auto position = active_position(chain, state);
+    const auto try_knob = [&](const ExposureKnob& knob) -> std::optional<ExposureStep> {
+        const auto wanted = exposure_wanted_level(
+            state, knob, ExposureDirection::raise, stats, tuning);
+        if (wanted == state.levels[std::to_underlying(knob.kind)]) {
+            return std::nullopt;
+        }
+        return exposure_change_step(state,
+            {.kind = knob.kind, .action = ExposureAction::set, .level = wanted}, knob.kind);
+    };
+    const auto current = try_knob(chain[position]);
+    if (current || position + 1 >= chain.size()) {
+        return current;
+    }
+    return try_knob(chain[position + 1]);
+}
+
+// Too bright (or clipped): step the highest escalated knob down. An escalated
+// knob that gets back to its initial level is left: it is restored (a manual
+// exposure hands control back to the camera's auto exposure) and the knob
+// before it becomes active. The first knob may go below its initial level.
+[[nodiscard]] constexpr std::optional<ExposureStep> darken_step(const ExposureLoopState& state,
+    const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTuning& tuning) {
+    const auto position = active_position(chain, state);
+    const auto& knob = chain[position];
+    const auto level = state.levels[std::to_underlying(knob.kind)];
+    const auto wanted = exposure_wanted_level(state, knob, ExposureDirection::lower, stats, tuning);
+    if (position > 0 && wanted <= knob.initial) {
+        return exposure_change_step(state,
+            {.kind = knob.kind, .action = ExposureAction::restore, .level = knob.initial},
+            chain[position - 1].kind);
+    }
+    if (wanted == level) {
+        return std::nullopt;
+    }
+    return exposure_change_step(state,
+        {.kind = knob.kind, .action = ExposureAction::set, .level = wanted}, knob.kind);
+}
+
+// One decision of the exposure loop. Pure: the caller applies `change` to the
+// camera and keeps `next` for the following observation. An empty chain never
+// acts.
 [[nodiscard]] constexpr ExposureStep next_exposure_step(const ExposureLoopState& state,
-    const LumaStats& stats, const ExposureKnob& knob, const ExposureTuning& tuning = {}) {
+    const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTuning& tuning = {}) {
     const auto observations = state.observations_since_change + 1;
     const auto unchanged = ExposureStep{
-        .next = {.level = state.level, .observations_since_change = observations},
-        .apply_level = std::nullopt};
-    if (stats.samples == 0 || observations < tuning.settle_observations) {
+        .next = {.levels = state.levels, .active = state.active,
+                 .observations_since_change = observations},
+        .change = std::nullopt};
+    if (chain.empty() || stats.samples == 0 || observations < tuning.settle_observations) {
         return unchanged;
     }
     return exposure_direction(stats, tuning)
-        .transform([&](const ExposureDirection direction) {
-            return std::clamp(exposure_candidate_level(state.level, direction, stats, knob, tuning),
-                knob.min, knob.max);
-        })
-        .and_then([&](const int wanted) {
-            return wanted == state.level ? std::nullopt : std::optional(wanted);
-        })
-        .transform([](const int wanted) {
-            return ExposureStep{
-                .next = {.level = wanted, .observations_since_change = 0}, .apply_level = wanted};
+        .and_then([&](const ExposureDirection direction) {
+            return direction == ExposureDirection::raise
+                ? brighten_step(state, stats, chain, tuning)
+                : darken_step(state, stats, chain, tuning);
         })
         .value_or(unchanged);
 }

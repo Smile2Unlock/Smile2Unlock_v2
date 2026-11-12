@@ -15,8 +15,10 @@
 #include <strmif.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <expected>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -90,16 +92,17 @@ template <typename Interface>
 }
 
 template <typename Interface>
-void restore_control(Interface* const control, const long property,
+[[nodiscard]] bool restore_control(Interface* const control, const long property,
                      const SavedControl& original, const std::string_view name) {
     if (control == nullptr) {
-        return;
+        return false;
     }
-    (void)check(control->Set(property, original.value, restore_flags(original)))
+    return check(control->Set(property, original.value, restore_flags(original)))
         .or_else([&](const HRESULT hr) -> HrStatus {
             log_control_failure("camera.control_restore_failed", name, hr);
             return std::unexpected(hr);
-        });
+        })
+        .has_value();
 }
 
 } // namespace
@@ -115,34 +118,47 @@ public:
         (void)source->QueryInterface(IID_PPV_ARGS(&camera_control_));
         backlight_ = probe_control(proc_amp_.Get(), kBacklightProperty, "backlight");
         exposure_ = probe_control(camera_control_.Get(), kExposureProperty, "exposure");
-        knob_ = detail::select_exposure_knob({},
-            backlight_.and_then([](const ProbedControl& probed) {
-                return detail::make_backlight_knob(probed.range, probed.original.value);
-            }),
-            exposure_.and_then([](const ProbedControl& probed) {
-                return detail::make_manual_exposure_knob(probed.range, probed.original.value);
-            }));
-        log_selected_knob();
-        return {.metering_region = false, .knob = knob_};
+        backlight_knob_ = backlight_.and_then([](const ProbedControl& probed) {
+            return detail::make_backlight_knob(probed.range, probed.original.value);
+        });
+        exposure_knob_ = exposure_.and_then([](const ProbedControl& probed) {
+            return detail::make_manual_exposure_knob(probed.range, probed.original.value);
+        });
+        const auto chain = detail::make_knob_chain({}, backlight_knob_, exposure_knob_);
+        log_knob_chain(chain);
+        return {.metering_region = false, .knobs = chain};
     }
 
-    [[nodiscard]] bool set_level(const int level) {
-        if (!knob_) {
+    [[nodiscard]] bool set_level(const detail::ExposureKnobKind kind, const int level) {
+        switch (kind) {
+        case detail::ExposureKnobKind::backlight_compensation:
+            return backlight_knob_ && set_backlight(level);
+        case detail::ExposureKnobKind::manual_exposure:
+            return exposure_knob_ && set_manual_exposure(level);
+        case detail::ExposureKnobKind::ev_bias:
+            return false;  // no verified mechanism on Windows
+        }
+        std::unreachable();
+    }
+
+    [[nodiscard]] bool reset(const detail::ExposureKnobKind kind) {
+        switch (kind) {
+        case detail::ExposureKnobKind::backlight_compensation:
+            return restore_if_changed(backlight_changed_, proc_amp_.Get(), kBacklightProperty,
+                backlight_, "backlight");
+        case detail::ExposureKnobKind::manual_exposure:
+            return restore_if_changed(exposure_changed_, camera_control_.Get(), kExposureProperty,
+                exposure_, "exposure");
+        case detail::ExposureKnobKind::ev_bias:
             return false;
         }
-        return knob_->kind == detail::ExposureKnobKind::backlight_compensation
-            ? set_backlight(level) : set_manual_exposure(level);
+        std::unreachable();
     }
 
+    // Reverse of the escalation order, like the V4L2 backend.
     void restore() {
-        if (std::exchange(backlight_changed_, false) && backlight_) {
-            restore_control(proc_amp_.Get(), kBacklightProperty, backlight_->original,
-                "backlight");
-        }
-        if (std::exchange(exposure_changed_, false) && exposure_) {
-            restore_control(camera_control_.Get(), kExposureProperty, exposure_->original,
-                "exposure");
-        }
+        (void)reset(detail::ExposureKnobKind::manual_exposure);
+        (void)reset(detail::ExposureKnobKind::backlight_compensation);
     }
 
     void release() {
@@ -151,7 +167,8 @@ public:
         camera_control_.Reset();
         backlight_.reset();
         exposure_.reset();
-        knob_.reset();
+        backlight_knob_.reset();
+        exposure_knob_.reset();
     }
 
 private:
@@ -164,7 +181,7 @@ private:
 
     [[nodiscard]] bool set_backlight(const int level) {
         const auto value = detail::snap_level_to_range(
-            level, knob_->min, knob_->max, knob_->step);
+            level, backlight_knob_->min, backlight_knob_->max, backlight_knob_->step);
         // Mark dirty before the call so a partially applied change is still
         // undone on close.
         backlight_changed_ = true;
@@ -181,19 +198,35 @@ private:
                 kExposureProperty, value, CameraControl_Flags_Manual)), "exposure");
     }
 
-    void log_selected_knob() const {
-        const auto selected = knob_ ? std::to_underlying(knob_->kind) : -1;
+    // Undoes one control if the loop changed it. The flag is cleared first so
+    // a failed undo is not retried on every later call.
+    template <typename Interface>
+    [[nodiscard]] static bool restore_if_changed(bool& changed, Interface* const control,
+        const long property, const std::optional<ProbedControl>& probed,
+        const std::string_view name) {
+        if (!std::exchange(changed, false) || !probed) {
+            return true;
+        }
+        return restore_control(control, property, probed->original, name);
+    }
+
+    static void log_knob_chain(const detail::ExposureKnobChain& chain) {
         su::log::process_logger().info("camera.exposure_knob", {
-            su::log::field("backlight_supported", backlight_ ? 1 : 0),
-            su::log::field("exposure_supported", exposure_ ? 1 : 0),
-            su::log::field("selected", selected)});
+            su::log::field("backlight_supported",
+                chain.end() != std::ranges::find(chain, detail::ExposureKnobKind::backlight_compensation,
+                    &detail::ExposureKnob::kind) ? 1 : 0),
+            su::log::field("manual_supported",
+                chain.end() != std::ranges::find(chain, detail::ExposureKnobKind::manual_exposure,
+                    &detail::ExposureKnob::kind) ? 1 : 0),
+            su::log::field("chain_length", static_cast<int>(chain.size()))});
     }
 
     ComPtr<IAMVideoProcAmp> proc_amp_;
     ComPtr<IAMCameraControl> camera_control_;
     std::optional<ProbedControl> backlight_;
     std::optional<ProbedControl> exposure_;
-    std::optional<detail::ExposureKnob> knob_;
+    std::optional<detail::ExposureKnob> backlight_knob_;
+    std::optional<detail::ExposureKnob> exposure_knob_;
     bool backlight_changed_ = false;
     bool exposure_changed_ = false;
 };
@@ -205,8 +238,12 @@ detail::ExposureCapabilities CameraExposureControls::probe(IMFMediaSource* const
     return impl_->probe(source);
 }
 
-bool CameraExposureControls::set_level(const int level) {
-    return impl_->set_level(level);
+bool CameraExposureControls::set_level(const detail::ExposureKnobKind kind, const int level) {
+    return impl_->set_level(kind, level);
+}
+
+bool CameraExposureControls::reset(const detail::ExposureKnobKind kind) {
+    return impl_->reset(kind);
 }
 
 void CameraExposureControls::restore() {

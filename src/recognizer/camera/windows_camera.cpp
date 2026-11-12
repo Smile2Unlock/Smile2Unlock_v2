@@ -77,8 +77,12 @@ public:
         return stream_.set_metering_region(region);
     }
 
-    bool set_exposure_level(int level) {
-        return stream_.set_exposure_level(level);
+    bool set_exposure_level(ExposureKnobKind kind, int level) {
+        return stream_.set_exposure_level(kind, level);
+    }
+
+    bool reset_exposure_knob(ExposureKnobKind kind) {
+        return stream_.reset_exposure_knob(kind);
     }
 
 private:
@@ -126,8 +130,12 @@ bool V4L2Camera::set_metering_region(PixelRegion region) {
     return impl_ && impl_->set_metering_region(region);
 }
 
-bool V4L2Camera::set_exposure_level(int level) {
-    return impl_ && impl_->set_exposure_level(level);
+bool V4L2Camera::set_exposure_level(ExposureKnobKind kind, int level) {
+    return impl_ && impl_->set_exposure_level(kind, level);
+}
+
+bool V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
+    return impl_ && impl_->reset_exposure_knob(kind);
 }
 
 } // namespace su::recognizer

@@ -5,13 +5,13 @@
 // implemented in windows_camera_controls.cpp and must only be used from the MF
 // worker thread.
 //
-// Mechanisms implemented here, in preference order:
-//   2. IAMVideoProcAmp  VideoProcAmp_BacklightCompensation  -> backlight_compensation
-//   3. IAMCameraControl CameraControl_Exposure (manual)     -> manual_exposure
-// Mechanism 1 (IMFExtendedCameraController ROI + EV compensation) is NOT
-// implemented: its IIDs and payload layouts could not be verified against an
-// authoritative header, so select_exposure_knob() never receives an ev_bias
-// candidate yet.
+// Knobs implemented here, in escalation order:
+//   IAMVideoProcAmp  VideoProcAmp_BacklightCompensation  -> backlight_compensation
+//   IAMCameraControl CameraControl_Exposure (manual)     -> manual_exposure
+// The ROI and EV compensation of IMFExtendedCameraController are NOT
+// implemented: mingw-w64 lacks the declarations and the IIDs / vtable order /
+// payload layouts could not be verified against an authoritative source, so
+// the chain never contains ev_bias and there is no metering region.
 #pragma once
 
 #include <algorithm>
@@ -132,16 +132,6 @@ struct ProcAmpRange {
     };
 }
 
-[[nodiscard]] constexpr std::optional<ExposureKnob> select_exposure_knob(
-    const std::optional<ExposureKnob>& ev_bias,
-    const std::optional<ExposureKnob>& backlight,
-    const std::optional<ExposureKnob>& manual) {
-    if (ev_bias) {
-        return ev_bias;
-    }
-    return backlight ? backlight : manual;
-}
-
 // Compile-time checks of the conversions the loop relies on.
 static_assert(exposure_log2_to_units(-5) == 313);  // 1/32 s = 312.5 * 100 us
 static_assert(exposure_log2_to_units(0) == kExposureUnitsPerSecond);
@@ -170,8 +160,12 @@ public:
     // Reads ranges and current values. Never fails: problems are logged and
     // leave the capabilities empty.
     [[nodiscard]] detail::ExposureCapabilities probe(IMFMediaSource* source);
-    // Applies a loop level; false when unsupported or rejected by the driver.
-    [[nodiscard]] bool set_level(int level);
+    // Applies a loop level to one knob; false when unsupported or rejected by
+    // the driver. The first manual exposure write switches auto -> manual.
+    [[nodiscard]] bool set_level(detail::ExposureKnobKind kind, int level);
+    // Puts one knob back to its value at probe() (manual exposure returns to
+    // its original auto/manual mode). True when nothing needed undoing.
+    [[nodiscard]] bool reset(detail::ExposureKnobKind kind);
     // Puts every control changed since probe() back to its value at probe().
     void restore();
     // restore() plus dropping the interfaces; call before the source shuts down.

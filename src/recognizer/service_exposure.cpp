@@ -48,14 +48,27 @@ void update_metering_region(V4L2Camera& camera, ExposureSession& session,
     su::log::process_logger().warn("camera.exposure_region_failed", {});
 }
 
-void apply_level(V4L2Camera& camera, ExposureSession& session, const int level) {
-    if (camera.set_exposure_level(level)) {
+bool write_change(V4L2Camera& camera, const detail::ExposureChange& change) {
+    return change.action == detail::ExposureAction::set
+        ? camera.set_exposure_level(change.kind, change.level)
+        : camera.reset_exposure_knob(change.kind);
+}
+
+void apply_change(V4L2Camera& camera, ExposureSession& session, const detail::ExposureChange& change) {
+    if (write_change(camera, change)) {
         return;
     }
-    // The control rejected the value: stop driving it for this session
-    // rather than retrying on every frame.
-    session.caps.knob.reset();
-    su::log::process_logger().warn("camera.exposure_knob_failed", {su::log::field("level", level)});
+    // The control rejected the value: drop just that knob from the chain for
+    // this session (the loop then skips or escalates past it) rather than
+    // retrying on every frame. Best-effort reset so a half-applied change,
+    // above all manual exposure, does not stay on the camera.
+    session.caps.knobs = session.caps.knobs.without(change.kind);
+    if (change.action == detail::ExposureAction::set) {
+        (void)camera.reset_exposure_knob(change.kind);
+    }
+    su::log::process_logger().warn("camera.exposure_knob_failed", {
+        su::log::field("knob", detail::to_string(change.kind)),
+        su::log::field("level", change.level)});
 }
 
 void log_decision(ExposureSession& session, const detail::LumaStats& stats,
@@ -64,10 +77,14 @@ void log_decision(ExposureSession& session, const detail::LumaStats& stats,
         return;
     }
     session.next_log = now + kLogInterval;
+    const auto& chain = session.caps.knobs;
+    const auto active = chain.empty()
+        ? std::nullopt
+        : std::optional(chain[detail::active_position(chain, session.loop)]);
     su::log::process_logger().debug("camera.exposure_observe", {
         su::log::field("mean", stats.mean), su::log::field("clipped", stats.clipped_fraction),
-        su::log::field("level", session.loop.level),
-        su::log::field("knob", session.caps.knob ? detail::to_string(session.caps.knob->kind) : std::string_view{"none"})});
+        su::log::field("level", active ? session.loop.levels[std::to_underlying(active->kind)] : 0),
+        su::log::field("knob", active ? detail::to_string(active->kind) : std::string_view{"none"})});
 }
 
 }  // namespace
@@ -75,7 +92,7 @@ void log_decision(ExposureSession& session, const detail::LumaStats& stats,
 void RecognizerService::observe_exposure(
     const ImageView frame, const std::optional<FaceBox> face) const {
     std::lock_guard lock(camera_mutex_);
-    if (!camera_ || !active_camera_ || (!exposure_.caps.knob && !exposure_.caps.metering_region)) {
+    if (!camera_ || !active_camera_ || (exposure_.caps.knobs.empty() && !exposure_.caps.metering_region)) {
         return;
     }
     const auto now = Clock::now();
@@ -86,13 +103,13 @@ void RecognizerService::observe_exposure(
     update_metering_region(*camera_, exposure_, region, frame, now);
     const auto stats = detail::measure_luma(
         frame.bytes, frame.width, frame.height, frame.channels, region);
-    if (!exposure_.caps.knob) {
+    if (exposure_.caps.knobs.empty()) {
         return;
     }
-    const auto step = detail::next_exposure_step(exposure_.loop, stats, *exposure_.caps.knob);
+    const auto step = detail::next_exposure_step(exposure_.loop, stats, exposure_.caps.knobs);
     exposure_.loop = step.next;
-    if (step.apply_level) {
-        apply_level(*camera_, exposure_, *step.apply_level);
+    if (step.change) {
+        apply_change(*camera_, exposure_, *step.change);
     }
     log_decision(exposure_, stats, now);
 }

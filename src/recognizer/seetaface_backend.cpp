@@ -418,9 +418,11 @@ private:
         const auto sample_count = static_cast<std::size_t>(detect_image.width)
             * static_cast<std::size_t>(detect_image.height) * 3;
         const auto pixels = std::span<const unsigned char>(detect_image.data, sample_count);
+        // The detector input is BGR (SeetaFace's channel order), not RGB.
         const auto centre = detail::measure_luma(std::as_bytes(pixels), detect_image.width,
             detect_image.height, 3,
-            detail::metering_region(detect_image.width, detect_image.height, std::nullopt));
+            detail::metering_region(detect_image.width, detect_image.height, std::nullopt),
+            detail::PixelOrder::bgr);
         return detail::low_light_lut(centre)
             .transform([&](const detail::LowLightLut& lut) {
                 auto enhanced = detail::apply_lut(pixels, lut);

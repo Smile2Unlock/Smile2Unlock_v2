@@ -66,7 +66,9 @@ public:
     // must be called from a single caller thread.
     [[nodiscard]] detail::ExposureCapabilities exposure_capabilities() const;
     bool set_metering_region(const detail::PixelRegion& region);
-    bool set_exposure_level(int level);
+    bool set_exposure_level(detail::ExposureKnobKind kind, int level);
+    // Puts one knob back to its value at open (manual exposure goes back to auto).
+    bool reset_exposure_knob(detail::ExposureKnobKind kind);
 
 private:
     class Impl;

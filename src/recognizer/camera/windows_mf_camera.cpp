@@ -348,13 +348,23 @@ public:
         return worker_alive_ && open_ ? exposure_capabilities_ : detail::ExposureCapabilities{};
     }
 
-    bool set_exposure_level(int level) {
+    bool set_exposure_level(const detail::ExposureKnobKind kind, const int level) {
+        return submit_exposure({.kind = kind, .level = level});
+    }
+
+    bool reset_exposure_knob(const detail::ExposureKnobKind kind) {
+        return submit_exposure({.kind = kind, .level = std::nullopt});
+    }
+
+    // Runs one exposure request on the worker (every COM call stays on that
+    // thread) and waits for the driver's answer.
+    bool submit_exposure(const ExposureRequest& request) {
         std::unique_lock lock(mutex_);
         if (!worker_alive_ || !open_ || quit_pending_) {
             return false;
         }
         op_ = Op::SetExposure;
-        control_level_ = level;
+        exposure_request_ = request;
         done_ = false;
         cv_.notify_all();
         cv_.wait(lock, [this] { return done_; });
@@ -391,6 +401,13 @@ public:
 
 private:
     enum class Op { None, Open, Grab, SetExposure, Quit };
+
+    // Payload of Op::SetExposure: a level to write, or nullopt to put the
+    // knob back to its value at open.
+    struct ExposureRequest {
+        detail::ExposureKnobKind kind = detail::ExposureKnobKind::backlight_compensation;
+        std::optional<int> level;
+    };
 
     // Per-read cap: bounds how long the worker can be inside one grab when a
     // device stalls, and therefore how long a Quit (camera stop) can be
@@ -466,7 +483,7 @@ private:
                 grab_worker();
                 break;
             case Op::SetExposure:
-                finish_control(open_ && controls_.set_level(control_level_));
+                finish_control(open_ && apply_exposure_request());
                 break;
             case Op::None:
             case Op::Quit:
@@ -909,6 +926,15 @@ private:
         cv_.notify_all();
     }
 
+    bool apply_exposure_request() {
+        const auto request = [this] {
+            const std::lock_guard lock(mutex_);
+            return exposure_request_;
+        }();
+        return request.level ? controls_.set_level(request.kind, *request.level)
+                             : controls_.reset(request.kind);
+    }
+
     void finish_control(bool ok) {
         std::lock_guard lock(mutex_);
         control_result_ = ok;
@@ -948,7 +974,7 @@ private:
     bool open_result_ = false;
     bool grab_result_ = false;
     bool control_result_ = false;
-    int control_level_ = 0;
+    ExposureRequest exposure_request_;
     detail::ExposureCapabilities exposure_capabilities_;
     bool done_ = false;
     MfCameraFrame frame_;
@@ -1022,8 +1048,12 @@ bool MfCameraStream::set_metering_region(const detail::PixelRegion&) {
     return false;
 }
 
-bool MfCameraStream::set_exposure_level(int level) {
-    return impl_ && impl_->set_exposure_level(level);
+bool MfCameraStream::set_exposure_level(const detail::ExposureKnobKind kind, const int level) {
+    return impl_ && impl_->set_exposure_level(kind, level);
+}
+
+bool MfCameraStream::reset_exposure_knob(const detail::ExposureKnobKind kind) {
+    return impl_ && impl_->reset_exposure_knob(kind);
 }
 
 } // namespace su::recognizer
