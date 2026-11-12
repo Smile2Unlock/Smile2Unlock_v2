@@ -292,6 +292,17 @@ std::vector<MfCameraDeviceInfo> mf_enumerate_cameras() {
     return result;
 }
 
+namespace {
+
+// Payload of Op::SetExposure: a level to write, or nullopt to put the knob
+// back to its value at open.
+struct ExposureRequest {
+    detail::ExposureKnobKind kind = detail::ExposureKnobKind::backlight_compensation;
+    std::optional<int> level;
+};
+
+}  // namespace
+
 class MfCameraStream::Impl final : public MfGrabSink {
 public:
     Impl() = default;
@@ -401,13 +412,6 @@ public:
 
 private:
     enum class Op { None, Open, Grab, SetExposure, Quit };
-
-    // Payload of Op::SetExposure: a level to write, or nullopt to put the
-    // knob back to its value at open.
-    struct ExposureRequest {
-        detail::ExposureKnobKind kind = detail::ExposureKnobKind::backlight_compensation;
-        std::optional<int> level;
-    };
 
     // Per-read cap: bounds how long the worker can be inside one grab when a
     // device stalls, and therefore how long a Quit (camera stop) can be
