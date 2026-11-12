@@ -69,5 +69,24 @@ int main() {
     assert(input == input_copy);
     assert((mapped == std::vector<unsigned char>{255, 245, 127, 0}));
     assert(apply_lut({}, inverting).empty());
+
+    // The span overload writes into caller storage, matches the returning
+    // overload, and leaves the input alone.
+    auto scratch = std::vector<unsigned char>(input.size(), 0xAB);
+    apply_lut(input, inverting, scratch);
+    assert(input == input_copy);
+    assert(scratch == mapped);
+    // Reusing a scratch buffer from a previous, different frame is exact.
+    const std::vector<unsigned char> next_frame{1, 2, 3, 4};
+    apply_lut(next_frame, inverting, scratch);
+    assert((scratch == std::vector<unsigned char>{254, 253, 252, 251}));
+
+    // Face-brightness floor: an enhanced-only detection is trusted only when
+    // the original face area carries real signal.
+    assert(!enhanced_face_is_usable(LumaStats{}));
+    assert(!enhanced_face_is_usable(stats_with_mean(0.0)));
+    assert(!enhanced_face_is_usable(stats_with_mean(kLowLightFaceMeanFloor - 0.01)));
+    assert(enhanced_face_is_usable(stats_with_mean(kLowLightFaceMeanFloor)));
+    assert(enhanced_face_is_usable(stats_with_mean(200.0)));
     return 0;
 }

@@ -257,45 +257,73 @@ int main() {
     const auto multi_face = backend.extract(view(multiple), true);
     assert(multi_face && !multi_face->has_face && multi_face->feature.empty());
 
-    // Backlit scene (#137): a very dark face centre with a bright window
-    // border. The detector alone may miss it; the backend retries on a
-    // brightened copy but must still extract from the original pixels.
-    auto backlit = TestImage{image_a.width, image_a.height, 3, image_a.bytes};
-    constexpr auto kBacklitGain = 0.04;
-    const auto border_x = image_a.width / 10;
-    const auto border_y = image_a.height / 10;
-    for (auto y = 0; y < image_a.height; ++y) {
-        for (auto x = 0; x < image_a.width; ++x) {
-            const auto inside = x >= border_x && x < image_a.width - border_x
-                && y >= border_y && y < image_a.height - border_y;
-            for (auto c = 0; c < 3; ++c) {
-                auto& value = backlit.bytes[(static_cast<std::size_t>(y) * image_a.width + x) * 3 + c];
-                value = inside
-                    ? static_cast<std::byte>(std::to_integer<int>(value) * kBacklitGain)
-                    : std::byte{255};
+    // Backlit scene (#137): the face is darkened by `gain` and surrounded by
+    // a bright window border, so the centre meter reads dark.
+    const auto make_backlit = [&](const double gain) {
+        auto backlit = TestImage{image_a.width, image_a.height, 3, image_a.bytes};
+        const auto border_x = image_a.width / 10;
+        const auto border_y = image_a.height / 10;
+        for (auto y = 0; y < image_a.height; ++y) {
+            for (auto x = 0; x < image_a.width; ++x) {
+                const auto inside = x >= border_x && x < image_a.width - border_x
+                    && y >= border_y && y < image_a.height - border_y;
+                for (auto c = 0; c < 3; ++c) {
+                    auto& value = backlit.bytes[(static_cast<std::size_t>(y) * image_a.width + x) * 3 + c];
+                    value = inside
+                        ? static_cast<std::byte>(std::to_integer<int>(value) * gain)
+                        : std::byte{255};
+                }
             }
         }
-    }
-    {
-        auto bgr = std::vector<unsigned char>(backlit.bytes.size());
+        return backlit;
+    };
+    // Guards the premise: without the low-light retry the plain detector
+    // pass must miss the frame, so a face below proves the retry ran.
+    auto detector_setting = seeta::ModelSetting{};
+    detector_setting.append(model_paths->detector.string());
+    auto raw_detector = seeta::FaceDetector(detector_setting);
+    const auto raw_detector_finds_face = [&](const TestImage& frame) {
+        auto bgr = std::vector<unsigned char>(frame.bytes.size());
         for (auto i = std::size_t{}; i < bgr.size(); i += 3) {
-            bgr[i] = std::to_integer<unsigned char>(backlit.bytes[i + 2]);
-            bgr[i + 1] = std::to_integer<unsigned char>(backlit.bytes[i + 1]);
-            bgr[i + 2] = std::to_integer<unsigned char>(backlit.bytes[i]);
+            bgr[i] = std::to_integer<unsigned char>(frame.bytes[i + 2]);
+            bgr[i + 1] = std::to_integer<unsigned char>(frame.bytes[i + 1]);
+            bgr[i + 2] = std::to_integer<unsigned char>(frame.bytes[i]);
         }
-        auto detector_setting = seeta::ModelSetting{};
-        detector_setting.append(model_paths->detector.string());
-        auto raw_detector = seeta::FaceDetector(detector_setting);
-        const auto raw_faces = raw_detector.detect(
-            SeetaImageData{backlit.width, backlit.height, 3, bgr.data()});
-        // Guards the premise: without the low-light retry this frame is
-        // invisible to the detector, so has_face below proves the retry ran.
-        assert(raw_faces.size == 0);
+        return raw_detector.detect(SeetaImageData{frame.width, frame.height, 3, bgr.data()}).size > 0;
+    };
+    // The plain pass still finds a face at this gain, so it is a normal
+    // result regardless of how dark the face is: the floor only guards
+    // enhanced-only detections.
+    const auto plain_dark = make_backlit(0.08);
+    assert(raw_detector_finds_face(plain_dark));
+    const auto plain_dark_result = backend.extract(view(plain_dark), false);
+    assert(plain_dark_result && plain_dark_result->has_face);
+    assert(plain_dark_result->feature.size() == first.feature.size());
+
+    // At these gains only the enhanced pass finds the face, and the original
+    // face mean is far below the floor, so it is metering-only: a box but no
+    // landmarks, liveness or features. (With this detector no gain exists
+    // where the plain pass misses yet the face mean stays at or above the
+    // floor: the plain pass already finds faces down to a mean of ~9. The
+    // at-floor decision is covered by enhanced_face_is_usable in
+    // su_low_light_enhance_test.)
+    for (const auto gain : {0.06, 0.04}) {
+        const auto backlit = make_backlit(gain);
+        assert(!raw_detector_finds_face(backlit));
+        const auto backlit_result = backend.extract(view(backlit), true);
+        assert(backlit_result && !backlit_result->has_face);
+        assert(backlit_result->face_box.has_value());
+        assert(backlit_result->face_box->width > 0 && backlit_result->face_box->height > 0);
+        assert(backlit_result->face_box->x >= 0 && backlit_result->face_box->y >= 0);
+        assert(backlit_result->face_box->x + backlit_result->face_box->width <= backlit.width);
+        assert(backlit_result->face_box->y + backlit_result->face_box->height <= backlit.height);
+        assert(backlit_result->feature.empty());
+        assert(backlit_result->liveness_score == 0.0F);
+        // The liveness window was reset exactly like the no-face path.
+        const auto after_metering = backend.predict_liveness(view(image_a), true);
+        assert(after_metering && after_metering->has_face && after_metering->liveness_score == 0.0F);
     }
-    const auto backlit_result = backend.extract(view(backlit), false);
-    assert(backlit_result && backlit_result->has_face);
-    assert(backlit_result->feature.size() == first.feature.size());
-    std::cout << "PASS: backlit image still yields a face\n";
+    std::cout << "PASS: dark backlit face is metering-only\n";
 
     auto missing_fas_paths = *model_paths;
     missing_fas_paths.anti_spoofing_first.clear();
