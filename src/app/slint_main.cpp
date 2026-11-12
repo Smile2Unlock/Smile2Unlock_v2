@@ -10,6 +10,7 @@
 #endif
 #ifdef __linux__
 #include <fontconfig/fontconfig.h>
+#include "common/process/shutdown_signal.h"
 #endif
 
 import std;
@@ -681,10 +682,41 @@ bool detect_linux_desktop_size(float& width, float& height) {
 }
 #endif
 
+#ifdef __linux__
+// SIGTERM/SIGINT would otherwise kill the process without running any
+// destructor, leaving the camera's exposure controls as the loop last set
+// them. Instead the event loop quits, so main returns through its normal
+// path and the preview controller closes (and restores) the camera.
+class SignalQuitWatcher {
+public:
+    SignalQuitWatcher() : thread_([this] {
+        signal_.wait();
+        if (signal_.requested()) {
+            slint::invoke_from_event_loop([] { slint::quit_event_loop(); });
+        }
+    }) {}
+
+    ~SignalQuitWatcher() {
+        signal_.wake();  // releases the thread when no signal ever came
+        thread_.join();
+    }
+
+    SignalQuitWatcher(const SignalQuitWatcher&) = delete;
+    SignalQuitWatcher& operator=(const SignalQuitWatcher&) = delete;
+
+private:
+    su::process::ShutdownSignal signal_;
+    std::thread thread_;
+};
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) try {
     gui_log("app.starting");
+#ifdef __linux__
+    const auto quit_on_signal = SignalQuitWatcher{};
+#endif
 #ifdef _WIN32
     // Force slint's software renderer. Two requirements:
     //  1. slint reads SLINT_BACKEND from the OS environment block (Rust

@@ -1,5 +1,6 @@
 module;
 #include "common/log/logger.h"
+#include "common/process/shutdown_signal.h"
 #include "common/capture/image.h"
 #include "common/capture/maintenance.h"
 #include "common/security/sensitive.h"
@@ -44,6 +45,10 @@ constexpr auto kRetryInterval = std::chrono::milliseconds{80};
 constexpr auto kCameraAcquireTimeout = std::chrono::milliseconds{1200};
 constexpr auto kAuthenticationRateLimit = std::chrono::seconds{1};
 constexpr auto kMaxConcurrentConnections = std::ptrdiff_t{16};
+// Longest wait for in-flight requests on SIGTERM/SIGINT. Requests poll the
+// shutdown flag every capture, so this only matters for a stuck camera; it
+// stays well below systemd's default 90 s stop timeout.
+constexpr auto kShutdownDrainTimeout = std::chrono::seconds{10};
 
 struct AttemptResult {
     su::control::ControlResult result = su::control::ControlResult::kUnavailable;
@@ -381,7 +386,8 @@ public:
         auto best_score = -1.0F;
         auto saw_live_face = false;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (cancel_requested_.load(std::memory_order_acquire)) {
+            if (cancel_requested_.load(std::memory_order_acquire)
+                || shutdown_requested_.load(std::memory_order_acquire)) {
                 return {su::control::ControlResult::kCancelled, "authentication cancelled"};
             }
 
@@ -699,6 +705,12 @@ public:
         return true;
     }
 
+    // Makes in-flight authentications stop at their next frame; the camera
+    // guard of each then restores the camera controls.
+    void request_shutdown() {
+        shutdown_requested_.store(true, std::memory_order_release);
+    }
+
     void prune_captures() const {
         std::error_code error;
         for (const auto& entry : std::filesystem::directory_iterator("/var/lib/smile2unlock/users", error)) {
@@ -908,6 +920,7 @@ private:
     std::mutex auth_mutex_;
     std::atomic<std::uint64_t> active_request_{0};
     std::atomic<bool> cancel_requested_{false};
+    std::atomic<bool> shutdown_requested_{false};
     ManagementCapabilityStore management_capabilities_;
     std::unordered_map<std::uint32_t, std::chrono::steady_clock::time_point>
         last_auth_started_;
@@ -915,11 +928,37 @@ private:
 
 } // namespace
 
+// Waits for a client or a shutdown signal; false means shut down.
+bool wait_for_client(const int listener_fd, const int shutdown_fd) {
+    auto fds = std::array{pollfd{.fd = listener_fd, .events = POLLIN, .revents = 0},
+                          pollfd{.fd = shutdown_fd, .events = POLLIN, .revents = 0}};
+    while (::poll(fds.data(), fds.size(), -1) < 0) {
+        if (errno != EINTR) {
+            logger().error("poll_failed", {field("errno", errno)});
+            return false;
+        }
+    }
+    return (fds[1].revents & (POLLIN | POLLERR | POLLHUP)) == 0;
+}
+
+// Takes every connection slot, i.e. waits until all detached workers are done.
+bool drain_workers(std::counting_semaphore<kMaxConcurrentConnections>& slots) {
+    const auto deadline = std::chrono::steady_clock::now() + kShutdownDrainTimeout;
+    return std::ranges::all_of(std::views::iota(std::ptrdiff_t{0}, kMaxConcurrentConnections),
+        [&](std::ptrdiff_t) { return slots.try_acquire_until(deadline); });
+}
+
 int run_daemon(std::string_view socket_path) {
     (void)logger();
     if (::geteuid() != 0) {
         logger().error("permission_denied");
         return 1;
+    }
+    // SIGTERM/SIGINT end the accept loop instead of killing the process, so
+    // the normal teardown runs and the camera guards restore camera controls.
+    const auto shutdown_signal = su::process::ShutdownSignal{};
+    if (!shutdown_signal.installed()) {
+        logger().warn("shutdown_signal_unavailable", {field("errno", errno)});
     }
 
     const auto path = std::filesystem::path(socket_path);
@@ -949,7 +988,7 @@ int run_daemon(std::string_view socket_path) {
         field("storage", service.storage_status())});
     auto connection_slots = std::counting_semaphore<kMaxConcurrentConnections>{
         kMaxConcurrentConnections};
-    while (true) {
+    while (wait_for_client(listener->native_handle(), shutdown_signal.pollable_fd())) {
         auto connection = listener->accept_one();
         if (!connection) {
             continue;
@@ -970,6 +1009,15 @@ int run_daemon(std::string_view socket_path) {
             service.handle(std::move(client));
         }).detach();
     }
+    logger().info("shutting_down", {field("signalled", shutdown_signal.requested())});
+    service.request_shutdown();
+    if (!drain_workers(connection_slots)) {
+        // Destroying the service under a running worker would be undefined
+        // behaviour; leave without cleanup instead.
+        logger().error("shutdown_drain_timeout");
+        std::_Exit(1);
+    }
+    return 0;
 }
 
 } // namespace su::auth
