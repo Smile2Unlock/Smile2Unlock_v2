@@ -15,6 +15,7 @@
 #include <limits>
 #include "recognizer/liveness_window.h"
 #include <seeta/FaceAntiSpoofing.h>
+#include <seeta/FaceDetector.h>
 #include <seeta/FaceLandmarker.h>
 #include <seeta/FaceRecognizer.h>
 
@@ -255,6 +256,46 @@ int main() {
     }
     const auto multi_face = backend.extract(view(multiple), true);
     assert(multi_face && !multi_face->has_face && multi_face->feature.empty());
+
+    // Backlit scene (#137): a very dark face centre with a bright window
+    // border. The detector alone may miss it; the backend retries on a
+    // brightened copy but must still extract from the original pixels.
+    auto backlit = TestImage{image_a.width, image_a.height, 3, image_a.bytes};
+    constexpr auto kBacklitGain = 0.04;
+    const auto border_x = image_a.width / 10;
+    const auto border_y = image_a.height / 10;
+    for (auto y = 0; y < image_a.height; ++y) {
+        for (auto x = 0; x < image_a.width; ++x) {
+            const auto inside = x >= border_x && x < image_a.width - border_x
+                && y >= border_y && y < image_a.height - border_y;
+            for (auto c = 0; c < 3; ++c) {
+                auto& value = backlit.bytes[(static_cast<std::size_t>(y) * image_a.width + x) * 3 + c];
+                value = inside
+                    ? static_cast<std::byte>(std::to_integer<int>(value) * kBacklitGain)
+                    : std::byte{255};
+            }
+        }
+    }
+    {
+        auto bgr = std::vector<unsigned char>(backlit.bytes.size());
+        for (auto i = std::size_t{}; i < bgr.size(); i += 3) {
+            bgr[i] = std::to_integer<unsigned char>(backlit.bytes[i + 2]);
+            bgr[i + 1] = std::to_integer<unsigned char>(backlit.bytes[i + 1]);
+            bgr[i + 2] = std::to_integer<unsigned char>(backlit.bytes[i]);
+        }
+        auto detector_setting = seeta::ModelSetting{};
+        detector_setting.append(model_paths->detector.string());
+        auto raw_detector = seeta::FaceDetector(detector_setting);
+        const auto raw_faces = raw_detector.detect(
+            SeetaImageData{backlit.width, backlit.height, 3, bgr.data()});
+        // Guards the premise: without the low-light retry this frame is
+        // invisible to the detector, so has_face below proves the retry ran.
+        assert(raw_faces.size == 0);
+    }
+    const auto backlit_result = backend.extract(view(backlit), false);
+    assert(backlit_result && backlit_result->has_face);
+    assert(backlit_result->feature.size() == first.feature.size());
+    std::cout << "PASS: backlit image still yields a face\n";
 
     auto missing_fas_paths = *model_paths;
     missing_fas_paths.anti_spoofing_first.clear();
