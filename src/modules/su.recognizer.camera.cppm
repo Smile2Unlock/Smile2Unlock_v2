@@ -1,9 +1,17 @@
+module;
+#include "recognizer/exposure/exposure_control.h"
+
 export module su.recognizer.camera;
 
 import std;
 import su.recognizer.types;
 
 export namespace su::recognizer {
+
+using detail::ExposureCapabilities;
+using detail::ExposureKnob;
+using detail::ExposureKnobKind;
+using detail::PixelRegion;
 
 // A discovered V4L2 capture device.
 struct CameraDevice {
@@ -30,6 +38,14 @@ public:
     std::expected<CapturedFrame, RecognizerError> grab_frame();
     void release();
     [[nodiscard]] bool is_open() const;
+
+    // Exposure control (issue #137). Capabilities are probed by open().
+    // Setters return false when the control is unsupported or the device
+    // rejects the value. release() (and the destructor) restore every
+    // control changed through these calls to its value at open().
+    [[nodiscard]] ExposureCapabilities exposure_capabilities() const;
+    bool set_metering_region(PixelRegion region);
+    bool set_exposure_level(int level);
 
 private:
     class Impl;

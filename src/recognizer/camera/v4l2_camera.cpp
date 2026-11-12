@@ -327,4 +327,17 @@ bool V4L2Camera::is_open() const {
     return impl_ && impl_->is_open();
 }
 
+// TODO(#137): probe and drive exposure controls.
+ExposureCapabilities V4L2Camera::exposure_capabilities() const {
+    return {};
+}
+
+bool V4L2Camera::set_metering_region(PixelRegion) {
+    return false;
+}
+
+bool V4L2Camera::set_exposure_level(int) {
+    return false;
+}
+
 }  // namespace su::recognizer
