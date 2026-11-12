@@ -14,6 +14,7 @@
 
 #include "windows_mf_camera.h"
 #include "capture_mode.h"
+#include "windows_camera_controls.h"
 
 #include <windows.h>
 #include <mfapi.h>
@@ -342,6 +343,24 @@ public:
         return true;
     }
 
+    detail::ExposureCapabilities exposure_capabilities() const {
+        std::lock_guard lock(mutex_);
+        return worker_alive_ && open_ ? exposure_capabilities_ : detail::ExposureCapabilities{};
+    }
+
+    bool set_exposure_level(int level) {
+        std::unique_lock lock(mutex_);
+        if (!worker_alive_ || !open_ || quit_pending_) {
+            return false;
+        }
+        op_ = Op::SetExposure;
+        control_level_ = level;
+        done_ = false;
+        cv_.notify_all();
+        cv_.wait(lock, [this] { return done_; });
+        return control_result_;
+    }
+
     void close() {
         std::unique_lock lock(mutex_);
         if (!worker_alive_) {
@@ -371,7 +390,7 @@ public:
     }
 
 private:
-    enum class Op { None, Open, Grab, Quit };
+    enum class Op { None, Open, Grab, SetExposure, Quit };
 
     // Per-read cap: bounds how long the worker can be inside one grab when a
     // device stalls, and therefore how long a Quit (camera stop) can be
@@ -434,6 +453,8 @@ private:
                     finish_open(false);
                 } else if (op == Op::Grab) {
                     finish_grab(false);
+                } else if (op == Op::SetExposure) {
+                    finish_control(false);
                 }
                 continue;
             }
@@ -443,6 +464,9 @@ private:
                 break;
             case Op::Grab:
                 grab_worker();
+                break;
+            case Op::SetExposure:
+                finish_control(open_ && controls_.set_level(control_level_));
                 break;
             case Op::None:
             case Op::Quit:
@@ -690,6 +714,12 @@ private:
         }
         permission_or_busy_ = false;
         open_ = true;
+        // Probing is best effort: it never fails an otherwise good open.
+        const auto capabilities = controls_.probe(source_.Get());
+        {
+            std::lock_guard lock(mutex_);
+            exposure_capabilities_ = capabilities;
+        }
         finish_open(true);
     }
 
@@ -852,6 +882,8 @@ private:
         if (reader_) {
             (void)reader_->Flush(MF_SOURCE_READER_ALL_STREAMS);
         }
+        // Restore camera-persisted settings while the source is still alive.
+        controls_.release();
         reader_.Reset();
         callback_.Reset();
         if (source_) {
@@ -859,6 +891,8 @@ private:
             source_.Reset();
         }
         open_ = false;
+        const std::lock_guard lock(mutex_);
+        exposure_capabilities_ = {};
     }
 
     void finish_open(bool ok) {
@@ -869,6 +903,17 @@ private:
         // its dispatch wait forever and close()'s join() never returns — the
         // camera-stop UI freeze.
         if (op_ == Op::Open) {
+            op_ = Op::None;
+        }
+        done_ = true;
+        cv_.notify_all();
+    }
+
+    void finish_control(bool ok) {
+        std::lock_guard lock(mutex_);
+        control_result_ = ok;
+        // Same guard as finish_open: never clobber a Quit posted meanwhile.
+        if (op_ == Op::SetExposure) {
             op_ = Op::None;
         }
         done_ = true;
@@ -902,6 +947,9 @@ private:
     std::atomic<bool> permission_or_busy_{false};
     bool open_result_ = false;
     bool grab_result_ = false;
+    bool control_result_ = false;
+    int control_level_ = 0;
+    detail::ExposureCapabilities exposure_capabilities_;
     bool done_ = false;
     MfCameraFrame frame_;
     std::vector<std::uint8_t> grab_buffer_;
@@ -922,6 +970,7 @@ private:
     ComPtr<IMFMediaSource> source_;
     ComPtr<IMFSourceReader> reader_;
     ComPtr<StreamCallback> callback_;
+    CameraExposureControls controls_;
     UINT32 width_ = 0;
     UINT32 height_ = 0;
     std::size_t stride_ = 0;
@@ -961,6 +1010,20 @@ void MfCameraStream::close() {
 
 bool MfCameraStream::is_open() const {
     return impl_ && impl_->is_open();
+}
+
+detail::ExposureCapabilities MfCameraStream::exposure_capabilities() const {
+    return impl_ ? impl_->exposure_capabilities() : detail::ExposureCapabilities{};
+}
+
+// No verified metering-region mechanism on Windows yet (the extended camera
+// controller ROI path is not implemented), so the loop falls back to the knob.
+bool MfCameraStream::set_metering_region(const detail::PixelRegion&) {
+    return false;
+}
+
+bool MfCameraStream::set_exposure_level(int level) {
+    return impl_ && impl_->set_exposure_level(level);
 }
 
 } // namespace su::recognizer

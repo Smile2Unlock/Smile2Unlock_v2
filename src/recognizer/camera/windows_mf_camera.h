@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 
+#include "recognizer/exposure/exposure_control.h"
+
 namespace su::recognizer {
 
 // A discovered video-capture device (index matches the camera picker order).
@@ -57,6 +59,14 @@ public:
     bool grab(MfCameraFrame& out);
     void close();
     [[nodiscard]] bool is_open() const;
+
+    // Backlight-aware exposure (issue #137). Capabilities are probed at open;
+    // the setters return false when unsupported or rejected. close() restores
+    // every control changed to its value at open. Like grab(), the setters
+    // must be called from a single caller thread.
+    [[nodiscard]] detail::ExposureCapabilities exposure_capabilities() const;
+    bool set_metering_region(const detail::PixelRegion& region);
+    bool set_exposure_level(int level);
 
 private:
     class Impl;
