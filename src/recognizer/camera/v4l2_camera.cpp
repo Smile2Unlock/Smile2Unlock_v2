@@ -13,6 +13,8 @@ module;
 #include <optional>
 #include <ranges>
 
+#include "recognizer/camera/v4l2_exposure.h"
+
 module su.recognizer.camera;
 
 namespace su::recognizer {
@@ -182,6 +184,8 @@ public:
             return std::unexpected(RecognizerError::kCameraUnavailable);
         }
         streaming_ = true;
+        // After streaming starts so the controls reflect the live format.
+        exposure_.probe(fd_, width_, height_);
         rollback.dismiss();
         return {};
     }
@@ -248,6 +252,9 @@ public:
     }
 
     void release() {
+        // Controls first: they need the descriptor, and must be restored even
+        // if streaming already stopped.
+        exposure_.restore();
         if (streaming_) {
             const auto type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             ioctl(fd_, VIDIOC_STREAMOFF, &type);
@@ -272,6 +279,19 @@ public:
 
     [[nodiscard]] bool is_open() const { return fd_ >= 0 && streaming_; }
 
+    [[nodiscard]] ExposureCapabilities exposure_capabilities() const {
+        return exposure_.capabilities();
+    }
+    std::expected<void, ExposureWriteError> set_metering_region(PixelRegion region) {
+        return exposure_.set_region(region);
+    }
+    std::expected<int, ExposureWriteError> set_exposure_level(ExposureKnobKind kind, int level) {
+        return exposure_.set_level(kind, level);
+    }
+    std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind kind) {
+        return exposure_.reset_knob(kind);
+    }
+
 private:
     struct MmapBuffer {
         void* start = nullptr;
@@ -279,6 +299,7 @@ private:
     };
 
     std::string device_path_;
+    detail::V4l2ExposureControl exposure_;
     int fd_ = -1;
     uint32_t negotiated_format_ = 0;
     int width_ = 0;
@@ -325,6 +346,32 @@ void V4L2Camera::release() {
 
 bool V4L2Camera::is_open() const {
     return impl_ && impl_->is_open();
+}
+
+ExposureCapabilities V4L2Camera::exposure_capabilities() const {
+    return impl_ ? impl_->exposure_capabilities() : ExposureCapabilities{};
+}
+
+std::expected<void, ExposureWriteError> V4L2Camera::set_metering_region(PixelRegion region) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_metering_region(region);
+}
+
+std::expected<int, ExposureWriteError> V4L2Camera::set_exposure_level(
+    ExposureKnobKind kind, int level) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_exposure_level(kind, level);
+}
+
+std::expected<void, ExposureWriteError> V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->reset_exposure_knob(kind);
 }
 
 }  // namespace su::recognizer

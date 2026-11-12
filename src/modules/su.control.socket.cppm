@@ -112,6 +112,8 @@ public:
     static std::expected<Listener, SocketError> bind_to(std::string_view path);
     std::expected<Connection, SocketError> accept_one(
         std::chrono::milliseconds timeout = std::chrono::seconds{15}) const;
+    // For polling the listening socket together with other descriptors.
+    [[nodiscard]] int native_handle() const { return fd_; }
 
 private:
     Listener(int fd, std::string path) : fd_(fd), path_(std::move(path)) {}

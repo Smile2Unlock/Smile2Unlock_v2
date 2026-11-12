@@ -351,10 +351,25 @@ target("su_capture_pipeline_test")
     if not is_plat("linux") then
         -- Focused local tests can compile the actual MF backend without the SDK.
         add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_files("src/recognizer/camera/windows_camera_controls.cpp")
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
     end
     add_tests("default")
     on_test(wine_on_test)
+
+if is_plat("windows", "mingw") then
+    -- The COM fakes drive the real CameraExposureControls implementation, so
+    -- the test needs the Windows SDK headers and only exists on Windows.
+    target("su_windows_camera_controls_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/recognizer/windows_camera_controls.cpp")
+        add_files("src/recognizer/camera/windows_camera_controls.cpp")
+        add_syslinks("ole32", "oleaut32", "uuid")
+        add_ldflags("-static", {force = true})
+        add_tests("default")
+        on_test(wine_on_test)
+end
 
 target("su_pixel_convert_test")
     set_default(false)
@@ -368,6 +383,32 @@ target("su_pixel_convert_test")
     add_tests("default")
     on_test(wine_on_test)
 
+target("su_exposure_control_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/recognizer/exposure_control.cpp")
+    add_includedirs("src")
+    add_tests("default")
+    on_test(wine_on_test)
+
+if is_plat("linux") then
+    -- Runs the V4L2 exposure controls against a fake device (injected ioctl).
+    target("su_v4l2_exposure_test")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tests/recognizer/v4l2_exposure.cpp")
+        add_deps("su_log")
+        add_includedirs("src")
+        add_tests("default")
+end
+
+target("su_low_light_enhance_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/recognizer/low_light_enhance.cpp")
+    add_tests("default")
+    on_test(wine_on_test)
+
 target("su_recognizer")
     apply_cpp_target("static")
     add_files("src/recognizer/*.cpp")
@@ -377,6 +418,7 @@ target("su_recognizer")
     else
         add_files("src/recognizer/camera/windows_camera.cpp")
         add_files("src/recognizer/camera/windows_mf_camera.cpp")
+        add_files("src/recognizer/camera/windows_camera_controls.cpp")
         add_files("src/platform/windows/paths.cpp")
         add_syslinks("mfplat", "mfreadwrite", "mfuuid", "ole32", "oleaut32")
         add_syslinks("shell32", "uuid")

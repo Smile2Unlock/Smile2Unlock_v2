@@ -69,6 +69,25 @@ public:
         return stream_.is_open();
     }
 
+    ExposureCapabilities exposure_capabilities() const {
+        return stream_.exposure_capabilities();
+    }
+
+    std::expected<void, ExposureWriteError> set_metering_region(const PixelRegion& region) {
+        if (stream_.set_metering_region(region)) {
+            return {};
+        }
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+
+    std::expected<int, ExposureWriteError> set_exposure_level(ExposureKnobKind kind, int level) {
+        return stream_.set_exposure_level(kind, level);
+    }
+
+    std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind kind) {
+        return stream_.reset_exposure_knob(kind);
+    }
+
 private:
     MfCameraStream stream_;
     std::vector<std::byte> buffer_;
@@ -104,6 +123,32 @@ void V4L2Camera::release() {
 
 bool V4L2Camera::is_open() const {
     return impl_ != nullptr && impl_->is_open();
+}
+
+ExposureCapabilities V4L2Camera::exposure_capabilities() const {
+    return impl_ ? impl_->exposure_capabilities() : ExposureCapabilities{};
+}
+
+std::expected<void, ExposureWriteError> V4L2Camera::set_metering_region(PixelRegion region) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_metering_region(region);
+}
+
+std::expected<int, ExposureWriteError> V4L2Camera::set_exposure_level(
+    ExposureKnobKind kind, int level) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->set_exposure_level(kind, level);
+}
+
+std::expected<void, ExposureWriteError> V4L2Camera::reset_exposure_knob(ExposureKnobKind kind) {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->reset_exposure_knob(kind);
 }
 
 } // namespace su::recognizer
