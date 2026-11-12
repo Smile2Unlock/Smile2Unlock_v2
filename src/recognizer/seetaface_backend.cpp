@@ -219,104 +219,30 @@ public:
         if (!liveness_enabled) {
             reset_liveness_locked();
         }
-
-        // ImageView is RGB/RGBA, but every SeetaFace model expects BGR.
-        // Swap red and blue only at the SDK boundary; preview stays RGB.
-        const auto pixels = static_cast<std::size_t>(image.width) * image.height;
-        if (pixels > std::numeric_limits<std::size_t>::max() / 3) {
+        const auto bgr = to_bgr(image);
+        if (!bgr) {
             reset_liveness_locked();
             return std::unexpected(RecognizerError::kInvalidImage);
         }
-        auto owned_bytes = std::vector<unsigned char>(pixels * 3);
-        for (auto i = std::size_t{}; i < pixels; ++i) {
-            for (auto channel = 0; channel < 3; ++channel) {
-                owned_bytes[i * 3 + channel] = std::to_integer<unsigned char>(
-                    image.bytes[i * image.channels + (image.channels == 1 ? 0 : 2 - channel)]);
-            }
-        }
-        auto seeta_image = SeetaImageData{
+        const auto seeta_image = SeetaImageData{
             .width = image.width,
             .height = image.height,
             .channels = 3,
-            .data = owned_bytes.data(),
+            .data = const_cast<unsigned char*>(bgr->data()),
         };
 
-        // Detect on a downscaled copy and map the box back to the full
-        // resolution so landmarking, anti-spoofing and embedding keep their
-        // accuracy on the original image.
-        const auto detect_input = downscale_for_detect(seeta_image, owned_bytes);
-        const auto& scale_x = detect_input.scale_x;
-        const auto& scale_y = detect_input.scale_y;
-        const auto faces = detect_with_low_light_retry(detect_input.image);
-        if (faces.size <= 0 || faces.data == nullptr) {
+        const auto detection = detect_primary_face(seeta_image, *bgr);
+        if (!detection) {
             reset_liveness_locked();
             return RecognitionResult{};
         }
-        if (faces.size != 1) {
-            // Authentication must not silently choose one identity from a
-            // multi-person frame. Require the user to present alone.
+        if (detection->enhanced_only && !face_bright_enough(seeta_image, detection->face)) {
+            // Metering-only: the box lets the exposure loop brighten the
+            // scene, but nothing downstream may see this near-black frame.
             reset_liveness_locked();
-            return RecognitionResult{};
+            return RecognitionResult{.has_face = false, .face_box = to_face_box(detection->face)};
         }
-
-        const auto scaled_face = faces.data[0].pos;
-        const auto face = SeetaRect{
-            .x = static_cast<int32_t>(scaled_face.x * scale_x),
-            .y = static_cast<int32_t>(scaled_face.y * scale_y),
-            .width = static_cast<int32_t>(scaled_face.width * scale_x),
-            .height = static_cast<int32_t>(scaled_face.height * scale_y),
-        };
-        const auto points = landmarker_->mark(seeta_image, face);
-
-        // Liveness is optional per-call: when disabled in config the caller
-        // skips anti-spoofing entirely (Predict is the expensive part of the
-        // pipeline beyond detect+landmark), returns a passing score so the
-        // frame still has a face box without a liveness gate.
-        auto liveness_score = liveness_enabled ? 0.0F : 1.0F;
-        if (liveness_enabled && anti_spoofing_) {
-            const auto liveness_status = anti_spoofing_->Predict(
-                seeta_image, face, points.data());
-            auto clarity = 0.0F;
-            auto reality = 0.0F;
-            anti_spoofing_->GetPreFrameScore(&clarity, &reality);
-            liveness_score = liveness_window_.push(clarity, reality);
-            const auto now = std::chrono::steady_clock::now();
-            const auto passes = liveness_score > 0.0F;
-            // Include the local window's verdict and progress, not only the
-            // SDK's single-frame status (REAL can still be warming up).
-            if (liveness_status != prev_liveness_status_
-                || passes != prev_liveness_passes_ || now >= next_liveness_log_) {
-                prev_liveness_status_ = liveness_status;
-                prev_liveness_passes_ = passes;
-                next_liveness_log_ = now + std::chrono::seconds{3};
-                su::log::process_logger().debug("seeta.liveness", {
-                    su::log::field("status", liveness_status_name(liveness_status)),
-                    su::log::field("clarity", clarity), su::log::field("reality", reality),
-                    su::log::field("score", liveness_score),
-                    su::log::field("frames", liveness_window_.sample_count())});
-            }
-        }
-
-        RecognitionResult result{
-            .has_face = true,
-            .face_box = FaceBox{
-                .x = face.x,
-                .y = face.y,
-                .width = face.width,
-                .height = face.height,
-            },
-            .feature = {},
-            .liveness_score = liveness_score,
-        };
-
-        if (extract_feature) {
-            auto feature = std::vector<float>(recognizer_->GetExtractFeatureSize());
-            if (!recognizer_->Extract(seeta_image, points.data(), feature.data())) {
-                return std::unexpected(RecognizerError::kModelUnavailable);
-            }
-            result.feature = std::move(feature);
-        }
-        return result;
+        return recognize_face(seeta_image, detection->face, extract_feature, liveness_enabled);
     }
 
     std::expected<RecognitionResult, RecognizerError> extract(
@@ -405,15 +331,137 @@ private:
         return input;
     }
 
+    // The single face found by the detection stage, in full-resolution
+    // coordinates. `enhanced_only` is set when the plain pass missed it and
+    // only the low-light retry found it.
+    struct PrimaryFace {
+        SeetaRect face{};
+        bool enhanced_only = false;
+    };
+
+    struct Detected {
+        SeetaFaceInfoArray faces{};
+        bool enhanced = false;
+    };
+
+    // ImageView is RGB/RGBA/gray, but every SeetaFace model expects BGR.
+    // Swap red and blue only at the SDK boundary; preview stays RGB.
+    [[nodiscard]] static std::optional<std::vector<unsigned char>> to_bgr(const ImageView image) {
+        const auto pixels = static_cast<std::size_t>(image.width) * image.height;
+        if (pixels > std::numeric_limits<std::size_t>::max() / 3) {
+            return std::nullopt;
+        }
+        auto bgr = std::vector<unsigned char>(pixels * 3);
+        for (auto i = std::size_t{}; i < pixels; ++i) {
+            for (auto channel = 0; channel < 3; ++channel) {
+                bgr[i * 3 + channel] = std::to_integer<unsigned char>(
+                    image.bytes[i * image.channels + (image.channels == 1 ? 0 : 2 - channel)]);
+            }
+        }
+        return bgr;
+    }
+
+    [[nodiscard]] static FaceBox to_face_box(const SeetaRect& rect) {
+        return FaceBox{.x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height};
+    }
+
+    // Detects on a downscaled copy and maps the box back to the full
+    // resolution so landmarking, anti-spoofing and embedding keep their
+    // accuracy on the original image. Authentication must not silently choose
+    // one identity from a multi-person frame, so anything but exactly one face
+    // yields nullopt.
+    [[nodiscard]] std::optional<PrimaryFace> detect_primary_face(
+        const SeetaImageData& image, const std::vector<unsigned char>& bgr) const {
+        const auto detect_input = downscale_for_detect(image, bgr);
+        const auto detected = detect_with_low_light_retry(detect_input.image);
+        if (detected.faces.size != 1 || detected.faces.data == nullptr) {
+            return std::nullopt;
+        }
+        const auto scaled_face = detected.faces.data[0].pos;
+        return PrimaryFace{
+            .face = SeetaRect{
+                .x = static_cast<int32_t>(scaled_face.x * detect_input.scale_x),
+                .y = static_cast<int32_t>(scaled_face.y * detect_input.scale_y),
+                .width = static_cast<int32_t>(scaled_face.width * detect_input.scale_x),
+                .height = static_cast<int32_t>(scaled_face.height * detect_input.scale_y),
+            },
+            .enhanced_only = detected.enhanced,
+        };
+    }
+
+    // Mean luma of the inner face region on the ORIGINAL (un-enhanced) image.
+    [[nodiscard]] static bool face_bright_enough(const SeetaImageData& image, const SeetaRect& face) {
+        const auto sample_count = static_cast<std::size_t>(image.width)
+            * static_cast<std::size_t>(image.height) * 3;
+        const auto pixels = std::span<const unsigned char>(image.data, sample_count);
+        const auto region = detail::metering_region(image.width, image.height,
+            detail::PixelRegion{.x = face.x, .y = face.y, .width = face.width, .height = face.height});
+        return detail::enhanced_face_is_usable(detail::measure_luma(std::as_bytes(pixels),
+            image.width, image.height, 3, region, detail::PixelOrder::bgr));
+    }
+
+    // Landmarks, liveness and (optionally) the embedding for a trusted face.
+    std::expected<RecognitionResult, RecognizerError> recognize_face(
+        const SeetaImageData& image, const SeetaRect& face, const bool extract_feature,
+        const bool liveness_enabled) const {
+        const auto points = landmarker_->mark(image, face);
+        auto result = RecognitionResult{
+            .has_face = true,
+            .face_box = to_face_box(face),
+            .feature = {},
+            .liveness_score = score_liveness(image, face, points, liveness_enabled),
+        };
+        if (extract_feature) {
+            auto feature = std::vector<float>(recognizer_->GetExtractFeatureSize());
+            if (!recognizer_->Extract(image, points.data(), feature.data())) {
+                return std::unexpected(RecognizerError::kModelUnavailable);
+            }
+            result.feature = std::move(feature);
+        }
+        return result;
+    }
+
+    // Liveness is optional per-call: when disabled in config the caller skips
+    // anti-spoofing entirely (Predict is the expensive part of the pipeline
+    // beyond detect+landmark) and gets a passing score, so the frame still has
+    // a face box without a liveness gate.
+    float score_liveness(const SeetaImageData& image, const SeetaRect& face,
+        const std::vector<SeetaPointF>& points, const bool liveness_enabled) const {
+        if (!liveness_enabled) {
+            return 1.0F;
+        }
+        const auto liveness_status = anti_spoofing_->Predict(image, face, points.data());
+        auto clarity = 0.0F;
+        auto reality = 0.0F;
+        anti_spoofing_->GetPreFrameScore(&clarity, &reality);
+        const auto liveness_score = liveness_window_.push(clarity, reality);
+        const auto now = std::chrono::steady_clock::now();
+        const auto passes = liveness_score > 0.0F;
+        // Include the local window's verdict and progress, not only the
+        // SDK's single-frame status (REAL can still be warming up).
+        if (liveness_status != prev_liveness_status_
+            || passes != prev_liveness_passes_ || now >= next_liveness_log_) {
+            prev_liveness_status_ = liveness_status;
+            prev_liveness_passes_ = passes;
+            next_liveness_log_ = now + std::chrono::seconds{3};
+            su::log::process_logger().debug("seeta.liveness", {
+                su::log::field("status", liveness_status_name(liveness_status)),
+                su::log::field("clarity", clarity), su::log::field("reality", reality),
+                su::log::field("score", liveness_score),
+                su::log::field("frames", liveness_window_.sample_count())});
+        }
+        return liveness_score;
+    }
+
     // Backlit faces can be too dark for the detector (#137). Only when the
     // plain pass finds nothing, retry on a gamma-brightened copy so the
     // exposure loop gets a face box to meter. The enhanced copy is used for
     // detection alone; landmarks, liveness and the embedding stay on the
     // untouched original so templates and liveness scores do not shift.
-    SeetaFaceInfoArray detect_with_low_light_retry(const SeetaImageData& detect_image) const {
+    Detected detect_with_low_light_retry(const SeetaImageData& detect_image) const {
         const auto first = detector_->detect(detect_image);
         if (first.size > 0 && first.data != nullptr) {
-            return first;
+            return {.faces = first};
         }
         const auto sample_count = static_cast<std::size_t>(detect_image.width)
             * static_cast<std::size_t>(detect_image.height) * 3;
@@ -425,14 +473,17 @@ private:
             detail::PixelOrder::bgr);
         return detail::low_light_lut(centre)
             .transform([&](const detail::LowLightLut& lut) {
-                auto enhanced = detail::apply_lut(pixels, lut);
+                // Reused every frame: the dark, face-less case is the steady
+                // state while the exposure loop is still adjusting.
+                enhance_scratch_.resize(sample_count);
+                detail::apply_lut(pixels, lut, enhance_scratch_);
                 auto enhanced_image = detect_image;
-                enhanced_image.data = enhanced.data();
+                enhanced_image.data = enhance_scratch_.data();
                 const auto retried = detector_->detect(enhanced_image);
                 log_low_light_detect(centre.mean, retried.size);
-                return retried;
+                return Detected{.faces = retried, .enhanced = retried.size > 0};
             })
-            .value_or(first);
+            .value_or(Detected{.faces = first});
     }
 
     void log_low_light_detect(const double centre_mean, const int faces_found) const {
@@ -476,6 +527,8 @@ private:
     std::unique_ptr<seeta::FaceRecognizer> recognizer_;
     std::unique_ptr<seeta::FaceAntiSpoofing> anti_spoofing_;
     mutable std::mutex mutex_;
+    // Gamma-enhanced detector input, reused across frames. Guarded by mutex_.
+    mutable std::vector<unsigned char> enhance_scratch_;
     mutable detail::LivenessWindow liveness_window_;
     mutable seeta::FaceAntiSpoofing::Status prev_liveness_status_ = seeta::FaceAntiSpoofing::DETECTING;
     mutable bool prev_liveness_passes_ = false;

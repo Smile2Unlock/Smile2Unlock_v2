@@ -37,6 +37,11 @@ inline constexpr double kLowLightMaxGamma = 1.0;
 // Keeps log(mean / 255) finite for an all-black centre.
 inline constexpr double kLowLightMinMean = 1.0;
 inline constexpr double kLumaMax = 255.0;
+// Original-image mean luma of a face box below which a face found only by the
+// enhanced pass is not trusted: the frame is near-black and noise-amplified,
+// so landmarks, liveness and the embedding would be junk. Such a detection is
+// still good enough for the exposure loop to meter.
+inline constexpr double kLowLightFaceMeanFloor = 40.0;
 
 // Output level of `gamma` at input level `index`, rounded to 0..255.
 [[nodiscard]] constexpr std::uint8_t gamma_level(const int index, const double gamma) {
@@ -66,14 +71,28 @@ inline constexpr double kLumaMax = 255.0;
     return gamma_lut(gamma);
 }
 
+// True when the original-image luma of a face box is high enough for an
+// enhanced-only detection to feed landmarks, liveness and the embedding. An
+// unmeasurable box (no samples) is not trusted.
+[[nodiscard]] constexpr bool enhanced_face_is_usable(
+    const LumaStats& face, const double mean_floor = kLowLightFaceMeanFloor) {
+    return face.samples > 0 && face.mean >= mean_floor;
+}
+
+// Remaps `pixels` into `out` (same size, caller-owned so a hot path can reuse
+// one scratch buffer). The input is never modified.
+inline void apply_lut(const std::span<const unsigned char> pixels, const LowLightLut& lut,
+    const std::span<unsigned char> out) {
+    std::ranges::transform(pixels, out.begin(),
+        [&lut](const unsigned char value) { return static_cast<unsigned char>(lut[value]); });
+}
+
 // Returns a remapped copy; the input is never modified.
 [[nodiscard]] inline std::vector<unsigned char> apply_lut(
     const std::span<const unsigned char> pixels, const LowLightLut& lut) {
-    return pixels
-        | std::views::transform([&lut](const unsigned char value) {
-              return static_cast<unsigned char>(lut[value]);
-          })
-        | std::ranges::to<std::vector>();
+    auto remapped = std::vector<unsigned char>(pixels.size());
+    apply_lut(pixels, lut, remapped);
+    return remapped;
 }
 
 // Compile-time guarantees every generated LUT relies on.
