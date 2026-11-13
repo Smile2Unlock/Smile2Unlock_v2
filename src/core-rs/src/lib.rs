@@ -111,6 +111,9 @@ pub struct SuCoreConfig {
     pub backlight_compensation: bool,
 }
 
+// Must match the static_assert in include/su_core.h.
+const _: () = assert!(std::mem::size_of::<SuCoreConfig>() == 56);
+
 pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};
 pub use protocol::{SuControlMessageType, SuControlRequest};
 
