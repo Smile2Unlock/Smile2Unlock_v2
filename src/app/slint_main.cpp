@@ -935,6 +935,7 @@ int main(int argc, char** argv) try {
     window->set_recognition_threshold(snapshot->config.recognition_threshold);
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
+    window->set_backlight_compensation(snapshot->config.backlight_compensation);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
     window->set_capture_enabled(snapshot->config.capture_enabled);
     window->set_capture_days(static_cast<int>(snapshot->config.capture_retention_days));
@@ -1454,6 +1455,7 @@ int main(int argc, char** argv) try {
             float recognition_threshold,
             bool liveness_enabled,
             float liveness_threshold,
+            bool backlight_compensation,
             int preview_fps,
             int recognition_mode,
             int auto_delay_sec,
@@ -1481,6 +1483,7 @@ int main(int argc, char** argv) try {
             config->recognition_threshold = recognition_threshold;
             config->liveness_detection = liveness_enabled;
             config->liveness_threshold = liveness_threshold;
+            config->backlight_compensation = backlight_compensation;
             config->preview_fps = static_cast<std::uint32_t>(std::clamp(preview_fps, 1, 60));
             config->recognition_mode = static_cast<std::uint32_t>(recognition_mode <= 1 ? recognition_mode : 0);
             config->auto_delay_sec = static_cast<std::uint32_t>(std::clamp(auto_delay_sec, 0, 3600));
@@ -1504,6 +1507,8 @@ int main(int argc, char** argv) try {
                     "bad");
                 return;
             }
+            // Live preview keeps running across a save: apply the switch now.
+            controller->recognizer().set_backlight_compensation(config->backlight_compensation);
             (*window)->set_settings_status(slint::SharedString(
                 translated(*catalog, *window, "settings.saved")));
             set_activity(
@@ -1562,6 +1567,7 @@ int main(int argc, char** argv) try {
         (*window)->set_preview_status_text(slint::SharedString(
             translated(*catalog, *window, "preview.starting")));
         (*window)->set_preview_error_text({});
+        controller->recognizer().set_backlight_compensation(config->backlight_compensation);
         const auto started = preview->start(
             controller->recognizer(),
             config->selected_camera,

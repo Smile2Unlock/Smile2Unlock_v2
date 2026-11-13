@@ -102,6 +102,7 @@ export component AppWindow inherits Window {
     in-out property <float> recognition_threshold: 0.65;
     in-out property <bool> liveness_enabled: true;
     in-out property <float> liveness_threshold: 0.5;
+    in-out property <bool> backlight_compensation: true;
     in-out property <int> preview_fps: 15;
     in-out property <string> settings_status: "";
     in-out property <bool> capture_enabled: false;
@@ -140,7 +141,7 @@ export component AppWindow inherits Window {
     callback rollback_desktop_target_requested(string);
     callback start_preview_requested();
     callback stop_preview_requested();
-    callback save_settings_requested(int, float, bool, float, int, int, int, int, int);
+    callback save_settings_requested(int, float, bool, float, bool, int, int, int, int, int);
     callback language_selected(int);
     callback theme_mode_selected(int);
     callback window_controls_selected(int);
@@ -620,6 +621,17 @@ export component AppWindow inherits Window {
                         ValueSlider { enabled: root.liveness_enabled; width: UiTheme.slider-width; minimum: 0.2; maximum: 0.95; value <=> root.liveness_threshold; }
                         Badge { text: Math.round(root.liveness_threshold * 100) + "%"; }
                     }
+                    Row {
+                        title: Tr.t("settings.backlight_compensation");
+                        subtitle: Tr.t("settings.backlight_compensation_detail");
+                        Toggle {
+                            on: root.backlight_compensation;
+                            toggled(value) => {
+                                root.backlight_compensation = value;
+                                root.settings_status = Tr.t("settings.unsaved");
+                            }
+                        }
+                    }
                 }
                 if root.platform_windows: Group {
                     title: Tr.t("settings.recognition_trigger");
@@ -684,6 +696,7 @@ export component AppWindow inherits Window {
                                 root.recognition_threshold,
                                 root.liveness_enabled,
                                 root.liveness_threshold,
+                                root.backlight_compensation,
                                 root.preview_fps,
                                 root.recognition_mode,
                                 root.auto_delay_sec,
