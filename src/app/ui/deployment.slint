@@ -9,6 +9,7 @@ export struct DeploymentTargetRow {
     effective_path: string,
     role: string,
     state: string,
+    note: string,
     password_fallback: bool,
     configured: bool,
     configurable: bool,
@@ -56,6 +57,7 @@ component TargetItem inherits VerticalLayout {
                     : target.state == "conflict" ? Tr.t("deployment.service_legacy_path")
                     : target.state == "supported" ? Tr.t("deployment.service_stopped")
                     : Tr.t("deployment.service_missing"))
+                : target.note != "" ? Tr.t(target.note)
                 : target.managed
                     ? (target.authtok-source == 0 ? Tr.t("target.face_on")
                         : target.authtok-source == 1 ? Tr.t("target.face_kernel") : Tr.t("target.face_keyring"))

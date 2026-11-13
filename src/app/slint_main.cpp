@@ -295,6 +295,7 @@ std::vector<ui::DeploymentTargetRow> deployment_target_rows(
             .effective_path = slint::SharedString(target.effective_path),
             .role = slint::SharedString(target.role),
             .state = slint::SharedString(target.state),
+            .note = slint::SharedString(target.note),
             .password_fallback = target.password_fallback,
             .configured = target.configured,
             .configurable = target.configurable,

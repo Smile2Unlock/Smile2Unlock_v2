@@ -305,6 +305,61 @@ Keep a working unlocked session while performing the first live lock-screen
 test. Confirm face success, password fallback after a failed face attempt, and
 password fallback while `su-authd.service` is stopped.
 
+## Enable Noctalia lock-screen authentication
+
+Noctalia authenticates the lock screen through a PAM helper that runs as the
+desktop user (`noctalia pam-helper`, or `noctalia-pam-helper` in newer builds).
+The PAM service name is a **build-time** meson option (`-Dpam_service`, default
+`login`); Noctalia has no runtime setting or environment variable for it.
+Smile2Unlock never edits `/etc/pam.d/login`, so the Noctalia lock-screen entry
+is available only when Noctalia was built with a dedicated service and the
+package ships the matching `/etc/pam.d/<service>` file.
+
+A packager enables it like this:
+
+```bash
+meson setup build -Dpam_service=noctalia
+```
+
+and installs `/etc/pam.d/noctalia`:
+
+```text
+#%PAM-1.0
+auth       include      login
+account    include      login
+password   include      login
+session    include      login
+```
+
+The app finds `noctalia-pam-helper` the way Noctalia does
+(`NOCTALIA_PAM_HELPER_PATH`, next to the `noctalia` executable on `PATH`, then
+`/usr` and `/usr/local` `libexec/noctalia`) and reads the compiled service name
+out of the binary, choosing among the names present in `/etc/pam.d`. The row
+reports one of: configurable, configured, needs a newer Noctalia (no helper),
+or built with `login` (unsupported).
+
+Turning the entry on uses the same managed substack as the other lock screens:
+the package-owned `/etc/pam.d/noctalia` gets `auth substack
+smile2unlock-noctalia-auth`, and turning it off restores the original. It also
+writes `$NOCTALIA_CONFIG_HOME` (or `$XDG_CONFIG_HOME/noctalia`, or
+`~/.config/noctalia`)`/smile2unlock.toml`:
+
+```toml
+[lockscreen]
+allow_empty_password = true
+```
+
+Noctalia merges every `*.toml` in that directory, so the fragment does not touch
+your own files. The app removes it when the entry is turned off, but never
+deletes or overwrites a copy you have edited.
+
+Noctalia never starts PAM for an empty password unless
+`allow_empty_password` is set. With it, press Enter on the empty password field
+to start a face scan; if the scan fails the stack continues into the password
+modules, which reject the empty password. Noctalia's PAM conversation ignores
+`PAM_TEXT_INFO` and `PAM_ERROR_MSG`, so the module's status messages are not
+shown: the lock screen displays only "Authenticating...".
+
 ## User data
 
 At boot, the service resolves the PAM username through NSS and uses:

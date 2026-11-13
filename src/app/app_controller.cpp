@@ -607,7 +607,11 @@ SystemStatus AppController::load_system_status() {
                 configurable || target.adoptable, target.sealed_available,
                 status.storage_protection == StorageProtection::kHostTpm2);
             has_login_target = has_login_target || login;
-            has_lock_target = has_lock_target || lock;
+            // A Noctalia build we cannot extend is informational; it must not
+            // keep the overall "lock screens configured" summary from completing.
+            const auto informational_only = target.kind == su::deploy::TargetKind::kNoctalia
+                && target.state == su::deploy::TargetState::kUnsupported;
+            has_lock_target = has_lock_target || (lock && !informational_only);
             status.login_pam_configured = status.login_pam_configured || (login && configured);
             status.lock_pam_configured = status.lock_pam_configured || (lock && configured);
             if (configured) {
@@ -620,6 +624,7 @@ SystemStatus AppController::load_system_status() {
                 .role = std::string(su::deploy::target_role_id(target.role)),
                 .state = std::string(su::deploy::target_state_id(target.state)),
                 .detail = target.detail,
+                .note = target.note,
                 .password_fallback = target.password_fallback,
                 .configured = configured,
                 .configurable = configurable,
