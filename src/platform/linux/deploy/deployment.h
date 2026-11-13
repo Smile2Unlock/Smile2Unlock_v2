@@ -7,6 +7,10 @@
 #include <string_view>
 #include <vector>
 
+#include <sys/types.h>
+
+#include "platform/linux/deploy/noctalia.h"
+
 namespace su::deploy {
 
 enum class TargetKind {
@@ -19,6 +23,7 @@ enum class TargetKind {
     kSudo,
     kSudoLogin,
     kPolkit,
+    kNoctalia,
 };
 
 enum class TargetRole {
@@ -51,6 +56,8 @@ struct TargetStatus {
     AuthtokSource authtok_source = AuthtokSource::kNone;
     bool sealed_available = false; // Parent AUTH wallet line follows the face/password anchor.
     std::string detail;
+    // Translation key for a target-specific explanation; empty when generic.
+    std::string note;
     bool adoptable = false;
     std::string adoption_unavailable_reason = "target is not externally configured";
 };
@@ -79,6 +86,17 @@ struct PamPlan {
     bool adoption = false;
 };
 
+// Inputs a plan needs beyond the target itself. The defaults are the safe,
+// privileged ones: the deploy helper passes the D-Bus caller's uid and relies on
+// the fixed-prefix helper lookup; only the unprivileged GUI ever supplies an
+// environment-derived NoctaliaSearch (and only to inspect_deployment).
+struct PlanContext {
+    HelperLookup helper = RootHelperLookup{};
+    // The account that asked for the change. Required for Noctalia, whose
+    // fragment lets an empty password reach PAM.
+    std::optional<uid_t> requester_uid;
+};
+
 [[nodiscard]] std::string_view target_id(TargetKind target);
 [[nodiscard]] std::string_view target_service(TargetKind target);
 [[nodiscard]] std::string_view target_role_id(TargetRole role);
@@ -86,17 +104,21 @@ struct PamPlan {
 [[nodiscard]] std::optional<TargetKind> target_from_id(std::string_view id);
 
 [[nodiscard]] std::expected<DeploymentSnapshot, std::string> inspect_deployment(
-    const std::filesystem::path& root = "/");
+    const std::filesystem::path& root = "/",
+    const HelperLookup& noctalia_helper = RootHelperLookup{});
 [[nodiscard]] std::expected<PamPlan, std::string>
 plan_pam_integration(const std::filesystem::path& root, TargetKind target,
-                     AuthtokSource authtok_source);
+                     AuthtokSource authtok_source, const PlanContext& context = {});
 [[nodiscard]] std::expected<PamPlan, std::string>
 plan_pam_adoption(const std::filesystem::path& root, TargetKind target,
-                  AuthtokSource authtok_source = AuthtokSource::kNone);
+                  AuthtokSource authtok_source = AuthtokSource::kNone,
+                  const PlanContext& context = {});
 [[nodiscard]] inline std::expected<PamPlan, std::string>
-plan_pam_integration(const std::filesystem::path& root, TargetKind target, bool wallet_token) {
+plan_pam_integration(const std::filesystem::path& root, TargetKind target, bool wallet_token,
+                     const PlanContext& context = {}) {
     return plan_pam_integration(
-        root, target, wallet_token ? AuthtokSource::kKernelKeyring : AuthtokSource::kNone);
+        root, target, wallet_token ? AuthtokSource::kKernelKeyring : AuthtokSource::kNone,
+        context);
 }
 [[nodiscard]] std::string_view authtok_source_id(AuthtokSource source);
 [[nodiscard]] std::optional<AuthtokSource> authtok_source_from_id(std::string_view id);
@@ -114,7 +136,14 @@ plan_pam_integration(const std::filesystem::path& root, TargetKind target, bool 
     const std::filesystem::path& root,
     std::string_view candidate_version);
 
+// Service predicate for the Noctalia target; the denied set is derived from the
+// target table so it cannot drift.
+[[nodiscard]] ServicePolicy noctalia_service_policy();
+
 [[nodiscard]] std::string snapshot_json(const DeploymentSnapshot& snapshot);
+// Inverse of snapshot_json, for clients that receive the snapshot over D-Bus.
+[[nodiscard]] std::expected<DeploymentSnapshot, std::string> parse_snapshot_json(
+    std::string_view text);
 [[nodiscard]] std::string plan_json(const PamPlan& plan);
 
 } // namespace su::deploy

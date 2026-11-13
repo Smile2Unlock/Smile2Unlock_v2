@@ -1,4 +1,6 @@
 #include "platform/linux/deploy_client/deployment_client.h"
+#include "platform/linux/deploy_client/noctalia_config.h"
+#include "platform/linux/deploy_client/noctalia_plan.h"
 
 #include <systemd/sd-bus.h>
 #include <nlohmann/json.hpp>
@@ -10,6 +12,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -205,9 +208,14 @@ std::expected<std::string, std::string> call_target_method(
     return output;
 }
 
+// Runs between Plan and Apply so a plan that disagrees with what the user's
+// session inspected is dropped (it expires unused) instead of being applied.
+using PlanVerifier = std::function<std::expected<void, std::string>(std::string_view)>;
+
 std::expected<std::string, std::string>
 configure_pam_target(std::string_view target, std::string_view authtok_source,
-                     std::optional<bool> legacy_wallet_token = std::nullopt) {
+                     std::optional<bool> legacy_wallet_token = std::nullopt,
+                     const PlanVerifier& verify_plan = {}) {
     sd_bus* bus = nullptr;
     sd_bus_error error = SD_BUS_ERROR_NULL;
     sd_bus_message* reply = nullptr;
@@ -240,10 +248,17 @@ configure_pam_target(std::string_view target, std::string_view authtok_source,
         return std::unexpected("deployment helper returned an invalid plan");
     }
     const auto owned_plan_id = std::string(plan_id);
+    const auto owned_description = std::string(plan_description != nullptr ? plan_description : "");
     ::sd_bus_message_unref(reply);
     reply = nullptr;
     ::sd_bus_error_free(&error);
     error = SD_BUS_ERROR_NULL;
+    if (verify_plan) {
+        if (const auto verified = verify_plan(owned_description); !verified) {
+            ::sd_bus_unref(bus);
+            return std::unexpected(verified.error());
+        }
+    }
 
     result = ::sd_bus_call_method(
         bus,
@@ -392,6 +407,51 @@ std::expected<std::string, std::string> configure_dms(bool enabled) {
 
 } // namespace
 
+std::expected<std::string, std::string> DeploymentClient::configure_noctalia() const {
+    const auto directory = noctalia_config_directory(noctalia_config_environment_from_process());
+    if (!directory) {
+        return std::unexpected("cannot locate the Noctalia configuration directory");
+    }
+    const auto policy = noctalia_service_policy();
+    // Inspect as the user, then hold the root helper's plan to the same answer.
+    const auto snapshot = inspect_deployment("/", noctalia_search_from_environment());
+    if (!snapshot) {
+        return std::unexpected(snapshot.error());
+    }
+    const auto expected = noctalia_expectation(*snapshot, policy);
+    if (!expected) {
+        return std::unexpected(expected.error());
+    }
+    // PAM first: the fragment is only useful once the stack contains the face
+    // module, and a refused (modified) fragment must not leave PAM half-wired.
+    auto applied = configure_pam_target(
+        "noctalia", {}, false, [&](std::string_view plan) {
+            return verify_noctalia_plan(plan, *expected, policy);
+        });
+    if (!applied) {
+        return applied;
+    }
+    if (const auto written = write_noctalia_fragment(*directory); !written) {
+        return std::unexpected("PAM was configured, but " + written.error());
+    }
+    return applied;
+}
+
+std::expected<std::string, std::string> DeploymentClient::rollback_noctalia() const {
+    auto restored = call_target_method("RollbackDesktopIntegration", "noctalia");
+    if (!restored) {
+        return restored;
+    }
+    const auto directory = noctalia_config_directory(noctalia_config_environment_from_process());
+    if (!directory) {
+        return restored;
+    }
+    if (const auto removed = remove_noctalia_fragment(*directory); !removed) {
+        return std::unexpected("PAM was restored, but " + removed.error());
+    }
+    return restored;
+}
+
 bool DeploymentClient::dms_available() const {
     return dms_executable().has_value();
 }
@@ -449,6 +509,9 @@ std::expected<std::string, std::string> DeploymentClient::configure_target(
     bool wallet_token) const {
     if (target == "dms" && wallet_token)
         return std::unexpected("wallet authtok is supported only for login targets");
+    if (target == "noctalia")
+        return wallet_token ? std::unexpected("wallet authtok is supported only for login targets")
+                            : configure_noctalia();
     return target == "dms" ? configure_dms(true) : configure_pam_target(target, {}, wallet_token);
 }
 
@@ -460,6 +523,10 @@ DeploymentClient::configure_target_source(std::string_view target,
         return std::unexpected("unsupported authtok source");
     if (target == "dms" && authtok_source != "none")
         return std::unexpected("wallet authtok is supported only for login targets");
+    if (target == "noctalia")
+        return authtok_source != "none"
+            ? std::unexpected("wallet authtok is supported only for login targets")
+            : configure_noctalia();
     return target == "dms" ? configure_dms(true) : configure_pam_target(target, authtok_source);
 }
 
@@ -506,6 +573,8 @@ DeploymentClient::plan_adoption(std::string_view target, std::string_view authto
 
 std::expected<std::string, std::string> DeploymentClient::rollback_target(
     std::string_view target) const {
+    if (target == "noctalia")
+        return rollback_noctalia();
     return target == "dms" ? configure_dms(false)
                            : call_target_method("RollbackDesktopIntegration", target);
 }

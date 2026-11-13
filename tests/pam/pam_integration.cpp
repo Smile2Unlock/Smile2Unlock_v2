@@ -222,6 +222,17 @@ bool run_timeout_case(std::string_view name, std::optional<bool> password_accept
     return passed;
 }
 
+// Noctalia's packaged service wraps `login` and its name comes from detection
+// of the compiled helper, so the fixture supplies both.
+std::string parent_service(su::deploy::TargetKind target) {
+    return target == su::deploy::TargetKind::kNoctalia
+        ? "noctalia" : std::string(su::deploy::target_service(target));
+}
+
+std::string password_stack(su::deploy::TargetKind target) {
+    return target == su::deploy::TargetKind::kNoctalia ? "login" : "system-auth";
+}
+
 bool run_administrator_case(
     su::deploy::TargetKind target,
     std::optional<su::control::ControlResult> face_result,
@@ -234,17 +245,34 @@ bool run_administrator_case(
     const auto socket_path = root / "control.sock";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(config_directory);
+    if (target == su::deploy::TargetKind::kNoctalia) {
+        // Fake helper that embeds the PAM service name Noctalia was built with.
+        const auto helper = root / "usr/libexec/noctalia/noctalia-pam-helper";
+        std::filesystem::create_directories(helper.parent_path());
+        std::ofstream(helper, std::ios::binary) << std::string("ELF\0pam_start\0noctalia\0", 23);
+        std::filesystem::permissions(helper, std::filesystem::perms::owner_all);
+        // The account asking for the change needs a password on file.
+        std::ofstream(root / "etc/passwd") << "tester:x:" << ::geteuid() << ":100::/:/bin/sh\n";
+        std::ofstream(root / "etc/shadow") << "tester:$6$hash:19000::::::\n";
+    }
     {
-        auto parent = std::ofstream(config_directory / su::deploy::target_service(target));
-        parent << "auth required " << (deny_parent ? "pam_deny.so" : "pam_permit.so")
-               << "\nauth include system-auth\naccount required pam_permit.so\n";
-        auto password = std::ofstream(config_directory / "system-auth");
+        auto parent = std::ofstream(config_directory / parent_service(target));
+        // Noctalia's packaged service is a bare wrapper: one auth line, no extras.
+        if (target != su::deploy::TargetKind::kNoctalia) {
+            parent << "auth required " << (deny_parent ? "pam_deny.so" : "pam_permit.so") << '\n';
+        }
+        parent << "auth include " << password_stack(target)
+               << "\naccount required pam_permit.so\n";
+        auto password = std::ofstream(config_directory / password_stack(target));
         // Stand-ins for a password verifier let us prove that the generated
         // stack reaches (or skips) the original fallback without host accounts.
         password << "auth required " << (password_accepts ? "pam_permit.so" : "pam_deny.so")
                  << '\n';
     }
-    auto plan = su::deploy::plan_pam_integration(root, target, false);
+    // The fixture is owned by the test user, so it stands in for root here.
+    const auto context = su::deploy::PlanContext{
+        .helper = su::deploy::RootHelperLookup{::geteuid()}, .requester_uid = ::geteuid()};
+    auto plan = su::deploy::plan_pam_integration(root, target, false, context);
     if (!plan) {
         return false;
     }
@@ -264,7 +292,7 @@ bool run_administrator_case(
     if (!su::deploy::apply_pam_plan(root, *plan)) {
         return false;
     }
-    auto pam = start_pam(config_directory, su::deploy::target_service(target));
+    auto pam = start_pam(config_directory, parent_service(target));
     if (!pam) {
         return false;
     }
@@ -310,14 +338,17 @@ bool run_administrator_case(
 
 bool administrator_stacks_preserve_fallback() {
     for (const auto target : {su::deploy::TargetKind::kSudo,
-             su::deploy::TargetKind::kSudoLogin, su::deploy::TargetKind::kPolkit}) {
+             su::deploy::TargetKind::kSudoLogin, su::deploy::TargetKind::kPolkit,
+             su::deploy::TargetKind::kNoctalia}) {
         if (!run_administrator_case(target, su::control::ControlResult::kAccepted, false)
             || !run_administrator_case(target, su::control::ControlResult::kRejected, true)
             || !run_administrator_case(target, su::control::ControlResult::kRejected, false)
             || !run_administrator_case(target, std::nullopt, true)
             || !run_administrator_case(target, std::nullopt, false)
             || !run_administrator_case(target, su::control::ControlResult::kBusy, true)
-            || !run_administrator_case(target, su::control::ControlResult::kAccepted, false, true)) {
+            || (target != su::deploy::TargetKind::kNoctalia
+                && !run_administrator_case(target, su::control::ControlResult::kAccepted, false,
+                                           true))) {
             return false;
         }
     }

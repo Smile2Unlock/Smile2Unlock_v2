@@ -33,6 +33,11 @@ public:
     plan_adoption(std::string_view target, std::string_view authtok_source = "none") const;
     [[nodiscard]] std::expected<std::string, std::string> rollback_target(
         std::string_view target) const;
+
+private:
+    // Managed PAM change plus the user-owned Noctalia config fragment.
+    [[nodiscard]] std::expected<std::string, std::string> configure_noctalia() const;
+    [[nodiscard]] std::expected<std::string, std::string> rollback_noctalia() const;
 };
 
 } // namespace su::deploy

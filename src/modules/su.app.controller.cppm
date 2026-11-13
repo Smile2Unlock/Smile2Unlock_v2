@@ -41,6 +41,8 @@ struct DeploymentTargetStatus {
     std::string role;
     std::string state;
     std::string detail;
+    // Translation key of a target-specific explanation; empty for the generic text.
+    std::string note;
     bool password_fallback = false;
     bool configured = false;
     bool configurable = false;

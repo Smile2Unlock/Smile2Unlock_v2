@@ -215,7 +215,7 @@ int collect_diagnostics(sd_bus_message* message, void*, sd_bus_error*) {
 }
 
 int inspect(sd_bus_message* message, void*, sd_bus_error*) {
-    const auto snapshot = su::deploy::inspect_deployment();
+    const auto snapshot = su::deploy::inspect_deployment("/", su::deploy::RootHelperLookup{});
     if (!snapshot) {
         return reply_error(message, snapshot.error());
     }
@@ -223,14 +223,29 @@ int inspect(sd_bus_message* message, void*, sd_bus_error*) {
     return reply_success(message, "s", payload.c_str());
 }
 
+std::expected<std::pair<std::uint32_t, std::uint32_t>, std::string> sender_identity(
+    sd_bus_message* message);
+
 int plan_integration_for_source(sd_bus_message* message, void* userdata, const char* target_text,
                                 su::deploy::AuthtokSource source, bool adoption = false) {
     const auto target = su::deploy::target_from_id(target_text);
     if (!target) {
         return reply_error(message, "unsupported desktop integration target");
     }
-    auto plan = adoption ? su::deploy::plan_pam_adoption("/", *target, source)
-                         : su::deploy::plan_pam_integration("/", *target, source);
+    // Default context: fixed-prefix helper lookup only. The helper runs as
+    // root, so neither PATH nor NOCTALIA_PAM_HELPER_PATH may influence it.
+    auto context = su::deploy::PlanContext{};
+    if (*target == su::deploy::TargetKind::kNoctalia) {
+        // The D-Bus credentials, not anything in the request, name the account
+        // whose password state decides whether Enter-to-unlock is safe.
+        const auto caller = sender_identity(message);
+        if (!caller) {
+            return reply_error(message, caller.error());
+        }
+        context.requester_uid = static_cast<uid_t>(caller->first);
+    }
+    auto plan = adoption ? su::deploy::plan_pam_adoption("/", *target, source, context)
+                         : su::deploy::plan_pam_integration("/", *target, source, context);
     if (!plan) {
         return reply_error(message, plan.error());
     }
@@ -325,7 +340,7 @@ int apply_integration(sd_bus_message* message, void* userdata, sd_bus_error*) {
     if (!applied) {
         return reply_error(message, applied.error());
     }
-    const auto snapshot = su::deploy::inspect_deployment();
+    const auto snapshot = su::deploy::inspect_deployment("/", su::deploy::RootHelperLookup{});
     if (!snapshot) {
         return reply_error(message, snapshot.error());
     }
@@ -350,7 +365,7 @@ int rollback_integration(sd_bus_message* message, void*, sd_bus_error*) {
     if (!rolled_back) {
         return reply_error(message, rolled_back.error());
     }
-    const auto snapshot = su::deploy::inspect_deployment();
+    const auto snapshot = su::deploy::inspect_deployment("/", su::deploy::RootHelperLookup{});
     if (!snapshot) {
         return reply_error(message, snapshot.error());
     }

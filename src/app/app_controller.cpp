@@ -572,7 +572,10 @@ SystemStatus AppController::load_system_status() {
     }
 
     const auto deployment_client = su::deploy::DeploymentClient{};
-    const auto deployment = su::deploy::inspect_deployment();
+    // The GUI is unprivileged, so it may honour the user's own environment when
+    // looking for Noctalia; the root helper never does and re-validates on plan.
+    const auto deployment = su::deploy::inspect_deployment(
+        "/", su::deploy::noctalia_search_from_environment());
     status.pam_status_known = deployment.has_value();
     status.deployment_helper_available = deployment_client.inspect().has_value();
     status.deployment_installer_available = deployment_client.installer_available();
@@ -615,7 +618,11 @@ SystemStatus AppController::load_system_status() {
                 configurable || target.adoptable, target.sealed_available,
                 status.storage_protection == StorageProtection::kHostTpm2);
             has_login_target = has_login_target || login;
-            has_lock_target = has_lock_target || lock;
+            // A Noctalia build we cannot extend is informational; it must not
+            // keep the overall "lock screens configured" summary from completing.
+            const auto informational_only = target.kind == su::deploy::TargetKind::kNoctalia
+                && target.state == su::deploy::TargetState::kUnsupported;
+            has_lock_target = has_lock_target || (lock && !informational_only);
             status.login_pam_configured = status.login_pam_configured || (login && configured);
             status.lock_pam_configured = status.lock_pam_configured || (lock && configured);
             if (configured) {
@@ -628,6 +635,7 @@ SystemStatus AppController::load_system_status() {
                 .role = std::string(su::deploy::target_role_id(target.role)),
                 .state = std::string(su::deploy::target_state_id(target.state)),
                 .detail = target.detail,
+                .note = target.note,
                 .password_fallback = target.password_fallback,
                 .configured = configured,
                 .configurable = configurable,

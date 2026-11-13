@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -84,7 +85,17 @@ constexpr sd_bus_vtable vtable[] = {
 };
 } // namespace
 
+bool noctalia_config_tests(const std::filesystem::path& base);
+bool noctalia_plan_tests();
+
 int main() {
+    const auto config_root = std::filesystem::current_path() / "build" / "test-data"
+        / ("noctalia-config-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(config_root);
+    const auto config_ok = noctalia_config_tests(config_root);
+    std::filesystem::remove_all(config_root);
+    if (!config_ok || !noctalia_plan_tests())
+        return 1;
     PrivateBus daemon;
     if (!daemon.start())
         return 1;
