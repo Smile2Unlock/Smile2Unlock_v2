@@ -1,4 +1,3 @@
-import { ScrollView } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 
 export struct ProfileRow {
@@ -365,17 +364,110 @@ export component PageHeader inherits VerticalLayout {
     }
 }
 
-// Scrolling page with a centred, width-limited content column.
-export component Page inherits ScrollView {
-    content-width: self.width;
-    VerticalLayout {
-        x: (parent.width - self.width) / 2;
-        width: min(parent.width - UiTheme.s8 * 2, UiTheme.content-max);
-        padding-top: UiTheme.s8;
-        padding-bottom: UiTheme.s8;
-        spacing: UiTheme.s6;
-        alignment: start;
-        @children
+// Thin vertical scrollbar for a Flickable: the parent binds `content-y` to the
+// flickable and sizes this to the content's right edge. The thumb widens on hover
+// and can be dragged; a click on the track jumps there.
+export component VerticalScrollBar inherits Rectangle {
+    in property <length> content-height;
+    in-out property <length> content-y;
+
+    property <length> view-height: self.height;
+    property <length> overflow: max(0px, root.content-height - root.view-height);
+    property <length> thumb-height: root.content-height > 0
+        ? max(UiTheme.scrollbar-thumb-min, root.view-height * root.view-height / root.content-height) : 0;
+    property <length> thumb-travel: root.view-height - root.thumb-height;
+    property <length> thumb-y: root.overflow > 0 ? -root.content-y / root.overflow * root.thumb-travel : 0;
+    property <length> grab-offset;
+
+    function scroll-to(thumb-top: length) {
+        root.content-y = -max(0, min(1, thumb-top / root.thumb-travel)) * root.overflow;
+    }
+
+    width: UiTheme.scrollbar-track;
+    visible: root.overflow > 0;
+
+    thumb := Rectangle {
+        x: parent.width - self.width - UiTheme.s1;
+        y: root.thumb-y;
+        width: touch.has-hover || touch.pressed ? UiTheme.scrollbar-thumb-hover : UiTheme.scrollbar-thumb;
+        height: root.thumb-height;
+        border-radius: self.width / 2;
+        background: touch.has-hover || touch.pressed ? UiTheme.text-dim : UiTheme.text-faint;
+        animate width, background { duration: 120ms; }
+    }
+    touch := TouchArea {
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.grab-offset = self.mouse-y >= root.thumb-y && self.mouse-y <= root.thumb-y + root.thumb-height
+                    ? self.mouse-y - root.thumb-y : root.thumb-height / 2;
+                root.scroll-to(self.mouse-y - root.grab-offset);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.scroll-to(self.mouse-y - root.grab-offset);
+            }
+        }
+    }
+}
+
+// Scrolling page with a centred, width-limited content column. Media pages pass
+// a larger `content-limit`; the wheel scrolls, the thin bar can be dragged.
+export component Page inherits Rectangle {
+    in property <length> content-limit: UiTheme.content-max;
+
+    flick := Flickable {
+        interactive: false;
+        content-width: self.width;
+        VerticalLayout {
+            x: (parent.width - self.width) / 2;
+            width: min(parent.width - UiTheme.s8 * 2, root.content-limit);
+            padding-top: UiTheme.s8;
+            padding-bottom: UiTheme.s8;
+            spacing: UiTheme.s6;
+            alignment: start;
+            @children
+        }
+    }
+    VerticalScrollBar {
+        x: parent.width - self.width;
+        height: parent.height;
+        content-height: flick.content-height;
+        content-y <=> flick.content-y;
+    }
+}
+
+// Read-only long text (licence texts): scrollable, selectable, copyable.
+export component TextViewer inherits Rectangle {
+    in property <string> text;
+
+    background: UiTheme.inset;
+    border-radius: UiTheme.radius-control;
+    clip: true;
+    changed text => { flick.content-y = 0; }
+
+    flick := Flickable {
+        interactive: false;
+        content-height: body.height + UiTheme.s4 * 2;
+        body := TextInput {
+            x: UiTheme.s4;
+            y: UiTheme.s4;
+            width: parent.width - UiTheme.s4 * 2 - UiTheme.scrollbar-track;
+            height: self.preferred-height;
+            text: root.text;
+            read-only: true;
+            wrap: word-wrap;
+            color: UiTheme.text-dim;
+            font-size: UiTheme.font-small;
+            selection-background-color: UiTheme.tonal;
+            selection-foreground-color: UiTheme.on-tonal;
+        }
+    }
+    VerticalScrollBar {
+        x: parent.width - self.width;
+        height: parent.height;
+        content-height: flick.content-height;
+        content-y <=> flick.content-y;
     }
 }
 
