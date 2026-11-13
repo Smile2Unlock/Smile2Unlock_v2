@@ -1,12 +1,13 @@
 import { CapturePanel, CaptureRow } from "captures.slint";
 export { CaptureRow } from "captures.slint";
-import { ComboBox, LineEdit, Palette, SpinBox } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
 export { UiTheme } from "theme.slint";
 export { Tr } from "i18n.slint";
 export { ProfileRow } from "components.slint";
 export { DeploymentTargetRow } from "deployment.slint";
 export { ContributorRow, LicenseSummaryRow } from "about.slint";
 import { AboutContent, ContributorRow, LicenseSummaryRow } from "about.slint";
+import { Dropdown, Stepper, TextField } from "inputs.slint";
 import { UiTheme } from "theme.slint";
 import { Tr } from "i18n.slint";
 import { KeyringGroup } from "wallet.slint";
@@ -419,8 +420,9 @@ export component AppWindow inherits Window {
                         title: Tr.t("account.windows_password");
                         subtitle: root.account_credential_configured
                             ? Tr.t("account.credential_configured") : Tr.t("account.credential_missing");
-                        LineEdit {
+                        TextField {
                             width: UiTheme.field-width;
+                            accessible-label: Tr.t("account.windows_password");
                             text <=> root.account_password_text;
                             input-type: InputType.password;
                             enabled: !root.busy;
@@ -556,11 +558,11 @@ export component AppWindow inherits Window {
                     hint: Tr.t("settings.camera_detail");
                     Row {
                         title: Tr.t("settings.camera_device");
-                        ComboBox { width: UiTheme.field-width * 1.5; model: root.camera_options; current-index <=> root.selected_camera; }
+                        Dropdown { accessible-label: Tr.t("settings.camera_device"); width: UiTheme.field-width * 1.5; model: root.camera_options; current-index <=> root.selected_camera; }
                     }
                     Row {
                         title: Tr.t("settings.preview_fps");
-                        SpinBox { width: UiTheme.field-narrow * 1.4; minimum: 1; maximum: 60; value <=> root.preview_fps; }
+                        Stepper { accessible-label: Tr.t("settings.preview_fps"); minimum: 1; maximum: 60; value <=> root.preview_fps; }
                     }
                 }
                 Group {
@@ -568,8 +570,9 @@ export component AppWindow inherits Window {
                     hint: Tr.t("settings.appearance_detail");
                     Row {
                         title: Tr.t("settings.language");
-                        ComboBox {
+                        Dropdown {
                             width: UiTheme.field-width * 1.5;
+                            accessible-label: Tr.t("settings.language");
                             model: root.language_names;
                             current-index <=> root.language_index;
                             selected(_) => {
@@ -637,17 +640,17 @@ export component AppWindow inherits Window {
                     Row {
                         title: Tr.t("settings.auto_delay");
                         subtitle: Tr.t("settings.auto_delay_detail");
-                        SpinBox { enabled: root.recognition_mode == 1; width: UiTheme.field-narrow * 1.4; minimum: 0; maximum: 60; value <=> root.auto_delay_sec; }
+                        Stepper { accessible-label: Tr.t("settings.auto_delay"); enabled: root.recognition_mode == 1; minimum: 0; maximum: 60; value <=> root.auto_delay_sec; }
                     }
                     Row {
                         title: Tr.t("settings.retry_delay");
                         subtitle: Tr.t("settings.retry_delay_detail");
-                        SpinBox { enabled: root.recognition_mode == 1; width: UiTheme.field-narrow * 1.4; minimum: 1; maximum: 60; value <=> root.retry_delay_sec; }
+                        Stepper { accessible-label: Tr.t("settings.retry_delay"); enabled: root.recognition_mode == 1; minimum: 1; maximum: 60; value <=> root.retry_delay_sec; }
                     }
                     Row {
                         title: Tr.t("settings.auto_timeout");
                         subtitle: Tr.t("settings.timeout_detail");
-                        SpinBox { enabled: root.recognition_mode == 1; width: UiTheme.field-narrow * 1.4; minimum: 5; maximum: 600; value <=> root.timeout_sec; }
+                        Stepper { accessible-label: Tr.t("settings.auto_timeout"); enabled: root.recognition_mode == 1; minimum: 5; maximum: 600; value <=> root.timeout_sec; }
                     }
                 }
                 CapturePanel {

@@ -1,7 +1,7 @@
-import { LineEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import { Tr } from "i18n.slint";
 import { Button, ButtonKind, Group, Note, Row, Tone } from "components.slint";
+import { TextField } from "inputs.slint";
 
 // Live camera preview with the detected face box and a status chip.
 export component PreviewFrame inherits Rectangle {
@@ -83,7 +83,12 @@ export component CaptureControls inherits VerticalLayout {
         hint: root.activity-detail;
         Row {
             title: Tr.t("enrollment.sample_name");
-            LineEdit { width: UiTheme.field-width * 0.8; text <=> root.label; enabled: !root.busy; }
+            TextField {
+                width: UiTheme.field-width * 0.8;
+                text <=> root.label;
+                enabled: !root.busy;
+                accessible-label: Tr.t("enrollment.sample_name");
+            }
         }
         Row {
             title: Tr.t("settings.camera");

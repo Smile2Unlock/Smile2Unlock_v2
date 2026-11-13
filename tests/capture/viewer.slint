@@ -1,4 +1,5 @@
-import { ScrollView, Palette } from "std-widgets.slint";
+import { Palette } from "std-widgets.slint";
+import { Page } from "../../src/app/ui/components.slint";
 import { CapturePanel, CaptureRow } from "../../src/app/ui/captures.slint";
 export { CaptureRow } from "../../src/app/ui/captures.slint";
 export { Tr } from "../../src/app/ui/i18n.slint";
@@ -12,16 +13,11 @@ export component CaptureTestWindow inherits Window {
     preferred-width: UiTheme.window-width;
     preferred-height: UiTheme.window-height * 1.5;
     background: UiTheme.canvas;
-    ScrollView {
-        content-width: self.width;
-        VerticalLayout {
-            padding: UiTheme.s8;
-            alignment: start;
-            CapturePanel {
-                records: root.records;
-                selected: root.selected;
-                selected-image: root.photo;
-            }
+    Page {
+        CapturePanel {
+            records: root.records;
+            selected: root.selected;
+            selected-image: root.photo;
         }
     }
 }

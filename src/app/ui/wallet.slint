@@ -1,7 +1,7 @@
-import { LineEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import { Tr } from "i18n.slint";
 import { Button, ButtonKind, Group, Note, Row, Toggle } from "components.slint";
+import { TextField } from "inputs.slint";
 
 // Keyring auto-unlock: one master switch. Turning it on asks for the sign-in
 // password inline; turning it off asks for confirmation first. The password is
@@ -68,8 +68,9 @@ export component KeyringGroup inherits VerticalLayout {
         if root.entering: Row {
             title: Tr.t("wallet.password_label");
             subtitle: Tr.t("wallet.password_detail");
-            LineEdit {
+            TextField {
                 width: UiTheme.field-width;
+                accessible-label: Tr.t("wallet.password_label");
                 text <=> root.password;
                 input-type: InputType.password;
                 enabled: !root.busy && root.usable;

@@ -1,7 +1,7 @@
-import { ComboBox, TextEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import { Tr } from "i18n.slint";
-import { Badge, Button, ButtonKind, Group, Note, PageHeader, Row, Tone } from "components.slint";
+import { Badge, Button, ButtonKind, Group, Note, PageHeader, Row, TextViewer, Tone } from "components.slint";
+import { Dropdown } from "inputs.slint";
 
 export struct ContributorRow { name: string, role: string, }
 export struct LicenseSummaryRow { name: string, license: string, }
@@ -81,7 +81,8 @@ export component AboutContent inherits VerticalLayout {
         hint: Tr.t("about.offline");
         Row {
             title: Tr.t("about.license_pick");
-            license-selector := ComboBox {
+            license-selector := Dropdown {
+                accessible-label: Tr.t("about.license_pick");
                 width: UiTheme.field-width * 1.5;
                 model: root.license-names;
                 current-index <=> root.license-index;
@@ -91,11 +92,9 @@ export component AboutContent inherits VerticalLayout {
         Rectangle {
             VerticalLayout {
                 padding: UiTheme.s4;
-                TextEdit {
+                TextViewer {
                     text: root.license-text;
-                    read-only: true;
                     height: UiTheme.license-height;
-                    font-size: UiTheme.font-small;
                 }
             }
         }
