@@ -5,6 +5,9 @@
 #include <iostream>
 #include <string>
 
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace {
 
 using namespace su::deploy;
@@ -81,6 +84,50 @@ void refuses_modified(const std::filesystem::path& base) {
           "a symlink is never followed or removed");
 }
 
+void exclusive_and_nofollow_writes(const std::filesystem::path& base) {
+    const auto directory = base / "hardening";
+    std::filesystem::create_directories(directory);
+    const auto path = directory / kNoctaliaFragmentName;
+
+    // A symlink already at the destination is refused and never written through.
+    write(base / "victim.toml", "victim\n");
+    std::filesystem::create_symlink(base / "victim.toml", path);
+    const auto linked = write_noctalia_fragment(directory);
+    check(!linked && linked.error().contains("not a regular file"),
+          "a symlink at the destination is refused");
+    check(read(base / "victim.toml") == "victim\n", "the symlink target is untouched");
+    std::filesystem::remove(path);
+
+    // A pre-planted temporary name must not be followed or reused (O_EXCL|O_NOFOLLOW).
+    const auto temporary = directory / (std::string(".") + std::string(kNoctaliaFragmentName)
+                                        + "." + std::to_string(::getpid()) + ".tmp");
+    std::filesystem::create_symlink(base / "victim.toml", temporary);
+    const auto planted = write_noctalia_fragment(directory);
+    check(!planted && !std::filesystem::exists(path), "a planted temporary symlink aborts the write");
+    check(read(base / "victim.toml") == "victim\n", "the file behind the temporary symlink is untouched");
+    std::filesystem::remove(temporary);
+
+    write(temporary, "stale");
+    check(!write_noctalia_fragment(directory) && read(temporary) == "stale",
+          "an existing temporary file is never reused");
+    std::filesystem::remove(temporary);
+
+    // Anything larger than our own fragment cannot be it and is left alone.
+    write(path, std::string(8192, 'x'));
+    check(!write_noctalia_fragment(directory) && !remove_noctalia_fragment(directory)
+              && read(path) == std::string(8192, 'x'),
+          "an oversize file is neither replaced nor removed");
+    std::filesystem::remove(path);
+
+    // A FIFO must not hang the read.
+    check(::mkfifo(path.c_str(), 0600) == 0, "a FIFO can be planted");
+    check(!write_noctalia_fragment(directory) && !remove_noctalia_fragment(directory),
+          "a FIFO at the destination is refused without blocking");
+    std::filesystem::remove(path);
+    check(write_noctalia_fragment(directory).has_value() && read(path) == noctalia_fragment_content(),
+          "a clean directory still works afterwards");
+}
+
 } // namespace
 
 bool noctalia_config_tests(const std::filesystem::path& base) {
@@ -89,5 +136,6 @@ bool noctalia_config_tests(const std::filesystem::path& base) {
     content_rules();
     write_and_remove(base);
     refuses_modified(base);
+    exclusive_and_nofollow_writes(base);
     return failures == before;
 }

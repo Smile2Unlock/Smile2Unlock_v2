@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -68,16 +69,28 @@ void scanner_cases() {
           "the default build reports login");
     check(scan_compiled_pam_service(fake_helper("noctalia") + std::string("sudo\0", 5), kCandidates)
                   .service == "noctalia",
-          "a Noctalia-branded name wins over unrelated matches");
+          "unrelated matches never displace the Noctalia-branded name");
     check(scan_compiled_pam_service(std::string("sudo\0sshd\0", 10), kCandidates).outcome
-              == NoctaliaScan::kAmbiguous,
-          "several unrelated matches are refused");
-    check(scan_compiled_pam_service(std::string("sudo\0", 5), kCandidates).service == "sudo",
-          "a single unbranded match is accepted");
+              == NoctaliaScan::kLogin,
+          "several unrelated matches are ignored, not guessed from");
+    const auto lone = scan_compiled_pam_service(std::string("sudo\0", 5), kCandidates);
+    check(lone.outcome == NoctaliaScan::kLogin && lone.service == "login",
+          "a single non-Noctalia match is no longer accepted");
+    const std::vector<std::string> two_branded{"noctalia", "noctalia-lock"};
+    check(scan_compiled_pam_service(std::string("noctalia\0noctalia-lock\0", 25), two_branded)
+                  .outcome == NoctaliaScan::kAmbiguous,
+          "several Noctalia-branded matches are refused");
     check(is_valid_pam_service_name("noctalia-lock.1") && !is_valid_pam_service_name("a/b")
               && !is_valid_pam_service_name("") && !is_valid_pam_service_name(".hidden")
               && !is_valid_pam_service_name(std::string(65, 'a')),
           "service names are plain file names");
+}
+
+// Tests run unprivileged, so the "root" lookup trusts the test user as owner;
+// the owner check itself is exercised in noctalia_hardening.cpp.
+const HelperLookup& test_root_lookup() {
+    static const HelperLookup lookup = RootHelperLookup{::geteuid()};
+    return lookup;
 }
 
 struct EnvGuard {
@@ -91,13 +104,21 @@ struct EnvGuard {
     }
 };
 
-TargetStatus noctalia_status(const std::filesystem::path& root) {
-    const auto snapshot = inspect_deployment(root);
+TargetStatus noctalia_status(const std::filesystem::path& root,
+                             const HelperLookup& lookup = noctalia_search_from_environment()) {
+    const auto snapshot = inspect_deployment(root, lookup);
     check(snapshot.has_value(), "snapshot is generated");
     const auto found = std::ranges::find(snapshot->targets, TargetKind::kNoctalia,
                                           &TargetStatus::kind);
     check(found != snapshot->targets.end(), "snapshot lists the Noctalia target");
     return found == snapshot->targets.end() ? TargetStatus{} : *found;
+}
+
+// An unprivileged account with a password, in a throwaway passwd/shadow.
+PlanContext test_context(const std::filesystem::path& root) {
+    write(root / "etc/passwd", "tester:x:" + std::to_string(::geteuid()) + ":100::/home/t:/bin/sh\n");
+    write(root / "etc/shadow", "tester:$6$hash:19000:0:99999:7:::\n", 0600);
+    return {.helper = test_root_lookup(), .requester_uid = ::geteuid()};
 }
 
 void detection_states(const std::filesystem::path& base) {
@@ -131,7 +152,7 @@ void detection_states(const std::filesystem::path& base) {
         check(status.state == TargetState::kUnsupported
                   && status.note == "target.noctalia_built_with_login",
               "a login build is unsupported");
-        check(!plan_pam_integration(root, TargetKind::kNoctalia, false),
+        check(!plan_pam_integration(root, TargetKind::kNoctalia, false, test_context(root)),
               "a login build is never planned");
         check(read(root / "etc/pam.d/login") == "auth required pam_unix.so\n",
               "login is untouched");
@@ -155,11 +176,11 @@ void managed_round_trip(const std::filesystem::path& root) {
     write(root / "etc/pam.d/login", "auth required pam_unix.so\n");
     const EnvGuard env(nullptr, "/nonexistent");
 
-    const auto before = noctalia_status(root);
+    const auto before = noctalia_status(root, test_root_lookup());
     check(before.state == TargetState::kSupported && before.service == "noctalia"
               && before.note == "target.noctalia_press_enter",
           "a Noctalia build with a packaged service is configurable");
-    const auto plan = plan_pam_integration(root, TargetKind::kNoctalia, false);
+    const auto plan = plan_pam_integration(root, TargetKind::kNoctalia, false, test_context(root));
     check(plan.has_value() && plan->service == "noctalia", "the detected service is planned");
     if (!plan) {
         return;
@@ -171,7 +192,7 @@ void managed_round_trip(const std::filesystem::path& root) {
     check(read(root / "etc/pam.d/smile2unlock-noctalia-auth").contains("pam_smile2unlock.so"),
           "the managed substack carries the face module");
     check(read(root / "etc/pam.d/login") == "auth required pam_unix.so\n", "login is untouched");
-    const auto managed = noctalia_status(root);
+    const auto managed = noctalia_status(root, test_root_lookup());
     check(managed.state == TargetState::kManaged && managed.password_fallback,
           "the target reports managed with a password fallback");
     check(rollback_pam_integration(root, TargetKind::kNoctalia).has_value(),
@@ -179,15 +200,18 @@ void managed_round_trip(const std::filesystem::path& root) {
     check(read(root / "etc/pam.d/noctalia") == kPackagedService
               && !std::filesystem::exists(root / "etc/pam.d/smile2unlock-noctalia-auth"),
           "rollback restores the packaged service");
-    check(noctalia_status(root).state == TargetState::kSupported, "the target is configurable again");
+    check(noctalia_status(root, test_root_lookup()).state == TargetState::kSupported,
+          "the target is configurable again");
 }
 
 } // namespace
+
+bool noctalia_hardening_tests(const std::filesystem::path& base);
 
 bool noctalia_deployment_tests(const std::filesystem::path& base) {
     const auto before = failures;
     scanner_cases();
     detection_states(base / "detection");
     managed_round_trip(base / "managed");
-    return failures == before;
+    return noctalia_hardening_tests(base / "hardening") && failures == before;
 }
