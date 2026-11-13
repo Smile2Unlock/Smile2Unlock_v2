@@ -1,7 +1,7 @@
-import { SpinBox } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import { Tr } from "i18n.slint";
 import { Button, ButtonKind, Group, Row, Toggle } from "components.slint";
+import { Stepper } from "inputs.slint";
 
 export struct CaptureRow { id: string, time: string, reason: string, thumbnail: image, ratio: float }
 
@@ -34,11 +34,11 @@ export component CapturePanel inherits VerticalLayout {
         }
         Row {
             title: Tr.t("capture.days");
-            SpinBox { width: UiTheme.field-narrow; value <=> root.days; minimum: 1; maximum: 90; }
+            Stepper { accessible-label: Tr.t("capture.days"); value <=> root.days; minimum: 1; maximum: 90; }
         }
         Row {
             title: Tr.t("capture.count");
-            SpinBox { width: UiTheme.field-narrow; value <=> root.max-count; minimum: 1; maximum: 200; }
+            Stepper { accessible-label: Tr.t("capture.count"); value <=> root.max-count; minimum: 1; maximum: 200; }
         }
     }
 

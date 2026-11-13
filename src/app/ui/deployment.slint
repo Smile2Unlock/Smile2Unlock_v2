@@ -1,7 +1,7 @@
-import { LineEdit } from "std-widgets.slint";
 import { UiTheme } from "theme.slint";
 import { Tr } from "i18n.slint";
 import { Button, ButtonKind, Chevron, Group, Note, ProgressBar, Row, Status, Tone, Toggle } from "components.slint";
+import { TextField } from "inputs.slint";
 
 export struct DeploymentTargetRow {
     id: string,
@@ -320,8 +320,9 @@ export component ModelsGroup inherits VerticalLayout {
         if !root.downloading: Row {
             title: Tr.t("models.mirror_title");
             subtitle: Tr.t("models.mirror_hint");
-            LineEdit {
+            TextField {
                 width: UiTheme.field-width * 1.5;
+                accessible-label: Tr.t("models.mirror_title");
                 text <=> root.mirror;
             }
         }

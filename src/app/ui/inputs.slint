@@ -1,0 +1,343 @@
+import { UiTheme } from "theme.slint";
+import { Chevron } from "components.slint";
+
+// Filled text field on the inset tone. The accent ring marks keyboard focus.
+// Slint paints the caret with the text colour, so it is not themed separately.
+export component TextField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in property <InputType> input-type: InputType.text;
+    callback edited(string);
+    callback accepted(string);
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    height: UiTheme.field-height;
+    border-radius: UiTheme.radius-control;
+    border-width: input.has-focus ? UiTheme.stroke : 0;
+    border-color: UiTheme.accent;
+    background: UiTheme.inset;
+    opacity: enabled ? 1 : UiTheme.disabled-alpha;
+    forward-focus: input;
+    accessible-role: text-input;
+    accessible-value: input.text;
+    accessible-placeholder-text: root.placeholder;
+    accessible-enabled: root.enabled;
+
+    Rectangle {
+        border-radius: parent.border-radius;
+        background: touch.has-hover && root.enabled ? UiTheme.text.with-alpha(UiTheme.hover-alpha) : transparent;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+    HorizontalLayout {
+        padding-left: UiTheme.s4;
+        padding-right: UiTheme.s4;
+        Rectangle {
+            input := TextInput {
+                width: parent.width;
+                height: parent.height;
+                enabled: root.enabled;
+                input-type: root.input-type;
+                color: UiTheme.text;
+                font-size: UiTheme.font-body;
+                vertical-alignment: center;
+                selection-background-color: UiTheme.tonal;
+                selection-foreground-color: UiTheme.on-tonal;
+                accessible-role: none;
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(self.text); }
+            }
+            if input.text == "": Text {
+                width: parent.width;
+                height: parent.height;
+                text: root.placeholder;
+                color: UiTheme.text-faint;
+                font-size: UiTheme.font-body;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+// The menu opened by a Dropdown. Up / Down and hover move the highlight, Enter
+// picks it, Escape dismisses. Lives in its own component because a popup's
+// contents cannot be reached from the component that opens it.
+component DropdownMenu inherits Rectangle {
+    in property <[string]> model;
+    in property <int> current-index;
+    callback chosen(int);
+    callback dismissed;
+
+    property <int> highlighted: root.current-index;
+    property <length> inner-padding: UiTheme.s1;
+
+    function reveal-highlighted() {
+        let top = root.inner-padding + root.highlighted * UiTheme.menu-item-height;
+        flick.content-y = -max(0px, min(
+            max(-flick.content-y, top + UiTheme.menu-item-height - root.height),
+            top));
+    }
+
+    background: UiTheme.group-hover;
+    border-radius: UiTheme.radius-control;
+    border-width: UiTheme.hairline;
+    border-color: UiTheme.outline;
+    clip: true;
+    init => {
+        menu-focus.focus();
+        root.reveal-highlighted();
+    }
+
+    menu-focus := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.DownArrow) {
+                root.highlighted = min(root.highlighted + 1, root.model.length - 1);
+            } else if (event.text == Key.UpArrow) {
+                root.highlighted = max(root.highlighted - 1, 0);
+            } else if (event.text == "\n" || event.text == " ") {
+                root.chosen(root.highlighted);
+                return accept;
+            } else if (event.text == Key.Escape) {
+                root.dismissed();
+                return accept;
+            } else {
+                return reject;
+            }
+            root.reveal-highlighted();
+            return accept;
+        }
+        flick := Flickable {
+            interactive: false;
+            content-height: root.model.length * UiTheme.menu-item-height + root.inner-padding * 2;
+            VerticalLayout {
+                padding: root.inner-padding;
+                for item[index] in root.model: Rectangle {
+                    height: UiTheme.menu-item-height;
+                    border-radius: UiTheme.radius-small;
+                    background: root.current-index == index ? UiTheme.nav-selected
+                        : root.highlighted == index ? UiTheme.text.with-alpha(UiTheme.press-alpha) : transparent;
+                    HorizontalLayout {
+                        padding-left: UiTheme.s4;
+                        padding-right: UiTheme.s4;
+                        Text {
+                            text: item;
+                            color: root.current-index == index ? UiTheme.on-nav-selected : UiTheme.text;
+                            font-size: UiTheme.font-body;
+                            font-weight: root.current-index == index ? UiTheme.weight-bold : UiTheme.weight-regular;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    TouchArea {
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                root.highlighted = index;
+                            }
+                        }
+                        clicked => { root.chosen(index); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Exposed dropdown menu: a field showing the current value that opens a menu of
+// the model's entries.
+export component Dropdown inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current-index: 0;
+    out property <string> current-value: root.model[root.current-index];
+    in property <bool> enabled: true;
+    callback selected(string);
+
+    function choose(index: int) {
+        popup.close();
+        field-focus.focus();
+        root.current-index = index;
+        root.selected(root.model[index]);
+    }
+
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    height: UiTheme.field-height;
+    border-radius: UiTheme.radius-control;
+    border-width: field-focus.has-focus ? UiTheme.stroke : 0;
+    border-color: UiTheme.accent;
+    background: UiTheme.inset;
+    opacity: enabled ? 1 : UiTheme.disabled-alpha;
+    forward-focus: field-focus;
+    accessible-role: combobox;
+    accessible-value: root.current-value;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { popup.show(); }
+
+    Rectangle {
+        border-radius: parent.border-radius;
+        background: touch.has-hover && root.enabled ? UiTheme.text.with-alpha(UiTheme.hover-alpha) : transparent;
+    }
+    HorizontalLayout {
+        padding-left: UiTheme.s4;
+        padding-right: UiTheme.s4;
+        spacing: UiTheme.s3;
+        Text {
+            text: root.current-value;
+            color: UiTheme.text;
+            font-size: UiTheme.font-body;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            Chevron { open: true; }
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            field-focus.focus();
+            popup.show();
+        }
+    }
+    field-focus := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == "\n" || event.text == " " || event.text == Key.DownArrow) {
+                popup.show();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + UiTheme.s1;
+        width: root.width;
+        height: min(UiTheme.menu-max-height, root.model.length * UiTheme.menu-item-height + UiTheme.s2);
+        close-policy: close-on-click-outside;
+        DropdownMenu {
+            model: root.model;
+            current-index: root.current-index;
+            chosen(index) => { root.choose(index); }
+            dismissed => {
+                popup.close();
+                field-focus.focus();
+            }
+        }
+    }
+}
+
+// Round − / + button of the Stepper.
+component StepButton inherits Rectangle {
+    in property <bool> plus;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    width: UiTheme.field-height - UiTheme.s2;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: touch.pressed && root.enabled ? UiTheme.text.with-alpha(UiTheme.press-alpha)
+        : touch.has-hover && root.enabled ? UiTheme.text.with-alpha(UiTheme.hover-alpha) : transparent;
+    opacity: enabled ? 1 : UiTheme.disabled-alpha;
+
+    Path {
+        width: parent.width * 0.36;
+        height: self.width;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        viewbox-width: 10;
+        viewbox-height: 10;
+        stroke: UiTheme.text-dim;
+        stroke-width: UiTheme.stroke;
+        commands: root.plus ? "M 0 5 L 10 5 M 5 0 L 5 10" : "M 0 5 L 10 5";
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Number field with − / + buttons; Up / Down keys step it too.
+export component Stepper inherits Rectangle {
+    in-out property <int> value;
+    in property <int> minimum: 0;
+    in property <int> maximum: 100;
+    in property <bool> enabled: true;
+    callback edited(int);
+
+    function step(delta: int) {
+        if (root.enabled && root.value + delta >= root.minimum && root.value + delta <= root.maximum) {
+            root.value += delta;
+            root.edited(root.value);
+        }
+    }
+
+    width: UiTheme.stepper-width;
+    height: UiTheme.field-height;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    border-radius: UiTheme.radius-control;
+    border-width: focus.has-focus ? UiTheme.stroke : 0;
+    border-color: UiTheme.accent;
+    background: UiTheme.inset;
+    opacity: enabled ? 1 : UiTheme.disabled-alpha;
+    forward-focus: focus;
+    accessible-role: spinbox;
+    accessible-value: "\{root.value}";
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: 1;
+    accessible-enabled: root.enabled;
+    accessible-action-increment => { root.step(1); }
+    accessible-action-decrement => { root.step(-1); }
+
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { focus.focus(); }
+    }
+    HorizontalLayout {
+        padding: UiTheme.s1;
+        StepButton {
+            enabled: root.enabled && root.value > root.minimum;
+            clicked => { root.step(-1); }
+        }
+        Text {
+            text: "\{root.value}";
+            color: UiTheme.text;
+            font-size: UiTheme.font-body;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        StepButton {
+            plus: true;
+            enabled: root.enabled && root.value < root.maximum;
+            clicked => { root.step(1); }
+        }
+    }
+    focus := FocusScope {
+        x: 0;
+        width: 0;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.UpArrow) {
+                root.step(1);
+                return accept;
+            } else if (event.text == Key.DownArrow) {
+                root.step(-1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
