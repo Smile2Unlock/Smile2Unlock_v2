@@ -730,6 +730,7 @@ if is_plat("linux") then
         set_default(false)
         apply_cpp_target("binary")
         add_files("tests/deploy_client/*.cpp", "src/platform/linux/deploy_client/*.cpp")
+        add_deps("su_deploy")
         add_packages("nlohmann_json")
         add_syslinks("systemd")
         add_tests("default")
