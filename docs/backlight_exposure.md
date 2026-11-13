@@ -148,6 +148,47 @@ pixels so templates and scores do not shift. The detector input is BGR, so the
 centre luma is measured with `PixelOrder::bgr` (`measure_luma` defaults to RGB;
 reading BGR data as RGB would swap the red and blue weights).
 
+## User switch
+
+Settings > Recognition policy has a "Backlight compensation" switch (config key
+`backlight_compensation`, default on). It covers both halves of the feature:
+the exposure loop and the low-light detection retry.
+
+OFF means the program behaves as it did before the feature:
+
+- No camera control is ever written: `observe_exposure` returns at once.
+- Whatever the current session already changed is put back immediately
+  (`RecognizerService::set_backlight_compensation(false)` resets every knob
+  and the metering region under `camera_mutex_`; the setter may be called from
+  the UI thread while preview or authentication threads run).
+- The low-light retry is skipped; the first detector pass is final, so a frame
+  only the retry could have found yields no face and no face box.
+- Turning it ON again restarts the loop from its initial state, with the same
+  session-generation rules (the generation is not bumped; only the loop state,
+  applied region and failure counters are cleared).
+
+Defaults and compatibility:
+
+- Config (`config.toml`): the key is `#[serde(default)]` true, so files written
+  before the switch keep it on. `SuCoreConfig` gained `backlight_compensation`
+  as its last field (struct size 52 to 56, asserted on the C and Rust sides).
+- Windows registry: `BacklightCompensationEnabled` (REG_DWORD, 0 or 1) next to
+  `LivenessEnabled`, under `HKLM\SOFTWARE\Smile2Unlock\Recognition\<SID>`. An
+  absent or out-of-range value means on, so existing installs stay on.
+- Windows service protocol: `RecognitionSettingsPayload` grew from 44 to 48
+  bytes (new last field, default 1). The service also accepts the 44-byte
+  legacy payload and then leaves the stored value alone. A new client talking
+  to an old service is rejected by the old exact-size check, so the GUI and
+  service must be upgraded together.
+- Recognition agent request: layout, size (52) and version (2) are unchanged.
+  The switch is the flag bit `kBacklightCompensationDisabled`, set only when
+  the user turned it off. On is the all-zero flags word, so an agent that
+  predates the switch still accepts every request except the "off" one, which
+  it rejects as an unknown flag.
+- Linux: `su_authd` applies the user's config to the recognizer before each
+  authentication; the GUI applies it on save, on preview start and before
+  enrollment or test captures.
+
 ## Integration
 
 `RecognizerService::observe_exposure(frame, face, camera_generation)` runs the
@@ -186,7 +227,9 @@ std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind);
 `su_exposure_control_test` (pure loop: runtime and `static_assert`) and
 `su_v4l2_exposure_test` (V4L2 controls against a fake device through an
 injected ioctl: failed reset retried on close, restore ordering, partial
-failure, EINTR, error classification, sparse EV menu).
+failure, EINTR, error classification, sparse EV menu, region reset). The
+switch is covered by `su_seetaface_pipeline_smoke_test` (retry off: the
+darkened face returns no box) and the Windows protocol tests.
 
 ## Tuning constants
 
