@@ -37,6 +37,8 @@ pub struct AppConfig {
     pub capture_retention_days: u32,
     #[serde(default = "default_capture_count")]
     pub capture_max_count: u32,
+    #[serde(default = "default_backlight_compensation")]
+    pub backlight_compensation: bool,
 }
 
 fn default_capture_days() -> u32 {
@@ -44,6 +46,12 @@ fn default_capture_days() -> u32 {
 }
 fn default_capture_count() -> u32 {
     50
+}
+
+// On by default so config files written before the switch existed keep the
+// backlight-aware exposure behaviour.
+fn default_backlight_compensation() -> bool {
+    true
 }
 
 fn default_version() -> u32 {
@@ -90,6 +98,7 @@ impl Default for AppConfig {
             capture_enabled: false,
             capture_retention_days: 7,
             capture_max_count: 50,
+            backlight_compensation: default_backlight_compensation(),
         }
     }
 }
@@ -110,6 +119,7 @@ impl From<AppConfig> for SuCoreConfig {
             capture_enabled: value.capture_enabled,
             capture_retention_days: value.capture_retention_days,
             capture_max_count: value.capture_max_count,
+            backlight_compensation: value.backlight_compensation,
         }
     }
 }
@@ -134,6 +144,7 @@ impl From<SuCoreConfig> for AppConfig {
             capture_enabled: value.capture_enabled,
             capture_retention_days: value.capture_retention_days,
             capture_max_count: value.capture_max_count,
+            backlight_compensation: value.backlight_compensation,
         })
     }
 }

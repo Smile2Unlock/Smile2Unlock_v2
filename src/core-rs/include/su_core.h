@@ -102,6 +102,7 @@ typedef struct SuCoreConfig {
     bool capture_enabled;
     uint32_t capture_retention_days;
     uint32_t capture_max_count;
+    bool backlight_compensation;
 } SuCoreConfig;
 
 typedef struct SuFaceAuthDecision {

@@ -106,6 +106,9 @@ pub struct SuCoreConfig {
     pub capture_enabled: bool,
     pub capture_retention_days: u32,
     pub capture_max_count: u32,
+    /// Appended last: the struct is only ever built and consumed by the same
+    /// release, so new fields go at the end to keep earlier offsets stable.
+    pub backlight_compensation: bool,
 }
 
 pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};
