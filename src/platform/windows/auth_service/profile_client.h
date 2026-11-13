@@ -23,6 +23,7 @@ struct RecognitionSettings {
     std::uint32_t capture_enabled = 0;
     std::uint32_t capture_retention_days = 7;
     std::uint32_t capture_max_count = 50;
+    std::uint32_t backlight_compensation = 1;
 };
 
 std::expected<std::string, std::string> list_profiles();

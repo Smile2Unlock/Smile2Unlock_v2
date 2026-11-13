@@ -106,7 +106,13 @@ pub struct SuCoreConfig {
     pub capture_enabled: bool,
     pub capture_retention_days: u32,
     pub capture_max_count: u32,
+    /// Appended last: the struct is only ever built and consumed by the same
+    /// release, so new fields go at the end to keep earlier offsets stable.
+    pub backlight_compensation: bool,
 }
+
+// Must match the static_assert in include/su_core.h.
+const _: () = assert!(std::mem::size_of::<SuCoreConfig>() == 56);
 
 pub use pipeline::{SuFaceAuthDecision, SuFaceAuthReport};
 pub use protocol::{SuControlMessageType, SuControlRequest};

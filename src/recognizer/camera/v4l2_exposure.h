@@ -126,6 +126,17 @@ public:
             .transform_error(classify_errno);
     }
 
+    // Puts the metering region back to its value at open. No-op when it was
+    // never touched; stays marked as touched on failure so close retries it.
+    [[nodiscard]] ExposureResult reset_region() {
+        if (!roi_touched_) {
+            return {};
+        }
+        return restore_roi()
+            .transform([&] { roi_touched_ = false; })
+            .transform_error(classify_errno);
+    }
+
     // Restores everything touched, in reverse order. Safe to call repeatedly.
     void restore() {
         if (fd_ < 0) {

@@ -56,6 +56,7 @@ CoreConfig map_config(const SuCoreConfig& config) {
         .capture_enabled = config.capture_enabled,
         .capture_retention_days = config.capture_retention_days,
         .capture_max_count = config.capture_max_count,
+        .backlight_compensation = config.backlight_compensation,
     };
 }
 
@@ -74,6 +75,7 @@ SuCoreConfig map_config(const CoreConfig& config) {
         .capture_enabled = config.capture_enabled,
         .capture_retention_days = config.capture_retention_days,
         .capture_max_count = config.capture_max_count,
+        .backlight_compensation = config.backlight_compensation,
     };
 }
 

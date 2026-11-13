@@ -41,6 +41,7 @@ struct CoreConfig {
     bool capture_enabled = false;
     std::uint32_t capture_retention_days = 7;
     std::uint32_t capture_max_count = 50;
+    bool backlight_compensation = true;
 };
 
 struct AuthDecision {

@@ -222,7 +222,7 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_fro
     if (auto ensured = ensure_seetaface_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    auto result = seetaface_backend_->extract(image, liveness_enabled);
+    auto result = seetaface_backend_->extract(image, liveness_enabled, backlight_compensation());
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -243,7 +243,8 @@ std::expected<RecognitionResult, RecognizerError> RecognizerService::predict_liv
     if (auto ensured = ensure_seetaface_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    return seetaface_backend_->predict_liveness(image, liveness_enabled);
+    return seetaface_backend_->predict_liveness(
+        image, liveness_enabled, backlight_compensation());
 #else
     (void)image;
     (void)liveness_enabled;

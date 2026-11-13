@@ -54,6 +54,8 @@ public:
     // exposure that hands control back to the camera's auto exposure.
     [[nodiscard]] std::expected<void, ExposureWriteError> reset_exposure_knob(
         ExposureKnobKind kind);
+    // Puts the metering region back to its value at open (no-op if untouched).
+    [[nodiscard]] std::expected<void, ExposureWriteError> reset_metering_region();
 
 private:
     class Impl;

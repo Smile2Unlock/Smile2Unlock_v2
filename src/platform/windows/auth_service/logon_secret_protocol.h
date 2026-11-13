@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <cstddef>
 #include <cstdint>
 
 namespace smile2unlock::logon_secret_ipc {
@@ -91,9 +92,18 @@ struct RecognitionSettingsPayload {
     std::uint32_t capture_enabled = 0;
     std::uint32_t capture_retention_days = 7;
     std::uint32_t capture_max_count = 50;
+    // Appended last (issue #137). 0/1; 1 when a legacy client did not send it.
+    std::uint32_t backlight_compensation = 1;
 };
 
-static_assert(sizeof(RecognitionSettingsPayload) == 44);
+static_assert(sizeof(RecognitionSettingsPayload) == 48);
+
+// Size of the payload before backlight_compensation existed. A client that
+// predates the field still sends this many bytes; the service accepts it and
+// leaves the stored backlight setting untouched.
+inline constexpr std::size_t kLegacyRecognitionSettingsSize =
+    offsetof(RecognitionSettingsPayload, backlight_compensation);
+static_assert(kLegacyRecognitionSettingsSize == 44);
 
 inline void clear_request(Request& request) noexcept {
     SecureZeroMemory(request.password, sizeof(request.password));

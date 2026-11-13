@@ -15,7 +15,7 @@ inline DWORD validate_agent_result(
     const smile2unlock::recognition_agent_ipc::Response& response,
     DWORD exit_code) {
     using namespace smile2unlock::recognition_agent_ipc;
-    if ((request.flags & ~kCaptureRequested) != 0
+    if ((request.flags & ~kKnownFlags) != 0
         || response.magic != kResponseMagic || response.version != kVersion
         || response.nonce != request.nonce || response.reserved != 0
         || response.jpeg_size > kMaximumJpegBytes

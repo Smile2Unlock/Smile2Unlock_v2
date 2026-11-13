@@ -102,6 +102,7 @@ typedef struct SuCoreConfig {
     bool capture_enabled;
     uint32_t capture_retention_days;
     uint32_t capture_max_count;
+    bool backlight_compensation;
 } SuCoreConfig;
 
 typedef struct SuFaceAuthDecision {
@@ -286,7 +287,7 @@ SuStatus su_core_capture(const SuEncryptedStoreContext* context,
 }
 
 static_assert(sizeof(SuStatus) == 4);
-static_assert(sizeof(SuCoreConfig) == 52);
+static_assert(sizeof(SuCoreConfig) == 56);
 static_assert(sizeof(SuFaceAuthDecision) == 16);
 static_assert(sizeof(SuFaceAuthReport) == 344);
 #endif

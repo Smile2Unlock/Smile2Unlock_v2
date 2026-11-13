@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::SuCoreConfig;
 use crate::SuStatus;
 use crate::auth::evaluate_auth_ffi;
-use crate::config::load_config;
+use crate::config::{AppConfig, load_config, load_config_ffi, save_config_ffi};
 use crate::embedding::{
     EMBEDDING_DIM, FaceEmbeddingError, FaceSample, cosine_similarity, embedding_from_face_sample,
     normalize, parse_face_sample_source, try_embedding_from_face_sample,
@@ -257,6 +258,35 @@ fn missing_config_file_returns_default() {
     assert_eq!(config.auto_delay_sec, 3);
     assert_eq!(config.retry_delay_sec, 5);
     assert_eq!(config.timeout_sec, 30);
+    assert!(config.backlight_compensation);
+}
+
+#[test]
+fn config_without_backlight_key_defaults_to_enabled() {
+    let path = temp_path("legacy_config_no_backlight", "toml");
+    fs::write(&path, "version = 1\nliveness_detection = false\n").unwrap();
+
+    let config = load_config(&path).unwrap();
+    assert!(config.backlight_compensation);
+    assert!(!config.liveness_detection);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn backlight_compensation_round_trips_through_ffi_struct_and_file() {
+    let path = temp_path("backlight_round_trip", "toml");
+    let c_path = CString::new(path.to_str().unwrap()).unwrap();
+    let off = SuCoreConfig {
+        backlight_compensation: false,
+        ..AppConfig::default().into()
+    };
+    assert!(!AppConfig::from(off).backlight_compensation);
+
+    assert_eq!(save_config_ffi(c_path.as_ptr(), &off), SuStatus::Ok);
+    let mut loaded = AppConfig::default().into();
+    assert_eq!(load_config_ffi(c_path.as_ptr(), &mut loaded), SuStatus::Ok);
+    assert!(!loaded.backlight_compensation);
+    let _ = fs::remove_file(path);
 }
 
 #[test]

@@ -359,6 +359,8 @@ struct RecognitionSettings {
     float recognition_threshold = 0.65F;
     bool liveness_detection = true;
     float liveness_threshold = 0.5F;
+    // Absent value means on, so installs that predate the switch keep it.
+    bool backlight_compensation = true;
     // Per-capture agent deadline, from the same TimeoutSec the credential
     // provider uses for its overall attempt.
     std::uint32_t timeout_ms = 10'000;
@@ -404,6 +406,10 @@ std::optional<RecognitionSettings> recognition_settings_at(
         value && *value >= 300 && *value <= 1000) {
         settings.liveness_threshold = static_cast<float>(*value) / 1000.0F;
     }
+    if (const auto value = registry_dword(raw_key, L"BacklightCompensationEnabled");
+        value && *value <= 1) {
+        settings.backlight_compensation = *value != 0;
+    }
     if (const auto value = registry_dword(raw_key, L"TimeoutSec");
         value && *value >= 5 && *value <= 600) {
         settings.timeout_ms = *value * 1000;
@@ -448,12 +454,16 @@ bool valid_recognition_settings(
         && payload.timeout_sec <= 600
         && payload.capture_enabled <= 1
         && payload.capture_retention_days >= 1 && payload.capture_retention_days <= 90
-        && payload.capture_max_count >= 1 && payload.capture_max_count <= 200;
+        && payload.capture_max_count >= 1 && payload.capture_max_count <= 200
+        && payload.backlight_compensation <= 1;
 }
 
+// `has_backlight_setting` is false for a legacy client: the stored value then
+// stays as it is instead of being reset by the payload's default.
 bool write_recognition_settings(
     std::wstring_view sid,
-    const smile2unlock::logon_secret_ipc::RecognitionSettingsPayload& payload) {
+    const smile2unlock::logon_secret_ipc::RecognitionSettingsPayload& payload,
+    const bool has_backlight_setting) {
     const auto path =
         L"SOFTWARE\\Smile2Unlock\\Recognition\\" + std::wstring{sid};
     auto raw_key = HKEY{};
@@ -495,7 +505,9 @@ bool write_recognition_settings(
         && set(L"TimeoutSec", payload.timeout_sec)
         && set(L"CaptureEnabled", payload.capture_enabled)
         && set(L"CaptureRetentionDays", payload.capture_retention_days)
-        && set(L"CaptureMaxCount", payload.capture_max_count);
+        && set(L"CaptureMaxCount", payload.capture_max_count)
+        && (!has_backlight_setting
+            || set(L"BacklightCompensationEnabled", payload.backlight_compensation));
 }
 
 std::expected<ResolvedAccount, Status> resolve_account(
@@ -862,7 +874,9 @@ std::expected<std::vector<float>, DWORD> run_recognition_agent(
         terminate_agent(ERROR_GEN_FAILURE);
         return agent_failure("random.generate", ERROR_GEN_FAILURE);
     }
-    request.flags = settings.capture_enabled ? kCaptureRequested : 0;
+    request.flags = static_cast<std::uint16_t>(
+        (settings.capture_enabled ? kCaptureRequested : 0)
+        | (settings.backlight_compensation ? 0 : kBacklightCompensationDisabled));
     request.camera_index = settings.camera_index;
     // Per-capture deadline: bounded independently of the credential
     // provider's overall attempt deadline so one slow capture cannot consume
@@ -1316,15 +1330,19 @@ Status process_request(
         return Status::kOk;
     }
     case Operation::kSetRecognitionSettings: {
-        if (request.payload_length != sizeof(RecognitionSettingsPayload)) {
+        using smile2unlock::logon_secret_ipc::kLegacyRecognitionSettingsSize;
+        const auto has_backlight_setting = request.payload_length == sizeof(RecognitionSettingsPayload);
+        if (!has_backlight_setting && request.payload_length != kLegacyRecognitionSettingsSize) {
             return Status::kInvalidRequest;
         }
         auto payload = RecognitionSettingsPayload{};
-        std::memcpy(&payload, request.payload, sizeof(payload));
+        std::memcpy(&payload, request.payload, request.payload_length);
         if (!valid_recognition_settings(payload)) {
             return Status::kInvalidRequest;
         }
-        if (!write_recognition_settings(*requested_sid, payload)) return Status::kUnavailable;
+        if (!write_recognition_settings(*requested_sid, payload, has_backlight_setting)) {
+            return Status::kUnavailable;
+        }
         const auto settings = recognition_settings(*requested_sid);
         const auto command = "{\"op\":\"configure\",\"settings\":" + capture_settings_json(settings) + "}";
         return profile_store.captures(*sid_utf8, command) ? Status::kOk : Status::kUnavailable;
