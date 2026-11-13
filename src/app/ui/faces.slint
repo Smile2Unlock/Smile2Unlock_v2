@@ -14,19 +14,25 @@ export component PreviewFrame inherits Rectangle {
     in property <int> source-width;
     in property <int> source-height;
     in property <string> status-text;
+    // Tallest the frame may grow to, so a wide window cannot push it off screen.
+    in property <length> height-limit;
 
     property <bool> sized: root.source-width > 0 && root.source-height > 0;
     property <length> fitted-width: sized
         ? Math.min(self.width, self.height * root.source-width / root.source-height) : self.width;
     property <length> fitted-height: sized
         ? Math.min(self.height, self.width * root.source-height / root.source-width) : self.height;
+    // Camera aspect from the live frame; 4:3 until the first frame arrives.
+    property <float> aspect: sized ? root.source-width / root.source-height : 4 / 3;
+    property <length> grown-height: max(UiTheme.preview-height, min(self.width / root.aspect, root.height-limit));
     property <float> source-scale: root.source-width > 0
         ? self.fitted-width / UiTheme.pixel / root.source-width : 1;
 
     background: UiTheme.preview-surface;
     border-radius: UiTheme.radius-group;
     clip: true;
-    min-height: UiTheme.preview-height;
+    min-height: root.grown-height;
+    preferred-height: root.grown-height;
 
     Image {
         width: parent.width;
@@ -78,6 +84,7 @@ export component CaptureControls inherits VerticalLayout {
     callback capture(string);
 
     spacing: UiTheme.s2;
+    alignment: LayoutAlignment.start;
     Group {
         title: Tr.t("enrollment.capture");
         hint: root.activity-detail;

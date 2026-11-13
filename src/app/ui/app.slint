@@ -409,6 +409,7 @@ export component AppWindow inherits Window {
             }
 
             if root.current_page == 1: Page {
+                content-limit: UiTheme.content-wide;
                 PageHeader {
                     title: Tr.t("nav.faces");
                     subtitle: Tr.tv("enrollment.manage_for", root.username);
@@ -449,6 +450,7 @@ export component AppWindow inherits Window {
                         source-width: root.preview_source_width;
                         source-height: root.preview_source_height;
                         status-text: root.preview_status_text;
+                        height-limit: root.height - UiTheme.preview-reserve;
                     }
                     CaptureControls {
                         width: UiTheme.preview-side;
@@ -476,6 +478,7 @@ export component AppWindow inherits Window {
                         source-width: root.preview_source_width;
                         source-height: root.preview_source_height;
                         status-text: root.preview_status_text;
+                        height-limit: root.height - UiTheme.preview-reserve;
                     }
                     CaptureControls {
                         busy: root.busy;
