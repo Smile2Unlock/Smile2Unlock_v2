@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <mdspan>
 #include <optional>
 #include <ranges>
@@ -80,6 +81,42 @@ enum class ExposureWriteError { unsupported, transient, rejected };
 
 // Monotonic time since an arbitrary epoch, passed in so the loop stays pure.
 using ExposureTime = std::chrono::milliseconds;
+
+// Only a transient failure is worth retrying; a rejection or a missing control
+// will not get better by asking again.
+[[nodiscard]] constexpr bool is_retryable(const ExposureWriteError error) {
+    return error == ExposureWriteError::transient;
+}
+
+// Restores that failed when the user switch went off and are still worth
+// retrying. The camera layer keeps its own touched marks (close() restores
+// everything); this only decides which restores the service keeps trying.
+struct RestorePending {
+    std::array<bool, kExposureKnobKindCount> knobs{};
+    bool region = false;
+
+    [[nodiscard]] constexpr bool any() const {
+        return region || std::ranges::any_of(knobs, std::identity{});
+    }
+};
+
+[[nodiscard]] constexpr RestorePending record_knob_restore(RestorePending pending,
+    const ExposureKnobKind kind, const std::expected<void, ExposureWriteError>& result) {
+    pending.knobs[std::to_underlying(kind)] = !result && is_retryable(result.error());
+    return pending;
+}
+
+[[nodiscard]] constexpr RestorePending record_region_restore(RestorePending pending,
+    const std::expected<void, ExposureWriteError>& result) {
+    pending.region = !result && is_retryable(result.error());
+    return pending;
+}
+
+// Retries are throttled by the same settle time the loop uses between writes.
+[[nodiscard]] constexpr bool restore_retry_due(
+    const RestorePending& pending, const ExposureTime now, const ExposureTime next_due) {
+    return pending.any() && now >= next_due;
+}
 
 struct ExposureKnob {
     ExposureKnobKind kind = ExposureKnobKind::backlight_compensation;

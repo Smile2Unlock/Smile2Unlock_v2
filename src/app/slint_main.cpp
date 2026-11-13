@@ -936,6 +936,9 @@ int main(int argc, char** argv) try {
     window->set_liveness_enabled(snapshot->config.liveness_detection);
     window->set_liveness_threshold(snapshot->config.liveness_threshold);
     window->set_backlight_compensation(snapshot->config.backlight_compensation);
+    // The recognizer defaults to on; apply the saved value now so image-file
+    // enrollment (which runs before any preview) honours it.
+    controller->recognizer().set_backlight_compensation(snapshot->config.backlight_compensation);
     window->set_preview_fps(static_cast<int>(snapshot->config.preview_fps));
     window->set_capture_enabled(snapshot->config.capture_enabled);
     window->set_capture_days(static_cast<int>(snapshot->config.capture_retention_days));

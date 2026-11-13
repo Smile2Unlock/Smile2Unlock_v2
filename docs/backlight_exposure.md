@@ -156,11 +156,25 @@ the exposure loop and the low-light detection retry.
 
 OFF means the program behaves as it did before the feature:
 
-- No camera control is ever written: `observe_exposure` returns at once.
+- No camera control is ever written except restores (see below).
 - Whatever the current session already changed is put back immediately
   (`RecognizerService::set_backlight_compensation(false)` resets every knob
   and the metering region under `camera_mutex_`; the setter may be called from
   the UI thread while preview or authentication threads run).
+- A restore that fails is logged (`camera.exposure_restore_failed`, with the
+  error class) and, when the error is `transient`, recorded as restore-pending
+  (`RestorePending`: the knobs and the region still to put back). While the
+  switch is off, later `observe_exposure` calls (the camera keeps delivering
+  frames) retry only those restores, under `camera_mutex_` and throttled by the
+  loop's `min_settle_time`. Retrying stops once everything succeeded; a
+  `rejected` or `unsupported` error is logged once and not retried. No other
+  control is ever written while off. `close()` still restores everything the
+  camera layer marked as touched.
+- Putting a control back is a brightness step, so the service resets the
+  liveness window itself: `set_backlight_compensation` does so when the restore
+  actually changed something, and `observe_exposure` returns true when a
+  pending-restore retry succeeded (callers already reset liveness on true).
+  Callers need no knowledge of the toggle.
 - The low-light retry is skipped; the first detector pass is final, so a frame
   only the retry could have found yields no face and no face box.
 - Turning it ON again restarts the loop from its initial state, with the same
@@ -185,6 +199,14 @@ Defaults and compatibility:
   the user turned it off. On is the all-zero flags word, so an agent that
   predates the switch still accepts every request except the "off" one, which
   it rejects as an unknown flag.
+- The Windows service and the recognition agent must ship together (they
+  always do, in one installer). An old agent rejects the new
+  `kBacklightCompensationDisabled = 2` flag with `kInvalidRequest`, which
+  only affects the OFF case. The protocol version was deliberately not bumped:
+  a bump would break every mixed install, not only the OFF case.
+- Image-file enrollment applies the saved switch to the recognizer before
+  feature extraction (also applied once at GUI startup), so a saved OFF
+  survives a restart.
 - Linux: `su_authd` applies the user's config to the recognizer before each
   authentication; the GUI applies it on save, on preview start and before
   enrollment or test captures.

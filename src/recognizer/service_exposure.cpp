@@ -13,6 +13,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using detail::ExposureSession;
+using detail::RestorePending;
 
 // Moving the camera's metering window too often makes its auto exposure
 // chase it; only follow the face when it moved by a tenth of the frame.
@@ -46,6 +47,7 @@ void update_metering_region(V4L2Camera& camera, ExposureSession& session,
     const auto applied = camera.set_metering_region(region);
     if (applied) {
         session.applied_region = region;
+        session.wrote_control = true;
         return;
     }
     if (applied.error() == detail::ExposureWriteError::transient) {
@@ -103,6 +105,7 @@ bool apply_step(V4L2Camera& camera, ExposureSession& session, const detail::Expo
         return false;
     }
     session.transient_failures[std::to_underlying(change.kind)] = 0;
+    session.wrote_control = true;
     session.loop = detail::with_applied_level(step.next, change.kind, *outcome);
     return true;
 }
@@ -123,14 +126,71 @@ void log_decision(ExposureSession& session, const detail::LumaStats& stats,
         su::log::field("knob", active ? detail::to_string(active->kind) : std::string_view{"none"})});
 }
 
+constexpr auto kAllRestoreTargets = RestorePending{
+    .knobs = {true, true, true}, .region = true};
+
+struct RestoreOutcome {
+    RestorePending remaining;
+    bool restored_any = false;
+};
+
+// A camera without the control is normal, so only real failures are logged.
+void log_restore_failure(const std::string_view target, const detail::ExposureWriteError error) {
+    if (error == detail::ExposureWriteError::unsupported) {
+        return;
+    }
+    su::log::process_logger().warn("camera.exposure_restore_failed", {
+        su::log::field("target", target),
+        su::log::field("error", detail::to_string(error)),
+        su::log::field("will_retry", detail::is_retryable(error))});
+}
+
+// Puts back the knobs and region named in `targets` (the camera treats an
+// untouched one as a no-op) and reports which of them must be retried.
+RestoreOutcome attempt_restore(V4L2Camera& camera, const RestorePending& targets) {
+    auto outcome = RestoreOutcome{};
+    const auto note = [&](const std::string_view name, const auto& result) {
+        outcome.restored_any = outcome.restored_any || result.has_value();
+        if (!result) {
+            log_restore_failure(name, result.error());
+        }
+    };
+    for (const auto kind : detail::kRestoreOrder) {
+        if (!targets.knobs[std::to_underlying(kind)]) {
+            continue;
+        }
+        const auto result = camera.reset_exposure_knob(kind);
+        note(detail::to_string(kind), result);
+        outcome.remaining = detail::record_knob_restore(outcome.remaining, kind, result);
+    }
+    if (targets.region) {
+        const auto result = camera.reset_metering_region();
+        note("metering_region", result);
+        outcome.remaining = detail::record_region_restore(outcome.remaining, result);
+    }
+    return outcome;
+}
+
+detail::ExposureTime to_exposure_time(const Clock::time_point now) {
+    return std::chrono::duration_cast<detail::ExposureTime>(now.time_since_epoch());
+}
+
 }  // namespace
 
 void RecognizerService::set_backlight_compensation(const bool enabled) {
     if (backlight_compensation_.exchange(enabled) == enabled) {
         return;
     }
-    std::lock_guard lock(camera_mutex_);
-    restart_exposure_loop_unlocked();
+    const auto restored = [&] {
+        std::lock_guard lock(camera_mutex_);
+        return restart_exposure_loop_unlocked();
+    }();
+    // Putting a control back is a brightness step; the liveness window must
+    // not aggregate across it. Done here so callers need not know. Outside
+    // the camera lock: it may touch the backend.
+    if (restored) {
+        (void)reset_liveness();
+    }
 }
 
 bool RecognizerService::backlight_compensation() const {
@@ -138,25 +198,55 @@ bool RecognizerService::backlight_compensation() const {
 }
 
 // Puts back whatever the loop changed in this session (a no-op when nothing
-// was) and starts the loop over. Nothing is written while the switch is off,
-// so on re-enable the loop begins at the camera's own state. The generation
-// is untouched: the session is the same, only the loop restarts.
-void RecognizerService::restart_exposure_loop_unlocked() const {
+// was) and starts the loop over. Restores that fail transiently stay pending
+// and are retried by observe_exposure while the switch is off. Nothing else
+// is written while the switch is off, so on re-enable the loop begins at the
+// camera's own state. The generation is untouched: the session is the same,
+// only the loop restarts.
+bool RecognizerService::restart_exposure_loop_unlocked() const {
+    auto restored = false;
     if (camera_ && active_camera_) {
-        for (const auto kind : detail::kRestoreOrder) {
-            (void)camera_->reset_exposure_knob(kind);
-        }
-        (void)camera_->reset_metering_region();
+        const auto outcome = attempt_restore(*camera_, kAllRestoreTargets);
+        exposure_.restore_pending = outcome.remaining;
+        exposure_.next_restore_retry = to_exposure_time(Clock::now())
+            + detail::ExposureTuning{}.min_settle_time;
+        restored = exposure_.wrote_control && outcome.restored_any;
+        exposure_.wrote_control = outcome.remaining.any();
     }
     exposure_.loop = detail::make_exposure_state(exposure_.caps.knobs);
     exposure_.applied_region.reset();
     exposure_.transient_failures = {};
+    return restored;
+}
+
+bool RecognizerService::in_exposure_session_unlocked(
+    const ImageView frame, const std::uint64_t camera_generation) const {
+    return camera_ && active_camera_ && camera_generation == camera_generation_
+        && frame.width == exposure_.frame_width && frame.height == exposure_.frame_height;
+}
+
+// Runs under camera_mutex_ while the switch is off. The camera keeps
+// delivering frames, which is the only clock available to retry a restore that
+// failed transiently (busy device). Never writes anything but a restore.
+bool RecognizerService::retry_pending_restores_unlocked() const {
+    const auto now = to_exposure_time(Clock::now());
+    if (!detail::restore_retry_due(exposure_.restore_pending, now, exposure_.next_restore_retry)) {
+        return false;
+    }
+    exposure_.next_restore_retry = now + detail::ExposureTuning{}.min_settle_time;
+    const auto outcome = attempt_restore(*camera_, exposure_.restore_pending);
+    exposure_.restore_pending = outcome.remaining;
+    exposure_.wrote_control = outcome.remaining.any();
+    return outcome.restored_any;
 }
 
 bool RecognizerService::observe_exposure(const ImageView frame, const std::optional<FaceBox> face,
     const std::uint64_t camera_generation) const {
     if (!backlight_compensation_.load()) {
-        return false;
+        std::lock_guard lock(camera_mutex_);
+        return !backlight_compensation_.load()
+            && in_exposure_session_unlocked(frame, camera_generation)
+            && retry_pending_restores_unlocked();
     }
     // Region and luma depend only on the frame, so they are computed before
     // taking the camera lock: capture and control writes are not held up by
@@ -172,9 +262,7 @@ bool RecognizerService::observe_exposure(const ImageView frame, const std::optio
     if (!backlight_compensation_.load()) {
         return false;  // switched off while the frame was being measured
     }
-    const auto in_session = camera_ && active_camera_ && camera_generation == camera_generation_
-        && frame.width == exposure_.frame_width && frame.height == exposure_.frame_height;
-    if (!in_session || (exposure_.caps.knobs.empty() && !exposure_.caps.metering_region)) {
+    if (!in_exposure_session_unlocked(frame, camera_generation) || (exposure_.caps.knobs.empty() && !exposure_.caps.metering_region)) {
         return false;
     }
     const auto now = Clock::now();

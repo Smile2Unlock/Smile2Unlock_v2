@@ -71,6 +71,7 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
 // an error describing which step failed.
 std::expected<std::string, std::string> resolve_image_sample_source(
     su::recognizer::RecognizerService& recognizer,
+    const std::string& config_path,
     std::string_view face_sample_source) {
     if (face_sample_source.size() <= kImageSourcePrefix.size()) {
         return std::string{face_sample_source};
@@ -91,6 +92,12 @@ std::expected<std::string, std::string> resolve_image_sample_source(
         return std::unexpected(std::format("failed to load image: {}", su::path_utf8(path)));
     }
 
+    // The recognizer flag defaults to on and nothing else has applied the
+    // saved switch in this process yet, so do it before the low-light retry
+    // can run. A config that cannot be read keeps whatever is already set.
+    if (const auto config = load_config(config_path)) {
+        recognizer.set_backlight_compensation(config->backlight_compensation);
+    }
     auto result = recognizer.extract_from_image(su::recognizer::ImageView{
         .width = loaded->width,
         .height = loaded->height,
@@ -366,7 +373,7 @@ std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sa
 std::expected<FaceDemoSnapshot, std::string> AppController::authenticate_face_sample_from_source(
     std::string_view face_sample_source,
     bool liveness_ok) {
-    const auto resolved = resolve_image_sample_source(recognizer_, face_sample_source);
+    const auto resolved = resolve_image_sample_source(recognizer_, config_path(), face_sample_source);
     if (!resolved) {
         return std::unexpected(resolved.error());
     }

@@ -551,7 +551,44 @@ void test_restore_order_covers_every_knob() {
     assert(std::ranges::all_of(seen, [](const int count) { return count == 1; }));
 }
 
+using RestoreResult = std::expected<void, ExposureWriteError>;
+
+// A failed restore is remembered only when retrying can help: transient errors
+// stay pending, a rejection or missing control is given up on, success clears.
+void test_restore_pending_bookkeeping() {
+    auto pending = RestorePending{};
+    assert(!pending.any());
+    pending = record_knob_restore(pending, ExposureKnobKind::ev_bias,
+        std::unexpected(ExposureWriteError::transient));
+    pending = record_region_restore(pending, std::unexpected(ExposureWriteError::transient));
+    assert(pending.any() && pending.region);
+    assert(pending.knobs[std::to_underlying(ExposureKnobKind::ev_bias)]);
+    assert(!pending.knobs[std::to_underlying(ExposureKnobKind::manual_exposure)]);
+
+    pending = record_knob_restore(pending, ExposureKnobKind::ev_bias, RestoreResult{});
+    assert(!pending.knobs[std::to_underlying(ExposureKnobKind::ev_bias)] && pending.any());
+
+    pending = record_region_restore(pending, std::unexpected(ExposureWriteError::rejected));
+    assert(!pending.region && !pending.any());
+    pending = record_knob_restore(pending, ExposureKnobKind::manual_exposure,
+        std::unexpected(ExposureWriteError::unsupported));
+    assert(!pending.any());
+}
+
+// Retries are throttled and only run while something is pending.
+void test_restore_retry_due() {
+    const auto none = RestorePending{};
+    auto some = RestorePending{};
+    some.region = true;
+    constexpr auto next_due = ExposureTime{1000};
+    assert(!restore_retry_due(none, ExposureTime{5000}, next_due));
+    assert(!restore_retry_due(some, ExposureTime{999}, next_due));
+    assert(restore_retry_due(some, ExposureTime{1000}, next_due));
+}
+
 int main() {
+    test_restore_pending_bookkeeping();
+    test_restore_retry_due();
     test_restore_order_covers_every_knob();
     test_metering_region();
     test_measure_luma();

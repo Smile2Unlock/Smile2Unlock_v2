@@ -23,6 +23,13 @@ struct ExposureSession {
     // Consecutive transient write failures per knob (indexed by kind); a knob
     // is only dropped after kMaxTransientFailures in a row.
     std::array<int, kExposureKnobKindCount> transient_failures{};
+    // Set once the loop wrote a control this session; a switch-off restore
+    // that undoes it is a brightness step, so liveness must start over.
+    bool wrote_control = false;
+    // Switch-off restores that failed transiently, retried (throttled) on
+    // later observations while the switch stays off.
+    RestorePending restore_pending;
+    ExposureTime next_restore_retry{};
     std::chrono::steady_clock::time_point last_region_change{};
     std::chrono::steady_clock::time_point next_log{};
 };
@@ -67,7 +74,8 @@ public:
     // session, or of another size, are ignored. No-op without an open camera.
     // Returns true when a camera control was changed; the caller must then
     // reset the liveness window, which must not aggregate across a brightness
-    // step.
+    // step. While the switch is off this only retries restores that failed
+    // when it was turned off (and returns true when one succeeded).
     [[nodiscard]] bool observe_exposure(ImageView frame, std::optional<FaceBox> face,
         std::uint64_t camera_generation) const;
 
@@ -83,7 +91,12 @@ public:
     bool seetaface_available() const;
 
 private:
-    void restart_exposure_loop_unlocked() const;
+    // Both return true when a camera control was actually put back, in which
+    // case the liveness window has to start over.
+    [[nodiscard]] bool restart_exposure_loop_unlocked() const;
+    [[nodiscard]] bool in_exposure_session_unlocked(
+        ImageView frame, std::uint64_t camera_generation) const;
+    [[nodiscard]] bool retry_pending_restores_unlocked() const;
 
     std::expected<void, RecognizerError> ensure_seetaface_backend() const;
     void close_camera_unlocked();
