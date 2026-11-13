@@ -1,4 +1,5 @@
 #include "platform/linux/deploy_client/deployment_client.h"
+#include "platform/linux/deploy_client/noctalia_config.h"
 
 #include <systemd/sd-bus.h>
 #include <nlohmann/json.hpp>
@@ -392,6 +393,38 @@ std::expected<std::string, std::string> configure_dms(bool enabled) {
 
 } // namespace
 
+std::expected<std::string, std::string> DeploymentClient::configure_noctalia() const {
+    const auto directory = noctalia_config_directory(noctalia_config_environment_from_process());
+    if (!directory) {
+        return std::unexpected("cannot locate the Noctalia configuration directory");
+    }
+    // PAM first: the fragment is only useful once the stack contains the face
+    // module, and a refused (modified) fragment must not leave PAM half-wired.
+    auto applied = configure_pam_target("noctalia", {}, false);
+    if (!applied) {
+        return applied;
+    }
+    if (const auto written = write_noctalia_fragment(*directory); !written) {
+        return std::unexpected("PAM was configured, but " + written.error());
+    }
+    return applied;
+}
+
+std::expected<std::string, std::string> DeploymentClient::rollback_noctalia() const {
+    auto restored = call_target_method("RollbackDesktopIntegration", "noctalia");
+    if (!restored) {
+        return restored;
+    }
+    const auto directory = noctalia_config_directory(noctalia_config_environment_from_process());
+    if (!directory) {
+        return restored;
+    }
+    if (const auto removed = remove_noctalia_fragment(*directory); !removed) {
+        return std::unexpected("PAM was restored, but " + removed.error());
+    }
+    return restored;
+}
+
 bool DeploymentClient::dms_available() const {
     return dms_executable().has_value();
 }
@@ -449,6 +482,9 @@ std::expected<std::string, std::string> DeploymentClient::configure_target(
     bool wallet_token) const {
     if (target == "dms" && wallet_token)
         return std::unexpected("wallet authtok is supported only for login targets");
+    if (target == "noctalia")
+        return wallet_token ? std::unexpected("wallet authtok is supported only for login targets")
+                            : configure_noctalia();
     return target == "dms" ? configure_dms(true) : configure_pam_target(target, {}, wallet_token);
 }
 
@@ -460,6 +496,10 @@ DeploymentClient::configure_target_source(std::string_view target,
         return std::unexpected("unsupported authtok source");
     if (target == "dms" && authtok_source != "none")
         return std::unexpected("wallet authtok is supported only for login targets");
+    if (target == "noctalia")
+        return authtok_source != "none"
+            ? std::unexpected("wallet authtok is supported only for login targets")
+            : configure_noctalia();
     return target == "dms" ? configure_dms(true) : configure_pam_target(target, authtok_source);
 }
 
@@ -506,6 +546,8 @@ DeploymentClient::plan_adoption(std::string_view target, std::string_view authto
 
 std::expected<std::string, std::string> DeploymentClient::rollback_target(
     std::string_view target) const {
+    if (target == "noctalia")
+        return rollback_noctalia();
     return target == "dms" ? configure_dms(false)
                            : call_target_method("RollbackDesktopIntegration", target);
 }

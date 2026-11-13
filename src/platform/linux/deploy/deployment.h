@@ -19,6 +19,7 @@ enum class TargetKind {
     kSudo,
     kSudoLogin,
     kPolkit,
+    kNoctalia,
 };
 
 enum class TargetRole {
@@ -51,6 +52,8 @@ struct TargetStatus {
     AuthtokSource authtok_source = AuthtokSource::kNone;
     bool sealed_available = false; // Parent AUTH wallet line follows the face/password anchor.
     std::string detail;
+    // Translation key for a target-specific explanation; empty when generic.
+    std::string note;
     bool adoptable = false;
     std::string adoption_unavailable_reason = "target is not externally configured";
 };

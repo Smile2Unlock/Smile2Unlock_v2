@@ -564,6 +564,8 @@ bool adoption_deployment_tests(const std::filesystem::path& base);
 
 bool sealed_deployment_tests(const std::filesystem::path& base);
 
+bool noctalia_deployment_tests(const std::filesystem::path& base);
+
 int main() {
     const auto root = std::filesystem::current_path() / "build" / "test-data"
         / ("deploy-" + std::to_string(::getpid()));
@@ -589,6 +591,7 @@ int main() {
     check(sealed_deployment_tests(root / "sealed"), "sealed deployment regressions");
 
     check(adoption_deployment_tests(root / "adoption"), "adoption deployment regressions");
+    check(noctalia_deployment_tests(root / "noctalia"), "Noctalia deployment regressions");
 
     std::filesystem::remove_all(root);
     if (failures != 0) {
