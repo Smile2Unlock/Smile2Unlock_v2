@@ -125,8 +125,39 @@ void log_decision(ExposureSession& session, const detail::LumaStats& stats,
 
 }  // namespace
 
+void RecognizerService::set_backlight_compensation(const bool enabled) {
+    if (backlight_compensation_.exchange(enabled) == enabled) {
+        return;
+    }
+    std::lock_guard lock(camera_mutex_);
+    restart_exposure_loop_unlocked();
+}
+
+bool RecognizerService::backlight_compensation() const {
+    return backlight_compensation_.load();
+}
+
+// Puts back whatever the loop changed in this session (a no-op when nothing
+// was) and starts the loop over. Nothing is written while the switch is off,
+// so on re-enable the loop begins at the camera's own state. The generation
+// is untouched: the session is the same, only the loop restarts.
+void RecognizerService::restart_exposure_loop_unlocked() const {
+    if (camera_ && active_camera_) {
+        for (const auto kind : detail::kRestoreOrder) {
+            (void)camera_->reset_exposure_knob(kind);
+        }
+        (void)camera_->reset_metering_region();
+    }
+    exposure_.loop = detail::make_exposure_state(exposure_.caps.knobs);
+    exposure_.applied_region.reset();
+    exposure_.transient_failures = {};
+}
+
 bool RecognizerService::observe_exposure(const ImageView frame, const std::optional<FaceBox> face,
     const std::uint64_t camera_generation) const {
+    if (!backlight_compensation_.load()) {
+        return false;
+    }
     // Region and luma depend only on the frame, so they are computed before
     // taking the camera lock: capture and control writes are not held up by
     // pixel scanning.
@@ -138,6 +169,9 @@ bool RecognizerService::observe_exposure(const ImageView frame, const std::optio
         frame.bytes, frame.width, frame.height, frame.channels, region);
 
     std::lock_guard lock(camera_mutex_);
+    if (!backlight_compensation_.load()) {
+        return false;  // switched off while the frame was being measured
+    }
     const auto in_session = camera_ && active_camera_ && camera_generation == camera_generation_
         && frame.width == exposure_.frame_width && frame.height == exposure_.frame_height;
     if (!in_session || (exposure_.caps.knobs.empty() && !exposure_.caps.metering_region)) {

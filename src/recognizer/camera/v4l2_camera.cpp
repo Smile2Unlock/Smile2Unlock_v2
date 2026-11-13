@@ -291,6 +291,9 @@ public:
     std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind kind) {
         return exposure_.reset_knob(kind);
     }
+    std::expected<void, ExposureWriteError> reset_metering_region() {
+        return exposure_.reset_region();
+    }
 
 private:
     struct MmapBuffer {
@@ -372,6 +375,13 @@ std::expected<void, ExposureWriteError> V4L2Camera::reset_exposure_knob(Exposure
         return std::unexpected(ExposureWriteError::unsupported);
     }
     return impl_->reset_exposure_knob(kind);
+}
+
+std::expected<void, ExposureWriteError> V4L2Camera::reset_metering_region() {
+    if (!impl_) {
+        return std::unexpected(ExposureWriteError::unsupported);
+    }
+    return impl_->reset_metering_region();
 }
 
 }  // namespace su::recognizer

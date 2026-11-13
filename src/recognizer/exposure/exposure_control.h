@@ -57,6 +57,13 @@ enum class ExposureKnobKind { ev_bias, backlight_compensation, manual_exposure }
 
 inline constexpr std::size_t kExposureKnobKindCount = 3;
 
+// Order in which a whole session is put back: the last knob of the chain
+// first, so manual exposure hands control back to auto before the knobs that
+// only matter while auto rules are restored.
+inline constexpr std::array<ExposureKnobKind, kExposureKnobKindCount> kRestoreOrder{
+    ExposureKnobKind::manual_exposure, ExposureKnobKind::backlight_compensation,
+    ExposureKnobKind::ev_bias};
+
 // Why a camera write failed, from the loop's point of view.
 // unsupported: the camera has no such control; transient: busy or a hiccup,
 // worth retrying; rejected: the camera refuses this control or value for good.

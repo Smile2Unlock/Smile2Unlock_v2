@@ -325,6 +325,36 @@ int main() {
     }
     std::cout << "PASS: dark backlit face is metering-only\n";
 
+    // Switch off (#137): the first detector pass is final, so the frames that
+    // only the retry could find yield no face and no box at all.
+    for (const auto gain : {0.06, 0.04}) {
+        const auto backlit = make_backlit(gain);
+        const auto no_retry = backend.extract(view(backlit), true, /*low_light_retry=*/false);
+        assert(no_retry && !no_retry->has_face && !no_retry->face_box.has_value());
+        const auto no_retry_liveness =
+            backend.predict_liveness(view(backlit), true, /*low_light_retry=*/false);
+        assert(no_retry_liveness && !no_retry_liveness->face_box.has_value());
+        // Ordinary frames are unaffected by the switch.
+        const auto plain = backend.extract(view(image_a), true, /*low_light_retry=*/false);
+        assert(plain && plain->has_face && !plain->feature.empty());
+    }
+    {
+        auto service = su::recognizer::RecognizerService{};
+        assert(service.backlight_compensation());
+        const auto backlit = make_backlit(0.04);
+        const auto with_retry = service.extract_from_image(view(backlit), true);
+        assert(with_retry && with_retry->face_box.has_value());
+        service.set_backlight_compensation(false);
+        assert(!service.backlight_compensation());
+        const auto without_retry = service.extract_from_image(view(backlit), true);
+        assert(without_retry && !without_retry->has_face && !without_retry->face_box.has_value());
+        // Off, or without a camera, the exposure loop never reports a change.
+        assert(!service.observe_exposure(view(backlit), std::nullopt, 0));
+        service.set_backlight_compensation(true);
+        assert(service.extract_from_image(view(backlit), true)->face_box.has_value());
+    }
+    std::cout << "PASS: backlight switch off disables the low-light retry\n";
+
     auto missing_fas_paths = *model_paths;
     missing_fas_paths.anti_spoofing_first.clear();
     const auto missing_fas = su::recognizer::SeetaFaceBackend(missing_fas_paths);

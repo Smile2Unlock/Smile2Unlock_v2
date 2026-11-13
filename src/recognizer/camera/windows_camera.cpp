@@ -151,4 +151,9 @@ std::expected<void, ExposureWriteError> V4L2Camera::reset_exposure_knob(Exposure
     return impl_->reset_exposure_knob(kind);
 }
 
+// Media Foundation has no metering region, so there is never one to put back.
+std::expected<void, ExposureWriteError> V4L2Camera::reset_metering_region() {
+    return {};
+}
+
 } // namespace su::recognizer

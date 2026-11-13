@@ -539,7 +539,20 @@ void test_region_math_survives_extreme_geometry() {
 
 }  // namespace
 
+// The whole-session restore (user switch off) must name every knob exactly
+// once, so none is left changed in the camera.
+void test_restore_order_covers_every_knob() {
+    static_assert(kRestoreOrder.size() == kExposureKnobKindCount);
+    static_assert(kRestoreOrder.front() == ExposureKnobKind::manual_exposure);
+    auto seen = std::array<int, kExposureKnobKindCount>{};
+    for (const auto kind : kRestoreOrder) {
+        ++seen[std::to_underlying(kind)];
+    }
+    assert(std::ranges::all_of(seen, [](const int count) { return count == 1; }));
+}
+
 int main() {
+    test_restore_order_covers_every_knob();
     test_metering_region();
     test_measure_luma();
     test_step_directions();

@@ -27,10 +27,12 @@ public:
     SeetaFaceBackend(SeetaFaceBackend&&) noexcept;
     SeetaFaceBackend& operator=(SeetaFaceBackend&&) noexcept;
 
+    // `low_light_retry` enables the brightened second detection pass for dark
+    // frames; off, the first detector result is final.
     std::expected<RecognitionResult, RecognizerError> extract(
-        ImageView image, bool liveness_enabled) const;
+        ImageView image, bool liveness_enabled, bool low_light_retry = true) const;
     std::expected<RecognitionResult, RecognizerError> predict_liveness(
-        ImageView image, bool liveness_enabled) const;
+        ImageView image, bool liveness_enabled, bool low_light_retry = true) const;
     void reset_liveness();
     bool available() const;
     bool liveness_available() const;

@@ -293,6 +293,21 @@ void test_restore_orders_roi_rect_and_auto_bit() {
     }
 }
 
+void test_reset_region_puts_rect_back_without_closing() {
+    auto rig = Rig{};
+    auto control = rig.make_control();
+    assert(control.reset_region());  // untouched: nothing to do
+    assert(rig.device.writes.empty());
+    assert(control.set_region({.x = 100, .y = 100, .width = 200, .height = 200}));
+    assert(control.reset_region());
+    assert(rig.device.rect.left == 10 && rig.device.rect.width == 100);
+    assert(rig.device.value_of(kRoiAutoCid) == 0);
+    // Still usable: the user switch can be turned back on in the same session.
+    assert(control.set_region({.x = 120, .y = 120, .width = 100, .height = 100}));
+    assert(rig.device.rect.left != 10);
+    assert(rig.device.value_of(kRoiAutoCid) == 1);
+}
+
 void test_partial_failure_still_restores_the_rest() {
     auto rig = Rig{};
     auto control = rig.make_control();
@@ -352,6 +367,7 @@ int main() {
     test_successful_reset_is_not_repeated();
     test_restore_writes_exposure_before_auto_mode();
     test_restore_orders_roi_rect_and_auto_bit();
+    test_reset_region_puts_rect_back_without_closing();
     test_partial_failure_still_restores_the_rest();
     test_eintr_is_retried();
     test_errno_classification();

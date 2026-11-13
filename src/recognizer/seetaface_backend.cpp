@@ -204,7 +204,8 @@ public:
     // preview/auth session. The mutex serializes access from
     // the preview thread (predict_liveness) and the detect thread (extract).
     std::expected<RecognitionResult, RecognizerError> run_pipeline(
-        const ImageView image, bool extract_feature, bool liveness_enabled) const {
+        const ImageView image, bool extract_feature, bool liveness_enabled,
+        bool low_light_retry) const {
         std::lock_guard lock(mutex_);
         if (!available()) {
             return std::unexpected(RecognizerError::kModelUnavailable);
@@ -231,7 +232,7 @@ public:
             .data = const_cast<unsigned char*>(bgr->data()),
         };
 
-        const auto detection = detect_primary_face(seeta_image, *bgr);
+        const auto detection = detect_primary_face(seeta_image, *bgr, low_light_retry);
         if (!detection) {
             reset_liveness_locked();
             return RecognitionResult{};
@@ -246,13 +247,13 @@ public:
     }
 
     std::expected<RecognitionResult, RecognizerError> extract(
-        const ImageView image, bool liveness_enabled) const {
-        return run_pipeline(image, /*extract_feature=*/true, liveness_enabled);
+        const ImageView image, bool liveness_enabled, bool low_light_retry) const {
+        return run_pipeline(image, /*extract_feature=*/true, liveness_enabled, low_light_retry);
     }
 
     std::expected<RecognitionResult, RecognizerError> predict_liveness(
-        const ImageView image, bool liveness_enabled) const {
-        return run_pipeline(image, /*extract_feature=*/false, liveness_enabled);
+        const ImageView image, bool liveness_enabled, bool low_light_retry) const {
+        return run_pipeline(image, /*extract_feature=*/false, liveness_enabled, low_light_retry);
     }
 
     bool available() const {
@@ -371,9 +372,10 @@ private:
     // one identity from a multi-person frame, so anything but exactly one face
     // yields nullopt.
     [[nodiscard]] std::optional<PrimaryFace> detect_primary_face(
-        const SeetaImageData& image, const std::vector<unsigned char>& bgr) const {
+        const SeetaImageData& image, const std::vector<unsigned char>& bgr,
+        const bool low_light_retry) const {
         const auto detect_input = downscale_for_detect(image, bgr);
-        const auto detected = detect_with_low_light_retry(detect_input.image);
+        const auto detected = detect_with_low_light_retry(detect_input.image, low_light_retry);
         if (detected.faces.size != 1 || detected.faces.data == nullptr) {
             return std::nullopt;
         }
@@ -458,9 +460,12 @@ private:
     // exposure loop gets a face box to meter. The enhanced copy is used for
     // detection alone; landmarks, liveness and the embedding stay on the
     // untouched original so templates and liveness scores do not shift.
-    Detected detect_with_low_light_retry(const SeetaImageData& detect_image) const {
+    Detected detect_with_low_light_retry(
+        const SeetaImageData& detect_image, const bool low_light_retry) const {
         const auto first = detector_->detect(detect_image);
-        if (first.size > 0 && first.data != nullptr) {
+        // With the retry off (user switch) the first pass is final, exactly as
+        // before the retry existed.
+        if (!low_light_retry || (first.size > 0 && first.data != nullptr)) {
             return {.faces = first};
         }
         const auto sample_count = static_cast<std::size_t>(detect_image.width)
@@ -567,17 +572,18 @@ SeetaFaceBackend::SeetaFaceBackend(SeetaFaceBackend&&) noexcept = default;
 SeetaFaceBackend& SeetaFaceBackend::operator=(SeetaFaceBackend&&) noexcept = default;
 
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::extract(
-    const ImageView image, bool liveness_enabled) const {
-    return impl_->extract(image, liveness_enabled);
+    const ImageView image, bool liveness_enabled, bool low_light_retry) const {
+    return impl_->extract(image, liveness_enabled, low_light_retry);
 }
 
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::predict_liveness(
-    const ImageView image, bool liveness_enabled) const {
+    const ImageView image, bool liveness_enabled, bool low_light_retry) const {
 #if SU_HAS_SEETAFACE
-    return impl_->predict_liveness(image, liveness_enabled);
+    return impl_->predict_liveness(image, liveness_enabled, low_light_retry);
 #else
     (void)image;
     (void)liveness_enabled;
+    (void)low_light_retry;
     return std::unexpected(RecognizerError::kModelUnavailable);
 #endif
 }
