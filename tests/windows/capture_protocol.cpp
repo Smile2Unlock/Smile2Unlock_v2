@@ -32,11 +32,22 @@ int main() {
     check(validate_agent_result(request, response, 5) == ERROR_INVALID_DATA);
     response.status = AgentStatus::kNoLiveFace;
     check(validate_agent_result(request, response, 5) == ERROR_LOGON_FAILURE);
-    request.flags = 2;
+    // Backlight compensation off (#137) is a known flag, alone or with
+    // capture. Without the capture flag the response must carry no JPEG.
+    response.jpeg_size = 0;
+    request.flags = kBacklightCompensationDisabled;
+    check(validate_agent_result(request, response, 5) == ERROR_LOGON_FAILURE);
+    response.jpeg_size = 4;
+    check(validate_agent_result(request, response, 5) == ERROR_INVALID_DATA);
+    request.flags = kBacklightCompensationDisabled | kCaptureRequested;
+    check(validate_agent_result(request, response, 5) == ERROR_LOGON_FAILURE);
+    request.flags = 4;
     check(validate_agent_result(request, response, 5) == ERROR_INVALID_DATA);
     using Settings = smile2unlock::logon_secret_ipc::RecognitionSettingsPayload;
-    static_assert(sizeof(Settings) == 44);
+    static_assert(sizeof(Settings) == 48);
+    static_assert(smile2unlock::logon_secret_ipc::kLegacyRecognitionSettingsSize == 44);
     constexpr Settings settings{};
+    static_assert(settings.backlight_compensation == 1);
     static_assert(settings.capture_enabled == 0 && settings.capture_retention_days == 7 && settings.capture_max_count == 50);
     static_assert(kMaximumJpegBytes < smile2unlock::logon_secret_ipc::kPayloadCapacity);
     std::cout << "capture opt-in, bounds, nonce, no-face and settings protocol passed\n";

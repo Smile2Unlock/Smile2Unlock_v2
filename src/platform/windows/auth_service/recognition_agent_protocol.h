@@ -12,6 +12,12 @@ inline constexpr std::size_t kNonceSize = 32;
 inline constexpr std::size_t kMaximumFeatureCount = 4096;
 inline constexpr std::size_t kMaximumJpegBytes = 45 * 1024;
 inline constexpr std::uint16_t kCaptureRequested = 1;
+// Set only when the user turned backlight compensation off (issue #137).
+// Negative polarity on purpose: the default, on, is the all-zero flags word,
+// so an agent that predates the switch still accepts every request that does
+// not ask for it to be off.
+inline constexpr std::uint16_t kBacklightCompensationDisabled = 2;
+inline constexpr std::uint16_t kKnownFlags = kCaptureRequested | kBacklightCompensationDisabled;
 
 enum class AgentStatus : std::uint32_t {
     kOk = 0,

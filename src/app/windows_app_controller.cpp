@@ -32,6 +32,7 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
     if (cancel_requested.load(std::memory_order_acquire)) {
         return std::unexpected("camera operation cancelled");
     }
+    recognizer.set_backlight_compensation(config.backlight_compensation);
     if (config.liveness_detection) {
         if (const auto reset = recognizer.reset_liveness(); !reset) {
             return std::unexpected("failed to reset liveness detector");
@@ -183,6 +184,7 @@ bool save_recognition_settings(const CoreConfig& config) {
     const auto liveness_enabled = DWORD{config.liveness_detection ? 1U : 0U};
     const auto liveness_threshold = static_cast<DWORD>(
         std::clamp(config.liveness_threshold, 0.3F, 1.0F) * 1000.0F);
+    const auto backlight_compensation = DWORD{config.backlight_compensation ? 1U : 0U};
     const auto set = [raw_key](const wchar_t* name, const DWORD& value) {
         return RegSetValueExW(
             raw_key, name, 0, REG_DWORD,
@@ -199,7 +201,8 @@ bool save_recognition_settings(const CoreConfig& config) {
         && set(L"TimeoutSec", static_cast<DWORD>(config.timeout_sec))
         && set(L"CaptureEnabled", config.capture_enabled ? 1U : 0U)
         && set(L"CaptureRetentionDays", config.capture_retention_days)
-        && set(L"CaptureMaxCount", config.capture_max_count);
+        && set(L"CaptureMaxCount", config.capture_max_count)
+        && set(L"BacklightCompensationEnabled", backlight_compensation);
     if (!trigger_saved) {
         return false;
     }
@@ -220,6 +223,7 @@ bool save_recognition_settings(const CoreConfig& config) {
             .capture_enabled = config.capture_enabled ? 1U : 0U,
             .capture_retention_days = config.capture_retention_days,
             .capture_max_count = config.capture_max_count,
+            .backlight_compensation = backlight_compensation,
         });
     return pushed.has_value();
 }

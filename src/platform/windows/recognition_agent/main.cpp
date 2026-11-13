@@ -80,7 +80,7 @@ int wmain() {
     response.nonce = request.nonce;
     if (request.magic != smile2unlock::recognition_agent_ipc::kRequestMagic
         || request.version != smile2unlock::recognition_agent_ipc::kVersion
-        || (request.flags & ~smile2unlock::recognition_agent_ipc::kCaptureRequested) != 0
+        || (request.flags & ~smile2unlock::recognition_agent_ipc::kKnownFlags) != 0
         || request.camera_index < 0
         || request.timeout_ms < 1000
         || request.timeout_ms > 30'000
@@ -95,6 +95,8 @@ int wmain() {
     }
 
     su::recognizer::RecognizerService recognizer;
+    recognizer.set_backlight_compensation(
+        (request.flags & smile2unlock::recognition_agent_ipc::kBacklightCompensationDisabled) == 0);
     const auto deadline = std::chrono::steady_clock::now()
         + std::chrono::milliseconds{request.timeout_ms};
     const auto open_deadline = std::min(
