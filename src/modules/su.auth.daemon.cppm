@@ -361,6 +361,8 @@ public:
             return {su::control::ControlResult::kRejected, "no enrolled face profiles"};
         }
         const auto& config = user_data->config;
+        // The recognizer outlives requests; the user's switch applies to this one.
+        recognizer_.set_backlight_compensation(config.backlight_compensation);
         const auto authentication_timeout = config.liveness_detection
             ? kLivenessAuthenticationTimeout
             : kAuthenticationTimeout;

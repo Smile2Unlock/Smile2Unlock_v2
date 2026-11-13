@@ -150,6 +150,7 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
     if (cancel_requested.load(std::memory_order_acquire)) {
         return std::unexpected("camera operation cancelled");
     }
+    recognizer.set_backlight_compensation(config.backlight_compensation);
     if (config.liveness_detection) {
         if (const auto reset = recognizer.reset_liveness(); !reset) {
             return std::unexpected("failed to reset liveness detector");
