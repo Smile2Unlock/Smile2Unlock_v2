@@ -331,12 +331,39 @@ password   include      login
 session    include      login
 ```
 
-The app finds `noctalia-pam-helper` the way Noctalia does
-(`NOCTALIA_PAM_HELPER_PATH`, next to the `noctalia` executable on `PATH`, then
-`/usr` and `/usr/local` `libexec/noctalia`) and reads the compiled service name
-out of the binary, choosing among the names present in `/etc/pam.d`. The row
-reports one of: configurable, configured, needs a newer Noctalia (no helper),
-or built with `login` (unsupported).
+The app reads the compiled service name out of `noctalia-pam-helper`, choosing
+among the names present in `/etc/pam.d` (an `/etc/pam.d` file overrides the
+vendor copy in `/usr/lib/pam.d`; a vendor-only file is copied into `/etc/pam.d`
+on apply and the copy is removed on rollback, as for the other targets). A
+service is accepted only if all of these hold:
+
+- its name contains `noctalia`;
+- it is a thin wrapper: its only `auth` line is `auth include login` or
+  `auth substack login`, and it has no `@include` lines;
+- it is not used by another Smile2Unlock target, not Smile2Unlock's own
+  `smile2unlock-noctalia-auth` substack, and not a system or privilege stack
+  (`su`, `su-l`, `sudo`, `sudo-i`, `polkit-1`, `sshd`, `passwd`, `chsh`, `chfn`,
+  `runuser`, `runuser-l`, `systemd-user`, `system-auth`, `system-login`,
+  `system-local-login`, `common-auth`, `login`, `other`).
+
+There is no fallback to a single unrelated match. If nothing qualifies the row
+reads "built with `login`" (unsupported) and needs `-Dpam_service=<name>` plus a
+matching thin-wrapper file. The same predicate is applied again to the service
+recorded in the deployment journal before a rollback.
+
+Where the helper is looked up depends on who asks. The unprivileged app uses the
+user's `NOCTALIA_PAM_HELPER_PATH`, then the `noctalia` executable on `PATH`,
+then `/usr` and `/usr/local` `libexec/noctalia`, only to show the row. The root
+deployment helper ignores `NOCTALIA_PAM_HELPER_PATH` and `PATH` entirely: it
+looks only in `/usr/libexec/noctalia` and `/usr/local/libexec/noctalia`, and
+requires the helper to be a regular file (symlinks are refused) owned by root and
+not group- or world-writable. Before applying, the app compares the helper's plan
+(service, source and destination files) with what it inspected itself and aborts
+on any difference. A Noctalia installed only in a user-writable prefix therefore
+shows in the row but cannot be configured.
+
+The row reports one of: configurable, configured, needs a newer Noctalia (no
+helper), or built with `login` (unsupported).
 
 Turning the entry on uses the same managed substack as the other lock screens:
 the package-owned `/etc/pam.d/noctalia` gets `auth substack
@@ -359,6 +386,26 @@ to start a face scan; if the scan fails the stack continues into the password
 modules, which reject the empty password. Noctalia's PAM conversation ignores
 `PAM_TEXT_INFO` and `PAM_ERROR_MSG`, so the module's status messages are not
 shown: the lock screen displays only "Authenticating...".
+
+### Empty passwords and `nullok`
+
+Because Enter on an empty field reaches PAM, an account whose password is empty
+would be unlockable by anyone. The root helper therefore refuses to plan the
+Noctalia entry when the requesting user's `/etc/shadow` hash (or a hash kept in
+`/etc/passwd`) is empty, and when it cannot read the shadow entry at all.
+Locked accounts (`!`, `*`) are fine. Accounts that are not in `/etc/passwd`
+(LDAP, SSSD) cannot be checked locally; make sure their stack does not allow
+empty passwords.
+
+This check is a point-in-time guard. If you later clear the password, or if the
+`login` stack uses `pam_unix.so nullok`, an empty submission can succeed again;
+do not combine `nullok` with this entry. The generated substack does not try to
+reject an empty authentication token itself: `pam_succeed_if.so` tests the user,
+uid, group and similar items, not the authtok, and no standard module does.
+Another effect to know about: a failed face scan followed by the empty password
+counts as a failed `login` attempt. With `pam_faillock` in the stack, repeated
+Enter presses (each a face attempt plus an empty password) add to the tally and
+can lock the account after the configured number of failures.
 
 ## User data
 

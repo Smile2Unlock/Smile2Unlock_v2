@@ -564,7 +564,10 @@ SystemStatus AppController::load_system_status() {
     }
 
     const auto deployment_client = su::deploy::DeploymentClient{};
-    const auto deployment = su::deploy::inspect_deployment();
+    // The GUI is unprivileged, so it may honour the user's own environment when
+    // looking for Noctalia; the root helper never does and re-validates on plan.
+    const auto deployment = su::deploy::inspect_deployment(
+        "/", su::deploy::noctalia_search_from_environment());
     status.pam_status_known = deployment.has_value();
     status.deployment_helper_available = deployment_client.inspect().has_value();
     status.deployment_installer_available = deployment_client.installer_available();

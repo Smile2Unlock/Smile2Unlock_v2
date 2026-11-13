@@ -1,5 +1,6 @@
 #include "platform/linux/deploy/deployment.h"
 
+#include "platform/linux/deploy/account.h"
 #include "platform/linux/deploy/noctalia.h"
 
 #include <nlohmann/json.hpp>
@@ -578,7 +579,7 @@ std::expected<void, std::string> remove_regular_file(const std::filesystem::path
 
 // Noctalia's service is a build-time constant of its PAM helper, so the
 // definition is completed from the installed helper. Anything that cannot be
-// resolved to a package-owned non-login service is reported, never guessed.
+// resolved to a package-owned thin wrapper is reported, never guessed.
 struct NoctaliaResolution {
     std::string service;
     TargetState state = TargetState::kAbsent;
@@ -586,33 +587,39 @@ struct NoctaliaResolution {
     std::string note;
 };
 
-NoctaliaResolution resolve_noctalia(const std::filesystem::path& root) {
-    const auto detection = detect_noctalia(root, noctalia_search_from_environment());
+NoctaliaResolution unsupported(std::string detail, std::string note) {
+    return {.state = TargetState::kUnsupported, .detail = std::move(detail),
+            .note = std::move(note)};
+}
+
+NoctaliaResolution resolve_noctalia(
+    const std::filesystem::path& root, const HelperLookup& lookup) {
+    const auto detection = detect_noctalia(root, lookup, noctalia_service_policy());
     switch (detection.install) {
     case NoctaliaInstall::kAbsent:
         return {.detail = "Noctalia is not installed"};
     case NoctaliaInstall::kNoHelper:
-        return {.state = TargetState::kUnsupported,
-                .detail = "this Noctalia predates noctalia-pam-helper and always uses the login "
-                          "PAM service",
-                .note = "target.noctalia_needs_newer"};
+        return unsupported("this Noctalia predates noctalia-pam-helper and always uses the "
+                           "login PAM service",
+                           "target.noctalia_needs_newer");
     case NoctaliaInstall::kUnreadable:
-        return {.state = TargetState::kUnsupported,
-                .detail = "noctalia-pam-helper could not be read",
-                .note = "target.noctalia_helper_unreadable"};
+        return unsupported("noctalia-pam-helper could not be read safely",
+                           "target.noctalia_helper_unreadable");
+    case NoctaliaInstall::kUntrusted:
+        return unsupported("noctalia-pam-helper is not root-owned or is writable by others",
+                           "target.noctalia_helper_unreadable");
     case NoctaliaInstall::kHelperFound:
         break;
     }
     switch (detection.scan.outcome) {
     case NoctaliaScan::kLogin:
-        return {.state = TargetState::kUnsupported,
-                .detail = "Noctalia was built with the default login PAM service; it needs "
-                          "-Dpam_service=<name> and a matching /etc/pam.d file",
-                .note = "target.noctalia_built_with_login"};
+        return unsupported("Noctalia was built with the default login PAM service, or its "
+                           "service is not a thin wrapper around login; it needs "
+                           "-Dpam_service=<name> and a matching /etc/pam.d file",
+                           "target.noctalia_built_with_login");
     case NoctaliaScan::kAmbiguous:
-        return {.state = TargetState::kUnsupported,
-                .detail = "noctalia-pam-helper embeds several PAM service names",
-                .note = "target.noctalia_ambiguous"};
+        return unsupported("noctalia-pam-helper embeds several PAM service names",
+                           "target.noctalia_ambiguous");
     case NoctaliaScan::kService:
         break;
     }
@@ -627,9 +634,9 @@ TargetDefinition with_service(TargetKind kind, std::string_view service) {
 
 TargetStatus inspect_target(const std::filesystem::path& root, const TargetDefinition& target);
 
-TargetStatus inspect_noctalia(const std::filesystem::path& root) {
+TargetStatus inspect_noctalia(const std::filesystem::path& root, const HelperLookup& lookup) {
     const auto& base = definition(TargetKind::kNoctalia);
-    const auto resolution = resolve_noctalia(root);
+    const auto resolution = resolve_noctalia(root, lookup);
     if (resolution.service.empty()) {
         return TargetStatus{
             .kind = base.kind,
@@ -644,7 +651,8 @@ TargetStatus inspect_noctalia(const std::filesystem::path& root) {
     if (status.state == TargetState::kAbsent) {
         // The package should ship the file; without it there is nothing to extend.
         status.state = TargetState::kUnsupported;
-        status.detail = "the Noctalia package does not ship /etc/pam.d/" + resolution.service;
+        status.detail = "the Noctalia package does not ship a PAM file for "
+            + resolution.service;
         status.note = "target.noctalia_service_missing";
     } else if (status.state == TargetState::kSupported || status.state == TargetState::kManaged) {
         status.note = "target.noctalia_press_enter";
@@ -652,8 +660,10 @@ TargetStatus inspect_noctalia(const std::filesystem::path& root) {
     return status;
 }
 
-TargetStatus inspect_any(const std::filesystem::path& root, const TargetDefinition& target) {
-    return target.kind == TargetKind::kNoctalia ? inspect_noctalia(root)
+TargetStatus inspect_any(
+    const std::filesystem::path& root, const TargetDefinition& target,
+    const HelperLookup& noctalia_helper) {
+    return target.kind == TargetKind::kNoctalia ? inspect_noctalia(root, noctalia_helper)
                                                 : inspect_target(root, target);
 }
 
@@ -743,7 +753,9 @@ TargetStatus inspect_target(
         status.detail = target.kind == TargetKind::kDms
             ? "dedicated DMS PAM service is installed"
             : "Smile2Unlock is configured outside the deployment helper";
-        if (target.kind != TargetKind::kDms) {
+        // Noctalia's service is only accepted while it is still a thin wrapper, so
+        // an externally configured file never reaches this state for it.
+        if (target.kind != TargetKind::kDms && target.kind != TargetKind::kNoctalia) {
             const auto adoption = plan_pam_adoption(root, target.kind);
             status.adoptable = adoption.has_value();
             status.adoption_unavailable_reason = adoption ? "" : adoption.error();
@@ -766,6 +778,16 @@ TargetStatus inspect_target(
 }
 
 } // namespace
+
+ServicePolicy noctalia_service_policy() {
+    auto policy = ServicePolicy{.child_service = child_service_name(TargetKind::kNoctalia)};
+    for (const auto& target : kTargets) {
+        if (target.kind != TargetKind::kNoctalia && !target.service.empty()) {
+            policy.denied.emplace_back(target.service);
+        }
+    }
+    return policy;
+}
 
 std::string_view authtok_source_id(AuthtokSource source) {
     switch (source) {
@@ -825,20 +847,40 @@ std::optional<TargetKind> target_from_id(std::string_view id) {
 }
 
 std::expected<DeploymentSnapshot, std::string> inspect_deployment(
-    const std::filesystem::path& root) {
+    const std::filesystem::path& root, const HelperLookup& noctalia_helper) {
     auto snapshot = DeploymentSnapshot{};
     snapshot.targets.reserve(kTargets.size());
     for (const auto& target : kTargets) {
-        snapshot.targets.push_back(inspect_any(root, target));
+        snapshot.targets.push_back(inspect_any(root, target, noctalia_helper));
     }
     return snapshot;
 }
 
 namespace {
+// A Noctalia plan enables "Enter on an empty field", so the account asking for
+// it must not be one whose empty password a `nullok` stack would accept.
+std::expected<void, std::string> require_non_empty_password(
+    const std::filesystem::path& root, const PlanContext& context) {
+    if (!context.requester_uid) {
+        return std::unexpected("cannot identify the requesting account for Noctalia");
+    }
+    const auto state = account_password_state(root, *context.requester_uid);
+    if (!state) {
+        return std::unexpected(state.error());
+    }
+    if (*state == AccountPassword::kEmpty) {
+        return std::unexpected(
+            "the requesting account has an empty password, which would let anyone unlock the "
+            "Noctalia lock screen by pressing Enter; set a password first");
+    }
+    return {};
+}
+
 std::expected<PamPlan, std::string> plan_pam_integration_impl(const std::filesystem::path& root,
                                                            TargetKind target,
                                                            AuthtokSource authtok_source,
-                                                           bool adoption) {
+                                                           bool adoption,
+                                                           const PlanContext& context) {
     if (authtok_source != AuthtokSource::kNone && definition(target).role != TargetRole::kLogin &&
         definition(target).role != TargetRole::kLoginAndLock) {
         return std::unexpected("wallet authtok is supported only for login targets");
@@ -846,8 +888,13 @@ std::expected<PamPlan, std::string> plan_pam_integration_impl(const std::filesys
     if (target == TargetKind::kDms) {
         return std::unexpected("DMS uses its dedicated PAM service installer");
     }
+    if (target == TargetKind::kNoctalia && !adoption) {
+        if (const auto allowed = require_non_empty_password(root, context); !allowed) {
+            return std::unexpected(allowed.error());
+        }
+    }
     const auto resolved_service = target == TargetKind::kNoctalia
-        ? resolve_noctalia(root).service
+        ? resolve_noctalia(root, context.helper).service
         : std::string(target_service(target));
     if (resolved_service.empty()) {
         return std::unexpected(std::string(target_id(target)) + " has no configurable PAM service");
@@ -860,6 +907,13 @@ std::expected<PamPlan, std::string> plan_pam_integration_impl(const std::filesys
     const auto source = read_regular_file(*source_path);
     if (!source) {
         return std::unexpected(source.error());
+    }
+    if (target == TargetKind::kNoctalia) {
+        // Judge the bytes about to be rewritten, not the ones seen at detection.
+        if (const auto accepted = check_noctalia_service(service, *source, noctalia_service_policy());
+            !accepted) {
+            return std::unexpected(std::string(service_rejection_text(accepted.error())));
+        }
     }
     auto lines = parse_lines(*source);
     if (adoption) {
@@ -983,14 +1037,16 @@ std::expected<PamPlan, std::string> plan_pam_integration_impl(const std::filesys
 
 std::expected<PamPlan, std::string> plan_pam_integration(const std::filesystem::path& root,
                                                        TargetKind target,
-                                                       AuthtokSource authtok_source) {
-    return plan_pam_integration_impl(root, target, authtok_source, false);
+                                                       AuthtokSource authtok_source,
+                                                       const PlanContext& context) {
+    return plan_pam_integration_impl(root, target, authtok_source, false, context);
 }
 
 std::expected<PamPlan, std::string> plan_pam_adoption(const std::filesystem::path& root,
                                                     TargetKind target,
-                                                    AuthtokSource authtok_source) {
-    return plan_pam_integration_impl(root, target, authtok_source, true);
+                                                    AuthtokSource authtok_source,
+                                                    const PlanContext& context) {
+    return plan_pam_integration_impl(root, target, authtok_source, true, context);
 }
 
 std::expected<void, std::string> apply_pam_plan(
@@ -1188,9 +1244,12 @@ std::expected<void, std::string> rollback_pam_integration(
     const auto recorded_service = record.value("service", "");
     const auto service = target == TargetKind::kNoctalia ? recorded_service
                                                         : std::string(target_service(target));
-    if (target == TargetKind::kNoctalia
-        && (!is_valid_pam_service_name(service) || service == "login")) {
-        return std::unexpected("deployment journal contains an invalid Noctalia service");
+    if (target == TargetKind::kNoctalia) {
+        if (const auto accepted = check_noctalia_service_name(service, noctalia_service_policy());
+            !accepted) {
+            return std::unexpected("deployment journal contains an unacceptable Noctalia service: "
+                                   + std::string(service_rejection_text(accepted.error())));
+        }
     }
     const auto expected_destination = pam_path(root, "/etc/pam.d", service);
     const auto expected_child = pam_path(root, "/etc/pam.d", child_service_name(target));
@@ -1225,6 +1284,14 @@ std::expected<void, std::string> rollback_pam_integration(
         || (state != "active"
             && (!(parent_result || parent_original) || !(child_result || child_original)))) {
         return std::unexpected("managed PAM files changed after installation");
+    }
+    if (target == TargetKind::kNoctalia && record.value("destination_existed", false)) {
+        // The backup is what rollback writes back to a PAM file, so it must be
+        // the pristine thin wrapper; refuse before any state changes.
+        if (const auto backup = read_regular_file(parent_backup); backup
+            && !check_noctalia_service(service, *backup, noctalia_service_policy())) {
+            return std::unexpected("the saved Noctalia PAM file is not a thin login wrapper");
+        }
     }
     (*journal)["targets"][id]["state"] = "rolling_back";
     if (const auto saved = save_journal(root, *journal); !saved) {
@@ -1367,28 +1434,6 @@ std::expected<void, std::string> check_package_upgrade(
             recorded_text, candidate_version));
     }
     return {};
-}
-
-std::string snapshot_json(const DeploymentSnapshot& snapshot) {
-    auto targets = json::array();
-    for (const auto& target : snapshot.targets) {
-        targets.push_back({
-            {"id", target_id(target.kind)},
-            {"service", target.service},
-            {"role", target_role_id(target.role)},
-            {"state", target_state_id(target.state)},
-            {"path", target.effective_path.string()},
-            {"password_fallback", target.password_fallback},
-            {"wallet_modules", target.wallet_modules},
-            {"wallet_token_enabled", target.wallet_token_enabled},
-            {"authtok_source", authtok_source_id(target.authtok_source)},
-            {"sealed_available", target.sealed_available},
-            {"detail", target.detail},
-            {"adoptable", target.adoptable},
-            {"adoption_unavailable_reason", target.adoption_unavailable_reason},
-        });
-    }
-    return json{{"version", 1}, {"targets", std::move(targets)}}.dump();
 }
 
 std::string plan_json(const PamPlan& plan) {
