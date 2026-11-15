@@ -10,18 +10,26 @@ policy for Linux and Windows.
 
 ## Product version
 
-`version.txt` is the only product release version to edit. Xmake reads it when
-loading targets and generates the C++ version define and Windows VERSIONINFO
-header. Package names, release manifests and release tag validation read the
-same file. `SU_VERSION` no longer overrides the build version.
+The pushed `vMAJOR.MINOR.PATCH` tag is the release version authority. The
+release workflow validates the tag and passes its numeric version as
+`SU_VERSION` to Xmake and both packaging jobs, so executable metadata, package
+names, and `release-info.json` use the same version. A release does not require
+a version-bump commit or a version-only PR, which keeps release numbering
+independent of protected-branch edits.
 
-To prepare a version change for a PR without creating a release tag:
+For local development builds, `version.txt` remains a fallback baseline when
+`SU_VERSION` is unset. To build or package a release candidate locally, set the
+version explicitly:
 
 ```bash
-packaging/version/bump-version.sh 2.3.1 --no-tag
+SU_VERSION=2.4.2 xmake f -y -p linux -a x86_64 -m release
+SU_VERSION=2.4.2 xmake build
+SU_VERSION=2.4.2 packaging/package.sh --platform all
 ```
 
-Rebuild before packaging so executable metadata matches the package version.
+Create and push `v2.4.2` only after the intended commit is on `main`; the tag
+starts the release workflow. Rebuild before packaging so executable metadata
+matches the package version. `version.txt` is not edited as part of a release.
 The Rust crates' internal package versions and the core ABI version describe
 their own interfaces; they are independent of the product release version.
 

@@ -6,12 +6,15 @@
 packaging_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 project_dir="$(cd "${packaging_dir}/.." && pwd)"
 package_name="smile2unlock"
-package_version="$(tr -d '[:space:]' < "${project_dir}/version.txt")"
+package_version="${SU_VERSION:-$(tr -d '[:space:]' < "${project_dir}/version.txt")}"
 
 package_die() {
     echo "packaging: $*" >&2
     exit 1
 }
+
+[[ "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || package_die "invalid product version: $package_version"
 
 package_require_command() {
     command -v "$1" >/dev/null 2>&1 || package_die "required command not found: $1"
