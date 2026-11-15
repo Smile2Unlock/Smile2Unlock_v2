@@ -64,6 +64,9 @@ constexpr LumaStats in_band{.mean = 120.0, .clipped_fraction = 0.0, .samples = 1
 static_assert(metering_region(640, 480, std::nullopt) == PixelRegion{192, 120, 256, 240});
 static_assert(metering_region(640, 480, PixelRegion{100, 100, 200, 200})
     == PixelRegion{130, 130, 140, 140});
+static_assert(!face_metering_region(640, 480, std::nullopt));
+static_assert(face_metering_region(640, 480, PixelRegion{100, 100, 200, 200})
+    == PixelRegion{130, 130, 140, 140});
 static_assert(to_string(ExposureKnobKind::manual_exposure) == "manual_exposure");
 static_assert(measure_luma(std::array{std::byte{200}, std::byte{0}, std::byte{0}}, 1, 1, 3,
                   PixelRegion{0, 0, 1, 1}).mean
@@ -314,6 +317,69 @@ Driven drive(Driven driven, const ExposureKnobChain& chain, const LumaStats& obs
 }
 
 constexpr auto level_index(const ExposureKnobKind kind) { return std::to_underlying(kind); }
+
+void test_face_only_metering() {
+    assert(!face_metering_region(0, 480, PixelRegion{10, 10, 100, 100}));
+    assert(!face_metering_region(640, 0, PixelRegion{10, 10, 100, 100}));
+    assert(!face_metering_region(640, 480, PixelRegion{10, 10, 0, 100}));
+    assert(!face_metering_region(640, 480, PixelRegion{10, 10, 100, -1}));
+    assert(!face_metering_region(640, 480, PixelRegion{900, 900, 50, 50}));
+    assert(!face_metering_region(640, 480,
+        PixelRegion{2'000'000'000, 2'000'000'000, 2'000'000'000, 2'000'000'000}));
+    assert(face_metering_region(640, 480, PixelRegion{-100, -100, 400, 400})
+        == PixelRegion(0, 0, 240, 240));
+
+    // An off-centre, usable face must win over the bright centre/background.
+    auto frame = solid_image(640, 480, 1, 255);
+    const auto face = PixelRegion{30, 100, 150, 180};
+    for (int y = face.y; y < face.y + face.height; ++y) {
+        for (int x = face.x; x < face.x + face.width; ++x) {
+            frame[y * 640 + x] = std::byte{120};
+        }
+    }
+    const auto region = face_metering_region(640, 480, face);
+    assert(region);
+    const auto face_stats = measure_luma(frame, 640, 480, 1, *region);
+    assert(face_stats.mean == 120 && face_stats.clipped_fraction == 0);
+    const auto centre_stats = measure_luma(frame, 640, 480, 1,
+        metering_region(640, 480, std::nullopt));
+    assert(centre_stats.mean == 255 && centre_stats.clipped_fraction == 1);
+    // Detector fallback still exists; it is deliberately not an exposure ROI.
+    assert(!face_metering_region(640, 480, std::nullopt));
+}
+
+void test_no_face_exposure_startup_and_loss() {
+    for (const auto& chain : {chain_of({kEvKnob}),
+             chain_of({kBacklightKnob, kManualKnob})}) {
+        auto state = make_exposure_state(chain);
+        auto boosts = 0;
+        for (int ms = 0; ms <= 60000; ms += 100) {
+            const auto region = face_metering_region(640, 480, std::nullopt);
+            assert(!region); // background must not be installed as the camera ROI
+            const auto step = boosts < 5
+                ? next_exposure_step(state, {}, chain, ExposureTime{ms}, {}, true)
+                : ExposureStep{.next = state, .change = std::nullopt};
+            if (step.change) {
+                assert(step.change->action == ExposureAction::set);
+                assert(step.change->level > state.levels[level_index(step.change->kind)]
+                    || (step.change->kind == ExposureKnobKind::manual_exposure
+                        && !state.manual_engaged));
+                state = with_applied_level(step.next, step.change->kind, step.change->level);
+                ++boosts;
+            } else {
+                state = step.next;
+            }
+        }
+        assert(boosts == 5); // bounded search then a stable hold
+
+        // Once a face is present, real face luma resumes both directions.
+        auto brightened_face = drive({make_exposure_state(chain), {}}, chain, dark, 8).state;
+        const auto bright_face = decide(settled(brightened_face), bright, chain, kLater);
+        assert(bright_face.change);
+        assert(bright_face.change->level
+            < brightened_face.levels[level_index(bright_face.change->kind)]);
+    }
+}
 
 void test_escalation_when_saturated() {
     const auto chain = chain_of({kBacklightKnob, kManualKnob});
@@ -591,6 +657,8 @@ int main() {
     test_restore_retry_due();
     test_restore_order_covers_every_knob();
     test_metering_region();
+    test_face_only_metering();
+    test_no_face_exposure_startup_and_loss();
     test_measure_luma();
     test_step_directions();
     test_step_settle_and_samples();

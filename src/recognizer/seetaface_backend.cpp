@@ -476,19 +476,17 @@ private:
             detect_image.height, 3,
             detail::metering_region(detect_image.width, detect_image.height, std::nullopt),
             detail::PixelOrder::bgr);
-        return detail::low_light_lut(centre)
-            .transform([&](const detail::LowLightLut& lut) {
-                // Reused every frame: the dark, face-less case is the steady
-                // state while the exposure loop is still adjusting.
-                enhance_scratch_.resize(sample_count);
-                detail::apply_lut(pixels, lut, enhance_scratch_);
-                auto enhanced_image = detect_image;
-                enhanced_image.data = enhance_scratch_.data();
-                const auto retried = detector_->detect(enhanced_image);
-                log_low_light_detect(centre.mean, retried.size);
-                return Detected{.faces = retried, .enhanced = retried.size > 0};
-            })
-            .value_or(Detected{.faces = first});
+        const auto lut = detail::low_light_lut(centre).value_or(
+            *detail::low_light_lut(detail::LumaStats{.mean = 60.0, .samples = 1}));
+        // Reused every frame: the dark, face-less case is the steady state
+        // while the exposure loop is still adjusting.
+        enhance_scratch_.resize(sample_count);
+        detail::apply_lut(pixels, lut, enhance_scratch_);
+        auto enhanced_image = detect_image;
+        enhanced_image.data = enhance_scratch_.data();
+        const auto retried = detector_->detect(enhanced_image);
+        log_low_light_detect(centre.mean, retried.size);
+        return Detected{.faces = retried, .enhanced = retried.size > 0};
     }
 
     void log_low_light_detect(const double centre_mean, const int faces_found) const {

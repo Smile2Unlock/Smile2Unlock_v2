@@ -13,8 +13,17 @@ controls (one at a time, escalating along a chain) until the face sits in a
 usable band. The window is allowed to blow
 out; only the face matters.
 
-- Region: the inner 70% of the face box once a face is found, otherwise a
-  centred window (40% x 50% of the frame) where a seated user's face normally is.
+- Region: the inner 70% of a valid face box, clamped to the frame. Missing,
+  invalid or wholly off-frame boxes never supply exposure measurements or
+  update hardware ROI.
+- No face at startup or after loss: do not meter background luma or lower
+  exposure based on it. Keep the last face ROI, then allow at most five
+  settled, one-way exposure increases to help the detector acquire a face.
+  Once found, resume the normal face-metered loop and reset the search budget.
+  If the search budget is exhausted, controls hold until a face returns or the
+  session restarts. This bounds brightness changes while allowing an initially
+  undetectable dark face to benefit from additional exposure. Holding controls
+  does not freeze image brightness while camera auto exposure is active.
 - Target: mean face luma within `[90, 150]` (`ExposureTuning`). Too dark steps
   the active knob up; too bright, or more than 5% of face samples clipped (`>= 250`), steps
   down; inside the band the loop holds and touches nothing.
@@ -30,7 +39,7 @@ out; only the face matters.
   `flip_flop_memory` (30 s), so a scene that really changed is corrected
   later instead of being held forever.
 - Normal-light users usually see no change: with the face in band the loop
-  holds, and the camera meters the face or centre region. It is not a strict
+  holds, and the camera meters the face region. It is not a strict
   no-op: a pale or very bright face (mean above 150, or more than 5% clipped)
   in a bright room is "too bright" too, and can lower `ev_bias` (or take
   backlight compensation down) even though nothing is wrong with the lighting.
@@ -141,12 +150,16 @@ API with synthetic dark/bright luma.
 
 Separate from the loop, `seetaface_backend.cpp` retries face detection on a
 brightened copy so a backlit face is found at all (the loop needs a face box to
-meter). Only when the first pass finds no face and the centre mean luma is
-below 70, a gamma LUT is applied to a copy used by the detector alone;
-landmarks, liveness and the feature extractor always run on the original
+meter). When the first pass finds no face, a gamma LUT is applied to a copy
+used by the detector alone. A dark centre gets a stronger centre-derived LUT;
+when the centre is bright the retry still uses a conservative fixed LUT, so a
+bright window cannot suppress enhancement of an off-centre face.
+Landmarks, liveness and the feature extractor always run on the original
 pixels so templates and scores do not shift. The detector input is BGR, so the
 centre luma is measured with `PixelOrder::bgr` (`measure_luma` defaults to RGB;
 reading BGR data as RGB would swap the red and blue weights).
+The centre window (40% x 50% of the frame) is only a detector fallback; it is
+never used to drive camera controls.
 
 ## User switch
 
@@ -252,6 +265,10 @@ injected ioctl: failed reset retried on close, restore ordering, partial
 failure, EINTR, error classification, sparse EV menu, region reset). The
 switch is covered by `su_seetaface_pipeline_smoke_test` (retry off: the
 darkened face returns no box) and the Windows protocol tests.
+Face-only metering regressions cover missing/invalid boxes, an off-centre face
+against a clipped background, startup without a face, bounded search after
+loss, and return to face metering. These are synthetic checks, not camera
+acceptance.
 
 ## Tuning constants
 

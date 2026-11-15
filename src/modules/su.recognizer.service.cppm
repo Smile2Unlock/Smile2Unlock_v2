@@ -23,6 +23,8 @@ struct ExposureSession {
     // Consecutive transient write failures per knob (indexed by kind); a knob
     // is only dropped after kMaxTransientFailures in a row.
     std::array<int, kExposureKnobKindCount> transient_failures{};
+    // Number of bounded open-loop boosts used while no face is detectable.
+    int face_search_steps = 0;
     // Set once the loop wrote a control this session; a switch-off restore
     // that undoes it is a brightness step, so liveness must start over.
     bool wrote_control = false;
