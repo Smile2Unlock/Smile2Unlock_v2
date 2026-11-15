@@ -20,6 +20,7 @@ using detail::RestorePending;
 constexpr int kRegionMovePercent = 10;
 constexpr auto kRegionMinInterval = std::chrono::milliseconds{500};
 constexpr auto kLogInterval = std::chrono::seconds{2};
+constexpr int kMaxFaceSearchSteps = 5;
 // A knob that keeps failing with transient errors (busy, I/O) is given up on
 // after this many writes in a row; a rejection drops it at once.
 constexpr int kMaxTransientFailures = 3;
@@ -215,6 +216,7 @@ bool RecognizerService::restart_exposure_loop_unlocked() const {
     }
     exposure_.loop = detail::make_exposure_state(exposure_.caps.knobs);
     exposure_.applied_region.reset();
+    exposure_.face_search_steps = 0;
     exposure_.transient_failures = {};
     return restored;
 }
@@ -254,9 +256,10 @@ bool RecognizerService::observe_exposure(const ImageView frame, const std::optio
     const auto face_region = face
         ? std::optional(detail::PixelRegion{face->x, face->y, face->width, face->height})
         : std::nullopt;
-    const auto region = detail::metering_region(frame.width, frame.height, face_region);
-    const auto stats = detail::measure_luma(
-        frame.bytes, frame.width, frame.height, frame.channels, region);
+    const auto region = detail::face_metering_region(frame.width, frame.height, face_region);
+    const auto stats = region ? detail::measure_luma(
+        frame.bytes, frame.width, frame.height, frame.channels, *region) : detail::LumaStats{};
+    if (region && stats.samples == 0) return false;
 
     std::lock_guard lock(camera_mutex_);
     if (!backlight_compensation_.load()) {
@@ -266,7 +269,20 @@ bool RecognizerService::observe_exposure(const ImageView frame, const std::optio
         return false;
     }
     const auto now = Clock::now();
-    update_metering_region(*camera_, exposure_, region, frame, now);
+    if (!region) {
+        // Keep the last ROI on loss: restoring camera-wide metering could
+        // abruptly darken the image. Do not measure background pixels to
+        // steer controls; acquisition is bounded and one-way.
+        if (exposure_.caps.knobs.empty()
+            || exposure_.face_search_steps >= kMaxFaceSearchSteps) return false;
+        const auto step = detail::next_exposure_step(exposure_.loop, {}, exposure_.caps.knobs,
+            to_exposure_time(now), {}, true);
+        const auto changed = apply_step(*camera_, exposure_, step);
+        if (changed) ++exposure_.face_search_steps;
+        return changed;
+    }
+    exposure_.face_search_steps = 0;
+    update_metering_region(*camera_, exposure_, *region, frame, now);
     if (exposure_.caps.knobs.empty()) {
         return false;
     }

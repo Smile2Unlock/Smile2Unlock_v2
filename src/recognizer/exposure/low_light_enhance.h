@@ -3,8 +3,9 @@
 //
 // In a backlit scene the face can be so dark (luma ~12/255) that the detector
 // finds nothing, so the exposure loop never gets a face box to meter. When the
-// first detection pass fails and the frame centre is dark, the detector is
-// retried on a gamma-brightened copy. The enhanced pixels must never reach
+// first detection pass fails, the detector is retried on a gamma-brightened
+// copy, including when a bright background makes the centre look well-lit.
+// The enhanced pixels must never reach
 // landmarking, anti-spoofing or feature extraction: enrolled templates and
 // liveness scores were produced from raw frames and would shift.
 //
@@ -26,7 +27,8 @@ namespace su::recognizer::detail {
 
 using LowLightLut = std::array<std::uint8_t, 256>;
 
-// Centre mean luma at or above which the detector already has enough light.
+// Centre mean luma at or above which the detector image needs only the
+// conservative fixed gamma fallback rather than a stronger centre-derived one.
 inline constexpr double kLowLightMeanThreshold = 70.0;
 // Centre mean the gamma curve aims for: a comfortable mid-dark face level.
 inline constexpr double kLowLightTargetMean = 110.0;
@@ -58,7 +60,7 @@ inline constexpr double kLowLightFaceMeanFloor = 40.0;
 }
 
 // Gamma LUT lifting `centre.mean` toward `target_mean`, or nullopt when the
-// centre is bright enough (or unmeasured) and enhancement would only add risk.
+// centre is bright enough (or unmeasured) for this stronger curve.
 [[nodiscard]] constexpr std::optional<LowLightLut> low_light_lut(const LumaStats& centre,
     const double mean_threshold = kLowLightMeanThreshold,
     const double target_mean = kLowLightTargetMean) {

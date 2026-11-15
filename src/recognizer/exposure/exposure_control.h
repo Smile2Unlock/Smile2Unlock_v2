@@ -273,15 +273,14 @@ struct ExposureStep {
     return state;
 }
 
-// Region the loop meters. With a face: the inner part of the face box (drops
-// hair and the background at the box edges), clamped to the frame. Without
-// one: a centred window where a seated user's face normally is, so a bright
-// window at the frame edge does not dominate.
-[[nodiscard]] constexpr PixelRegion metering_region(
+// Exposure controls require an actual face: a bright background must never
+// stand in for one, at startup or after detection is lost. Invalid or wholly
+// off-frame boxes are absent too. Keep the inner 70%, clamped to the frame.
+[[nodiscard]] constexpr std::optional<PixelRegion> face_metering_region(
     const int width, const int height, const std::optional<PixelRegion> face) {
     constexpr auto kFaceInsetPercent = 15;
     if (width <= 0 || height <= 0) {
-        return {};
+        return std::nullopt;
     }
     // 64-bit throughout: the face box comes from a detector, so its geometry
     // is external input and int sums could overflow.
@@ -306,20 +305,26 @@ struct ExposureStep {
     const auto is_usable = [](const PixelRegion& region) {
         return region.width > 0 && region.height > 0;
     };
-    const auto centre = [&] {
-        const auto region_width = width * 2 / 5;
-        const auto region_height = height / 2;
-        const auto x0 = (width - region_width) / 2;
-        const auto y0 = (height - region_height) / 2;
-        return clamp_to_frame(x0, y0, x0 + region_width, y0 + region_height);
-    };
     return face.and_then([&](const PixelRegion& box) {
                    return is_usable(box) ? std::optional(inner_face(box)) : std::nullopt;
                })
         .and_then([&](const PixelRegion& inner) {
             return is_usable(inner) ? std::optional(inner) : std::nullopt;
-        })
-        .value_or(centre());
+        });
+}
+
+// Detector-only fallback for the low-light retry. The exposure service uses
+// face_metering_region instead: a centre measurement cannot identify a face.
+[[nodiscard]] constexpr PixelRegion metering_region(
+    const int width, const int height, const std::optional<PixelRegion> face) {
+    if (width <= 0 || height <= 0) {
+        return {};
+    }
+    const auto region_width = static_cast<int>(static_cast<long long>(width) * 2 / 5);
+    const auto region_height = height / 2;
+    return face_metering_region(width, height, face).value_or(PixelRegion{
+        (width - region_width) / 2, (height - region_height) / 2,
+        region_width, region_height});
 }
 
 // Running totals while scanning the metered region.
@@ -578,19 +583,24 @@ struct ExposureEdit {
 // just left, accepting a slightly out-of-band face over oscillating.
 [[nodiscard]] constexpr ExposureStep next_exposure_step(const ExposureLoopState& state,
     const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTime now,
-    const ExposureTuning& tuning = {}) {
+    const ExposureTuning& tuning = {}, const bool seek_face_without_measurement = false) {
     auto held = state;
     held.observations_since_change = state.observations_since_change + 1;
     const auto unchanged = ExposureStep{.next = held, .change = std::nullopt};
-    if (chain.empty() || stats.samples == 0 || !has_settled(state, now, tuning)) {
+    if (chain.empty() || (!stats.samples && !seek_face_without_measurement)
+        || !has_settled(state, now, tuning)) {
         return unchanged;
     }
-    const auto direction = exposure_direction(stats, tuning);
+    // Without a face, background luma is not evidence that exposure is too
+    // high or low. The caller may request a bounded, one-way acquisition step.
+    const auto direction = seek_face_without_measurement
+        ? std::optional(ExposureDirection::raise) : exposure_direction(stats, tuning);
     if (!direction) {
         return unchanged;
     }
     auto candidate = *direction == ExposureDirection::raise
-        ? brighten_step(state, stats, chain, tuning)
+        ? brighten_step(state, stats.samples ? stats : LumaStats{
+              .mean = tuning.target_low - 1.0, .samples = 1}, chain, tuning)
         : darken_step(state, stats, chain, tuning);
     if (!candidate || is_flip_flop(state, *candidate, *direction, now, tuning)) {
         return unchanged;
