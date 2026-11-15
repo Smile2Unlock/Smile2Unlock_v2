@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Bump the Smile2Unlock version and create a git tag.
+# Set the local development version fallback.
 #
-#   packaging/version/bump-version.sh 2.3.1 [--no-tag]
+#   packaging/version/bump-version.sh 2.4.2
 #
-# - Writes version.txt; build and packaging read this single source
-# - Runs `git tag v<version>` (unless --no-tag)
-# - Prints the next packaging command
+# Official release versions come from pushed vMAJOR.MINOR.PATCH tags. This
+# helper only updates version.txt for local builds without SU_VERSION.
 #
 # Xmake generates target versions, C++ defines and Windows resources from
-# version.txt. No other tracked product-version literals need updating.
+# version.txt only when SU_VERSION is not provided.
 
 set -euo pipefail
 
@@ -17,6 +16,7 @@ version_file="${project_dir}/version.txt"
 
 usage() {
     echo "Usage: packaging/version/bump-version.sh <version> [--no-tag]"
+    echo "Sets the local version.txt fallback; releases are created by pushing vX.Y.Z tags."
     exit 1
 }
 
@@ -29,28 +29,14 @@ shift
 }
 [[ -f "$version_file" ]] && old_version="$(tr -d '[:space:]' < "$version_file")" || old_version="(none)"
 
-tag=true
 while (($# > 0)); do
     case "$1" in
-        --no-tag) tag=false; shift ;;
+        --no-tag) shift ;;
         *) echo "unknown argument: $1" >&2; usage ;;
     esac
 done
 
 printf '%s\n' "${new_version}" > "${version_file}"
 
-echo "version: ${old_version:-<empty>} -> ${new_version}"
-
-if [[ "$tag" == true ]]; then
-    # Reuse an existing tag body if present, else a generic one.
-    if git -C "$project_dir" rev-parse "v${new_version}" >/dev/null 2>&1; then
-        echo "note: tag v${new_version} already exists (skipped)"
-    else
-        git -C "$project_dir" add version.txt
-        git -C "$project_dir" commit -m "chore: bump version to ${new_version}" >/dev/null
-        git -C "$project_dir" tag "v${new_version}"
-        echo "tagged: v${new_version}"
-    fi
-fi
-
-echo "next: packaging/windows/package.sh && packaging/linux/package.sh --format all"
+echo "development version: ${old_version:-<empty>} -> ${new_version}"
+echo "release version is set by pushing v${new_version} after the release commit is on main"

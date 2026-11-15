@@ -4,7 +4,7 @@
 # This script is sourced by the packaging scripts (packaging/windows/package.sh
 # and packaging/linux/package.sh). It provides:
 #
-#   version_read()          -> print the current version from version.txt
+#   version_read()          -> print SU_VERSION or the local version.txt fallback
 #   inject_release_info(ROOT PLATFORM) -> write release-info.json into a staged tree
 #
 # Layout:
@@ -23,7 +23,11 @@ project_dir="$(cd "${version_dir}/../.." && pwd)"
 version_file="${project_dir}/version.txt"
 
 version_read() {
-    tr -d '[:space:]' < "${version_file}"
+    if [[ -n "${SU_VERSION:-}" ]]; then
+        printf '%s\n' "$SU_VERSION"
+    else
+        tr -d '[:space:]' < "${version_file}"
+    fi
 }
 
 # inject_release_info STAGED_ROOT PLATFORM [OUTPUT]

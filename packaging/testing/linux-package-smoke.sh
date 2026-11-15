@@ -40,7 +40,7 @@ done
 # checkout or output directory directly. The root path must isolate its inputs.
 echo "Linux packaging smoke test: uid=$(id -u)"
 "${fixture_dir}/packaging/linux/package.sh" --format all --output-dir "$output_dir"
-version="$(tr -d '[:space:]' < "$fixture_dir/version.txt")"
+version="${SU_VERSION:-$(tr -d '[:space:]' < "$fixture_dir/version.txt")}"
 archives=("$output_dir"/*)
 [[ ${#archives[@]} == 4 ]] || { echo "expected four package formats" >&2; exit 1; }
 tar --numeric-owner -tvf "$output_dir/smile2unlock-${version}-1-x86_64.pkg.tar.zst" \

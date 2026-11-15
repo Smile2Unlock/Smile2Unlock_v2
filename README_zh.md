@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="#项目简介">项目简介</a> •
+  <a href="#软件截图">软件截图</a> •
   <a href="#平台">平台</a> •
   <a href="#部署">部署</a> •
   <a href="#架构">架构</a> •
@@ -33,6 +34,17 @@ Smile2Unlock 是一套**本地人脸认证系统**:人脸特征全部在本机�
 - **Linux**:通过 PAM 模块接入 `login` / GDM / SDDM 等认证流程
 
 两个平台共享同一套核心:C++26 modules 编写的识别流水线、Rust 编写的人脸档案存储(明文与加密两种后端)、Slint 编写的 GUI,以及 xmake 构建系统。
+
+## 软件截图
+
+下图为 Linux 桌面程序当前构建在 Xvfb 中的设置界面；截图裁去了账户侧栏和人脸资料。
+
+<p align="center">
+  <img src="docs/images/settings-xvfb.png" alt="Smile2Unlock Linux 设置界面" width="900" />
+</p>
+
+详细控制项见[功能与设置](docs/features.md)；开发、验证、文档和发布流程见
+[维护手册](docs/maintenance.md)。
 
 ## 平台
 
@@ -200,6 +212,8 @@ packaging/package.sh --platform all --build
 Linux 原生格式可用 `--linux-format pacman`、`deb`、`rpm` 或 `all`。安装包会内嵌包含版本、平台、架构和文件校验值的 `release-info.json`，且不会修改仓库中的受跟踪文件。详细布局和验证约定见 [`packaging/README.md`](packaging/README.md)。
 
 当前实现状态和发布前待办见 [`docs/current_status.md`](docs/current_status.md)。
+正式发布版本由 `vX.Y.Z` Git tag 决定，无需为版本号单独提交 PR；本地覆盖方式见
+[`packaging/README.md`](packaging/README.md)。
 
 ## 贡献者
 

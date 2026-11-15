@@ -8,6 +8,7 @@
 
 <p align="center">
   <a href="#overview">Overview</a> •
+  <a href="#screenshots">Screenshots</a> •
   <a href="#platforms">Platforms</a> •
   <a href="#deployment">Deployment</a> •
   <a href="#architecture">Architecture</a> •
@@ -33,6 +34,19 @@ Smile2Unlock is a local face-authentication system: all face features are extrac
 - **Linux**: plugs into `login` / GDM / SDDM authentication via a PAM module
 
 Both platforms share the same core: a recognition pipeline written with C++26 modules, a Rust face-profile store (plaintext and encrypted backends), a Slint GUI, and the xmake build system.
+
+## Screenshots
+
+The Linux desktop app is shown below. It was captured from the current build
+under Xvfb; the account sidebar and face data are excluded.
+
+<p align="center">
+  <img src="docs/images/settings-xvfb.png" alt="Smile2Unlock settings on Linux" width="900" />
+</p>
+
+See the [feature and settings guide](docs/features.md) for the available controls,
+and the [maintenance guide](docs/maintenance.md) for development, verification,
+documentation, and release procedures.
 
 ## Platforms
 
@@ -226,6 +240,9 @@ contract.
 
 See [`docs/current_status.md`](docs/current_status.md) for the verified implementation
 status and the remaining release work.
+
+Release builds take their product version from the pushed `vX.Y.Z` tag. See
+[`packaging/README.md`](packaging/README.md) for local version overrides.
 
 ## Contributors
 
