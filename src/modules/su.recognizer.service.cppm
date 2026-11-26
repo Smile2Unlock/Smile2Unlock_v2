@@ -90,7 +90,12 @@ public:
     void set_backlight_compensation(bool enabled);
     [[nodiscard]] bool backlight_compensation() const;
 
-    bool seetaface_available() const;
+    // True when the active face backend (LightFace by default) loaded its models.
+    bool backend_available() const;
+    // Short backend id ("lightface" / "seetaface"); empty while unavailable.
+    std::string backend_name() const;
+    // Compatibility alias kept for callers that predate the backend layer.
+    bool seetaface_available() const { return backend_available(); }
 
 private:
     // Both return true when a camera control was actually put back, in which
@@ -100,7 +105,7 @@ private:
         ImageView frame, std::uint64_t camera_generation) const;
     [[nodiscard]] bool retry_pending_restores_unlocked() const;
 
-    std::expected<void, RecognizerError> ensure_seetaface_backend() const;
+    std::expected<void, RecognizerError> ensure_backend() const;
     void close_camera_unlocked();
     std::expected<PreviewFrame, RecognizerError> grab_rgb_frame_locked() const;
 
@@ -113,11 +118,9 @@ private:
     mutable detail::ExposureSession exposure_;
     // Bumped on every camera open and close; guarded by camera_mutex_.
     std::uint64_t camera_generation_ = 0;
-#if SU_HAS_SEETAFACE
-    mutable std::unique_ptr<SeetaFaceBackend> seetaface_backend_;
-    mutable std::mutex seetaface_mutex_;
-    mutable std::chrono::steady_clock::time_point next_seetaface_retry_{};
-#endif
+    mutable std::unique_ptr<FaceBackend> backend_;
+    mutable std::mutex backend_mutex_;
+    mutable std::chrono::steady_clock::time_point next_backend_retry_{};
     std::unique_ptr<V4L2Camera> camera_;
 };
 

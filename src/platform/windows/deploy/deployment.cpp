@@ -575,7 +575,8 @@ std::expected<InstalledComponents, std::string> stage_security_components(
     }
     const auto install_root = *program_files / "Smile2Unlock";
     const auto install_bin = install_root / "bin";
-    const auto install_models = install_root / "assets" / "models" / "seeta";
+    const auto install_models = install_root / "assets" / "models" / "lightface";
+    const auto install_seeta_models = install_root / "assets" / "models" / "seeta";
     const auto install_i18n = install_root / "assets" / "i18n";
     auto error = std::error_code{};
     std::filesystem::create_directories(install_bin, error);
@@ -622,17 +623,12 @@ std::expected<InstalledComponents, std::string> stage_security_components(
         }
     }
 
-    // The agent is dynamically linked to SeetaFace and the MinGW runtime.
+    // The agent is dynamically linked to ONNX Runtime and the MinGW runtime.
     // Copy only the known runtime set; unrelated DLLs beside the package are
     // never promoted into the trusted install directory.
     constexpr auto runtime_names = std::array{
         L"libgcc_s_seh-1.dll", L"libstdc++-6.dll", L"libwinpthread-1.dll",
-        L"libgomp-1.dll", L"libSeetaFaceAntiSpoofingX600.dll",
-        L"libSeetaFaceDetector600.dll", L"libSeetaFaceLandmarker600.dll",
-        L"libSeetaFaceRecognizer610.dll", L"libSeetaAuthorize.dll", L"libtennis.dll",
-        // TenniS selects these CPU-specific backends at runtime; they are not
-        // listed in the PE imports but are required in every release package.
-        L"libtennis_haswell.dll", L"libtennis_sandy_bridge.dll", L"libtennis_pentium.dll",
+        L"onnxruntime.dll",
     };
     for (const auto* name : runtime_names) {
         const auto relative = "bin/" + wide_to_utf8(name);
@@ -641,16 +637,60 @@ std::expected<InstalledComponents, std::string> stage_security_components(
             return std::unexpected(copied.error());
         }
     }
+    if (package->hashes.contains("bin/onnxruntime_providers_shared.dll")) {
+        if (const auto copied = copy_required_file(
+                *package, "bin/onnxruntime_providers_shared.dll",
+                install_bin / L"onnxruntime_providers_shared.dll", true); !copied) {
+            return std::unexpected(copied.error());
+        }
+    }
 
     constexpr auto model_names = std::array{
-        L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
-        L"fas_first.csta", L"fas_second.csta",
+        L"detector_5pt_lcf.onnx", L"recognizer_edgeface.onnx",
+        L"fas_spatial_enc.onnx", L"fas_temporal_head.onnx",
     };
     for (const auto* name : model_names) {
-        const auto relative = "assets/models/seeta/" + wide_to_utf8(name);
+        const auto relative = "assets/models/lightface/" + wide_to_utf8(name);
         if (const auto copied = copy_required_file(
                 *package, relative, install_models / name, false); !copied) {
             return std::unexpected(copied.error());
+        }
+    }
+
+    // Optional SeetaFace compatibility runtime and models, when the package was
+    // built with --with_seetaface=y.
+    if (package->hashes.contains("bin/libSeetaFaceDetector600.dll")) {
+        std::filesystem::create_directories(install_seeta_models, error);
+        if (error) {
+            return std::unexpected("failed to create the protected SeetaFace model directory: "
+                + error.message());
+        }
+        if (const auto checked = ensure_plain_directory(install_seeta_models); !checked) {
+            return std::unexpected(checked.error());
+        }
+        constexpr auto seeta_runtime_names = std::array{
+            L"libgomp-1.dll", L"libSeetaFaceAntiSpoofingX600.dll",
+            L"libSeetaFaceDetector600.dll", L"libSeetaFaceLandmarker600.dll",
+            L"libSeetaFaceRecognizer610.dll", L"libSeetaAuthorize.dll", L"libtennis.dll",
+            L"libtennis_haswell.dll", L"libtennis_sandy_bridge.dll", L"libtennis_pentium.dll",
+        };
+        for (const auto* name : seeta_runtime_names) {
+            const auto relative = "bin/" + wide_to_utf8(name);
+            if (const auto copied = copy_required_file(
+                    *package, relative, install_bin / name, true); !copied) {
+                return std::unexpected(copied.error());
+            }
+        }
+        constexpr auto seeta_model_names = std::array{
+            L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
+            L"fas_first.csta", L"fas_second.csta",
+        };
+        for (const auto* name : seeta_model_names) {
+            const auto relative = "assets/models/seeta/" + wide_to_utf8(name);
+            if (const auto copied = copy_required_file(
+                    *package, relative, install_seeta_models / name, false); !copied) {
+                return std::unexpected(copied.error());
+            }
         }
     }
     for (const auto* name : {L"en.json", L"zh-CN.json"}) {

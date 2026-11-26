@@ -356,9 +356,9 @@ struct ResolvedAccount {
 
 struct RecognitionSettings {
     std::int32_t camera_index = 0;
-    float recognition_threshold = 0.65F;
+    float recognition_threshold = 0.40F;
     bool liveness_detection = true;
-    float liveness_threshold = 0.5F;
+    float liveness_threshold = 0.76F;
     // Absent value means on, so installs that predate the switch keep it.
     bool backlight_compensation = true;
     // Per-capture agent deadline, from the same TimeoutSec the credential
@@ -396,14 +396,14 @@ std::optional<RecognitionSettings> recognition_settings_at(
         settings.camera_index = static_cast<std::int32_t>(*value);
     }
     if (const auto value = registry_dword(raw_key, L"RecognitionThresholdMilli");
-        value && *value >= 500 && *value <= 1000) {
+        value && *value >= 250 && *value <= 1000) {
         settings.recognition_threshold = static_cast<float>(*value) / 1000.0F;
     }
     if (const auto value = registry_dword(raw_key, L"LivenessEnabled"); value && *value <= 1) {
         settings.liveness_detection = *value != 0;
     }
     if (const auto value = registry_dword(raw_key, L"LivenessThresholdMilli");
-        value && *value >= 300 && *value <= 1000) {
+        value && *value >= 200 && *value <= 1000) {
         settings.liveness_threshold = static_cast<float>(*value) / 1000.0F;
     }
     if (const auto value = registry_dword(raw_key, L"BacklightCompensationEnabled");
@@ -441,10 +441,10 @@ RecognitionSettings recognition_settings(std::wstring_view sid) {
 bool valid_recognition_settings(
     const smile2unlock::logon_secret_ipc::RecognitionSettingsPayload& payload) {
     return payload.camera_index <= 64
-        && payload.recognition_threshold_milli >= 500
+        && payload.recognition_threshold_milli >= 250
         && payload.recognition_threshold_milli <= 1000
         && payload.liveness_enabled <= 1
-        && payload.liveness_threshold_milli >= 300
+        && payload.liveness_threshold_milli >= 200
         && payload.liveness_threshold_milli <= 1000
         && payload.recognition_mode <= 1
         && payload.auto_delay_sec <= 3600

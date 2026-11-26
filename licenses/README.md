@@ -9,7 +9,9 @@
 | 组件 | 版本 | 许可证 | 上游 | 文件 |
 | --- | --- | --- | --- | --- |
 | Slint | 1.18.1 | 三重许可：GPL-3.0 / Royalty-free 2.0 / Slint Software 3.0，另有内嵌第三方资源（字体 OFL、qskinny 等） | https://github.com/slint-ui/slint | `slint/`（官方包自带 LICENSE.md + LICENSES/ 全套） |
-| SeetaFace6（seetaface6open，含随包模型） | xmake `latest` | BSD-2-Clause | https://github.com/SeetaFace6Open | `SeetaFace6-BSD-2-Clause.txt` |
+| ONNX Runtime（默认人脸后端运行时） | 1.22.0 | MIT | https://github.com/microsoft/onnxruntime | `ONNXRuntime-MIT.txt` |
+| LightFacePipeline 模型（检测 / 识别 / 活体 ONNX，默认人脸模型） | v1 | 项目自有（LightFacePipeline 训练产物） | 本仓库同作者 LightFacePipeline | — |
+| SeetaFace6（seetaface6open，含随包模型；仅在 `--with_seetaface=y` 时编译） | xmake `latest` | BSD-2-Clause | https://github.com/SeetaFace6Open | `SeetaFace6-BSD-2-Clause.txt` |
 | libpng | 1.6.58 | PNG Reference Library License v2 | https://github.com/pnggroup/libpng | `libpng-PNG-Reference-Library-v2.txt` |
 | libjpeg-turbo | 3.1.4 | IJG 许可 + BSD-3-Clause（双许可，另含被覆盖的 zlib、PNG-ref-v2 条款） | https://github.com/libjpeg-turbo/libjpeg-turbo | `libjpeg-turbo-LICENSE.md`、`libjpeg-turbo-README.ijg.txt` |
 | CImg | 4.0.4 | CeCILL-C 或 CeCILL v2（双许可） | https://github.com/dtschump/CImg | `CImg-CeCILL-C.txt`、`CImg-CeCILL-V2.txt` |

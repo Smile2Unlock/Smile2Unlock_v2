@@ -36,7 +36,7 @@ struct Request {
     std::array<std::uint8_t, kNonceSize> nonce{};
     std::int32_t camera_index = 0;
     std::uint32_t timeout_ms = 10'000;
-    float liveness_threshold = 0.5F;
+    float liveness_threshold = 0.76F;
 };
 
 struct Response {

@@ -122,11 +122,11 @@ jobs:
             echo
             echo "## 🧠 人脸模型 / Face models"
             echo
-            models_page="https://github.com/Smile2Unlock/local-repo/releases/tag/models-seetaface6-v1"
-            models_badge_link="https://github.com/Smile2Unlock/local-repo/releases/download/models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip"
-            echo "[![models](https://img.shields.io/badge/models-SeetaFace6-8A2BE2?style=flat-square)](${models_badge_link})"
+            models_page="https://github.com/Smile2Unlock/local-repo/releases/tag/models-lightface-v1"
+            models_badge_link="https://github.com/Smile2Unlock/local-repo/releases/download/models-lightface-v1/smile2unlock-models-lightface-v1.zip"
+            echo "[![models](https://img.shields.io/badge/models-LightFace-8A2BE2?style=flat-square)](${models_badge_link})"
             echo
-            echo "所有发行包均已内嵌模型;独立的模型包([models-seetaface6-v1](${models_page}))由 local-repo 托管，用于离线安装与单独更新,按来源分类(当前:SeetaFace6,BSD-2-Clause)。"
+            echo "所有发行包均已内嵌模型;独立的模型包([models-lightface-v1](${models_page}))由 local-repo 托管，用于离线安装与单独更新（默认 LightFace ONNX 模型；SeetaFace6 可作为可选兼容后端单独启用编译）。"
           } > /tmp/release-notes.md
 
           gh release create "$RELEASE_TAG" \
@@ -146,7 +146,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja \
             pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig \
-            freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip \
+            freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip unzip \
             nodejs libinput ruby ruby-rdoc dpkg rpm-tools cpio
           # fpm (deb/rpm packaging) is a ruby gem, not in the repos. Arch's
           # ruby puts gem executables in a user-local dir that later steps'
@@ -174,8 +174,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: release-linux-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
-          restore-keys: release-linux-xmake-${{ hashFiles('local-repo/**') }}-
+          key: release-linux-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: release-linux-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -191,7 +191,7 @@ jobs:
 
       - name: Build Linux release
         run: |
-          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y --seetaface_prebuilt=y
+          xmake f -y -p linux -a x86_64 -m release --with_slint=y
           xmake build -v
 
       - name: Build and verify Linux packages
@@ -256,8 +256,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: release-windows-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
-          restore-keys: release-windows-xmake-${{ hashFiles('local-repo/**') }}-
+          key: release-windows-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: release-windows-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -310,7 +310,7 @@ jobs:
 
       - name: Build Windows release
         run: |
-          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=y
           xmake build -v
 
       - name: Sign, package, and verify Windows archive

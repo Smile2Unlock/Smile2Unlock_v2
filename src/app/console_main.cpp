@@ -20,7 +20,9 @@ int main() {
     std::println("Selected camera: {}", snapshot->config.selected_camera);
     std::println("Preview FPS: {}", snapshot->config.preview_fps);
     std::println("Liveness: {}", snapshot->config.liveness_detection ? "yes" : "no");
-    std::println("SeetaFace: {}", snapshot->seetaface_available ? "available" : "unavailable");
+    std::println("Recognizer ({}): {}",
+        snapshot->recognizer_backend.empty() ? "default" : snapshot->recognizer_backend,
+        snapshot->recognizer_available ? "available" : "unavailable");
     std::println("Detected cameras: {}", snapshot->cameras.size());
     for (const auto& camera : snapshot->cameras) {
         std::println("  [{}] {}", camera.index, camera.name);

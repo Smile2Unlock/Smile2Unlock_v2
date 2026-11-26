@@ -13,7 +13,7 @@ RuntimeDirectoryMode=0755
 StateDirectory=smile2unlock
 StateDirectoryMode=0700
 LoadCredentialEncrypted=smile2unlock-master.key
-Environment=SU_SEETAFACE_MODEL_DIR=/usr/share/smile2unlock/models
+Environment=SU_LIGHTFACE_MODEL_DIR=/usr/share/smile2unlock/models/lightface
 UMask=0077
 LimitMEMLOCK=64K
 LimitCORE=0

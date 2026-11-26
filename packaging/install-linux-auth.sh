@@ -65,9 +65,9 @@ install -d -m 0755 "$(destination "${pam_module_dir}")"
 install -m 0755 "${build_dir}/pam_smile2unlock.so" \
     "$(destination "${pam_module_dir}/pam_smile2unlock.so")"
 
-install -d -m 0755 "$(destination /usr/share/smile2unlock/models)"
-install -m 0644 "${build_dir}/assets/models/seeta/"*.csta \
-    "$(destination /usr/share/smile2unlock/models)/"
+install -d -m 0755 "$(destination /usr/share/smile2unlock/models/lightface)"
+install -m 0644 "${build_dir}/assets/models/lightface/"*.onnx \
+    "$(destination /usr/share/smile2unlock/models/lightface)/"
 install -d -m 0755 "$(destination /usr/share/smile2unlock/pam)"
 install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
     "$(destination /usr/share/smile2unlock/pam/dankshell-smile2unlock)"
@@ -75,37 +75,43 @@ install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
 rpath="$(readelf -d "${build_dir}/su_authd" \
     | sed -n 's/.*Library rpath: \[\(.*\)\]/\1/p')"
 IFS=: read -r -a rpath_directories <<< "${rpath}"
+ort_library_dir=""
 seeta_library_dir=""
 for directory in "${rpath_directories[@]}"; do
-    if [[ "${directory}" == *seetaface6open* \
+    if [[ -z "${ort_library_dir}" && -f "${directory}/libonnxruntime.so" ]]; then
+        ort_library_dir="${directory}"
+    fi
+    if [[ -z "${seeta_library_dir}" && "${directory}" == *seetaface6open* \
         && -f "${directory}/libSeetaFaceDetector600.so" ]]; then
         seeta_library_dir="${directory}"
-        break
     fi
 done
-if [[ -z "${seeta_library_dir}" ]]; then
-    echo "failed to locate SeetaFace runtime libraries" >&2
+if [[ -z "${ort_library_dir}" ]]; then
+    echo "failed to locate ONNX Runtime libraries" >&2
     exit 1
 fi
 shopt -s nullglob
-seeta_libraries=(
-    "${seeta_library_dir}/"libSeetaAuthorize.so*
-    "${seeta_library_dir}/"libSeetaFaceAntiSpoofingX600.so*
-    "${seeta_library_dir}/"libSeetaFaceDetector600.so*
-    "${seeta_library_dir}/"libSeetaFaceLandmarker600.so*
-    "${seeta_library_dir}/"libSeetaFaceRecognizer610.so*
-    "${seeta_library_dir}/"libtennis.so*
-    "${seeta_library_dir}/"libtennis_haswell*.so*
-    "${seeta_library_dir}/"libtennis_pentium*.so*
-    "${seeta_library_dir}/"libtennis_sandy_bridge*.so*
+runtime_libraries=(
+    "${ort_library_dir}/"libonnxruntime*.so*
 )
-shopt -u nullglob
-if [[ "${#seeta_libraries[@]}" -lt 9 ]]; then
-    echo "incomplete SeetaFace runtime library set" >&2
-    exit 1
+if [[ -n "${seeta_library_dir}" ]]; then
+    runtime_libraries+=(
+        "${seeta_library_dir}/"libSeetaAuthorize.so*
+        "${seeta_library_dir}/"libSeetaFaceAntiSpoofingX600.so*
+        "${seeta_library_dir}/"libSeetaFaceDetector600.so*
+        "${seeta_library_dir}/"libSeetaFaceLandmarker600.so*
+        "${seeta_library_dir}/"libSeetaFaceRecognizer610.so*
+        "${seeta_library_dir}/"libtennis*.so*
+    )
+    if [[ -d "${build_dir}/assets/models/seeta" ]] && compgen -G "${build_dir}/assets/models/seeta/*.csta" >/dev/null; then
+        install -d -m 0755 "$(destination /usr/share/smile2unlock/models/seeta)"
+        install -m 0644 "${build_dir}/assets/models/seeta/"*.csta \
+            "$(destination /usr/share/smile2unlock/models/seeta)/"
+    fi
 fi
+shopt -u nullglob
 install -d -m 0755 "$(destination /usr/lib/smile2unlock)"
-install -m 0755 "${seeta_libraries[@]}" \
+install -m 0755 "${runtime_libraries[@]}" \
     "$(destination /usr/lib/smile2unlock)/"
 
 install -d -m 0755 "$(destination "${systemd_unit_dir}")"

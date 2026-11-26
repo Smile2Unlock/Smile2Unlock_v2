@@ -64,8 +64,8 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
     return std::unexpected(saw_face ? "liveness check failed" : "no face detected");
 }
 
-// Try to turn an `image:<path>` sample source into a real SeetaFace embedding.
-// When the SeetaFace backend is unavailable, the source is returned unchanged
+// Try to turn an `image:<path>` sample source into a real face embedding.
+// When no recognizer backend is available, the source is returned unchanged
 // so the Rust core falls back to its mock image-source handling (which only
 // validates the file exists). Returns the embedding:... source on success, or
 // an error describing which step failed.
@@ -79,7 +79,7 @@ std::expected<std::string, std::string> resolve_image_sample_source(
     if (face_sample_source.substr(0, kImageSourcePrefix.size()) != kImageSourcePrefix) {
         return std::string{face_sample_source};
     }
-    if (!recognizer.seetaface_available()) {
+    if (!recognizer.backend_available()) {
         // Backend unavailable: let Rust core handle the image: source with its
         // mock backend (file-existence validation only).
         return std::string{face_sample_source};
@@ -187,10 +187,10 @@ bool save_recognition_settings(const CoreConfig& config) {
         raw_key, &RegCloseKey};
     const auto camera_index = static_cast<DWORD>(std::max(config.selected_camera, 0));
     const auto recognition_threshold = static_cast<DWORD>(
-        std::clamp(config.recognition_threshold, 0.5F, 1.0F) * 1000.0F);
+        std::clamp(config.recognition_threshold, 0.25F, 1.0F) * 1000.0F);
     const auto liveness_enabled = DWORD{config.liveness_detection ? 1U : 0U};
     const auto liveness_threshold = static_cast<DWORD>(
-        std::clamp(config.liveness_threshold, 0.3F, 1.0F) * 1000.0F);
+        std::clamp(config.liveness_threshold, 0.20F, 1.0F) * 1000.0F);
     const auto backlight_compensation = DWORD{config.backlight_compensation ? 1U : 0U};
     const auto set = [raw_key](const wchar_t* name, const DWORD& value) {
         return RegSetValueExW(
@@ -273,7 +273,8 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         .profiles = std::move(profiles),
         .profiles_json = std::move(profiles_json),
         .slint_enabled = SU_HAS_SLINT != 0,
-        .seetaface_available = recognizer_.seetaface_available(),
+        .recognizer_available = recognizer_.backend_available(),
+        .recognizer_backend = recognizer_.backend_name(),
     };
 }
 
@@ -727,33 +728,45 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
 
 
 // ---------------------------------------------------------------------------
-// Face-model download (SeetaFace6 archive from the models GitHub release).
+// Face-model download (LightFace ONNX default; SeetaFace6 fallback when built
+// without LightFace).
 // ---------------------------------------------------------------------------
 namespace {
 
-// Mirrors the recognizer backend's model-dir resolution: walk up from the
-// executable looking for assets/models/seeta.
+#if !SU_HAS_LIGHTFACE && SU_HAS_SEETAFACE
+constexpr auto kModelSubdir = L"seeta";
 constexpr auto kRequiredModels = std::array{
     L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
     L"fas_first.csta", L"fas_second.csta",
 };
-
 constexpr char kModelsAssetUrl[] =
     "https://github.com/Smile2Unlock/local-repo/releases/download/"
     "models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip";
+#else
+constexpr auto kModelSubdir = L"lightface";
+constexpr auto kRequiredModels = std::array{
+    L"detector_5pt_lcf.onnx", L"recognizer_edgeface.onnx",
+    L"fas_spatial_enc.onnx", L"fas_temporal_head.onnx",
+};
+constexpr char kModelsAssetUrl[] =
+    "https://github.com/Smile2Unlock/local-repo/releases/download/"
+    "models-lightface-v1/smile2unlock-models-lightface-v1.zip";
+#endif
 
+// Mirrors the recognizer backend's model-dir resolution: walk up from the
+// executable looking for assets/models/<backend>.
 std::filesystem::path expected_model_dir() {
     const auto executable_dir = su::windows::executable_path().parent_path();
     auto dir = executable_dir;
     for (int depth = 0; depth < 6 && dir.has_parent_path(); ++depth) {
-        const auto candidate = dir / "assets" / "models" / "seeta";
+        const auto candidate = dir / "assets" / "models" / kModelSubdir;
         std::error_code ignored{};
         if (std::filesystem::is_directory(candidate, ignored)) {
             return candidate;
         }
         dir = dir.parent_path();
     }
-    return executable_dir / "assets" / "models" / "seeta";
+    return executable_dir / "assets" / "models" / kModelSubdir;
 }
 
 std::expected<std::string, std::string> http_download_to_file(
@@ -940,7 +953,7 @@ ModelsStatus AppController::models_status() {
     auto status = ModelsStatus{};
     const auto dir = expected_model_dir();
     status.model_dir = su::path_utf8(dir);
-    auto present = recognizer_.seetaface_available();
+    auto present = recognizer_.backend_available();
     if (present) {
         for (const auto* name : kRequiredModels) {
             std::error_code ignored{};

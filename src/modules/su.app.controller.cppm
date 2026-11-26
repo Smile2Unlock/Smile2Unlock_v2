@@ -16,7 +16,8 @@ struct AppSnapshot {
     std::vector<FaceProfileSummary> profiles;
     std::string profiles_json;
     bool slint_enabled = false;
-    bool seetaface_available = false;
+    bool recognizer_available = false;
+    std::string recognizer_backend;
 };
 
 struct FaceDemoSnapshot {
@@ -85,9 +86,9 @@ class AppController {
 public:
     std::expected<AppSnapshot, std::string> load_initial_snapshot();
     // Face-model availability for the download card. `present` mirrors the
-    // recognizer backend's own notion (all .csta files loadable).
+    // recognizer backend's own notion (all required model files loadable).
     ModelsStatus models_status();
-    // Downloads the SeetaFace6 model archive in the background. `url_prefix`
+    // Downloads the face model archive in the background. `url_prefix`
     // is either empty (GitHub direct) or a mirror prefix in front of the
     // asset URL. Both callbacks fire on the worker thread; callers marshal
     // to the UI loop. `finished` receives an empty string on success.

@@ -10,7 +10,7 @@ fixture_dir="${test_dir}/fixture checkout"
 build_dir="${fixture_dir}/build/linux/x86_64/release"
 runtime_dir="${test_dir}/runtime libraries"
 output_dir="${test_dir}/output packages"
-mkdir -p "$build_dir/assets/i18n" "$build_dir/assets/models/seeta" \
+mkdir -p "$build_dir/assets/i18n" "$build_dir/assets/models/lightface" \
     "$runtime_dir" "$fixture_dir/assets/icons" "$fixture_dir/docs"
 cp -a "${project_dir}/packaging" "${project_dir}/licenses" \
     "${project_dir}/NOTICE" "${project_dir}/LICENSE" "${project_dir}/version.txt" "$fixture_dir/"
@@ -20,11 +20,12 @@ cp "${project_dir}/assets/icons/Smile2Unlock.png" "$fixture_dir/assets/icons/"
 printf 'int fixture(void) { return 0; }\n' | \
     cc -x c -shared -fPIC -Wl,-soname,libslint_cpp.so.1 -o "$runtime_dir/libslint_cpp.so.1" -
 ln -s libslint_cpp.so.1 "$runtime_dir/libslint_cpp.so"
-printf 'int detector(void) { return 0; }\n' | \
-    cc -x c -shared -fPIC -o "$runtime_dir/libSeetaFaceDetector600.so" -
-printf '#include <iostream>\nextern "C" int fixture(void); extern "C" int detector(void); int main() { std::cout << "runtime fixture"; return fixture() + detector(); }\n' | \
+printf 'int ort(void) { return 0; }\n' | \
+    cc -x c -shared -fPIC -Wl,-soname,libonnxruntime.so.1 -o "$runtime_dir/libonnxruntime.so.1" -
+ln -s libonnxruntime.so.1 "$runtime_dir/libonnxruntime.so"
+printf '#include <iostream>\nextern "C" int fixture(void); extern "C" int ort(void); int main() { std::cout << "runtime fixture"; return fixture() + ort(); }\n' | \
     c++ -x c++ - -L"$runtime_dir" -Wl,-rpath,"$runtime_dir" \
-        -lslint_cpp -lSeetaFaceDetector600 -o "$build_dir/su_app"
+        -lslint_cpp -lonnxruntime -o "$build_dir/su_app"
 cp "$build_dir/su_app" "$build_dir/su_authd"
 printf 'int main(void) { return 0; }\n' | cc -x c - -o "$build_dir/su_deploy_helper"
 printf 'int pam_sm_authenticate(void) { return 0; } int pam_sm_setcred(void) { return 0; }\n' | \
@@ -32,8 +33,8 @@ printf 'int pam_sm_authenticate(void) { return 0; } int pam_sm_setcred(void) { r
 for language in en zh-CN; do
     printf '{}\n' > "$build_dir/assets/i18n/${language}.json"
 done
-for model in face_detector face_landmarker_pts5 face_recognizer fas_first fas_second; do
-    printf 'packaging fixture\n' > "$build_dir/assets/models/seeta/${model}.csta"
+for model in detector_5pt_lcf recognizer_edgeface fas_spatial_enc fas_temporal_head; do
+    printf 'packaging fixture\n' > "$build_dir/assets/models/lightface/${model}.onnx"
 done
 
 # mktemp's parent is mode 700: a dropped-privilege makepkg cannot read this

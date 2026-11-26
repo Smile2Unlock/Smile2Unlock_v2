@@ -86,9 +86,9 @@ done
 for name in en.json zh-CN.json; do
     package_require_file "${build_dir}/assets/i18n/${name}"
 done
-for name in face_detector.csta face_landmarker_pts5.csta face_recognizer.csta \
-    fas_first.csta fas_second.csta; do
-    package_require_file "${build_dir}/assets/models/seeta/${name}"
+for name in detector_5pt_lcf.onnx recognizer_edgeface.onnx fas_spatial_enc.onnx \
+    fas_temporal_head.onnx; do
+    package_require_file "${build_dir}/assets/models/lightface/${name}"
 done
 
 case "$format" in
@@ -141,7 +141,7 @@ mkdir -p \
     "${root_dir}/usr/share/applications" \
     "${root_dir}/usr/share/icons/hicolor/128x128/apps" \
     "${root_dir}/usr/share/smile2unlock/i18n" \
-    "${root_dir}/usr/share/smile2unlock/models" \
+    "${root_dir}/usr/share/smile2unlock/models/lightface" \
     "${root_dir}/usr/share/smile2unlock/pam" \
     "${root_dir}/usr/share/doc/smile2unlock" \
     "$output_dir"
@@ -172,32 +172,43 @@ install -m 0644 "${project_dir}/assets/icons/Smile2Unlock.png" \
 install -m 0644 "${project_dir}/packaging/linux/pam/dankshell-smile2unlock" \
     "${root_dir}/usr/share/smile2unlock/pam/"
 install -m 0644 "${build_dir}/assets/i18n/"*.json "${root_dir}/usr/share/smile2unlock/i18n/"
-install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${root_dir}/usr/share/smile2unlock/models/"
+install -m 0644 "${build_dir}/assets/models/lightface/"*.onnx "${root_dir}/usr/share/smile2unlock/models/lightface/"
+if [[ -d "${build_dir}/assets/models/seeta" ]] && compgen -G "${build_dir}/assets/models/seeta/*.csta" >/dev/null; then
+    mkdir -p "${root_dir}/usr/share/smile2unlock/models/seeta"
+    install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${root_dir}/usr/share/smile2unlock/models/seeta/"
+fi
 install -m 0644 "${project_dir}/LICENSE" "${root_dir}/usr/share/doc/smile2unlock/LICENSE"
 install -m 0644 "${project_dir}/NOTICE/THIRD-PARTY-NOTICES.md" "${root_dir}/usr/share/doc/smile2unlock/"
-# Full third-party license texts referenced by the notices (Slint, SeetaFace6,
-# libjpeg-turbo IJG terms, Rust crate inventory, ...).
+# Full third-party license texts referenced by the notices (Slint, ONNX Runtime,
+# optional SeetaFace6, libjpeg-turbo IJG terms, Rust crate inventory, ...).
 cp -r "${project_dir}/licenses" "${root_dir}/usr/share/doc/smile2unlock/licenses"
 install -m 0644 "${project_dir}/packaging/linux/README.md" "${root_dir}/usr/share/doc/smile2unlock/README.md"
 install -m 0644 "${project_dir}/docs/linux_pam_setup.md" "${root_dir}/usr/share/doc/smile2unlock/"
 
 app_rpath="$(patchelf --print-rpath "${build_dir}/su_app")"
 slint_dir=""
+ort_dir=""
 seeta_dir=""
 IFS=':' read -r -a runtime_dirs <<< "$app_rpath"
 for directory in "${runtime_dirs[@]}"; do
     [[ -n "$slint_dir" || ! -f "${directory}/libslint_cpp.so" ]] || slint_dir="$directory"
+    [[ -n "$ort_dir" || ! -f "${directory}/libonnxruntime.so" ]] || ort_dir="$directory"
     [[ -n "$seeta_dir" || ! -f "${directory}/libSeetaFaceDetector600.so" ]] || seeta_dir="$directory"
 done
 [[ -n "$slint_dir" ]] || package_die "cannot locate the Slint runtime from su_app RPATH"
-[[ -n "$seeta_dir" ]] || package_die "cannot locate the SeetaFace runtime from su_app RPATH"
+[[ -n "$ort_dir" ]] || package_die "cannot locate the ONNX Runtime from su_app RPATH"
 
 shopt -s nullglob
 runtime_libraries=(
     "${slint_dir}/libslint_cpp.so"*
-    "${seeta_dir}/libSeeta"*.so*
-    "${seeta_dir}/libtennis"*.so*
+    "${ort_dir}/libonnxruntime"*.so*
 )
+if [[ -n "$seeta_dir" ]]; then
+    runtime_libraries+=(
+        "${seeta_dir}/libSeeta"*.so*
+        "${seeta_dir}/libtennis"*.so*
+    )
+fi
 shopt -u nullglob
 (( ${#runtime_libraries[@]} > 0 )) || package_die "no private runtime libraries found"
 cp -a "${runtime_libraries[@]}" "${root_dir}/usr/lib/smile2unlock/"

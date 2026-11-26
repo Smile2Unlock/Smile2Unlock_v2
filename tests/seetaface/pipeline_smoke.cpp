@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -113,6 +114,13 @@ su::recognizer::RecognitionResult extract_required(
 }  // namespace
 
 int main() {
+    // Dual-backend builds default to LightFace; force SeetaFace so
+    // RecognizerService paths in this test exercise the SeetaFace backend.
+#if defined(_WIN32)
+    _putenv_s("SU_RECOGNIZER_BACKEND", "seetaface");
+#else
+    setenv("SU_RECOGNIZER_BACKEND", "seetaface", 1);
+#endif
     auto window = su::recognizer::detail::LivenessWindow{};
     // Eleven 0.75 scores must never pass the 0.8 gate (upstream computes
     // 11 * 0.75 / 10). Keep checking after the ring wraps several times.

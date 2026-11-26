@@ -10,6 +10,7 @@ module;
 module su.app.controller;
 import std;
 import su.recognizer.service;
+import su.recognizer.backend;
 import su.recognizer.image;
 import su.control.socket;
 import su.app.user;
@@ -180,8 +181,8 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
     return std::unexpected(saw_face ? "liveness check failed" : "no face detected");
 }
 
-// Try to turn an `image:<path>` sample source into a real SeetaFace embedding.
-// When the SeetaFace backend is unavailable, the source is returned unchanged
+// Try to turn an `image:<path>` sample source into a real face embedding.
+// When no recognizer backend is available, the source is returned unchanged
 // so the Rust core falls back to its mock image-source handling (which only
 // validates the file exists). Returns the embedding:... source on success, or
 // an error describing which step failed.
@@ -195,7 +196,7 @@ std::expected<std::string, std::string> resolve_image_sample_source(
     if (face_sample_source.substr(0, kImageSourcePrefix.size()) != kImageSourcePrefix) {
         return std::string{face_sample_source};
     }
-    if (!recognizer.seetaface_available()) {
+    if (!recognizer.backend_available()) {
         // Backend unavailable: let Rust core handle the image: source with its
         // mock backend (file-existence validation only).
         return std::string{face_sample_source};
@@ -307,7 +308,8 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         .profiles = std::move(profiles),
         .profiles_json = std::move(profiles_json),
         .slint_enabled = SU_HAS_SLINT != 0,
-        .seetaface_available = recognizer_.seetaface_available(),
+        .recognizer_available = recognizer_.backend_available(),
+        .recognizer_backend = recognizer_.backend_name(),
     };
 }
 
@@ -732,8 +734,8 @@ ModelsStatus AppController::models_status() {
     // The distribution packages install the model set under the shared
     // location; the recognizer backend resolves it the same way.
     auto status = ModelsStatus{};
-    status.model_dir = "/usr/share/smile2unlock/models/seeta";
-    status.present = recognizer_.seetaface_available();
+    status.model_dir = su::recognizer::default_model_dir().string();
+    status.present = recognizer_.backend_available();
     return status;
 }
 

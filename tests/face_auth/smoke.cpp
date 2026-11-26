@@ -60,6 +60,22 @@ int main() {
     assert(!no_liveness_report->liveness_ok);
     assert(no_liveness_report->reason == "liveness check failed");
 
+#if SU_HAS_LIGHTFACE
+    {
+        const auto model_paths = su::recognizer::lightface_model_paths(
+            su::recognizer::default_lightface_model_dir());
+        assert(model_paths.has_value());
+        auto backend = su::recognizer::LightFaceBackend(*model_paths);
+        const auto empty_extract = backend.extract(su::recognizer::ImageView{}, /*liveness_enabled=*/true);
+        assert(!empty_extract.has_value());
+        if (backend.available()) {
+            assert(empty_extract.error() == su::recognizer::RecognizerError::kInvalidImage);
+        } else {
+            assert(empty_extract.error() == su::recognizer::RecognizerError::kModelUnavailable);
+        }
+    }
+#endif
+
 #if SU_HAS_SEETAFACE
     const auto model_paths = su::recognizer::seetaface_model_paths(
         su::recognizer::default_seetaface_model_dir());

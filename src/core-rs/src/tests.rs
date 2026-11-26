@@ -301,8 +301,8 @@ fn unsafe_config_values_fall_back_to_safe_defaults() {
     let config = load_config(&path).unwrap();
     assert_eq!(config.version, 1);
     assert_eq!(config.selected_camera, 0);
-    assert_eq!(config.recognition_threshold, 0.65);
-    assert_eq!(config.liveness_threshold, 0.50);
+    assert_eq!(config.recognition_threshold, 0.40);
+    assert_eq!(config.liveness_threshold, 0.76);
     assert_eq!(config.preview_fps, 15);
     assert_eq!(config.recognition_mode, 0);
     assert_eq!(config.auto_delay_sec, 3);

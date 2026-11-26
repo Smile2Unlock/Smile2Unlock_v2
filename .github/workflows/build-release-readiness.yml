@@ -37,7 +37,7 @@ jobs:
           pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
           pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
           freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
-          nodejs libinput
+          unzip nodejs libinput
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,8 +55,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: linux-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
-          restore-keys: linux-xmake-${{ hashFiles('local-repo/**') }}-
+          key: linux-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: linux-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -79,13 +79,13 @@ jobs:
       - name: Build Linux
         timeout-minutes: 30
         run: |
-          xmake f -y -p linux -a x86_64 -m release --with_slint=y --with_seetaface=y --seetaface_prebuilt=y
-          xmake build -v su_app su_authd su_deploy_helper pam_smile2unlock su_face_auth_smoke_test su_deploy_test su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test su_download_progress_test su_core_rust_tests su_seetaface_pipeline_smoke_test
+          xmake f -y -p linux -a x86_64 -m release --with_slint=y
+          xmake build -v su_app su_authd su_deploy_helper pam_smile2unlock su_about_test su_face_auth_smoke_test su_deploy_test su_pam_integration_test su_control_socket_smoke_test su_control_socket_deadline_test su_download_progress_test su_core_rust_tests su_lightface_preprocess_test su_lightface_pipeline_smoke_test
 
       - name: Test Linux
         timeout-minutes: 5
         run: |
-          xmake test -v su_face_auth_smoke_test/default su_deploy_test/default su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default su_download_progress_test/default su_core_rust_tests/default su_seetaface_pipeline_smoke_test/default
+          xmake test -v su_about_test/default su_face_auth_smoke_test/default su_deploy_test/default su_pam_integration_test/default su_control_socket_smoke_test/default su_control_socket_deadline_test/default su_download_progress_test/default su_core_rust_tests/default su_lightface_preprocess_test/default su_lightface_pipeline_smoke_test/default
 
       - name: Build and verify Linux tarball
         run: packaging/linux/package.sh --format tar.gz
@@ -101,7 +101,7 @@ jobs:
       - name: Install cross-test dependencies
         run: >-
           pacman -Syu --noconfirm --needed git git-lfs curl rustup mingw-w64-gcc
-          wine xorg-server-xvfb nodejs python
+          unzip wine xorg-server-xvfb nodejs python
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -119,8 +119,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: mingw-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
-          restore-keys: mingw-xmake-${{ hashFiles('local-repo/**') }}-
+          key: mingw-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: mingw-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -138,8 +138,8 @@ jobs:
 
       - name: Build Windows privileged components
         run: |
-          xmake f -y -p mingw -a x86_64 -m release --with_slint=n --with_seetaface=n
-          xmake build -v su_deploy_helper su_auth_service su_password_tool su_credential_provider su_status_host su_credential_provider_rust_tests su_windows_recognition_result_test su_windows_status_display_test su_windows_pipe_response_test
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=n --with_lightface=y --with_seetaface=n
+          xmake build -v su_deploy_helper su_auth_service su_password_tool su_credential_provider su_status_host su_recognition_agent su_credential_provider_rust_tests su_windows_recognition_result_test su_windows_status_display_test su_windows_pipe_response_test su_lightface_preprocess_test
 
       - name: Run Windows tests under Wine
         run: |
@@ -154,6 +154,7 @@ jobs:
           xvfb-run -a xmake test su_windows_recognition_result_test/default -v
           xvfb-run -a xmake test su_windows_status_display_test/default -v
           xvfb-run -a xmake test su_windows_pipe_response_test/default -v
+          xvfb-run -a xmake test su_lightface_preprocess_test/default -v
 
   windows-package:
     name: Windows release package verification
@@ -194,8 +195,8 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.xmake/packages
-          key: windows-package-xmake-${{ hashFiles('local-repo/**') }}-${{ hashFiles('xmake.lua') }}
-          restore-keys: windows-package-xmake-${{ hashFiles('local-repo/**') }}-
+          key: windows-package-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-${{ hashFiles('xmake.lua') }}
+          restore-keys: windows-package-xmake-${{ hashFiles('local-repo/**', 'xmake/repo/**') }}-
 
       - name: Cache Cargo registry
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -225,7 +226,7 @@ jobs:
 
       - name: Build Windows release
         run: |
-          xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+          xmake f -y -p mingw -a x86_64 -m release --with_slint=y
           xmake build -v
 
       - name: Build and verify signed Windows zip
