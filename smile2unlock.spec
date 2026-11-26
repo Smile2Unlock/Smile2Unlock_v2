@@ -5,12 +5,12 @@
 %global __os_install_post %{nil}
 %global _build_id_links none
 Name:           smile2unlock
-Version:        2.4.3
+Version:        2.4.4
 Release:        1
 Summary:        Local face authentication with desktop, sudo and Polkit integration
 License:        MIT AND GPL-3.0-only AND LGPL-2.1-or-later
 URL:            https://github.com/Smile2Unlock/Smile2Unlock_v2
-Source0:        smile2unlock_2.4.3.orig.tar.gz
+Source0:        smile2unlock_2.4.4.orig.tar.gz
 Source1:        prepare-payload.py
 ExclusiveArch:  x86_64
 AutoReqProv:    no
@@ -34,7 +34,7 @@ checksum-verified upstream x86_64 release, including its private runtime
 and recognition models. Configure authentication explicitly in the GUI.
 
 %prep
-echo '2d016b2c5133adb4c8fce848e691e6aacb8cb99cb7a86f012bc7f5116d0f205c  %{SOURCE0}' | sha256sum -c -
+echo '2a3912601e60284530552ee1a3dfdce81b3402b3462593683134c97510de2b02  %{SOURCE0}' | sha256sum -c -
 %setup -q -n smile2unlock-%{version}
 
 %build
