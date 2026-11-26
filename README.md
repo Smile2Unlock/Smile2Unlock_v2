@@ -28,7 +28,7 @@
 
 ## Overview
 
-Smile2Unlock is a local face-authentication system: all face features are extracted and matched on-device (SeetaFace 6), with no cloud dependency. It ships as two platform variants:
+Smile2Unlock is a local face-authentication system: all face features are extracted and matched on-device via a pluggable local recognition backend (LightFacePipeline ONNX Runtime by default; SeetaFace 6 optional compatibility backend), with no cloud dependency. It ships as two platform variants:
 
 - **Windows**: integrates into the Winlogon sign-in surface (lock screen, UAC) via a Credential Provider
 - **Linux**: plugs into `login` / GDM / SDDM authentication via a PAM module
@@ -88,18 +88,17 @@ Windows package:  Smile2Unlock\
 │   ├── Smile2UnlockCredentialProvider.dll
 │   ├── Smile2UnlockAuthService.exe
 │   ├── Smile2Unlock.ico
-│   └── (SeetaFace / tennis / MinGW runtime DLLs)
+│   └── (onnxruntime / MinGW runtime DLLs; optional SeetaFace DLLs with --with_seetaface=y)
 └── assets\
     ├── i18n\
     │   ├── en.json
     │   └── zh-CN.json
     └── models\
-        └── seeta\
-            ├── face_detector.csta
-            ├── face_landmarker_pts5.csta
-            ├── face_recognizer.csta
-            ├── fas_first.csta
-            └── fas_second.csta
+        └── lightface\         # or seeta\ when built with --with_seetaface=y
+            ├── detector_5pt_lcf.onnx
+            ├── recognizer_edgeface.onnx
+            ├── fas_spatial_enc.onnx
+            └── fas_temporal_head.onnx
 
 Windows installed security components:  C:\Program Files\Smile2Unlock\bin\
 
@@ -109,7 +108,7 @@ Linux (packaged):  /usr/bin/su_app
                    /usr/share/smile2unlock/{i18n,models}
 ```
 
-- The model directory is resolved via `SU_SEETAFACE_MODEL_DIR` (env), a compile-time macro, or by walking up from the current directory looking for `assets/models/seeta`; i18n uses the same walk-up for `assets/i18n` (this is what makes the `bin\` + `assets\` sibling layout work); a system install on Linux falls back to `/usr/share/smile2unlock/models`
+- The backend is selected at runtime via `SU_RECOGNIZER_BACKEND=lightface|seetaface` (defaulting to LightFace when compiled in). The model directory is resolved via `SU_MODEL_DIR`, the backend-specific `SU_LIGHTFACE_MODEL_DIR` / `SU_SEETAFACE_MODEL_DIR`, a compile-time macro, or by walking up from the current directory looking for `assets/models/<backend>`; i18n uses the same walk-up for `assets/i18n` (this is what makes the `bin\` + `assets\` sibling layout work); a system install on Linux falls back to `/usr/share/smile2unlock/models/<backend>`
 - On Windows, extract the zip anywhere, run `bin\Smile2Unlock.exe`, then use the
   Deployment panel. The elevated helper copies security components to
   `C:\Program Files\Smile2Unlock\bin` before registering the CP and service;
@@ -123,13 +122,13 @@ flowchart LR
         CP[Smile2UnlockCredentialProvider.dll] -- named pipe --> SERVICE[Auth service]
         GUIW[Smile2Unlock.exe] -- named pipe --> SERVICE
         SERVICE --> AGENT[Recognition agent]
-        AGENT --> REC[src/recognizer<br/>SeetaFace 6]
+        AGENT --> REC[src/recognizer<br/>FaceBackend: ONNX / optional SeetaFace]
         SERVICE --> CORE[(Rust core<br/>encrypted profiles and credentials)]
         GUIW -- UAC --> HELPER[Smile2UnlockDeployHelper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
-        AUTHD --> REC2[src/recognizer<br/>SeetaFace 6]
+        AUTHD --> REC2[src/recognizer<br/>FaceBackend: ONNX / optional SeetaFace]
         AUTHD --> CORE2[(Rust core<br/>encrypted profile files)]
         GUI[su_app] -- control.sock --> AUTHD
         GUI -- D-Bus/Polkit --> HELPER2[su_deploy_helper]
@@ -138,7 +137,7 @@ flowchart LR
 
 ### Runtime roles
 
-- **Recognition pipeline** (`src/recognizer`): camera capture (V4L2 / Windows Media Foundation), SeetaFace detection / landmarks / feature extraction / anti-spoofing — all local
+- **Recognition pipeline** (`src/recognizer`): camera capture (V4L2 / Windows Media Foundation) and a pluggable `FaceBackend` abstraction (LightFacePipeline ONNX Runtime by default; optional SeetaFace 6 compatibility backend) for detection / alignment / feature extraction / anti-spoofing — all local
 - **Rust core** (`src/core-rs`): versioned XChaCha20-Poly1305 profile and credential envelopes; Windows protects its master key with CNG TPM or machine-DPAPI fallback, while Linux keys are managed by systemd
 - **GUI** (`src/app`): Slint UI + per-platform controller; Windows requests profile operations from the LocalSystem service over the named pipe, while Linux talks to `su_authd` over the control socket
 
@@ -164,32 +163,37 @@ Secrets are wiped with `zeroize` on both platforms. The Linux `su_authd` master 
 |   |-- app/                  # su_app GUI entry + platform controllers
 |   |-- modules/              # C++26 modules (su.core.* / su.app.* / su.recognizer.*)
 |   |-- core-rs/              # Rust profile store + encryption
-|   |-- recognizer/           # SeetaFace backend, camera, image pipeline
+|   |-- recognizer/           # FaceBackend (LightFace ONNX + optional SeetaFace), camera, image pipeline
 |   |-- platform/
 |   |   |-- windows/          # Rust CP, auth service, recognition agent, deploy helper
 |   |   `-- linux/            # authd, PAM, deploy helper
 |   `-- zig/                  # Zig components
-|-- assets/                   # single resource dir: icons / i18n / models/seeta
+|-- assets/                   # single resource dir: icons / i18n / models/{lightface,seeta}
 |-- packaging/                # Linux (package.sh, systemd, dbus, polkit) + Windows (package.sh)
 |-- docs/                     # design documents
-|-- local-repo/               # local xmake package repository
+|-- xmake/repo/               # project-local xmake package repo (ONNX Runtime)
+|-- local-repo/               # local xmake package repository (Slint, optional SeetaFace6)
 |-- NOTICE/                   # third-party notices
 `-- xmake.lua                 # build entry
 ```
 
 ## Building
 
-The build uses Slint 1.18.1 and Rust 1.99.0. Third-party SDKs and the unchanged
-SeetaFace6 model bundle are hosted in
-[local-repo Releases](https://github.com/Smile2Unlock/local-repo/releases).
-The [model download](https://github.com/Smile2Unlock/local-repo/releases/download/models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip)
-and its `.sha256` sidecar are also available for offline installation.
+The build uses Slint 1.18.1, Rust 1.99.0, and enables the **LightFace ONNX Runtime**
+backend by default (`with_lightface=y`, `with_seetaface=n`; official CPU binaries
+are fetched via `xmake/repo/`). Default ONNX weights are hosted in
+[LightFacePipeline Releases](https://github.com/Smile2Unlock/LightFacePipeline/releases),
+and all release packages embed them by default. Checkouts without Git LFS can fetch
+and verify the pinned model files with `bash packaging/models/fetch-models.sh`
+(validated against `packaging/models/lightface-v1.json` and
+`assets/models/lightface/SHA256SUMS`).
 
 ### Windows (cross-compiled or native)
 
 ```bash
 bash packaging/slint/setup-rust.sh --target x86_64-pc-windows-gnu
 bash packaging/slint/seed-slint-mingw.sh
+bash packaging/models/fetch-models.sh
 xmake f -y -p mingw -a x86_64 -m release
 xmake build
 ```
@@ -208,17 +212,17 @@ The main outputs under `build/mingw/x86_64/release/` are `Smile2Unlock.exe`,
 
 ```bash
 bash packaging/slint/setup-rust.sh
+bash packaging/models/fetch-models.sh
 xmake f -y -p linux -a x86_64 -m release
 xmake build
 ```
 
-Release x86_64 builds use the SeetaFace SDKs from
-[local-repo](https://github.com/Smile2Unlock/local-repo/releases/tag/seetaface6-prebuilt-a32e2fa).
-The MinGW SDK includes the Unicode model/DLL path fixes. The Linux SDK was
-built on Ubuntu 24.04 with GCC 13.3.0 and requires glibc >= 2.38 plus GNU
-libstdc++ with `GLIBCXX_3.4.32` and `CXXABI_1.3.8`; incompatible runtimes or
-other C++ toolchains fall back to source builds. Use `--seetaface_prebuilt=n`
-to rebuild SeetaFace from its pinned upstream source on either platform.
+To also compile the optional SeetaFace6 compatibility backend (`--with_seetaface=y`,
+and select it at runtime with `SU_RECOGNIZER_BACKEND=seetaface`), Xmake uses the
+recipes and prebuilt SDKs in `local-repo/` / [local-repo Releases](https://github.com/Smile2Unlock/local-repo/releases/tag/seetaface6-prebuilt-a32e2fa)
+(the Linux SDK requires glibc >= 2.38, `GLIBCXX_3.4.32`, and `CXXABI_1.3.8`; pass
+`--seetaface_prebuilt=n` to rebuild from its pinned source, and fetch the standalone
+`models-seetaface6-v1` archive if needed).
 
 Package both supported platforms from existing release builds:
 

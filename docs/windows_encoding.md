@@ -9,7 +9,8 @@
 - APPDATA/USERPROFILE 共用 `roaming_app_data`，配置 TOML 与 UI JSON 落在同一账户目录。环境变量缺失时使用 Windows 已知文件夹，不把配置悄悄重定向到当前目录或 TEMP。
 - 程序位置通过动态长度的 `GetModuleFileNameW` 获取，禁止用 Windows 窄 `argv[0]` 定位语言包、部署 helper 和模型。模型查找优先级是显式环境覆盖、可执行文件所在目录向上查找、构建目录/当前目录回退。
 - `std::filesystem::path` 保持原生路径类型。用 `su::path_utf8` 导出文本，用 `su::path_from_utf8` 导入 UTF-8 文本；不要依赖不同标准库中窄 `path`/`string()` 的隐式编码约定。
-- SeetaFace 的路径参数按 UTF-8 导出；本地依赖包在 ORZ、SeetaAuthorize 的加密 `.csta` 读取、TenniS（含加密和内联流）及 SDK 模型读取入口执行严格 UTF-8 → UTF-16 转换，再使用宽字符文件流/`_wfopen`。无效 UTF-8 被拒绝，不回退到系统 ANSI 页。
+- 默认 LightFace ONNX 后端在 Windows 上直接向 `Ort::Session` 传入原生 UTF-16 `std::filesystem::path::c_str()`（`ORTCHAR_T*`），不经过窄系统代码页。
+- 可选 SeetaFace6 兼容后端（启用 `--with_seetaface=y` 时）的路径参数按 UTF-8 导出；本地依赖包在 ORZ、SeetaAuthorize 的加密 `.csta` 读取、TenniS（含加密和内联流）及 SDK 模型读取入口执行严格 UTF-8 → UTF-16 转换，再使用宽字符文件流/`_wfopen`。无效 UTF-8 被拒绝，不回退到系统 ANSI 页。
 - TenniS 用 `GetModuleFileNameW` 定位自身 DLL，并用 `LoadLibraryW` 加载 CPU 变体。MinGW 构建使用其实际产物的 `libtennis*.dll` 名称，MSVC 保留 `tennis*.dll` 名称。
 - 依赖包配置 `unicode_paths=true` 纳入缓存标识，避免继续链接修复前的 DLL。依赖源码补丁对固定上游版本检查替换数量，版本漂移会导致构建失败。
 - 配置和语言包文件内容约定为 UTF-8。支持不同系统代码页，不等于自动读取 GBK/UTF-16 配置。

@@ -6,18 +6,22 @@ target user's enrolled profiles. The PAM module is only a socket client.
 
 ## Package the Linux application
 
-Build the Release targets, then create a portable archive or a native package:
+Build the Release targets (fetching verified LightFace ONNX models if Git LFS
+was not used; pass `--with_seetaface=y` optionally to also include SeetaFace6),
+then create a portable archive or a native package:
 
 ```bash
-xmake f -m release --with_slint=y --with_seetaface=y
+bash packaging/models/fetch-models.sh
+xmake f -m release --with_slint=y
 xmake build
 packaging/linux/package.sh --format tar.gz
 packaging/linux/package.sh --format pacman
 ```
 
-The package contains `su_app`, `su_authd`, the PAM module, models, language
-packs, bundled Slint / SeetaFace runtime libraries, systemd metadata, the
-desktop entry, a DMS PAM template and its installer, and licenses. It does not
+The package contains `su_app`, `su_authd`, the PAM module, embedded models,
+language packs, bundled Slint and recognition runtime libraries (ONNX Runtime by
+default, plus SeetaFace when built with `--with_seetaface=y`), systemd metadata,
+the desktop entry, a DMS PAM template and its installer, and licenses. It does not
 enable the service or edit `/etc/pam.d`.
 For DEB/RPM output, install fpm and use `--format deb` or `--format rpm`; see
 [`packaging/linux/README.md`](../packaging/linux/README.md) for dependency
@@ -25,11 +29,11 @@ mapping, PAM module directory overrides and staging details.
 
 ## Build and install
 
-Configure the release build with the real recognizer enabled, then build through
+Configure the release build with the default recognizer enabled (`--with_seetaface=y` optional), then build through
 the project entry point:
 
 ```bash
-xmake f -m release --with_slint=y --with_zig=y --with_simd=y --with_seetaface=y
+xmake f -m release --with_slint=y --with_zig=y --with_simd=y
 xmake build
 sudo packaging/install-linux-auth.sh
 ```

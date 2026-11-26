@@ -309,7 +309,7 @@ public:
         if (!master_key_) {
             return "encrypted storage key unavailable";
         }
-        if (!recognizer_.seetaface_available()) {
+        if (!recognizer_.backend_available()) {
             return "face recognition models unavailable";
         }
         if (recognizer_.enumerate_cameras().empty()) {
@@ -367,7 +367,7 @@ public:
             ? kLivenessAuthenticationTimeout
             : kAuthenticationTimeout;
         const auto deadline = std::chrono::steady_clock::now() + authentication_timeout;
-        if (!recognizer_.seetaface_available()) {
+        if (!recognizer_.backend_available()) {
             return {su::control::ControlResult::kUnavailable, "face models unavailable"};
         }
         const auto camera_deadline = std::min(

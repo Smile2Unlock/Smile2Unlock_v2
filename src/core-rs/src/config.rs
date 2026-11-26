@@ -58,13 +58,13 @@ fn default_version() -> u32 {
     1
 }
 fn default_recognition_threshold() -> f32 {
-    0.65
+    0.40
 }
 fn default_liveness_detection() -> bool {
     true
 }
 fn default_liveness_threshold() -> f32 {
-    0.50
+    0.76
 }
 fn default_preview_fps() -> u32 {
     15

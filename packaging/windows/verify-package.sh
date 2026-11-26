@@ -37,16 +37,13 @@ required=(
     bin/Smile2UnlockCredentialProvider.dll
     bin/Smile2UnlockAuthService.exe
     bin/Smile2Unlock.ico
-    bin/libtennis_haswell.dll
-    bin/libtennis_sandy_bridge.dll
-    bin/libtennis_pentium.dll
+    bin/onnxruntime.dll
     assets/i18n/en.json
     assets/i18n/zh-CN.json
-    assets/models/seeta/face_detector.csta
-    assets/models/seeta/face_landmarker_pts5.csta
-    assets/models/seeta/face_recognizer.csta
-    assets/models/seeta/fas_first.csta
-    assets/models/seeta/fas_second.csta
+    assets/models/lightface/detector_5pt_lcf.onnx
+    assets/models/lightface/recognizer_edgeface.onnx
+    assets/models/lightface/fas_spatial_enc.onnx
+    assets/models/lightface/fas_temporal_head.onnx
     release-info.json
     release-info.p7s
 )

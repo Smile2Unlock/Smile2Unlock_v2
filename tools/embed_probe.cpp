@@ -30,8 +30,8 @@ int main(int argc, char** argv) {
         && std::string_view{argv[2]} == "--with-liveness";
 
     auto recognizer = su::recognizer::RecognizerService{};
-    if (!recognizer.seetaface_available()) {
-        std::fprintf(stderr, "seetaface backend unavailable\n");
+    if (!recognizer.backend_available()) {
+        std::fprintf(stderr, "face recognizer backend unavailable\n");
         return 3;
     }
     const auto loaded = su::recognizer::load_image_file(path);

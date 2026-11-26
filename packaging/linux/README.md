@@ -7,10 +7,12 @@ or modify PAM configuration.
 
 ## Build
 
-Build the real Linux application first:
+Build the real Linux application first (fetching verified LightFace ONNX models if
+Git LFS was not used; `--with_seetaface=y` is optional):
 
 ```bash
-xmake f -m release --with_slint=y --with_seetaface=y
+bash packaging/models/fetch-models.sh
+xmake f -m release --with_slint=y
 xmake build
 ```
 
@@ -21,7 +23,9 @@ packaging/linux/package.sh --format tar.gz
 ```
 
 The archive contains `su_app`, `su_authd`, the restricted deployment helper,
-the PAM module, bundled Slint, SeetaFace and C/C++ runtime dependencies, models, language packs,
+the PAM module, bundled Slint and recognition runtime dependencies (ONNX Runtime
+by default, plus SeetaFace when built with `--with_seetaface=y`), C/C++ runtime
+dependencies, embedded models (LFS pointer stubs are rejected), language packs,
 systemd, D-Bus and Polkit integration, the desktop entry, DMS PAM resources,
 and license files.
 
@@ -189,7 +193,8 @@ package documentation for verification and rollback commands.
 ## Runtime dependencies
 
 The package collects the complete linked dependency closure of all three
-executables and the Slint/SeetaFace libraries, including libstdc++, libgcc,
+executables and the Slint / recognition runtime libraries (ONNX Runtime and,
+when enabled, SeetaFace), including libstdc++, libgcc,
 OpenMP and image/compression/font/input dependencies. libyuv and JPEG support
 are already linked statically. glibc (including its loader, libm and available
 NSS compatibility libraries) is isolated under `/usr/lib/smile2unlock/glibc`;

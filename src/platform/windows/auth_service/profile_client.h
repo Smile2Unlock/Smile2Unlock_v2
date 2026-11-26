@@ -13,9 +13,9 @@ namespace su::windows::profile_client {
 /// Field order and widths must match logon_secret_ipc::RecognitionSettingsPayload.
 struct RecognitionSettings {
     std::uint32_t camera_index = 0;
-    std::uint32_t recognition_threshold_milli = 650;
+    std::uint32_t recognition_threshold_milli = 400;
     std::uint32_t liveness_enabled = 1;
-    std::uint32_t liveness_threshold_milli = 500;
+    std::uint32_t liveness_threshold_milli = 760;
     std::uint32_t recognition_mode = 0;
     std::uint32_t auto_delay_sec = 3;
     std::uint32_t retry_delay_sec = 5;

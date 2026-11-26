@@ -15,7 +15,7 @@ package_require_command nm
 required_paths=(
     usr/bin/su_app
     usr/lib/smile2unlock/libslint_cpp.so
-    usr/lib/smile2unlock/libSeetaFaceDetector600.so
+    usr/lib/smile2unlock/libonnxruntime.so
     usr/libexec/smile2unlock/su_authd
     usr/libexec/smile2unlock/su_deploy_helper
     usr/libexec/smile2unlock/install-dms-lock
@@ -32,11 +32,10 @@ required_paths=(
     usr/share/icons/hicolor/128x128/apps/smile2unlock.png
     usr/share/smile2unlock/i18n/en.json
     usr/share/smile2unlock/i18n/zh-CN.json
-    usr/share/smile2unlock/models/face_detector.csta
-    usr/share/smile2unlock/models/face_landmarker_pts5.csta
-    usr/share/smile2unlock/models/face_recognizer.csta
-    usr/share/smile2unlock/models/fas_first.csta
-    usr/share/smile2unlock/models/fas_second.csta
+    usr/share/smile2unlock/models/lightface/detector_5pt_lcf.onnx
+    usr/share/smile2unlock/models/lightface/recognizer_edgeface.onnx
+    usr/share/smile2unlock/models/lightface/fas_spatial_enc.onnx
+    usr/share/smile2unlock/models/lightface/fas_temporal_head.onnx
     usr/share/smile2unlock/pam/dankshell-smile2unlock
     usr/share/smile2unlock/release-info.json
     usr/share/doc/smile2unlock/runtime-libraries.json

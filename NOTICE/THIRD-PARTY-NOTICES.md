@@ -17,7 +17,19 @@
 
    - 另含内嵌第三方资源（字体 OFL-1.1、qskinny 等），原文见 `licenses/slint/`
 
-   **SeetaFace6**（seetaface6open，含随包 .csta 模型）
+   **ONNX Runtime** v1.22.0（默认人脸识别后端的推理运行时）
+   (https://github.com/microsoft/onnxruntime)
+   - 许可证: MIT (SPDX: MIT)
+   - 版权:
+
+    Copyright (c) Microsoft Corporation
+
+   **LightFacePipeline 模型**（detector_5pt_lcf / recognizer_edgeface / fas_spatial_enc /
+   fas_temporal_head，默认人脸检测、识别与活体模型，ONNX 格式）
+   - 来源: 本项目作者的 LightFacePipeline 训练流水线产物，随包分发
+
+   **SeetaFace6**（seetaface6open，含随包 .csta 模型；仅在以 `--with_seetaface=y`
+   编译的可选兼容后端中链接）
    (https://github.com/SeetaFace6Open/index)
    - 许可证: BSD-2-Clause (SPDX: BSD-2-Clause)
    - 版权:

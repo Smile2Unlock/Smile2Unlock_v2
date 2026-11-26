@@ -1,10 +1,10 @@
 # Smile2Unlock 当前状态与剩余工作
 
-更新日期：2026-11-14。本文汇总的是按日期记录的验证快照，不应被解读为每项功能在该日期之后都未变化。当前用户可见功能见 [`features.md`](features.md)，开发与发布流程见 [`maintenance.md`](maintenance.md)；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
+更新日期：2026-11-26。本文汇总的是按日期记录的验证快照，不应被解读为每项功能在该日期之后都未变化。当前用户可见功能见 [`features.md`](features.md)，开发与发布流程见 [`maintenance.md`](maintenance.md)；其他 `*_plan.md` 保留设计背景和历史记录，其中未勾选项不一定代表当前代码尚未实现。
 
 ## 已实现主线
 
-- Linux：Slint GUI、V4L2/SeetaFace 识别、system-owned 加密档案、`su_authd`、PAM bridge、control socket、D-Bus/Polkit 部署 helper，以及 DMS、KScreenLocker、Plasma Login、GDM 和 SDDM 的受控 PAM 转换。
+- Linux：Slint GUI、V4L2 与可插拔识别后端（默认 LightFacePipeline ONNX，可选 SeetaFace 6 兼容后端）、system-owned 加密档案、`su_authd`、PAM bridge、control socket、D-Bus/Polkit 部署 helper，以及 DMS、KScreenLocker、Plasma Login、GDM 和 SDDM 的受控 PAM 转换。
 - Windows：纯 Rust Credential Provider、LocalSystem 认证服务（有界 worker 池并发处理事务）、加密的 per-SID 人脸档案与账户凭据、目标会话识别 agent、命名管道协议（overlapped 事务、取消与截止时间，客户端断开即终止识别 agent）、锁屏自动识别（自动模式开关、初始延迟、重试间隔、超时与机器级策略存储）、UAC 部署 helper 和可验证 ZIP 打包。
 - 共享核心：C++26 modules 识别流水线、Rust C ABI、XChaCha20-Poly1305 封套、外部 i18n 资源、统一 `assets/` 布局和 Xmake 构建。
 
@@ -21,6 +21,13 @@ Credential Provider
 ```
 
 `Smile2Unlock.exe` 不参与锁屏认证；它仅在交互会话中通过命名管道请求服务完成档案管理和设置操作。早期的 GUI UDP 识别服务器已删除。
+
+## 2026-11-26 默认切换至 LightFace ONNX 后端与 FaceBackend 兼容层
+
+- 引入 `FaceBackend` 抽象层与 `backend_factory`：默认开启 `with_lightface=y`（LightFacePipeline ONNX 模型 + ONNX Runtime 1.22.0，输出 512 维特征、5 点 Umeyama 对齐、8 帧时空活体）；SeetaFace6 保留在抽象层之下（`with_seetaface` 默认关闭，`--with_seetaface=y` 时可编译并通过 `SU_RECOGNIZER_BACKEND=seetaface` 切换）。
+- 默认识别阈值调整为 `0.40`（滑块下限放宽至 `0.25`），默认活体阈值调整为 `0.76`；UI 下载标题、关于页组件列表与发布说明文案改为按构建配置和模型清单动态呈现，避免硬编码特定模型后端名称。
+- CI 与发行打包禁用 Git LFS（`lfs: false`），通过 `packaging/models/fetch-models.sh` 从 `Smile2Unlock/LightFacePipeline` Release 拉取并校验模型后默认内嵌到所有 Linux / Windows 发行包；打包脚本增加 LFS 指针文件防护。
+- 本机验证覆盖：Linux Release（默认与双后端）编译及核心/扩展测试全绿、真实人脸端到端推理（512 维）、Linux 打包冒烟与 `tar.gz` 实包校验、MinGW 交叉编译（含 Slint GUI、`Smile2UnlockRecognitionAgent.exe` 与全部 `windows-cross` Wine 测试），以及 `fetch-models.sh` 实时拉取与指针替换校验。
 
 ## 2026-10-06 Linux SDK 与 CI 卡死修复
 

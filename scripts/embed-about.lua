@@ -1,9 +1,18 @@
 -- Embed the repository's actual notices and license texts so the About
 -- page also works offline, in an unpackaged build or after relocation.
-function main(output)
+function main(output, features)
     import("core.base.json")
     local root = os.projectdir()
     local data = json.loadfile(path.join(root, "assets", "about", "credits.json"))
+    local active = features or {}
+    local filtered = {}
+    for _, component in ipairs(data.components or {}) do
+        local flag = component.feature
+        if not flag or active[flag] then
+            table.insert(filtered, {name = component.name, license = component.license})
+        end
+    end
+    data.components = filtered
     data.documents = {}
     local function add_document(label, file)
         local text = assert(io.readfile(file))

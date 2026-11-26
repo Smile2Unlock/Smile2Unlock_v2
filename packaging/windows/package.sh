@@ -79,12 +79,16 @@ done
 for name in en.json zh-CN.json; do
     package_require_file "${build_dir}/assets/i18n/${name}"
 done
-for name in face_detector.csta face_landmarker_pts5.csta face_recognizer.csta \
-    fas_first.csta fas_second.csta; do
-    package_require_file "${build_dir}/assets/models/seeta/${name}"
+for name in detector_5pt_lcf.onnx recognizer_edgeface.onnx fas_spatial_enc.onnx \
+    fas_temporal_head.onnx; do
+    package_require_file "${build_dir}/assets/models/lightface/${name}"
+    if head -n 1 "${build_dir}/assets/models/lightface/${name}" 2>/dev/null | grep -q '^version https://git-lfs.github.com/spec/v1'; then
+        package_die "refusing to package Git LFS pointer file: ${build_dir}/assets/models/lightface/${name} (run packaging/models/fetch-models.sh)"
+    fi
 done
 
 xmake_home="${XMAKE_GLOBALDIR:-${HOME}/.xmake}"
+ort_package_root="${ONNXRUNTIME_PACKAGE_ROOT:-${xmake_home}/packages/o/onnxruntime}"
 seeta_package_root="${SEETAFACE_PACKAGE_ROOT:-${xmake_home}/packages/s/seetaface6open}"
 
 mingw_bin="${MINGW_BIN:-/usr/x86_64-w64-mingw32/bin}"
@@ -94,7 +98,7 @@ stage_root="${project_dir}/build/package-stage/windows"
 package_root="${stage_root}/Smile2Unlock"
 package_reset_stage "$stage_root"
 mkdir -p "${package_root}/bin" "${package_root}/assets/i18n" \
-    "${package_root}/assets/models/seeta"
+    "${package_root}/assets/models/lightface"
 
 install -m 0755 "${build_dir}/Smile2Unlock.exe" "${package_root}/bin/Smile2Unlock.exe"
 install -m 0755 "${build_dir}/Smile2UnlockDeployHelper.exe" "${package_root}/bin/Smile2UnlockDeployHelper.exe"
@@ -105,11 +109,15 @@ install -m 0755 "${build_dir}/Smile2UnlockRecognitionAgent.exe" "${package_root}
 install -m 0755 "${build_dir}/Smile2UnlockStatus.exe" "${package_root}/bin/Smile2UnlockStatus.exe"
 install -m 0644 "${build_dir}/Smile2Unlock.ico" "${package_root}/bin/Smile2Unlock.ico"
 install -m 0644 "${build_dir}/assets/i18n/"*.json "${package_root}/assets/i18n/"
-install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${package_root}/assets/models/seeta/"
+install -m 0644 "${build_dir}/assets/models/lightface/"*.onnx "${package_root}/assets/models/lightface/"
+if [[ -d "${build_dir}/assets/models/seeta" ]] && compgen -G "${build_dir}/assets/models/seeta/*.csta" >/dev/null; then
+    mkdir -p "${package_root}/assets/models/seeta"
+    install -m 0644 "${build_dir}/assets/models/seeta/"*.csta "${package_root}/assets/models/seeta/"
+fi
 
 # Third-party attribution: project license, notices, and every license text
-# (Slint triple-license, SeetaFace6 BSD-2, libjpeg-turbo IJG notice, Rust
-# crates inventory) ship next to the binaries they cover.
+# (Slint triple-license, ONNX Runtime MIT, optional SeetaFace6 BSD-2,
+# libjpeg-turbo IJG notice, Rust crates inventory) ship next to the binaries.
 install -m 0644 "${project_dir}/LICENSE" "${package_root}/LICENSE"
 install -m 0644 "${project_dir}/NOTICE/THIRD-PARTY-NOTICES.md" "${package_root}/"
 cp -r "${project_dir}/licenses" "${package_root}/licenses"
@@ -125,14 +133,18 @@ find_runtime_dll() {
     fi
     if [[ -z "$candidate" ]]; then
         local candidates=()
-        # Only installed x64 runtimes are eligible. SDK source/build trees
-        # also contain copies, even with a single installed package.
-        if [[ -d "$seeta_package_root" ]]; then
+        if [[ -d "$ort_package_root" ]]; then
+            mapfile -t candidates < <(find "$ort_package_root" -type f \
+                \( -path '*/bin/*' -o -path '*/lib/*' \) -iname "$name" -print)
+        fi
+        if ((${#candidates[@]} == 0)) && [[ -d "$seeta_package_root" ]]; then
+            # Only installed x64 runtimes are eligible. SDK source/build trees
+            # also contain copies, even with a single installed package.
             mapfile -t candidates < <(find "$seeta_package_root" -type d -name src -prune -o \
                 -type f \( -path '*/bin/x64/*' -o -path '*/lib/x64/*' \) -iname "$name" -print)
         fi
         if ((${#candidates[@]} > 1)); then
-            package_die "ambiguous SDK DLL $name; stage the exact build DLLs or set SEETAFACE_PACKAGE_ROOT"
+            package_die "ambiguous SDK DLL $name; stage the exact build DLLs or set ONNXRUNTIME_PACKAGE_ROOT / SEETAFACE_PACKAGE_ROOT"
         fi
         candidate="${candidates[0]:-}"
     fi
@@ -164,14 +176,22 @@ for binary in "${package_root}/bin/"*.exe "${package_root}/bin/Smile2UnlockCrede
     stage_dependencies "$binary"
 done
 
-# TenniS loads these at runtime on CPUs that cannot use its baseline build;
-# they do not appear in the PE import table scanned above.
-for name in libtennis_haswell.dll libtennis_sandy_bridge.dll libtennis_pentium.dll; do
-    source="$(find_runtime_dll "$name")"
-    [[ -n "$source" ]] || package_die "CPU runtime DLL was not found: $name"
-    install -m 0755 "$source" "${package_root}/bin/${name}"
-    stage_dependencies "$source"
-done
+# Optional onnxruntime_providers_shared.dll (present when provider DLLs exist).
+if providers_shared="$(find_runtime_dll onnxruntime_providers_shared.dll)" && [[ -n "$providers_shared" ]]; then
+    install -m 0755 "$providers_shared" "${package_root}/bin/onnxruntime_providers_shared.dll"
+    stage_dependencies "$providers_shared"
+fi
+
+# When built with --with_seetaface=y, TenniS loads these at runtime on CPUs
+# that cannot use its baseline build; they do not appear in the PE import table.
+if [[ -f "${package_root}/bin/libtennis.dll" ]]; then
+    for name in libtennis_haswell.dll libtennis_sandy_bridge.dll libtennis_pentium.dll; do
+        source="$(find_runtime_dll "$name")"
+        [[ -n "$source" ]] || package_die "CPU runtime DLL was not found: $name"
+        install -m 0755 "$source" "${package_root}/bin/${name}"
+        stage_dependencies "$source"
+    done
+fi
 
 if [[ "$unsigned_development" == false ]]; then
     package_require_file "$sign_certificate"

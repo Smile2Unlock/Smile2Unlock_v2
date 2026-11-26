@@ -74,8 +74,8 @@ std::expected<PreviewFrame, RecognizerError> RecognizerService::capture_preview_
 
 std::expected<std::pair<PreviewFrame, RecognitionResult>, RecognizerError>
 RecognizerService::capture_and_extract(bool liveness_enabled) const {
-    // Copy the mmap-backed frame while holding the camera lock. SeetaFace
-    // runs after the copy, so camera control does not stay blocked during
+    // Copy the mmap-backed frame while holding the camera lock. The face
+    // backend runs after the copy, so camera control does not stay blocked during
     // model inference.
     auto grabbed = [&] {
         std::lock_guard lock(camera_mutex_);
@@ -131,7 +131,7 @@ std::expected<float, RecognizerError> RecognizerService::compare_features(
         return std::unexpected(RecognizerError::kInvalidArgument);
     }
 
-    // Cosine similarity, matching the Rust core's matching metric. SeetaFace
+    // Cosine similarity, matching the Rust core's matching metric. Backend
     // embeddings are normalized, so for them this is equivalent to the dot
     // product; the division keeps it correct for unnormalized inputs too.
     const auto dot = std::transform_reduce(
@@ -174,105 +174,73 @@ std::string embedding_sample_source(std::span<const float> feature) {
     return out.str();
 }
 
-#if SU_HAS_SEETAFACE
-
-std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
-    auto lock = std::lock_guard{seetaface_mutex_};
-    if (seetaface_backend_) {
+std::expected<void, RecognizerError> RecognizerService::ensure_backend() const {
+    auto lock = std::lock_guard{backend_mutex_};
+    if (backend_) {
         return {};
     }
     const auto now = std::chrono::steady_clock::now();
-    if (now < next_seetaface_retry_) {
+    if (now < next_backend_retry_) {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
     // A missing model directory is recoverable after package installation or
     // a mount becoming available. Retry lazily instead of caching failure for
     // the lifetime of the daemon.
-    next_seetaface_retry_ = now + std::chrono::seconds{5};
+    next_backend_retry_ = now + std::chrono::seconds{5};
     try {
-        auto paths = seetaface_model_paths(default_seetaface_model_dir());
-        if (paths) {
-            auto backend = std::make_unique<SeetaFaceBackend>(*std::move(paths));
-            if (backend->available()) {
-                seetaface_backend_ = std::move(backend);
-                next_seetaface_retry_ = {};
-            }
+        if (auto created = create_default_backend(); created) {
+            backend_ = *std::move(created);
+            next_backend_retry_ = {};
         }
     } catch (...) {
         // Model constructors are third-party code; expose a safe unavailable
         // result and allow the bounded retry above to recover later.
     }
-    if (seetaface_backend_) {
+    if (backend_) {
         return {};
     }
     return std::unexpected(RecognizerError::kModelUnavailable);
 }
 
-#else
-
-std::expected<void, RecognizerError> RecognizerService::ensure_seetaface_backend() const {
-    return std::unexpected(RecognizerError::kModelUnavailable);
-}
-
-#endif
-
 std::expected<RecognitionResult, RecognizerError> RecognizerService::extract_from_image(
     ImageView image, bool liveness_enabled) const {
-#if SU_HAS_SEETAFACE
-    if (auto ensured = ensure_seetaface_backend(); !ensured) {
+    if (auto ensured = ensure_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    auto result = seetaface_backend_->extract(image, liveness_enabled, backlight_compensation());
-    if (!result) {
-        return std::unexpected(result.error());
-    }
-    // No face detected is a normal outcome, not an error: return the result
-    // with has_face=false so callers can show "no face" without treating it
-    // as a detection failure.
-    return result;
-#else
-    (void)image;
-    (void)liveness_enabled;
-    return std::unexpected(RecognizerError::kModelUnavailable);
-#endif
+    // No face detected is a normal outcome, not an error: the result carries
+    // has_face=false so callers can show "no face" without treating it as a
+    // detection failure.
+    return backend_->extract(image, liveness_enabled, backlight_compensation());
 }
 
 std::expected<RecognitionResult, RecognizerError> RecognizerService::predict_liveness(
     ImageView image, bool liveness_enabled) const {
-#if SU_HAS_SEETAFACE
-    if (auto ensured = ensure_seetaface_backend(); !ensured) {
+    if (auto ensured = ensure_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    return seetaface_backend_->predict_liveness(
-        image, liveness_enabled, backlight_compensation());
-#else
-    (void)image;
-    (void)liveness_enabled;
-    return std::unexpected(RecognizerError::kModelUnavailable);
-#endif
+    return backend_->predict_liveness(image, liveness_enabled, backlight_compensation());
 }
 
 std::expected<void, RecognizerError> RecognizerService::reset_liveness() const {
-#if SU_HAS_SEETAFACE
-    if (auto ensured = ensure_seetaface_backend(); !ensured) {
+    if (auto ensured = ensure_backend(); !ensured) {
         return std::unexpected(ensured.error());
     }
-    if (!seetaface_backend_->liveness_available()) {
+    if (!backend_->liveness_available()) {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
-    seetaface_backend_->reset_liveness();
+    backend_->reset_liveness();
     return {};
-#else
-    return std::unexpected(RecognizerError::kModelUnavailable);
-#endif
 }
 
-bool RecognizerService::seetaface_available() const {
-#if SU_HAS_SEETAFACE
-    return ensure_seetaface_backend().has_value();
-#else
-    return false;
-#endif
+bool RecognizerService::backend_available() const {
+    return ensure_backend().has_value();
+}
+
+std::string RecognizerService::backend_name() const {
+    if (!ensure_backend()) {
+        return {};
+    }
+    return std::string{backend_->name()};
 }
 
 }  // namespace su::recognizer

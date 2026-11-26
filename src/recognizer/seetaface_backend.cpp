@@ -81,6 +81,14 @@ std::filesystem::path default_seetaface_model_dir() {
         configured && std::filesystem::is_directory(*configured, error)) {
         return *configured;
     }
+    if (const auto base = su::windows::environment_path(L"SU_MODEL_DIR")) {
+        for (const auto& candidate : {*base / L"seeta", *base}) {
+            error.clear();
+            if (std::filesystem::is_regular_file(candidate / kModelFiles[0], error)) {
+                return candidate;
+            }
+        }
+    }
     if (const auto model_dir = find_model_dir_from(su::windows::executable_path().parent_path())) {
         return *model_dir;
     }
@@ -88,6 +96,15 @@ std::filesystem::path default_seetaface_model_dir() {
     if (const auto* configured = std::getenv("SU_SEETAFACE_MODEL_DIR");
         configured != nullptr && std::filesystem::is_directory(configured, error)) {
         return std::filesystem::path(configured);
+    }
+    // SU_MODEL_DIR is the parent shared by every backend's model set.
+    if (const auto* base = std::getenv("SU_MODEL_DIR"); base != nullptr && *base != '\0') {
+        for (const auto& candidate : {std::filesystem::path(base) / "seeta", std::filesystem::path(base)}) {
+            error.clear();
+            if (std::filesystem::is_regular_file(candidate / kModelFiles[0], error)) {
+                return candidate;
+            }
+        }
     }
 #endif
 #ifdef SU_SEETAFACE_MODEL_DIR
@@ -545,7 +562,11 @@ class SeetaFaceBackend::Impl {
 public:
     explicit Impl(const SeetaFaceModelPaths&) {}
 
-    std::expected<RecognitionResult, RecognizerError> extract(ImageView, bool) const {
+    std::expected<RecognitionResult, RecognizerError> extract(ImageView, bool, bool) const {
+        return std::unexpected(RecognizerError::kModelUnavailable);
+    }
+
+    std::expected<RecognitionResult, RecognizerError> predict_liveness(ImageView, bool, bool) const {
         return std::unexpected(RecognizerError::kModelUnavailable);
     }
 
@@ -556,6 +577,8 @@ public:
     bool liveness_available() const {
         return false;
     }
+
+    void reset_liveness() {}
 };
 
 #endif
@@ -565,10 +588,6 @@ SeetaFaceBackend::SeetaFaceBackend(SeetaFaceModelPaths paths)
 
 SeetaFaceBackend::~SeetaFaceBackend() = default;
 
-SeetaFaceBackend::SeetaFaceBackend(SeetaFaceBackend&&) noexcept = default;
-
-SeetaFaceBackend& SeetaFaceBackend::operator=(SeetaFaceBackend&&) noexcept = default;
-
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::extract(
     const ImageView image, bool liveness_enabled, bool low_light_retry) const {
     return impl_->extract(image, liveness_enabled, low_light_retry);
@@ -576,14 +595,7 @@ std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::extract(
 
 std::expected<RecognitionResult, RecognizerError> SeetaFaceBackend::predict_liveness(
     const ImageView image, bool liveness_enabled, bool low_light_retry) const {
-#if SU_HAS_SEETAFACE
     return impl_->predict_liveness(image, liveness_enabled, low_light_retry);
-#else
-    (void)image;
-    (void)liveness_enabled;
-    (void)low_light_retry;
-    return std::unexpected(RecognizerError::kModelUnavailable);
-#endif
 }
 
 bool SeetaFaceBackend::available() const {
@@ -595,9 +607,7 @@ bool SeetaFaceBackend::liveness_available() const {
 }
 
 void SeetaFaceBackend::reset_liveness() {
-#if SU_HAS_SEETAFACE
     impl_->reset_liveness();
-#endif
 }
 
 }  // namespace su::recognizer

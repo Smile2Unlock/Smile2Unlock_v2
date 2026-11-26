@@ -313,8 +313,9 @@ pub fn enroll_profile(
     let mut store = load_store(path)?;
 
     // Lock the embedding dimension at the first enrollment so a store never
-    // mixes embeddings from incompatible backends (e.g. mock 32-dim and
-    // SeetaFace ~512-dim). Subsequent enrollments must match the locked dim.
+    // mixes embeddings from incompatible backends (e.g. mock 32-dim,
+    // LightFace 512-dim, or optional SeetaFace 1024-dim). Subsequent enrollments
+    // must match the locked dim.
     lock_embedding_dimension(&mut store, embedding.len())?;
 
     let profile = FaceProfile {

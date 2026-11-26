@@ -26,7 +26,7 @@ Summary summary_input(const AppSnapshot& app, const SystemStatus& system,
     result.service_reason = system.service_reason;
     constexpr std::array names{"unavailable", "host-key", "host-tpm2", "unknown"};
     result.storage_protection = names[static_cast<unsigned>(system.storage_protection)];
-    result.recognizer_available = app.seetaface_available;
+    result.recognizer_available = app.recognizer_available;
     for (const auto& camera : app.cameras)
         result.cameras.push_back(camera.name);
     result.profile_count = app.profiles.size();

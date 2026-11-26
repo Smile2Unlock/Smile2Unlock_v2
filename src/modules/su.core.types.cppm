@@ -28,9 +28,9 @@ struct EncryptedStoreContext {
 struct CoreConfig {
     std::uint32_t version = 1;
     int selected_camera = 0;
-    float recognition_threshold = 0.65F;
+    float recognition_threshold = 0.40F;
     bool liveness_detection = true;
-    float liveness_threshold = 0.50F;
+    float liveness_threshold = 0.76F;
     std::uint32_t preview_fps = 15;
     // Recognition trigger policy (0 = manual, 1 = auto). Mirrors
     // HKLM\SOFTWARE\Smile2Unlock\Recognition on Windows.

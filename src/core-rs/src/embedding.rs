@@ -80,8 +80,9 @@ pub(crate) fn parse_face_sample_source(source: &str) -> Result<FaceSample, FaceE
 
 // Produce an embedding from a face sample source. Precomputed embeddings are
 // passed through; everything else uses the deterministic mock generator. Real
-// model inference lives on the C++ side (SeetaFace) and reaches Rust only as a
-// precomputed embedding:... source, so there is no "model backend" here.
+// model inference lives on the C++ side (LightFace ONNX default, or optional
+// SeetaFace) and reaches Rust only as a precomputed embedding:... source, so
+// there is no "model backend" here.
 fn embed_sample(sample: &FaceSample) -> Result<FaceEmbedding, FaceEmbeddingError> {
     match sample {
         FaceSample::PrecomputedEmbedding { embedding } => Ok(embedding.clone()),

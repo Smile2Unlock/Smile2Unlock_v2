@@ -923,7 +923,7 @@ int main(int argc, char** argv) try {
         window, snapshot->cameras, camera_model, camera_indices, snapshot->config.selected_camera);
     gui_log("camera.enumerated", {field("count", snapshot->cameras.size()),
         field("first", snapshot->cameras.empty() ? "" : snapshot->cameras.front().name)});
-    window->set_seetaface_available(snapshot->seetaface_available);
+    window->set_recognizer_available(snapshot->recognizer_available);
     {
         const auto models = controller->models_status();
         window->set_models_present(models.present);
@@ -1054,7 +1054,7 @@ int main(int argc, char** argv) try {
                         if (error.empty()) {
                             const auto models = controller->models_status();
                             (*window)->set_models_present(models.present);
-                            (*window)->set_seetaface_available(models.present);
+                            (*window)->set_recognizer_available(models.present);
                             (*window)->set_models_status_text(slint::SharedString(
                                 translated(*catalog, *window, "models.done")));
                         } else {

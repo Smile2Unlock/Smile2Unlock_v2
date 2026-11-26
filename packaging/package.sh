@@ -54,7 +54,7 @@ build_targets() {
     local target_platform="$1"
     shift
     echo "==> configuring ${target_platform} release build"
-    xmake f -p "$target_platform" -a x86_64 -m release --with_slint=y --with_seetaface=y
+    xmake f -p "$target_platform" -a x86_64 -m release --with_slint=y
 
     # C++ module BMIs are compiler-specific. Cleaning the selected target graph
     # prevents a GCC/MinGW switch from reusing incompatible module state.

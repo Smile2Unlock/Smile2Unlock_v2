@@ -64,8 +64,8 @@ std::expected<su::recognizer::RecognitionResult, std::string> capture_live_featu
     return std::unexpected(saw_face ? "liveness check failed" : "no face detected");
 }
 
-// Try to turn an `image:<path>` sample source into a real SeetaFace embedding.
-// When the SeetaFace backend is unavailable, the source is returned unchanged
+// Try to turn an `image:<path>` sample source into a real face embedding.
+// When no recognizer backend is available, the source is returned unchanged
 // so the Rust core falls back to its mock image-source handling (which only
 // validates the file exists). Returns the embedding:... source on success, or
 // an error describing which step failed.
@@ -79,7 +79,7 @@ std::expected<std::string, std::string> resolve_image_sample_source(
     if (face_sample_source.substr(0, kImageSourcePrefix.size()) != kImageSourcePrefix) {
         return std::string{face_sample_source};
     }
-    if (!recognizer.seetaface_available()) {
+    if (!recognizer.backend_available()) {
         // Backend unavailable: let Rust core handle the image: source with its
         // mock backend (file-existence validation only).
         return std::string{face_sample_source};
@@ -187,10 +187,10 @@ bool save_recognition_settings(const CoreConfig& config) {
         raw_key, &RegCloseKey};
     const auto camera_index = static_cast<DWORD>(std::max(config.selected_camera, 0));
     const auto recognition_threshold = static_cast<DWORD>(
-        std::clamp(config.recognition_threshold, 0.5F, 1.0F) * 1000.0F);
+        std::clamp(config.recognition_threshold, 0.25F, 1.0F) * 1000.0F);
     const auto liveness_enabled = DWORD{config.liveness_detection ? 1U : 0U};
     const auto liveness_threshold = static_cast<DWORD>(
-        std::clamp(config.liveness_threshold, 0.3F, 1.0F) * 1000.0F);
+        std::clamp(config.liveness_threshold, 0.20F, 1.0F) * 1000.0F);
     const auto backlight_compensation = DWORD{config.backlight_compensation ? 1U : 0U};
     const auto set = [raw_key](const wchar_t* name, const DWORD& value) {
         return RegSetValueExW(
@@ -273,7 +273,8 @@ std::expected<AppSnapshot, std::string> AppController::load_initial_snapshot() {
         .profiles = std::move(profiles),
         .profiles_json = std::move(profiles_json),
         .slint_enabled = SU_HAS_SLINT != 0,
-        .seetaface_available = recognizer_.seetaface_available(),
+        .recognizer_available = recognizer_.backend_available(),
+        .recognizer_backend = recognizer_.backend_name(),
     };
 }
 
@@ -727,33 +728,60 @@ std::expected<std::string, std::string> AppController::rollback_desktop_target(
 
 
 // ---------------------------------------------------------------------------
-// Face-model download (SeetaFace6 archive from the models GitHub release).
+// Face-model download (LightFace ONNX default; SeetaFace6 fallback when built
+// without LightFace).
 // ---------------------------------------------------------------------------
 namespace {
 
-// Mirrors the recognizer backend's model-dir resolution: walk up from the
-// executable looking for assets/models/seeta.
+#if !SU_HAS_LIGHTFACE && SU_HAS_SEETAFACE
+constexpr auto kModelSubdir = L"seeta";
 constexpr auto kRequiredModels = std::array{
     L"face_detector.csta", L"face_landmarker_pts5.csta", L"face_recognizer.csta",
     L"fas_first.csta", L"fas_second.csta",
 };
-
 constexpr char kModelsAssetUrl[] =
     "https://github.com/Smile2Unlock/local-repo/releases/download/"
     "models-seetaface6-v1/smile2unlock-models-seetaface6-v1.zip";
+#else
+constexpr auto kModelSubdir = L"lightface";
+constexpr auto kRequiredModels = std::array{
+    L"detector_5pt_lcf.onnx", L"recognizer_edgeface.onnx",
+    L"fas_spatial_enc.onnx", L"fas_temporal_head.onnx",
+};
+struct LightFaceModelSpec {
+    const wchar_t* wide_name;
+    const char* name;
+    const char* sha256;
+    std::uint64_t bytes;
+};
+constexpr char kLightFaceReleaseBaseUrl[] =
+    "https://github.com/Smile2Unlock/LightFacePipeline/releases/download/v1.0.0/";
+constexpr auto kLightFaceModelSpecs = std::array{
+    LightFaceModelSpec{L"detector_5pt_lcf.onnx", "detector_5pt_lcf.onnx",
+        "ec6d8e7e873dd3e7c769af27df911f9d633b4558f939d25fae776bba37c69844", 7700006ULL},
+    LightFaceModelSpec{L"recognizer_edgeface.onnx", "recognizer_edgeface.onnx",
+        "631293c83e33302e0e5afbbf8e04691efc4f13d2081879d42f84e372b6ca8261", 14798997ULL},
+    LightFaceModelSpec{L"fas_spatial_enc.onnx", "fas_spatial_enc.onnx",
+        "06ab343cc6017d2288644650347b0b1e750dfe098d64816b97da3554d409d6ec", 2709447ULL},
+    LightFaceModelSpec{L"fas_temporal_head.onnx", "fas_temporal_head.onnx",
+        "b4ef564a2fb64788ff4868f3ad9f0b2c161ac45d0f4f5e880393748de6c02a84", 2447312ULL},
+};
+#endif
 
+// Mirrors the recognizer backend's model-dir resolution: walk up from the
+// executable looking for assets/models/<backend>.
 std::filesystem::path expected_model_dir() {
     const auto executable_dir = su::windows::executable_path().parent_path();
     auto dir = executable_dir;
     for (int depth = 0; depth < 6 && dir.has_parent_path(); ++depth) {
-        const auto candidate = dir / "assets" / "models" / "seeta";
+        const auto candidate = dir / "assets" / "models" / kModelSubdir;
         std::error_code ignored{};
         if (std::filesystem::is_directory(candidate, ignored)) {
             return candidate;
         }
         dir = dir.parent_path();
     }
-    return executable_dir / "assets" / "models" / "seeta";
+    return executable_dir / "assets" / "models" / kModelSubdir;
 }
 
 std::expected<std::string, std::string> http_download_to_file(
@@ -897,6 +925,7 @@ std::expected<std::string, std::string> sha256_file_hex(const std::filesystem::p
     return hex;
 }
 
+#if SU_HAS_SEETAFACE && !SU_HAS_LIGHTFACE
 // Windows 10 1803+ ships bsdtar as tar.exe; it extracts zip archives, so no
 // third-party unpacker is needed.
 std::expected<std::string, std::string> extract_archive_with_tar(
@@ -928,6 +957,7 @@ std::expected<std::string, std::string> extract_archive_with_tar(
     }
     return std::string{};
 }
+#endif
 
 } // namespace
 
@@ -940,7 +970,7 @@ ModelsStatus AppController::models_status() {
     auto status = ModelsStatus{};
     const auto dir = expected_model_dir();
     status.model_dir = su::path_utf8(dir);
-    auto present = recognizer_.seetaface_available();
+    auto present = recognizer_.backend_available();
     if (present) {
         for (const auto* name : kRequiredModels) {
             std::error_code ignored{};
@@ -962,7 +992,6 @@ void AppController::download_models(
             }
         };
         const auto model_dir = expected_model_dir();
-        const auto models_parent = model_dir.parent_path(); // .../assets/models
         auto temp = std::filesystem::path{};
         try {
             temp = su::windows::temporary_directory();
@@ -970,6 +999,8 @@ void AppController::download_models(
             fail("failed to resolve the temporary directory");
             return;
         }
+#if SU_HAS_SEETAFACE && !SU_HAS_LIGHTFACE
+        const auto models_parent = model_dir.parent_path(); // .../assets/models
         const auto archive = temp / "smile2unlock-models.zip";
         const auto archive_hash_file = temp / "smile2unlock-models.zip.sha256";
         const auto archive_url = url_prefix.empty()
@@ -1030,12 +1061,77 @@ void AppController::download_models(
         // Strip the bundle's outer directory so its seeta/*.csta entries
         // land directly in the expected model directory.
         for (const auto* name : kRequiredModels) {
-            std::error_code ignored{};
-            if (!std::filesystem::exists(model_dir / name, ignored)) {
+            std::error_code check_ignored{};
+            if (!std::filesystem::exists(model_dir / name, check_ignored)) {
                 fail("the extracted archive is missing " + su::path_utf8(std::filesystem::path(name)));
                 return;
             }
         }
+#else
+        const auto staging_dir = temp / "smile2unlock-lightface-models";
+        auto cleanup_ignored = std::error_code{};
+        std::filesystem::remove_all(staging_dir, cleanup_ignored);
+        std::filesystem::create_directories(staging_dir, cleanup_ignored);
+        std::uint64_t total_expected = 0;
+        for (const auto& spec : kLightFaceModelSpecs) {
+            total_expected += spec.bytes;
+        }
+        std::uint64_t completed_bytes = 0;
+        for (const auto& spec : kLightFaceModelSpecs) {
+            const auto file_url = url_prefix.empty()
+                ? std::string{kLightFaceReleaseBaseUrl} + spec.name
+                : url_prefix + kLightFaceReleaseBaseUrl + spec.name;
+            const auto staged_file = staging_dir / spec.wide_name;
+            const auto file_progress =
+                [&progress, completed_bytes, total_expected](std::uint64_t done, std::uint64_t total) {
+                    const auto combined_done = completed_bytes + done;
+                    const auto combined_total = std::max(total_expected, completed_bytes + total);
+                    if (const auto scaled = archive_download_progress(combined_done, combined_total); progress && scaled) {
+                        progress(scaled->done, scaled->total);
+                    }
+                };
+            if (const auto downloaded = http_download_to_file(file_url, staged_file, file_progress); !downloaded) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(downloaded.error());
+                return;
+            }
+            const auto actual = sha256_file_hex(staged_file);
+            if (!actual) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(actual.error());
+                return;
+            }
+            if (*actual != spec.sha256) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(std::string{"checksum mismatch for "} + spec.name + "; please retry");
+                return;
+            }
+            completed_bytes += spec.bytes;
+        }
+        if (progress) {
+            progress(98, 100);
+        }
+        std::error_code install_ec{};
+        std::filesystem::create_directories(model_dir, install_ec);
+        if (install_ec) {
+            std::filesystem::remove_all(staging_dir, cleanup_ignored);
+            fail("failed to create the model directory");
+            return;
+        }
+        for (const auto& spec : kLightFaceModelSpecs) {
+            std::filesystem::copy_file(
+                staging_dir / spec.wide_name,
+                model_dir / spec.wide_name,
+                std::filesystem::copy_options::overwrite_existing,
+                install_ec);
+            if (install_ec) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(std::string{"failed to install "} + spec.name);
+                return;
+            }
+        }
+        std::filesystem::remove_all(staging_dir, cleanup_ignored);
+#endif
         if (progress) {
             progress(100, 100);
         }

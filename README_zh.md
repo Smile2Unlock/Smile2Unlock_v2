@@ -28,7 +28,7 @@
 
 ## 项目简介
 
-Smile2Unlock 是一套**本地人脸认证系统**:人脸特征全部在本机提取与比对(SeetaFace 6),不依赖任何云服务。它由两个平台变体组成:
+Smile2Unlock 是一套**本地人脸认证系统**:人脸特征全部通过可插拔的本地识别后端提取与比对(默认使用 LightFacePipeline ONNX Runtime；SeetaFace 6 作为可选兼容后端保留在抽象层之下),不依赖任何云服务。它由两个平台变体组成:
 
 - **Windows**:通过 Credential Provider 集成到 Winlogon 登录界面(锁定屏幕、UAC 提权界面)
 - **Linux**:通过 PAM 模块接入 `login` / GDM / SDDM 等认证流程
@@ -84,18 +84,17 @@ Windows:  C:\su-deploy\
 │   ├── Smile2UnlockCredentialProvider.dll
 │   ├── Smile2UnlockAuthService.exe
 │   ├── Smile2Unlock.ico
-│   └── (SeetaFace / tennis / MinGW 运行库)
+│   └── (onnxruntime / MinGW 运行库；若开启 --with_seetaface=y 则附带 SeetaFace 运行库)
 └── assets\
     ├── i18n\
     │   ├── en.json
     │   └── zh-CN.json
     └── models\
-        └── seeta\
-            ├── face_detector.csta
-            ├── face_landmarker_pts5.csta
-            ├── face_recognizer.csta
-            ├── fas_first.csta
-            └── fas_second.csta
+        └── lightface\         # 开启 --with_seetaface=y 时也可使用 seeta\
+            ├── detector_5pt_lcf.onnx
+            ├── recognizer_edgeface.onnx
+            ├── fas_spatial_enc.onnx
+            └── fas_temporal_head.onnx
 
 Windows 安全组件安装后:  C:\Program Files\Smile2Unlock\bin\
 
@@ -105,7 +104,7 @@ Linux(打包后):  /usr/bin/su_app
                /usr/share/smile2unlock/{i18n,models}
 ```
 
-- 模型目录按 `SU_SEETAFACE_MODEL_DIR` 环境变量、编译期宏、「从当前目录向上查找 `assets/models/seeta`」的顺序解析;i18n 用同样的向上查找定位 `assets/i18n`(这正是 `bin\` + `assets\` 平级布局能工作的原因);Linux 系统安装后回退到 `/usr/share/smile2unlock/models`
+- 运行时可通过 `SU_RECOGNIZER_BACKEND=lightface|seetaface` 选择后端(编译启用时默认 LightFace)。模型目录按 `SU_MODEL_DIR`、后端专用变量(`SU_LIGHTFACE_MODEL_DIR` / `SU_SEETAFACE_MODEL_DIR`)、编译期宏、「从当前目录向上查找 `assets/models/<backend>`」的顺序解析;i18n 用同样的向上查找定位 `assets/i18n`(这正是 `bin\` + `assets\` 平级布局能工作的原因);Linux 系统安装后回退到 `/usr/share/smile2unlock/models/<backend>`
 - Windows 解压后运行 `bin\Smile2Unlock.exe`,再在 GUI 的 **Deployment(部署)** 面板执行安装。提权 helper 会先把安全组件复制到 `C:\Program Files\Smile2Unlock\bin`,然后注册 CP 和服务；注册表不指向解压目录
 
 ## 架构
@@ -116,13 +115,13 @@ flowchart LR
         CP[Smile2UnlockCredentialProvider.dll] -- 命名管道 --> SERVICE[认证服务]
         GUIW[Smile2Unlock.exe] -- 命名管道 --> SERVICE
         SERVICE --> AGENT[识别 agent]
-        AGENT --> REC[src/recognizer<br/>SeetaFace 6]
+        AGENT --> REC[src/recognizer<br/>FaceBackend: ONNX / 可选 SeetaFace]
         SERVICE --> CORE[(Rust core<br/>加密档案与凭据)]
         GUIW -- UAC --> HELPER[Smile2UnlockDeployHelper.exe]
     end
     subgraph Linux
         PAM[pam_smile2unlock.so] -- control.sock --> AUTHD[su_authd]
-        AUTHD --> REC2[src/recognizer<br/>SeetaFace 6]
+        AUTHD --> REC2[src/recognizer<br/>FaceBackend: ONNX / 可选 SeetaFace]
         AUTHD --> CORE2[(Rust core<br/>加密档案文件)]
         GUI[su_app] -- control.sock --> AUTHD
         GUI -- D-Bus/Polkit --> HELPER2[su_deploy_helper]
@@ -131,7 +130,7 @@ flowchart LR
 
 ### 运行时角色
 
-- **识别流水线**(`src/recognizer`):摄像头采集(V4L2 / Windows Media Foundation)、SeetaFace 检测 / 关键点 / 特征提取 / 活体检测,全部本地执行
+- **识别流水线**(`src/recognizer`):摄像头采集(V4L2 / Windows Media Foundation)与可插拔 `FaceBackend` 抽象层(默认 LightFacePipeline ONNX Runtime；可选 SeetaFace 6 兼容后端)实现检测 / 对齐 / 特征提取 / 活体检测,全部本地执行
 - **Rust core**(`src/core-rs`):版本化 XChaCha20-Poly1305 档案与凭据封套；Windows 主密钥由 CNG TPM 保护，无 TPM 时回退 machine DPAPI，Linux 密钥由 systemd 托管
 - **GUI**(`src/app`):Slint 界面 + 平台控制器；Windows 通过命名管道请求认证服务管理档案，Linux 通过 control socket 与 `su_authd` 交互
 
@@ -157,34 +156,38 @@ flowchart LR
 |   |-- app/                  # su_app GUI 入口 + 平台控制器
 |   |-- modules/              # C++26 modules(su.core.* / su.app.* / su.recognizer.*)
 |   |-- core-rs/              # Rust 档案存储与加密
-|   |-- recognizer/           # SeetaFace 后端、摄像头、图像流水线
+|   |-- recognizer/           # FaceBackend(LightFace ONNX + 可选 SeetaFace)、摄像头、图像流水线
 |   |-- platform/
 |   |   |-- windows/          # Rust CP、认证服务、识别 agent、部署助手
 |   |   `-- linux/            # authd、PAM、部署助手
 |   `-- zig/                  # Zig 组件
-|-- assets/                   # 唯一资源目录:icons / i18n / models/seeta
+|-- assets/                   # 唯一资源目录:icons / i18n / models/{lightface,seeta}
 |-- packaging/                # Linux(package.sh、systemd、dbus、polkit)+ Windows(package.sh)
 |-- docs/                     # 设计文档
-|-- local-repo/               # 本地 xmake 包仓库
+|-- xmake/repo/               # 项目内置 xmake 包仓库(ONNX Runtime)
+|-- local-repo/               # 本地 xmake 包仓库(Slint、可选 SeetaFace6)
 |-- NOTICE/                   # 第三方声明
 `-- xmake.lua                 # 构建入口
 ```
 
 ## 构建
 
+构建默认启用 **LightFace ONNX Runtime** 后端(`with_lightface=y`、`with_seetaface=n`,通过 `xmake/repo/` 获取官方 CPU 预编译库)。默认 ONNX 模型由 [LightFacePipeline Releases](https://github.com/Smile2Unlock/LightFacePipeline/releases) 托管，发行安装包均默认内嵌模型；未使用 Git LFS 检出源码时，可执行 `bash packaging/models/fetch-models.sh` 下载并按 SHA-256 校验。
+
 ### Windows(交叉编译或原生)
 
 ```bash
-xmake f -y -c -p mingw -a x86_64
-xmake require --build -f -y seetaface6open
+bash packaging/slint/setup-rust.sh --target x86_64-pc-windows-gnu
+bash packaging/slint/seed-slint-mingw.sh
+bash packaging/models/fetch-models.sh
+xmake f -y -p mingw -a x86_64 -m release
 xmake build
 ```
 
 Windows Credential Provider 由 Rust 构建:
 
 ```bash
-cargo build --release --target x86_64-pc-windows-gnu \
-    --manifest-path src/platform/windows/credential_provider_rs/Cargo.toml
+xmake build su_credential_provider
 ```
 
 主要产物位于 `build/mingw/x86_64/release/`:包括 `Smile2Unlock.exe`、`Smile2UnlockDeployHelper.exe`、`Smile2UnlockCredentialProvider.dll`、`Smile2UnlockAuthService.exe`、`Smile2UnlockRecognitionAgent.exe` 和 `Smile2UnlockPasswordTool.exe`。
@@ -192,10 +195,13 @@ cargo build --release --target x86_64-pc-windows-gnu \
 ### Linux
 
 ```bash
-xmake f -y -p linux
-xmake require --build -f -y seetaface6open
+bash packaging/slint/setup-rust.sh
+bash packaging/models/fetch-models.sh
+xmake f -y -p linux -a x86_64 -m release
 xmake build
 ```
+
+若需同时编入可选 SeetaFace6 兼容后端，可在配置时传入 `--with_seetaface=y`(并通过 `SU_RECOGNIZER_BACKEND=seetaface` 切换运行，SDK 配方由 `local-repo/` 提供)。
 
 从现有 Release 产物打包并验证两个平台:
 

@@ -38,7 +38,7 @@ export component AppWindow inherits Window {
     in property <string> profile_store_path_text: "";
     in property <string> camera_text: "";
     in property <int> camera_count: 0;
-    in property <bool> seetaface_available: false;
+    in property <bool> recognizer_available: false;
     in property <bool> service_available: false;
     in property <bool> account_credential_configured: false;
     in property <bool> authtok_status_known: false;
@@ -100,9 +100,9 @@ export component AppWindow inherits Window {
     in-out property <string> activity_tone: "neutral";
     in-out property <bool> busy: false;
     in-out property <int> selected_camera: 0;
-    in-out property <float> recognition_threshold: 0.65;
+    in-out property <float> recognition_threshold: 0.40;
     in-out property <bool> liveness_enabled: true;
-    in-out property <float> liveness_threshold: 0.5;
+    in-out property <float> liveness_threshold: 0.76;
     in-out property <bool> backlight_compensation: true;
     in-out property <int> preview_fps: 15;
     in-out property <string> settings_status: "";
@@ -179,14 +179,14 @@ export component AppWindow inherits Window {
 
     private property <bool> compact-layout: root.width - UiTheme.sidebar-width < UiTheme.compact-width;
     private property <bool> storage-ready: root.storage_protection_index == 1 || root.storage_protection_index == 2;
-    private property <bool> auth-ready: root.service_available && root.seetaface_available && root.camera_count > 0;
+    private property <bool> auth-ready: root.service_available && root.recognizer_available && root.camera_count > 0;
     private property <bool> runtime-ready: root.auth-ready && root.storage-ready;
     private property <bool> can-test: !root.busy && root.auth-ready && root.profiles.length > 0;
     private property <bool> setup-complete: root.platform_windows
         ? (root.runtime-ready && root.profiles.length > 0)
         : (root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured);
     private property <bool> step-service: root.service_available && root.storage-ready;
-    private property <bool> step-hardware: root.seetaface_available && root.camera_count > 0;
+    private property <bool> step-hardware: root.recognizer_available && root.camera_count > 0;
     private property <bool> step-enroll: root.profiles.length > 0;
     private property <bool> step-test: root.desktop_auth_passed;
     private property <bool> step-pam: root.pam_configured;
@@ -376,8 +376,8 @@ export component AppWindow inherits Window {
                     Row {
                         title: Tr.t("diagnostics.recognizer");
                         Status {
-                            text: root.seetaface_available ? Tr.t("status.ready") : Tr.t("status.unavailable");
-                            tone: root.seetaface_available ? Tone.ok : Tone.danger;
+                            text: root.recognizer_available ? Tr.t("status.ready") : Tr.t("status.unavailable");
+                            tone: root.recognizer_available ? Tone.ok : Tone.danger;
                         }
                     }
                     Row {
@@ -609,7 +609,7 @@ export component AppWindow inherits Window {
                     hint: Tr.t("settings.policy_detail");
                     Row {
                         title: Tr.t("settings.recognition_threshold");
-                        ValueSlider { width: UiTheme.slider-width; minimum: 0.35; maximum: 0.95; value <=> root.recognition_threshold; }
+                        ValueSlider { width: UiTheme.slider-width; minimum: 0.25; maximum: 0.95; value <=> root.recognition_threshold; }
                         Badge { text: Math.round(root.recognition_threshold * 100) + "%"; }
                     }
                     Row {
@@ -770,10 +770,10 @@ export component AppWindow inherits Window {
                     }
                     Row {
                         title: Tr.t("diagnostics.recognizer");
-                        subtitle: root.seetaface_available ? Tr.t("diagnostics.recognizer_ready_detail") : Tr.t("diagnostics.recognizer_action");
+                        subtitle: root.recognizer_available ? Tr.t("diagnostics.recognizer_ready_detail") : Tr.t("diagnostics.recognizer_action");
                         Status {
-                            text: root.seetaface_available ? Tr.t("status.available") : Tr.t("status.unavailable");
-                            tone: root.seetaface_available ? Tone.ok : Tone.danger;
+                            text: root.recognizer_available ? Tr.t("status.available") : Tr.t("status.unavailable");
+                            tone: root.recognizer_available ? Tone.ok : Tone.danger;
                         }
                     }
                     Row {

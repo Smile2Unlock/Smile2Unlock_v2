@@ -1,0 +1,10 @@
+{
+  "repository": "Smile2Unlock/LightFacePipeline",
+  "tag": "v1.0.0",
+  "files": {
+    "detector_5pt_lcf.onnx": "ec6d8e7e873dd3e7c769af27df911f9d633b4558f939d25fae776bba37c69844",
+    "recognizer_edgeface.onnx": "631293c83e33302e0e5afbbf8e04691efc4f13d2081879d42f84e372b6ca8261",
+    "fas_spatial_enc.onnx": "06ab343cc6017d2288644650347b0b1e750dfe098d64816b97da3554d409d6ec",
+    "fas_temporal_head.onnx": "b4ef564a2fb64788ff4868f3ad9f0b2c161ac45d0f4f5e880393748de6c02a84"
+  }
+}

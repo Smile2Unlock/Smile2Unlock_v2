@@ -2,6 +2,9 @@ add_rules("mode.debug", "mode.release")
 
 -- Xmake's repository syntax is "<name> <path>"; both tokens are required.
 add_repositories("local-repo local-repo")
+-- Project-local packages (ONNX Runtime). Registered after local-repo so the
+-- submodule stays untouched; package names do not overlap with it.
+add_repositories("project-repo xmake/repo")
 
 -- Product version is loaded from version.txt for every target. A rule keeps
 -- this separate from existing target on_load hooks and generates PE resources.
@@ -69,13 +72,21 @@ option("acceptance_tools")
     set_description("Build acceptance-test helpers such as su_embed_probe")
 option_end()
 
-option("with_seetaface")
-    -- Default on: SeetaFace is the real recognizer backend. A build without it
-    -- is a mock-only shell useful only for headless CI; the desktop app is
-    -- expected to ship with real face detection.
+option("with_lightface")
+    -- Default on: LightFacePipeline ONNX models (detector + EdgeFace + ST-FAS)
+    -- are the product's face backend. Without it (and without SeetaFace) the
+    -- build is a mock-only shell useful only for headless CI.
     set_default(true)
     set_showmenu(true)
-    set_description("Enable the SeetaFace recognizer backend")
+    set_description("Enable the LightFacePipeline ONNX recognizer backend (default)")
+option_end()
+
+option("with_seetaface")
+    -- Default off: SeetaFace is kept as an optional legacy backend behind the
+    -- FaceBackend abstraction (select with SU_RECOGNIZER_BACKEND=seetaface).
+    set_default(false)
+    set_showmenu(true)
+    set_description("Enable the legacy SeetaFace recognizer backend (optional)")
 option_end()
 
 option("seetaface_prebuilt")
@@ -83,6 +94,10 @@ option("seetaface_prebuilt")
     set_showmenu(true)
     set_description("Use a compatible local-repo SeetaFace SDK (disable to rebuild from source)")
 option_end()
+
+if has_config("with_lightface") then
+    add_requires("onnxruntime 1.22.0", { system = false })
+end
 
 if has_config("with_seetaface") then
     add_requires("seetaface6open", { system = false,
@@ -114,23 +129,61 @@ local function seetaface_test_data_dir()
     return path.join(os.projectdir(), "build", "test-data", "seetaface")
 end
 
-local function add_seetaface_backend()
+local function lightface_model_stage_dir()
+    return path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "lightface")
+end
+
+local function onnxruntime_libdir(root)
+    local lib = path.join(root, "lib")
+    if os.isdir(lib) then
+        return lib
+    end
+end
+
+local function lightface_on_load(target)
+    local ort = target:pkg("onnxruntime")
+    if ort then
+        local root = ort:installdir()
+        target:add("sysincludedirs", path.join(root, "include"), { public = true })
+        if target:is_plat("linux") then
+            local libdir = onnxruntime_libdir(root)
+            if libdir then
+                target:add("rpathdirs", libdir, { public = true })
+            end
+        end
+    end
+end
+
+local function add_lightface_backend()
+    add_packages("onnxruntime", { public = true })
+    if is_plat("linux") then
+        add_ldflags("-Wl,--disable-new-dtags", { force = true, public = true })
+    end
+end
+
+local function seetaface_on_load(target)
+    local seetaface = target:pkg("seetaface6open")
+    if seetaface then
+        local root = seetaface:installdir()
+        target:add("sysincludedirs", path.join(root, "include"), { public = true })
+        for _, dir in ipairs(seetaface_runtime_dirs(root)) do
+            target:add("rpathdirs", dir, { public = true })
+        end
+    end
+end
+
+-- `shared_on_load` leaves on_load registration to the caller, which combines
+-- several backends in one hook (xmake keeps a single on_load per target).
+local function add_seetaface_backend(shared_on_load)
     add_packages("seetaface6open", { public = true })
     if is_plat("linux") then
         add_cxxflags("-fopenmp", { force = true, public = true })
         add_ldflags("-fopenmp", { force = true, public = true })
         add_ldflags("-Wl,--disable-new-dtags", { force = true, public = true })
     end
-    on_load( function (target)
-        local seetaface = target:pkg("seetaface6open")
-        if seetaface then
-            local root = seetaface:installdir()
-            target:add("sysincludedirs", path.join(root, "include"), { public = true })
-            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
-                target:add("rpathdirs", dir, { public = true })
-            end
-        end
-    end)
+    if not shared_on_load then
+        on_load(seetaface_on_load)
+    end
 end
 
 local function seetaface_root_from_target(target)
@@ -192,7 +245,8 @@ end
 -- Embed the checked-in license texts before the C++ module prescan.
 local function generate_about_content()
     import("embed-about", {rootdir = path.join(os.projectdir(), "scripts")})(
-        path.join(os.projectdir(), "build", "generated", "about", "about_data.h"))
+        path.join(os.projectdir(), "build", "generated", "about", "about_data.h"),
+        {with_lightface = has_config("with_lightface"), with_seetaface = has_config("with_seetaface")})
 end
 
 local function add_about_content()
@@ -432,21 +486,43 @@ target("su_recognizer")
     if is_plat("mingw") then
         add_files("src/platform/windows/print_shim.cpp")
     end
+    if has_config("with_lightface") then
+        add_defines("SU_HAS_LIGHTFACE=1", { public = true })
+        add_defines("SU_LIGHTFACE_MODEL_DIR=\"" .. path.unix(lightface_model_stage_dir()) .. "\"", { public = true })
+        add_lightface_backend()
+    else
+        add_defines("SU_HAS_LIGHTFACE=0", { public = true })
+    end
     if has_config("with_seetaface") then
         add_defines("SU_HAS_SEETAFACE=1", { public = true })
         add_defines("SU_SEETAFACE_MODEL_DIR=\"" .. path.unix(model_stage_dir()) .. "\"", { public = true })
-        add_seetaface_backend()
-        before_build( function ()
-            local srcdir = path.join(os.projectdir(), "assets", "models", "seeta")
-            local dstdir = path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models", "seeta")
-            os.mkdir(dstdir)
-            for _, file in ipairs(os.files(path.join(srcdir, "*.csta"))) do
-                os.cp(file, dstdir)
-            end
-        end)
+        add_seetaface_backend(true)
     else
         add_defines("SU_HAS_SEETAFACE=0", { public = true })
     end
+    -- One hook per callback type: xmake replaces earlier hooks on the same target.
+    before_build( function ()
+        local base = path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode"), "assets", "models")
+        if has_config("with_lightface") then
+            local dstdir = path.join(base, "lightface")
+            os.mkdir(dstdir)
+            for _, file in ipairs(os.files(path.join(os.projectdir(), "assets", "models", "lightface", "*.onnx"))) do
+                os.cp(file, dstdir)
+            end
+        end
+        if has_config("with_seetaface") then
+            local dstdir = path.join(base, "seeta")
+            os.mkdir(dstdir)
+            for _, file in ipairs(os.files(path.join(os.projectdir(), "assets", "models", "seeta", "*.csta"))) do
+                os.cp(file, dstdir)
+            end
+        end
+    end)
+    -- One hook for every backend: xmake keeps a single on_load per target.
+    on_load( function (target)
+        if has_config("with_lightface") then lightface_on_load(target) end
+        if has_config("with_seetaface") then seetaface_on_load(target) end
+    end)
 
     target("su_app")
         apply_cpp_target("binary")
@@ -572,6 +648,20 @@ target("su_recognizer")
             -- native window (title bar / taskbar) at startup via WM_SETICON.
             if is_plat("windows", "mingw") then
                 os.cp(path.join(os.projectdir(), "assets", "icons", "Smile2Unlock.ico"), target:targetdir())
+                if has_config("with_lightface") then
+                    -- ONNX Runtime ships next to the executable; stage it from
+                    -- the exact package used to link this build.
+                    local ort = assert(target:dep("su_recognizer"):pkg("onnxruntime"))
+                    local ort_root = ort:installdir()
+                    local found = false
+                    for _, directory in ipairs({"bin", "lib"}) do
+                        for _, dll in ipairs(os.files(path.join(ort_root, directory, "onnxruntime*.dll"))) do
+                            os.cp(dll, target:targetdir())
+                            found = true
+                        end
+                    end
+                    assert(found, "onnxruntime.dll not found in " .. ort_root)
+                end
                 if has_config("with_seetaface") then
                     -- Stage runtime DLLs from the exact package used to link
                     -- this build. Source trees and older cache entries can
@@ -1227,30 +1317,50 @@ if has_config("with_seetaface") then
             add_tests("default")
         end
 
-    -- Acceptance-test helper: prints the embedding:... source for a face
-    -- photo so a headless Windows VM can enroll a profile without the GUI
-    -- camera preview (the same photo is looped through a virtual camera).
-    if has_config("acceptance_tools") then
-    target("su_embed_probe")
+end
+
+-- LightFace backend tests. The preprocess test needs no ONNX Runtime and
+-- also runs under Wine; the pipeline smoke test loads the real models.
+target("su_lightface_preprocess_test")
+    set_default(false)
+    apply_cpp_target("binary")
+    add_files("tests/lightface/preprocess_test.cpp")
+    if is_plat("mingw") then add_ldflags("-static", {force = true}) end
+    add_tests("default")
+    on_test(wine_on_test)
+
+if has_config("with_lightface") then
+    target("su_lightface_pipeline_smoke_test")
         set_default(false)
         apply_cpp_target("binary")
-        add_files("tools/embed_probe.cpp")
+        add_files("tests/lightface/pipeline_smoke.cpp")
         add_deps("su_core", "su_recognizer")
-        add_packages("seetaface6open")
         add_files("src/app/core_bridge.cpp")
         add_files("src/modules/su.core.*.cppm")
         add_files("src/modules/su.recognizer.*.cppm")
         add_includedirs("src/core-rs/include")
         add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
         add_links("su_core")
-        on_load( function (target)
-            local root = seetaface_root_from_target(target)
-            target:add("sysincludedirs", path.join(root, "include"))
-            for _, dir in ipairs(seetaface_runtime_dirs(root)) do
-                target:add("rpathdirs", dir)
-            end
-        end)
-    end
+        if not is_plat("mingw") then
+            add_tests("default")
+        end
+end
+
+-- Acceptance-test helper: prints the embedding:... source for a face
+-- photo so a headless Windows VM can enroll a profile without the GUI
+-- camera preview (the same photo is looped through a virtual camera).
+if has_config("acceptance_tools") and (has_config("with_lightface") or has_config("with_seetaface")) then
+    target("su_embed_probe")
+        set_default(false)
+        apply_cpp_target("binary")
+        add_files("tools/embed_probe.cpp")
+        add_deps("su_core", "su_recognizer")
+        add_files("src/app/core_bridge.cpp")
+        add_files("src/modules/su.core.*.cppm")
+        add_files("src/modules/su.recognizer.*.cppm")
+        add_includedirs("src/core-rs/include")
+        add_linkdirs(path.join(os.projectdir(), get_config("builddir") or "build", get_config("plat"), get_config("arch"), get_config("mode")))
+        add_links("su_core")
 end
 
 -- Auto-generate compile_commands.json for clangd LSP after each full build.
