@@ -243,4 +243,11 @@ std::string RecognizerService::backend_name() const {
     return std::string{backend_->name()};
 }
 
+std::size_t RecognizerService::embedding_dim() const {
+    if (!ensure_backend()) {
+        return 0;
+    }
+    return backend_->embedding_dim();
+}
+
 }  // namespace su::recognizer

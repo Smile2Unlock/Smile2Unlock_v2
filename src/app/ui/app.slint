@@ -64,6 +64,7 @@ export component AppWindow inherits Window {
     in-out property <float> models_progress: 0;
     in-out property <string> models_status_text: "";
     in-out property <bool> desktop_auth_passed: false;
+    in property <bool> profiles_model_mismatch: false;
     in property <[ProfileRow]> profiles;
     in property <[string]> camera_options;
     in property <[string]> language_names;
@@ -187,7 +188,7 @@ export component AppWindow inherits Window {
         : (root.runtime-ready && root.profiles.length > 0 && root.desktop_auth_passed && root.pam_configured);
     private property <bool> step-service: root.service_available && root.storage-ready;
     private property <bool> step-hardware: root.recognizer_available && root.camera_count > 0;
-    private property <bool> step-enroll: root.profiles.length > 0;
+    private property <bool> step-enroll: root.profiles.length > 0 && !root.profiles_model_mismatch;
     private property <bool> step-test: root.desktop_auth_passed;
     private property <bool> step-pam: root.pam_configured;
     // The first unfinished setup step (1..5), or 0 when everything is done.
@@ -314,6 +315,21 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+                if root.profiles_model_mismatch: Group {
+                    title: Tr.t("enrollment.model_mismatch_title");
+                    Row {
+                        subtitle: Tr.t("enrollment.model_mismatch_banner");
+                        Status {
+                            text: Tr.t("status.action_required");
+                            tone: Tone.warn;
+                        }
+                        Button {
+                            text: Tr.t("nav.faces");
+                            kind: ButtonKind.filled;
+                            clicked => { root.current_page = 1; }
+                        }
+                    }
+                }
                 Group {
                     title: Tr.t("onboarding.title");
                     Row {
@@ -414,6 +430,16 @@ export component AppWindow inherits Window {
                 PageHeader {
                     title: Tr.t("nav.faces");
                     subtitle: Tr.tv("enrollment.manage_for", root.username);
+                }
+                if root.profiles_model_mismatch: Group {
+                    title: Tr.t("enrollment.model_mismatch_title");
+                    Row {
+                        subtitle: Tr.t("enrollment.model_mismatch_banner");
+                        Status {
+                            text: Tr.t("status.action_required");
+                            tone: Tone.warn;
+                        }
+                    }
                 }
                 if root.platform_windows: Group {
                     title: Tr.t("account.credential_title");

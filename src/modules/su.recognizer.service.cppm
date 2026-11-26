@@ -94,6 +94,8 @@ public:
     bool backend_available() const;
     // Short backend id ("lightface" / "seetaface"); empty while unavailable.
     std::string backend_name() const;
+    // Feature vector dimension of the active backend (0 while unavailable).
+    std::size_t embedding_dim() const;
     // Compatibility alias kept for callers that predate the backend layer.
     bool seetaface_available() const { return backend_available(); }
 

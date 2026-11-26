@@ -18,6 +18,7 @@ enum class FaceProfileStoreError {
     kCorrupt,
     kWriteFailed,
     kNotFound,
+    kEmbeddingDimensionMismatch,
 };
 
 class FaceProfileStore {

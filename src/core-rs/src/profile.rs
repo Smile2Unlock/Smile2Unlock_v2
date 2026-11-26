@@ -230,6 +230,9 @@ pub(crate) fn delete_profile_encrypted(
     let before = store.profiles.len();
     store.profiles.retain(|profile| profile.id != profile_id);
     let deleted = store.profiles.len() != before;
+    if store.profiles.is_empty() {
+        store.embedding_dim = None;
+    }
     if deleted {
         save_encrypted_store(path, context, &store)?;
     }
@@ -245,6 +248,7 @@ pub(crate) fn list_encrypted_profiles_json(
         id: &'a str,
         label: &'a str,
         created_at_unix: u64,
+        embedding_dim: usize,
     }
 
     let store = load_encrypted_store(path, context)?;
@@ -255,6 +259,7 @@ pub(crate) fn list_encrypted_profiles_json(
             id: &profile.id,
             label: &profile.label,
             created_at_unix: profile.created_at_unix,
+            embedding_dim: profile.embedding.len(),
         })
         .collect::<Vec<_>>();
     serde_json::to_string(&summaries).map_err(|_| SuStatus::WriteError)
@@ -264,9 +269,15 @@ fn lock_embedding_dimension(
     store: &mut ProfileStore,
     embedding_len: usize,
 ) -> Result<(), SuStatus> {
+    if store.profiles.is_empty() {
+        store.embedding_dim = Some(embedding_len as u32);
+        return Ok(());
+    }
     match store.embedding_dim {
         None => store.embedding_dim = Some(embedding_len as u32),
-        Some(dim) if dim as usize != embedding_len => return Err(SuStatus::InvalidArgument),
+        Some(dim) if dim as usize != embedding_len => {
+            return Err(SuStatus::EmbeddingDimensionMismatch);
+        }
         Some(_) => {}
     }
     Ok(())
@@ -340,6 +351,9 @@ pub fn delete_profile(path: &Path, profile_id: &str) -> Result<bool, SuStatus> {
     let before = store.profiles.len();
     store.profiles.retain(|profile| profile.id != profile_id);
     let deleted = store.profiles.len() != before;
+    if store.profiles.is_empty() {
+        store.embedding_dim = None;
+    }
     save_store(path, &store)?;
     Ok(deleted)
 }

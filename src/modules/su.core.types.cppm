@@ -16,6 +16,7 @@ enum class CoreError {
     kCryptoError,
     kKeyUnavailable,
     kMigrationRequired,
+    kEmbeddingDimensionMismatch,
     kUnknown,
 };
 
@@ -90,6 +91,7 @@ struct FaceProfileSummary {
     std::string id;
     std::string label;
     std::uint64_t created_at_unix = 0;
+    std::size_t embedding_dim = 0;
 };
 
 struct FaceAuthReport {

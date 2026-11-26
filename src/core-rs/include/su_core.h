@@ -30,6 +30,7 @@ typedef enum SuStatus {
     SuStatus_CryptoError = 9,
     SuStatus_KeyUnavailable = 10,
     SuStatus_MigrationRequired = 11,
+    SuStatus_EmbeddingDimensionMismatch = 12,
 } SuStatus;
 
 typedef enum SuAccountKind {

@@ -131,10 +131,15 @@ std::expected<std::vector<FaceProfileSummary>, std::string> profile_rows_from_js
             || !item.contains("created_at_unix") || !item["created_at_unix"].is_number_unsigned()) {
             return std::unexpected("profile store returned invalid profile data");
         }
+        const auto embedding_dim =
+            item.contains("embedding_dim") && item["embedding_dim"].is_number_unsigned()
+            ? item["embedding_dim"].get<std::size_t>()
+            : 0U;
         profiles.push_back(FaceProfileSummary{
             .id = item["id"].get<std::string>(),
             .label = item["label"].get<std::string>(),
             .created_at_unix = item["created_at_unix"].get<std::uint64_t>(),
+            .embedding_dim = embedding_dim,
         });
     }
     return profiles;

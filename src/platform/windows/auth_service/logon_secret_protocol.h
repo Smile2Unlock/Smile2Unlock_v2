@@ -42,6 +42,7 @@ enum class Status : std::uint32_t {
     kAuthenticationFailed = 6,
     kProfileNotFound = 7,
     kNoFaceDetected = 8,
+    kModelMismatch = 9,
 };
 
 struct Request {

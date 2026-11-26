@@ -616,6 +616,8 @@ Status map_profile_error(security::FaceProfileStoreError error) {
     case security::FaceProfileStoreError::kUnavailable:
     case security::FaceProfileStoreError::kWriteFailed:
         return Status::kUnavailable;
+    case security::FaceProfileStoreError::kEmbeddingDimensionMismatch:
+        return Status::kModelMismatch;
     }
     return Status::kUnavailable;
 }

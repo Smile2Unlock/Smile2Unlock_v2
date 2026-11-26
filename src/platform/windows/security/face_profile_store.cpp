@@ -31,6 +31,8 @@ FaceProfileStoreError map_status(SuStatus status) {
     case SuStatus_NullArgument:
     case SuStatus_BufferTooSmall:
         return FaceProfileStoreError::kInvalidArgument;
+    case SuStatus_EmbeddingDimensionMismatch:
+        return FaceProfileStoreError::kEmbeddingDimensionMismatch;
     case SuStatus_ParseError:
     case SuStatus_CryptoError:
     case SuStatus_MigrationRequired:
