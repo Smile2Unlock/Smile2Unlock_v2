@@ -23,8 +23,12 @@ struct ExposureSession {
     // Consecutive transient write failures per knob (indexed by kind); a knob
     // is only dropped after kMaxTransientFailures in a row.
     std::array<int, kExposureKnobKindCount> transient_failures{};
-    // Number of bounded open-loop boosts used while no face is detectable.
-    int face_search_steps = 0;
+    // Monotonic time when a face first went missing while controls/ROI were
+    // active; cleared as soon as a face is seen again.
+    std::optional<ExposureTime> face_missing_since;
+    // Face mean luma measured right before manual_exposure was engaged,
+    // used to detect cameras where manual mode disables AGC/dynamic fps.
+    std::optional<double> pre_manual_mean;
     // Set once the loop wrote a control this session; a switch-off restore
     // that undoes it is a brightness step, so liveness must start over.
     bool wrote_control = false;
@@ -82,7 +86,7 @@ public:
         std::uint64_t camera_generation) const;
 
     // User switch for the whole backlight feature (issue #137): the exposure
-    // loop and the low-light detection retry. Default on. Safe to call from
+    // loop and the low-light detection retry. Default off. Safe to call from
     // any thread while preview or authentication threads run. Turning it off
     // puts every camera control the loop changed back at once, and no further
     // control is written; any change of the switch restarts the loop from its
@@ -114,7 +118,7 @@ private:
     mutable std::mutex camera_mutex_;
     // Written without camera_mutex_; observe_exposure re-reads it under the
     // lock so a control is never written after the restore of a switch-off.
-    std::atomic<bool> backlight_compensation_{true};
+    std::atomic<bool> backlight_compensation_{false};
     std::optional<int> active_camera_;
     // Guarded by camera_mutex_.
     mutable detail::ExposureSession exposure_;

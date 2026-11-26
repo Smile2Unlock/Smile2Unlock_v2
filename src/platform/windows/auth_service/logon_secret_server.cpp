@@ -359,8 +359,8 @@ struct RecognitionSettings {
     float recognition_threshold = 0.40F;
     bool liveness_detection = true;
     float liveness_threshold = 0.76F;
-    // Absent value means on, so installs that predate the switch keep it.
-    bool backlight_compensation = true;
+    // Absent value means off so new or unconfigured installs keep camera AE.
+    bool backlight_compensation = false;
     // Per-capture agent deadline, from the same TimeoutSec the credential
     // provider uses for its overall attempt.
     std::uint32_t timeout_ms = 10'000;

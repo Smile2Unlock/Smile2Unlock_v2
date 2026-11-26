@@ -47,7 +47,7 @@ int main() {
     static_assert(sizeof(Settings) == 48);
     static_assert(smile2unlock::logon_secret_ipc::kLegacyRecognitionSettingsSize == 44);
     constexpr Settings settings{};
-    static_assert(settings.backlight_compensation == 1);
+    static_assert(settings.backlight_compensation == 0);
     static_assert(settings.capture_enabled == 0 && settings.capture_retention_days == 7 && settings.capture_max_count == 50);
     static_assert(kMaximumJpegBytes < smile2unlock::logon_secret_ipc::kPayloadCapacity);
     std::cout << "capture opt-in, bounds, nonce, no-face and settings protocol passed\n";

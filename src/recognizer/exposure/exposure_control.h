@@ -215,6 +215,9 @@ struct ExposureTuning {
     // How long a reversal onto the level just left is held (anti flip-flop);
     // after that the scene is assumed to have really changed.
     ExposureTime flip_flop_memory{30000};
+    // How long controls and hardware ROI stay held after a face disappears
+    // (tolerates brief blinks/dropouts) before restoring camera auto exposure.
+    ExposureTime face_loss_restore_delay{2000};
 };
 
 // What the loop asks of the camera for one knob.
@@ -575,32 +578,50 @@ struct ExposureEdit {
         && (!state.last_change_at || now - *state.last_change_at >= tuning.min_settle_time);
 }
 
+[[nodiscard]] constexpr bool face_loss_restore_due(const std::optional<ExposureTime> missing_since,
+    const ExposureTime now,
+    const ExposureTime delay = ExposureTuning{}.face_loss_restore_delay) {
+    return missing_since && now >= *missing_since && now - *missing_since >= delay;
+}
+
+// Detects cameras where switching to manual exposure disables auto-gain or
+// dynamic frame rate, leaving max manual exposure darker than auto exposure was.
+[[nodiscard]] constexpr bool manual_exposure_regressed(const ExposureLoopState& state,
+    const ExposureKnobChain& chain, const LumaStats& stats, const ExposureTime now,
+    const std::optional<double> pre_manual_mean, const ExposureTuning& tuning = {}) {
+    if (!state.manual_engaged || !pre_manual_mean || !stats.samples
+        || !has_settled(state, now, tuning)) {
+        return false;
+    }
+    const auto manual =
+        std::ranges::find(chain, ExposureKnobKind::manual_exposure, &ExposureKnob::kind);
+    return manual != chain.end()
+        && state.levels[std::to_underlying(ExposureKnobKind::manual_exposure)] >= manual->max
+        && stats.mean + 3.0 < *pre_manual_mean;
+}
+
 // One decision of the exposure loop at monotonic time `now`. Pure: the caller
 // applies `change` to the camera, then keeps `next` (with the applied level,
-// see with_applied_level) for the following observation. An empty chain never
-// acts. After a change the loop skips `settle_observations` observations and
-// at least `min_settle_time`; it holds rather than reversing onto the level it
-// just left, accepting a slightly out-of-band face over oscillating.
+// see with_applied_level) for the following observation. An empty chain or a
+// missing face measurement (`stats.samples == 0`) never acts. After a change
+// the loop skips `settle_observations` observations and at least
+// `min_settle_time`; it holds rather than reversing onto the level it just
+// left, accepting a slightly out-of-band face over oscillating.
 [[nodiscard]] constexpr ExposureStep next_exposure_step(const ExposureLoopState& state,
     const LumaStats& stats, const ExposureKnobChain& chain, const ExposureTime now,
-    const ExposureTuning& tuning = {}, const bool seek_face_without_measurement = false) {
+    const ExposureTuning& tuning = {}) {
     auto held = state;
     held.observations_since_change = state.observations_since_change + 1;
     const auto unchanged = ExposureStep{.next = held, .change = std::nullopt};
-    if (chain.empty() || (!stats.samples && !seek_face_without_measurement)
-        || !has_settled(state, now, tuning)) {
+    if (chain.empty() || !stats.samples || !has_settled(state, now, tuning)) {
         return unchanged;
     }
-    // Without a face, background luma is not evidence that exposure is too
-    // high or low. The caller may request a bounded, one-way acquisition step.
-    const auto direction = seek_face_without_measurement
-        ? std::optional(ExposureDirection::raise) : exposure_direction(stats, tuning);
+    const auto direction = exposure_direction(stats, tuning);
     if (!direction) {
         return unchanged;
     }
     auto candidate = *direction == ExposureDirection::raise
-        ? brighten_step(state, stats.samples ? stats : LumaStats{
-              .mean = tuning.target_low - 1.0, .samples = 1}, chain, tuning)
+        ? brighten_step(state, stats, chain, tuning)
         : darken_step(state, stats, chain, tuning);
     if (!candidate || is_flip_flop(state, *candidate, *direction, now, tuning)) {
         return unchanged;

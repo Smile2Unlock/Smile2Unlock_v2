@@ -259,16 +259,16 @@ fn missing_config_file_returns_default() {
     assert_eq!(config.auto_delay_sec, 3);
     assert_eq!(config.retry_delay_sec, 5);
     assert_eq!(config.timeout_sec, 30);
-    assert!(config.backlight_compensation);
+    assert!(!config.backlight_compensation);
 }
 
 #[test]
-fn config_without_backlight_key_defaults_to_enabled() {
+fn config_without_backlight_key_defaults_to_disabled() {
     let path = temp_path("legacy_config_no_backlight", "toml");
     fs::write(&path, "version = 1\nliveness_detection = false\n").unwrap();
 
     let config = load_config(&path).unwrap();
-    assert!(config.backlight_compensation);
+    assert!(!config.backlight_compensation);
     assert!(!config.liveness_detection);
     let _ = fs::remove_file(path);
 }
@@ -277,16 +277,16 @@ fn config_without_backlight_key_defaults_to_enabled() {
 fn backlight_compensation_round_trips_through_ffi_struct_and_file() {
     let path = temp_path("backlight_round_trip", "toml");
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
-    let off = SuCoreConfig {
-        backlight_compensation: false,
+    let on = SuCoreConfig {
+        backlight_compensation: true,
         ..AppConfig::default().into()
     };
-    assert!(!AppConfig::from(off).backlight_compensation);
+    assert!(AppConfig::from(on).backlight_compensation);
 
-    assert_eq!(save_config_ffi(c_path.as_ptr(), &off), SuStatus::Ok);
+    assert_eq!(save_config_ffi(c_path.as_ptr(), &on), SuStatus::Ok);
     let mut loaded = AppConfig::default().into();
     assert_eq!(load_config_ffi(c_path.as_ptr(), &mut loaded), SuStatus::Ok);
-    assert!(!loaded.backlight_compensation);
+    assert!(loaded.backlight_compensation);
     let _ = fs::remove_file(path);
 }
 
