@@ -34,7 +34,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: >-
-          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
+          pacman -Syu --noconfirm --needed git curl rustup cmake ninja
           pkgconf systemd pam libx11 libxcb libxkbcommon wayland fontconfig
           freetype2 mesa libglvnd libjpeg-turbo imagemagick patchelf python zip
           unzip nodejs libinput
@@ -42,9 +42,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
           fetch-depth: 1
+
+      - name: Cache LightFace models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/smile2unlock/models
+          key: lightface-models-${{ hashFiles('packaging/models/lightface-v1.json') }}
+
+      - name: Fetch LightFace models
+        run: bash packaging/models/fetch-models.sh
 
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
@@ -100,15 +109,24 @@ jobs:
     steps:
       - name: Install cross-test dependencies
         run: >-
-          pacman -Syu --noconfirm --needed git git-lfs curl rustup mingw-w64-gcc
+          pacman -Syu --noconfirm --needed git curl rustup mingw-w64-gcc
           unzip wine xorg-server-xvfb nodejs python
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
           fetch-depth: 1
+
+      - name: Cache LightFace models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/smile2unlock/models
+          key: lightface-models-${{ hashFiles('packaging/models/lightface-v1.json') }}
+
+      - name: Fetch LightFace models
+        run: bash packaging/models/fetch-models.sh
 
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5
@@ -166,7 +184,7 @@ jobs:
     steps:
       - name: Install system dependencies
         run: >-
-          pacman -Syu --noconfirm --needed git git-lfs curl rustup cmake ninja
+          pacman -Syu --noconfirm --needed git curl rustup cmake ninja
           mingw-w64-gcc pkgconf imagemagick python zip unzip openssl
           wine xorg-server-xvfb nodejs
 
@@ -182,9 +200,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          lfs: true
+          lfs: false
           submodules: recursive
           fetch-depth: 1
+
+      - name: Cache LightFace models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/smile2unlock/models
+          key: lightface-models-${{ hashFiles('packaging/models/lightface-v1.json') }}
+
+      - name: Fetch LightFace models
+        run: bash packaging/models/fetch-models.sh
 
       - name: Set up Xmake
         uses: xmake-io/github-action-setup-xmake@f7350dc65157b629c2a98c523de814dfdda47609 # v1.2.5

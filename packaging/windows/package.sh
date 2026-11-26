@@ -82,6 +82,9 @@ done
 for name in detector_5pt_lcf.onnx recognizer_edgeface.onnx fas_spatial_enc.onnx \
     fas_temporal_head.onnx; do
     package_require_file "${build_dir}/assets/models/lightface/${name}"
+    if head -n 1 "${build_dir}/assets/models/lightface/${name}" 2>/dev/null | grep -q '^version https://git-lfs.github.com/spec/v1'; then
+        package_die "refusing to package Git LFS pointer file: ${build_dir}/assets/models/lightface/${name} (run packaging/models/fetch-models.sh)"
+    fi
 done
 
 xmake_home="${XMAKE_GLOBALDIR:-${HOME}/.xmake}"

@@ -748,9 +748,24 @@ constexpr auto kRequiredModels = std::array{
     L"detector_5pt_lcf.onnx", L"recognizer_edgeface.onnx",
     L"fas_spatial_enc.onnx", L"fas_temporal_head.onnx",
 };
-constexpr char kModelsAssetUrl[] =
-    "https://github.com/Smile2Unlock/local-repo/releases/download/"
-    "models-lightface-v1/smile2unlock-models-lightface-v1.zip";
+struct LightFaceModelSpec {
+    const wchar_t* wide_name;
+    const char* name;
+    const char* sha256;
+    std::uint64_t bytes;
+};
+constexpr char kLightFaceReleaseBaseUrl[] =
+    "https://github.com/Smile2Unlock/LightFacePipeline/releases/download/v1.0.0/";
+constexpr auto kLightFaceModelSpecs = std::array{
+    LightFaceModelSpec{L"detector_5pt_lcf.onnx", "detector_5pt_lcf.onnx",
+        "ec6d8e7e873dd3e7c769af27df911f9d633b4558f939d25fae776bba37c69844", 7700006ULL},
+    LightFaceModelSpec{L"recognizer_edgeface.onnx", "recognizer_edgeface.onnx",
+        "631293c83e33302e0e5afbbf8e04691efc4f13d2081879d42f84e372b6ca8261", 14798997ULL},
+    LightFaceModelSpec{L"fas_spatial_enc.onnx", "fas_spatial_enc.onnx",
+        "06ab343cc6017d2288644650347b0b1e750dfe098d64816b97da3554d409d6ec", 2709447ULL},
+    LightFaceModelSpec{L"fas_temporal_head.onnx", "fas_temporal_head.onnx",
+        "b4ef564a2fb64788ff4868f3ad9f0b2c161ac45d0f4f5e880393748de6c02a84", 2447312ULL},
+};
 #endif
 
 // Mirrors the recognizer backend's model-dir resolution: walk up from the
@@ -910,6 +925,7 @@ std::expected<std::string, std::string> sha256_file_hex(const std::filesystem::p
     return hex;
 }
 
+#if SU_HAS_SEETAFACE && !SU_HAS_LIGHTFACE
 // Windows 10 1803+ ships bsdtar as tar.exe; it extracts zip archives, so no
 // third-party unpacker is needed.
 std::expected<std::string, std::string> extract_archive_with_tar(
@@ -941,6 +957,7 @@ std::expected<std::string, std::string> extract_archive_with_tar(
     }
     return std::string{};
 }
+#endif
 
 } // namespace
 
@@ -975,7 +992,6 @@ void AppController::download_models(
             }
         };
         const auto model_dir = expected_model_dir();
-        const auto models_parent = model_dir.parent_path(); // .../assets/models
         auto temp = std::filesystem::path{};
         try {
             temp = su::windows::temporary_directory();
@@ -983,6 +999,8 @@ void AppController::download_models(
             fail("failed to resolve the temporary directory");
             return;
         }
+#if SU_HAS_SEETAFACE && !SU_HAS_LIGHTFACE
+        const auto models_parent = model_dir.parent_path(); // .../assets/models
         const auto archive = temp / "smile2unlock-models.zip";
         const auto archive_hash_file = temp / "smile2unlock-models.zip.sha256";
         const auto archive_url = url_prefix.empty()
@@ -1043,12 +1061,77 @@ void AppController::download_models(
         // Strip the bundle's outer directory so its seeta/*.csta entries
         // land directly in the expected model directory.
         for (const auto* name : kRequiredModels) {
-            std::error_code ignored{};
-            if (!std::filesystem::exists(model_dir / name, ignored)) {
+            std::error_code check_ignored{};
+            if (!std::filesystem::exists(model_dir / name, check_ignored)) {
                 fail("the extracted archive is missing " + su::path_utf8(std::filesystem::path(name)));
                 return;
             }
         }
+#else
+        const auto staging_dir = temp / "smile2unlock-lightface-models";
+        auto cleanup_ignored = std::error_code{};
+        std::filesystem::remove_all(staging_dir, cleanup_ignored);
+        std::filesystem::create_directories(staging_dir, cleanup_ignored);
+        std::uint64_t total_expected = 0;
+        for (const auto& spec : kLightFaceModelSpecs) {
+            total_expected += spec.bytes;
+        }
+        std::uint64_t completed_bytes = 0;
+        for (const auto& spec : kLightFaceModelSpecs) {
+            const auto file_url = url_prefix.empty()
+                ? std::string{kLightFaceReleaseBaseUrl} + spec.name
+                : url_prefix + kLightFaceReleaseBaseUrl + spec.name;
+            const auto staged_file = staging_dir / spec.wide_name;
+            const auto file_progress =
+                [&progress, completed_bytes, total_expected](std::uint64_t done, std::uint64_t total) {
+                    const auto combined_done = completed_bytes + done;
+                    const auto combined_total = std::max(total_expected, completed_bytes + total);
+                    if (const auto scaled = archive_download_progress(combined_done, combined_total); progress && scaled) {
+                        progress(scaled->done, scaled->total);
+                    }
+                };
+            if (const auto downloaded = http_download_to_file(file_url, staged_file, file_progress); !downloaded) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(downloaded.error());
+                return;
+            }
+            const auto actual = sha256_file_hex(staged_file);
+            if (!actual) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(actual.error());
+                return;
+            }
+            if (*actual != spec.sha256) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(std::string{"checksum mismatch for "} + spec.name + "; please retry");
+                return;
+            }
+            completed_bytes += spec.bytes;
+        }
+        if (progress) {
+            progress(98, 100);
+        }
+        std::error_code install_ec{};
+        std::filesystem::create_directories(model_dir, install_ec);
+        if (install_ec) {
+            std::filesystem::remove_all(staging_dir, cleanup_ignored);
+            fail("failed to create the model directory");
+            return;
+        }
+        for (const auto& spec : kLightFaceModelSpecs) {
+            std::filesystem::copy_file(
+                staging_dir / spec.wide_name,
+                model_dir / spec.wide_name,
+                std::filesystem::copy_options::overwrite_existing,
+                install_ec);
+            if (install_ec) {
+                std::filesystem::remove_all(staging_dir, cleanup_ignored);
+                fail(std::string{"failed to install "} + spec.name);
+                return;
+            }
+        }
+        std::filesystem::remove_all(staging_dir, cleanup_ignored);
+#endif
         if (progress) {
             progress(100, 100);
         }
