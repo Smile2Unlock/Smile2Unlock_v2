@@ -148,16 +148,17 @@ API with synthetic dark/bright luma.
 
 ## Low-light detect retry
 
-Separate from the loop, `seetaface_backend.cpp` retries face detection on a
-brightened copy so a backlit face is found at all (the loop needs a face box to
-meter). When the first pass finds no face, a gamma LUT is applied to a copy
-used by the detector alone. A dark centre gets a stronger centre-derived LUT;
-when the centre is bright the retry still uses a conservative fixed LUT, so a
-bright window cannot suppress enhancement of an off-centre face.
-Landmarks, liveness and the feature extractor always run on the original
-pixels so templates and scores do not shift. The detector input is BGR, so the
-centre luma is measured with `PixelOrder::bgr` (`measure_luma` defaults to RGB;
-reading BGR data as RGB would swap the red and blue weights).
+Separate from the loop, `lightface_backend.cpp` (default, RGB input via
+`PixelOrder::rgb`) and `seetaface_backend.cpp` (optional compatibility backend,
+BGR input via `PixelOrder::bgr`) retry face detection on a brightened copy so a
+backlit face is found at all (the loop needs a face box to meter). When the first
+pass finds no face, a gamma LUT is applied to a copy used by the detector alone.
+A dark centre gets a stronger centre-derived LUT; when the centre is bright the
+retry still uses a conservative fixed LUT, so a bright window cannot suppress
+enhancement of an off-centre face. Landmarks, liveness and the feature extractor
+always run on the original pixels so templates and scores do not shift. For the
+SeetaFace BGR path, the centre luma uses `PixelOrder::bgr` (`measure_luma`
+defaults to RGB; reading BGR data as RGB would swap the red and blue weights).
 The centre window (40% x 50% of the frame) is only a detector fallback; it is
 never used to drive camera controls.
 
@@ -263,8 +264,9 @@ std::expected<void, ExposureWriteError> reset_exposure_knob(ExposureKnobKind);
 `su_v4l2_exposure_test` (V4L2 controls against a fake device through an
 injected ioctl: failed reset retried on close, restore ordering, partial
 failure, EINTR, error classification, sparse EV menu, region reset). The
-switch is covered by `su_seetaface_pipeline_smoke_test` (retry off: the
-darkened face returns no box) and the Windows protocol tests.
+switch is covered by `su_lightface_pipeline_smoke_test`,
+`su_seetaface_pipeline_smoke_test` (when `--with_seetaface=y`: retry off returns
+no box on the darkened fixture), and the Windows protocol tests.
 Face-only metering regressions cover missing/invalid boxes, an off-centre face
 against a clipped background, startup without a face, bounded search after
 loss, and return to face metering. These are synthetic checks, not camera

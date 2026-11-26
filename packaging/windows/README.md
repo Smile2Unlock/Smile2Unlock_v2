@@ -6,12 +6,18 @@ Build and verify the Windows zip from existing MinGW release artifacts:
 packaging/windows/package.sh
 ```
 
-The Windows product build stages SeetaFace DLLs from the SDK package it
-actually links, including TenniS CPU variants. Packaging prefers these files.
-When packaging an older build without staged runtimes, `SEETAFACE_PACKAGE_ROOT`
-can select one installed SDK package; only its installed `bin/x64` and
-`lib/x64` DLLs are searched. Source/build-tree copies are excluded, and
-multiple eligible cached versions still require an explicit selection.
+The Windows product build stages `onnxruntime.dll` (plus
+`onnxruntime_providers_shared.dll` when present) and LightFace ONNX models by
+default, and optionally stages SeetaFace DLLs (including TenniS CPU variants) and
+`.csta` models when built with `--with_seetaface=y`. Packaging prefers the staged
+files next to the executables. When packaging an older build without staged
+runtimes, `ONNXRUNTIME_PACKAGE_ROOT` / `SEETAFACE_PACKAGE_ROOT` can select an
+installed SDK package; for SeetaFace only its installed `bin/x64` and `lib/x64`
+DLLs are searched, source/build-tree copies are excluded, and multiple eligible
+cached versions still require an explicit selection. Checkouts without Git LFS
+should run `bash packaging/models/fetch-models.sh` (which downloads from
+`Smile2Unlock/LightFacePipeline` Releases and verifies `SHA256SUMS`); the
+packager refuses to ship Git LFS pointer files.
 
 CI installs Rust 1.99.0, declared in `packaging/slint/prebuilt-mingw.json`,
 with `setup-rust.sh`, then seeds the MinGW Slint SDK with
@@ -19,10 +25,10 @@ with `setup-rust.sh`, then seeds the MinGW Slint SDK with
 commit, pinned archive digest and exact Xmake package directory, library,
 headers and host compiler. A digest marker invalidates packages from older
 prebuilt archives even when the Xmake package hash is unchanged.
-The SDK archives come from `Smile2Unlock/local-repo` Releases. Xmake fetches
-the SeetaFace MinGW SDK from that repository and verifies its SHA-256; use
-`--seetaface_prebuilt=n` to build the same pinned revision from source.
-Slint and the core Rust staticlib must use the
+The prebuilt Slint and optional SeetaFace archives come from `Smile2Unlock/local-repo`
+Releases, while ONNX Runtime comes from the project-local `xmake/repo/` recipe.
+When `--with_seetaface=y` is enabled, `--seetaface_prebuilt=n` builds the same
+pinned revision from source. Slint and the core Rust staticlib must use the
 same Rust compiler; mixing releases can cause duplicate standard-library
 symbols. Update the prebuilt release, digest, package identity and Rust
 toolchain together. For local builds, select its `rust_toolchain` with
@@ -51,9 +57,10 @@ Two trust models are supported:
   for a self-signed certificate.
 
 ```bash
+bash packaging/models/fetch-models.sh
 packaging/windows/generate-signing-cert.sh --output-dir .signing
 export SMILE2UNLOCK_PINNED_SIGNER_SHA256=<printed fingerprint>
-xmake f -y -p mingw -a x86_64 -m release --with_slint=y --with_seetaface=y
+xmake f -y -p mingw -a x86_64 -m release --with_slint=y
 xmake build -v
 WINDOWS_SIGN_CERTIFICATE=.signing/windows-signing.pem \
 WINDOWS_SIGN_KEY=.signing/windows-signing.key \
@@ -106,7 +113,7 @@ show this page or launch the GUI.
 
 The installer extracts and verifies a separate package before deployment. The
 helper stops the existing authentication service, installs the executables,
-runtime DLLs (including the TenniS CPU backends), models and translations, then
+runtime DLLs (ONNX Runtime, plus TenniS CPU backends when built with SeetaFace), models and translations, then
 starts the service. After deployment, NSIS copies only the remaining package
 metadata and license files; it never re-extracts `bin/` or `assets/` over the
 running payload.

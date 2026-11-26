@@ -4,13 +4,17 @@
 
 ## 开发环境
 
-项目使用 Xmake、C++26 modules、Rust 和 Slint。依赖与模型 SDK 由 `local-repo`
-配方提供；Rust/Slint 工具链初始化脚本位于 `packaging/slint/`。
+项目使用 Xmake、C++26 modules、Rust 和 Slint。ONNX Runtime 由项目内置
+`xmake/repo/` 提供，默认人脸模型通过 `bash packaging/models/fetch-models.sh`
+从 `Smile2Unlock/LightFacePipeline` Release 拉取（无需 Git LFS）；Slint 与可选
+SeetaFace6 配方由 `local-repo` 提供，Rust/Slint 工具链初始化脚本位于
+`packaging/slint/`。
 
 Linux 本地构建：
 
 ```bash
 bash packaging/slint/setup-rust.sh
+bash packaging/models/fetch-models.sh
 xmake f -y -p linux -a x86_64 -m release
 xmake build -j2 su_app
 ```
