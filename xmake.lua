@@ -245,7 +245,8 @@ end
 -- Embed the checked-in license texts before the C++ module prescan.
 local function generate_about_content()
     import("embed-about", {rootdir = path.join(os.projectdir(), "scripts")})(
-        path.join(os.projectdir(), "build", "generated", "about", "about_data.h"))
+        path.join(os.projectdir(), "build", "generated", "about", "about_data.h"),
+        {with_lightface = has_config("with_lightface"), with_seetaface = has_config("with_seetaface")})
 end
 
 local function add_about_content()

@@ -122,11 +122,11 @@ jobs:
             echo
             echo "## 🧠 人脸模型 / Face models"
             echo
-            models_page="https://github.com/Smile2Unlock/LightFacePipeline/releases/tag/v1.0.0"
-            models_badge_link="https://github.com/Smile2Unlock/LightFacePipeline/releases/tag/v1.0.0"
-            echo "[![models](https://img.shields.io/badge/models-LightFace%20v1.0.0-8A2BE2?style=flat-square)](${models_badge_link})"
+            read -r models_repo models_tag < <(python3 -c "import json; d=json.load(open('packaging/models/lightface-v1.json')); print(d['repository'], d['tag'])")
+            models_page="https://github.com/${models_repo}/releases/tag/${models_tag}"
+            echo "[![models](https://img.shields.io/badge/models-${models_tag}-8A2BE2?style=flat-square)](${models_page})"
             echo
-            echo "所有发行包均已内嵌模型;独立的 LightFace ONNX 模型包由 [LightFacePipeline v1.0.0](${models_page}) 托管，用于离线安装与单独更新（SeetaFace6 可作为可选兼容后端单独启用编译）。"
+            echo "所有发行包均默认内嵌人脸识别模型；独立模型权重由 [${models_repo} (${models_tag})](${models_page}) 托管，用于离线安装与单独更新（模型后端为可选项，可在编译时切换）。"
           } > /tmp/release-notes.md
 
           gh release create "$RELEASE_TAG" \

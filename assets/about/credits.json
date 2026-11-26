@@ -6,9 +6,9 @@
     ],
     "components": [
         {"name": "Slint", "license": "GPL-3.0-only / Royalty-free 2.0 / Slint Software 3.0"},
-        {"name": "ONNX Runtime", "license": "MIT"},
-        {"name": "LightFacePipeline · models", "license": "Project"},
-        {"name": "SeetaFace6 · models (optional)", "license": "BSD-2-Clause"},
+        {"name": "ONNX Runtime", "license": "MIT", "feature": "with_lightface"},
+        {"name": "LightFacePipeline · models", "license": "Project", "feature": "with_lightface"},
+        {"name": "SeetaFace6 · models", "license": "BSD-2-Clause", "feature": "with_seetaface"},
         {"name": "CImg", "license": "CeCILL-C / CeCILL v2"},
         {"name": "libpng", "license": "PNG Reference Library License v2"},
         {"name": "libjpeg-turbo", "license": "IJG / BSD-3-Clause"},
