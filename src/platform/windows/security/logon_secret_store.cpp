@@ -20,6 +20,7 @@ LogonSecretError map_status(SuStatus status) {
     case SuStatus_InvalidUtf8:
     case SuStatus_NullArgument:
     case SuStatus_BufferTooSmall:
+    case SuStatus_EmbeddingDimensionMismatch:
         return LogonSecretError::kInvalidArgument;
     case SuStatus_UserDenied:
         return LogonSecretError::kAccessDenied;

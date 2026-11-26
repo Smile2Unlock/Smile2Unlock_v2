@@ -348,18 +348,20 @@ int main() {
     }
     {
         auto service = su::recognizer::RecognizerService{};
-        assert(service.backlight_compensation());
-        const auto backlit = make_backlit(0.04);
-        const auto with_retry = service.extract_from_image(view(backlit), true);
-        assert(with_retry && with_retry->face_box.has_value());
-        service.set_backlight_compensation(false);
         assert(!service.backlight_compensation());
+        const auto backlit = make_backlit(0.04);
         const auto without_retry = service.extract_from_image(view(backlit), true);
         assert(without_retry && !without_retry->has_face && !without_retry->face_box.has_value());
         // Off, or without a camera, the exposure loop never reports a change.
         assert(!service.observe_exposure(view(backlit), std::nullopt, 0));
         service.set_backlight_compensation(true);
-        assert(service.extract_from_image(view(backlit), true)->face_box.has_value());
+        assert(service.backlight_compensation());
+        const auto with_retry = service.extract_from_image(view(backlit), true);
+        assert(with_retry && with_retry->face_box.has_value());
+        service.set_backlight_compensation(false);
+        assert(!service.backlight_compensation());
+        const auto off_again = service.extract_from_image(view(backlit), true);
+        assert(off_again && !off_again->has_face && !off_again->face_box.has_value());
     }
     std::cout << "PASS: backlight switch off disables the low-light retry\n";
 

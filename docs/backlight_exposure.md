@@ -16,14 +16,15 @@ out; only the face matters.
 - Region: the inner 70% of a valid face box, clamped to the frame. Missing,
   invalid or wholly off-frame boxes never supply exposure measurements or
   update hardware ROI.
-- No face at startup or after loss: do not meter background luma or lower
-  exposure based on it. Keep the last face ROI, then allow at most five
-  settled, one-way exposure increases to help the detector acquire a face.
-  Once found, resume the normal face-metered loop and reset the search budget.
-  If the search budget is exhausted, controls hold until a face returns or the
-  session restarts. This bounds brightness changes while allowing an initially
-  undetectable dark face to benefit from additional exposure. Holding controls
-  does not freeze image brightness while camera auto exposure is active.
+- No face at startup or after loss: do not meter background luma or step
+  hardware exposure blindly without a face measurement. At startup without a
+  face, keep the camera's native auto exposure untouched (the detector's
+  low-light gamma LUT retry already runs independently to acquire backlit
+  faces). After a face was tracked and then disappears, hold the current
+  controls and hardware ROI briefly (`face_loss_restore_delay`, 2 s) to tolerate
+  blinks or single-frame dropouts; if the face remains absent past the delay,
+  restore the hardware ROI and any modified exposure knobs back to camera auto
+  exposure so bright backgrounds behind a stale ROI cannot crush exposure.
 - Target: mean face luma within `[90, 150]` (`ExposureTuning`). Too dark steps
   the active knob up; too bright, or more than 5% of face samples clipped (`>= 250`), steps
   down; inside the band the loop holds and touches nothing.
@@ -65,7 +66,11 @@ The decision logic is the pure, constexpr function `next_exposure_step` in
       effect). After that exposure time moves proportionally toward the middle
       of the band (ratio clamped to `[0.5, 2]`, at least one step) and is
       capped at 1/30 s (333 in 100 microsecond units) and at the device
-      maximum. Too bright while auto still rules: nothing is done.
+      maximum. If maxed-out manual exposure (`>= max`) settles darker than the
+      pre-manual auto-exposure baseline (e.g. a camera whose manual mode
+      disables auto-gain or dynamic frame rate), the loop rolls back to auto
+      exposure and drops `manual_exposure` for the session. Too bright while
+      auto still rules: nothing is done.
 
 A single knob saturates: backlight compensation is often only 0..1 or 0..2
 (the UVC webcam used for the hardware check: 0..2) and a face at luma ~12/255
@@ -165,7 +170,7 @@ never used to drive camera controls.
 ## User switch
 
 Settings > Recognition policy has a "Backlight compensation" switch (config key
-`backlight_compensation`, default on). It covers both halves of the feature:
+`backlight_compensation`, default off). It covers both halves of the feature:
 the exposure loop and the low-light detection retry.
 
 OFF means the program behaves as it did before the feature:
@@ -197,14 +202,15 @@ OFF means the program behaves as it did before the feature:
 
 Defaults and compatibility:
 
-- Config (`config.toml`): the key is `#[serde(default)]` true, so files written
-  before the switch keep it on. `SuCoreConfig` gained `backlight_compensation`
-  as its last field (struct size 52 to 56, asserted on the C and Rust sides).
+- Config (`config.toml`): the key is `#[serde(default)]` false, so cameras
+  keep native auto exposure unless the user opts in. `SuCoreConfig` gained
+  `backlight_compensation` as its last field (struct size 52 to 56, asserted
+  on the C and Rust sides).
 - Windows registry: `BacklightCompensationEnabled` (REG_DWORD, 0 or 1) next to
   `LivenessEnabled`, under `HKLM\SOFTWARE\Smile2Unlock\Recognition\<SID>`. An
-  absent or out-of-range value means on, so existing installs stay on.
+  absent or out-of-range value means off.
 - Windows service protocol: `RecognitionSettingsPayload` grew from 44 to 48
-  bytes (new last field, default 1). The service also accepts the 44-byte
+  bytes (new last field, default 0). The service also accepts the 44-byte
   legacy payload and then leaves the stored value alone. A new client talking
   to an old service is rejected by the old exact-size check, so the GUI and
   service must be upgraded together.
@@ -281,6 +287,7 @@ acceptance.
 | `settle_observations` | 4 skipped observations | `ExposureTuning` |
 | `min_settle_time` | 500 ms | `ExposureTuning` |
 | `flip_flop_memory` | 30 s | `ExposureTuning` |
+| `face_loss_restore_delay` | 2000 ms | `ExposureTuning` |
 | `kMaxTransientFailures` | 3 | `service_exposure.cpp` |
 | `kMaxManualExposure` | 333 | `v4l2_exposure.h` |
 | `kMaxManualExposureUnits` | 333 | `windows_camera_controls.h` |

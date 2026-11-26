@@ -48,10 +48,10 @@ fn default_capture_count() -> u32 {
     50
 }
 
-// On by default so config files written before the switch existed keep the
-// backlight-aware exposure behaviour.
+// Off by default so the camera keeps its native auto exposure unless the user
+// enables backlight compensation explicitly.
 fn default_backlight_compensation() -> bool {
-    true
+    false
 }
 
 fn default_version() -> u32 {

@@ -15,9 +15,10 @@ use crate::embedding::{
 use crate::encrypted_store::AccountId;
 use crate::pipeline::authenticate_sample_with_liveness;
 use crate::profile::{
-    EncryptedProfileContext, copy_str_to_fixed, delete_profile, delete_profile_encrypted,
-    enroll_profile, enroll_profile_encrypted, load_encrypted_store, load_store,
-    migrate_plaintext_store,
+    EncryptedProfileContext, ProfileStore, copy_str_to_fixed, delete_profile,
+    delete_profile_encrypted, enroll_profile, enroll_profile_encrypted,
+    list_encrypted_profiles_json, load_encrypted_store, load_store, migrate_plaintext_store,
+    save_encrypted_store,
 };
 use crate::protocol::{ControlRequest, parse_control_request};
 
@@ -258,16 +259,16 @@ fn missing_config_file_returns_default() {
     assert_eq!(config.auto_delay_sec, 3);
     assert_eq!(config.retry_delay_sec, 5);
     assert_eq!(config.timeout_sec, 30);
-    assert!(config.backlight_compensation);
+    assert!(!config.backlight_compensation);
 }
 
 #[test]
-fn config_without_backlight_key_defaults_to_enabled() {
+fn config_without_backlight_key_defaults_to_disabled() {
     let path = temp_path("legacy_config_no_backlight", "toml");
     fs::write(&path, "version = 1\nliveness_detection = false\n").unwrap();
 
     let config = load_config(&path).unwrap();
-    assert!(config.backlight_compensation);
+    assert!(!config.backlight_compensation);
     assert!(!config.liveness_detection);
     let _ = fs::remove_file(path);
 }
@@ -276,16 +277,16 @@ fn config_without_backlight_key_defaults_to_enabled() {
 fn backlight_compensation_round_trips_through_ffi_struct_and_file() {
     let path = temp_path("backlight_round_trip", "toml");
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
-    let off = SuCoreConfig {
-        backlight_compensation: false,
+    let on = SuCoreConfig {
+        backlight_compensation: true,
         ..AppConfig::default().into()
     };
-    assert!(!AppConfig::from(off).backlight_compensation);
+    assert!(AppConfig::from(on).backlight_compensation);
 
-    assert_eq!(save_config_ffi(c_path.as_ptr(), &off), SuStatus::Ok);
+    assert_eq!(save_config_ffi(c_path.as_ptr(), &on), SuStatus::Ok);
     let mut loaded = AppConfig::default().into();
     assert_eq!(load_config_ffi(c_path.as_ptr(), &mut loaded), SuStatus::Ok);
-    assert!(!loaded.backlight_compensation);
+    assert!(loaded.backlight_compensation);
     let _ = fs::remove_file(path);
 }
 
@@ -691,7 +692,7 @@ fn rejects_enrollment_with_mismatched_dimension() {
     // A 4-dim embedding must be rejected once the store is locked to 3.
     let result = enroll_profile(&path, "Bob", &embedding_source(&[1.0, 0.0, 0.0, 0.0]));
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), SuStatus::InvalidArgument);
+    assert_eq!(result.unwrap_err(), SuStatus::EmbeddingDimensionMismatch);
 
     let store = load_store(&path).unwrap();
     assert_eq!(store.profiles.len(), 1);
@@ -769,7 +770,85 @@ fn legacy_store_without_dim_field_backfills_on_load() {
     // Mismatched dimension still rejected.
     let wrong_dim = enroll_profile(&path, "Carol", &embedding_source(&[0.0, 1.0, 0.0]));
     assert!(wrong_dim.is_err());
-    assert_eq!(wrong_dim.unwrap_err(), SuStatus::InvalidArgument);
+    assert_eq!(wrong_dim.unwrap_err(), SuStatus::EmbeddingDimensionMismatch);
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn deleting_last_profile_unlocks_embedding_dimension() {
+    let old_dim_source = embedding_source(&[1.0; 1024]);
+    let new_dim_source = embedding_source(&[0.5; 512]);
+
+    let plain_path = temp_path("profile_store_unlock_plain", "json");
+    let _ = fs::remove_file(&plain_path);
+    let p1 = enroll_profile(&plain_path, "Legacy", &old_dim_source).unwrap();
+    assert_eq!(load_store(&plain_path).unwrap().embedding_dim, Some(1024));
+    assert!(delete_profile(&plain_path, &p1.id).unwrap());
+    assert_eq!(load_store(&plain_path).unwrap().embedding_dim, None);
+    enroll_profile(&plain_path, "LightFace", &new_dim_source).unwrap();
+    assert_eq!(load_store(&plain_path).unwrap().embedding_dim, Some(512));
+    let _ = fs::remove_file(plain_path);
+
+    let enc_path = temp_path("profile_store_unlock_enc", "s2u");
+    let _ = fs::remove_file(&enc_path);
+    let context = encrypted_context(1000);
+    let p2 = enroll_profile_encrypted(&enc_path, &context, "Legacy", &old_dim_source).unwrap();
+    assert_eq!(
+        load_encrypted_store(&enc_path, &context)
+            .unwrap()
+            .embedding_dim,
+        Some(1024)
+    );
+    assert!(delete_profile_encrypted(&enc_path, &context, &p2.id).unwrap());
+    assert_eq!(
+        load_encrypted_store(&enc_path, &context)
+            .unwrap()
+            .embedding_dim,
+        None
+    );
+    enroll_profile_encrypted(&enc_path, &context, "LightFace", &new_dim_source).unwrap();
+    assert_eq!(
+        load_encrypted_store(&enc_path, &context)
+            .unwrap()
+            .embedding_dim,
+        Some(512)
+    );
+    let _ = fs::remove_file(enc_path);
+}
+
+#[test]
+fn empty_store_with_stale_embedding_dim_relocks_on_enroll() {
+    let enc_path = temp_path("profile_store_stale_empty_dim", "s2u");
+    let _ = fs::remove_file(&enc_path);
+    let context = encrypted_context(1000);
+
+    let stale = ProfileStore {
+        version: 1,
+        embedding_dim: Some(1024),
+        profiles: Vec::new(),
+    };
+    save_encrypted_store(&enc_path, &context, &stale).unwrap();
+
+    let new_dim_source = embedding_source(&[0.25; 512]);
+    enroll_profile_encrypted(&enc_path, &context, "LightFace", &new_dim_source).unwrap();
+    let updated = load_encrypted_store(&enc_path, &context).unwrap();
+    assert_eq!(updated.embedding_dim, Some(512));
+    assert_eq!(updated.profiles.len(), 1);
+    let _ = fs::remove_file(enc_path);
+}
+
+#[test]
+fn list_encrypted_profiles_json_includes_embedding_dim() {
+    let enc_path = temp_path("profile_store_list_dim", "s2u");
+    let _ = fs::remove_file(&enc_path);
+    let context = encrypted_context(1000);
+    enroll_profile_encrypted(&enc_path, &context, "Alice", &embedding_source(&[0.5; 512])).unwrap();
+
+    let json_text = list_encrypted_profiles_json(&enc_path, &context).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_text).unwrap();
+    let rows = parsed.as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["embedding_dim"].as_u64(), Some(512));
+    let _ = fs::remove_file(enc_path);
 }

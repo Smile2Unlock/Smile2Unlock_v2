@@ -278,10 +278,25 @@ std::vector<ui::ProfileRow> profile_rows(
     return rows;
 }
 
+bool has_model_mismatch(
+    const std::vector<su::app::FaceProfileSummary>& profiles,
+    std::size_t expected_dim) {
+    if (expected_dim == 0) {
+        return false;
+    }
+    return std::ranges::any_of(profiles, [expected_dim](const auto& profile) {
+        return profile.embedding_dim != 0 && profile.embedding_dim != expected_dim;
+    });
+}
+
+template <typename WindowRef>
 void update_profiles(
+    const WindowRef& window,
     const std::shared_ptr<ProfileModel>& model,
-    const std::vector<su::app::FaceProfileSummary>& profiles) {
+    const std::vector<su::app::FaceProfileSummary>& profiles,
+    std::size_t expected_dim) {
     model->set_vector(profile_rows(profiles));
+    window->set_profiles_model_mismatch(has_model_mismatch(profiles, expected_dim));
 }
 
 std::vector<ui::DeploymentTargetRow> deployment_target_rows(
@@ -395,6 +410,8 @@ std::string localized_backend_error(
             ? "error.profile_access_denied"
         : error == "camera permission denied or device busy"
             ? "preview.camera_permission_or_busy"
+        : error == "enrolled face samples incompatible with current model"
+            ? "error.model_mismatch_reenroll"
         : error == "face profile was not found"
             ? "error.profile_not_found"
         : std::string_view{};
@@ -904,6 +921,8 @@ int main(int argc, char** argv) try {
     window->set_config_path_text(slint::SharedString(snapshot->config_path));
     window->set_profile_store_path_text(slint::SharedString(snapshot->profile_store_path));
     window->set_profiles(profiles);
+    window->set_profiles_model_mismatch(
+        has_model_mismatch(snapshot->profiles, controller->recognizer().embedding_dim()));
     window->set_deployment_targets(deployment_targets);
     const auto targets_with_role = [&deployment_targets](auto role_matches) {
         return std::make_shared<slint::FilterModel<ui::DeploymentTargetRow>>(
@@ -1266,9 +1285,10 @@ int main(int argc, char** argv) try {
                     ? controller->list_face_profile_rows()
                     : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
                         std::unexpected(enrolled.error())};
+                const auto expected_dim = controller->recognizer().embedding_dim();
 
                 slint::invoke_from_event_loop(
-                    [weak_window, profiles, catalog, label, rows = std::move(rows)]() mutable {
+                    [weak_window, profiles, catalog, label, expected_dim, rows = std::move(rows)]() mutable {
                         const auto window = weak_window.lock();
                         if (!window) {
                             return;
@@ -1281,7 +1301,7 @@ int main(int argc, char** argv) try {
                                 "bad");
                             return;
                         }
-                        update_profiles(profiles, *rows);
+                        update_profiles(*window, profiles, *rows, expected_dim);
                         set_activity(
                             *window,
                             translated(*catalog, *window, "activity.enrolled"),
@@ -1318,6 +1338,7 @@ int main(int argc, char** argv) try {
             preference_path,
             preferences] {
             auto result = controller->authenticate_current_frame();
+            const auto expected_dim = controller->recognizer().embedding_dim();
             slint::invoke_from_event_loop(
                 [
                     weak_window,
@@ -1325,6 +1346,7 @@ int main(int argc, char** argv) try {
                     catalog,
                     preference_path,
                     preferences,
+                    expected_dim,
                     result = std::move(result)]() mutable {
                     const auto window = weak_window.lock();
                     if (!window) {
@@ -1339,13 +1361,20 @@ int main(int argc, char** argv) try {
                         return;
                     }
 
-                    update_profiles(profiles, result->profiles);
+                    update_profiles(*window, profiles, result->profiles, expected_dim);
                     if (result->decision.accepted) {
                         (*window)->set_desktop_auth_passed(true);
                         preferences->desktop_auth_test_passed = true;
                         persist_ui_preferences(preference_path, *preferences);
                     }
-                    const auto detail = result->report.best_profile_label.empty()
+                    const auto model_mismatch = !result->decision.accepted
+                        && result->report.reason.starts_with("embedding dimension mismatch");
+                    if (model_mismatch) {
+                        (*window)->set_profiles_model_mismatch(true);
+                    }
+                    const auto detail = model_mismatch
+                        ? translated(*catalog, *window, "error.model_mismatch_reenroll")
+                        : result->report.best_profile_label.empty()
                         ? translated_value(
                             *catalog,
                             *window,
@@ -1389,8 +1418,9 @@ int main(int argc, char** argv) try {
                     : std::expected<std::vector<su::app::FaceProfileSummary>, std::string>{
                         std::unexpected("profile was not deleted")};
                 auto status = controller->load_system_status();
+                const auto expected_dim = controller->recognizer().embedding_dim();
                 slint::invoke_from_event_loop(
-                    [weak_window, profiles, deployment_targets, catalog, deleted,
+                    [weak_window, profiles, deployment_targets, catalog, deleted, expected_dim,
                      rows = std::move(rows), status = std::move(status)] {
                         const auto window = weak_window.lock();
                         if (!window) {
@@ -1421,7 +1451,7 @@ int main(int argc, char** argv) try {
                                 "warn");
                             return;
                         }
-                        update_profiles(profiles, *rows);
+                        update_profiles(*window, profiles, *rows, expected_dim);
                         set_activity(
                             *window,
                             translated(*catalog, *window, "activity.removed"),
@@ -1445,7 +1475,7 @@ int main(int argc, char** argv) try {
                 "bad");
             return;
         }
-        update_profiles(profiles, *rows);
+        update_profiles(*window, profiles, *rows, controller->recognizer().embedding_dim());
         set_activity(
             *window,
             translated(*catalog, *window, "activity.refreshed"),

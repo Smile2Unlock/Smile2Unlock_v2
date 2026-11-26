@@ -37,6 +37,8 @@ CoreError map_status(SuStatus status) {
         return CoreError::kKeyUnavailable;
     case SuStatus_MigrationRequired:
         return CoreError::kMigrationRequired;
+    case SuStatus_EmbeddingDimensionMismatch:
+        return CoreError::kEmbeddingDimensionMismatch;
     }
     return CoreError::kUnknown;
 }

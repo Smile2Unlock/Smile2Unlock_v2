@@ -352,33 +352,47 @@ void test_no_face_exposure_startup_and_loss() {
     for (const auto& chain : {chain_of({kEvKnob}),
              chain_of({kBacklightKnob, kManualKnob})}) {
         auto state = make_exposure_state(chain);
-        auto boosts = 0;
         for (int ms = 0; ms <= 60000; ms += 100) {
             const auto region = face_metering_region(640, 480, std::nullopt);
             assert(!region); // background must not be installed as the camera ROI
-            const auto step = boosts < 5
-                ? next_exposure_step(state, {}, chain, ExposureTime{ms}, {}, true)
-                : ExposureStep{.next = state, .change = std::nullopt};
-            if (step.change) {
-                assert(step.change->action == ExposureAction::set);
-                assert(step.change->level > state.levels[level_index(step.change->kind)]
-                    || (step.change->kind == ExposureKnobKind::manual_exposure
-                        && !state.manual_engaged));
-                state = with_applied_level(step.next, step.change->kind, step.change->level);
-                ++boosts;
-            } else {
-                state = step.next;
-            }
+            const auto step = next_exposure_step(state, {}, chain, ExposureTime{ms});
+            assert(!step.change);
+            state = step.next;
         }
-        assert(boosts == 5); // bounded search then a stable hold
 
-        // Once a face is present, real face luma resumes both directions.
+        // Once a face is present, real face luma drives both directions.
         auto brightened_face = drive({make_exposure_state(chain), {}}, chain, dark, 8).state;
         const auto bright_face = decide(settled(brightened_face), bright, chain, kLater);
         assert(bright_face.change);
         assert(bright_face.change->level
             < brightened_face.levels[level_index(bright_face.change->kind)]);
     }
+
+    assert(!face_loss_restore_due(std::nullopt, ExposureTime{5000}));
+    assert(!face_loss_restore_due(ExposureTime{1000}, ExposureTime{2999}));
+    assert(face_loss_restore_due(ExposureTime{1000}, ExposureTime{3000}));
+    assert(face_loss_restore_due(ExposureTime{1000}, ExposureTime{5000}));
+}
+
+void test_manual_exposure_regressed() {
+    const auto chain = chain_of({kBacklightKnob, kManualKnob});
+    auto state = ready(kManualKnob, 333);
+    // Not engaged: never treated as regressed.
+    state.manual_engaged = false;
+    assert(!manual_exposure_regressed(state, chain, stats(30.0), kLater, 50.0));
+    state.manual_engaged = true;
+    // No baseline or not settled yet.
+    assert(!manual_exposure_regressed(state, chain, stats(30.0), kLater, std::nullopt));
+    auto unsettled = state;
+    unsettled.observations_since_change = 0;
+    assert(!manual_exposure_regressed(unsettled, chain, stats(30.0), kLater, 50.0));
+    // Below manual cap: loop can still raise manual exposure.
+    auto below_max = ready(kManualKnob, 200);
+    assert(!manual_exposure_regressed(below_max, chain, stats(30.0), kLater, 50.0));
+    // Within noise margin (not strictly darker by > 3.0): hold.
+    assert(!manual_exposure_regressed(state, chain, stats(48.0), kLater, 50.0));
+    // Settled at cap and distinctly darker than pre-manual AE: roll back.
+    assert(manual_exposure_regressed(state, chain, stats(30.0), kLater, 50.0));
 }
 
 void test_escalation_when_saturated() {
@@ -659,6 +673,7 @@ int main() {
     test_metering_region();
     test_face_only_metering();
     test_no_face_exposure_startup_and_loss();
+    test_manual_exposure_regressed();
     test_measure_luma();
     test_step_directions();
     test_step_settle_and_samples();

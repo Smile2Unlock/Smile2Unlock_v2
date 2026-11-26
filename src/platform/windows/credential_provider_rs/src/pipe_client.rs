@@ -77,6 +77,8 @@ pub const kStatusCorrupt: u32 = 5;
 pub const kStatusAuthenticationFailed: u32 = 6;
 pub const kStatusProfileNotFound: u32 = 7;
 pub const kStatusNoFaceDetected: u32 = 8;
+#[allow(dead_code)]
+pub const kStatusModelMismatch: u32 = 9;
 
 pub const kSidCapacity: usize = 185;
 pub const kUsernameCapacity: usize = 513;
@@ -421,6 +423,7 @@ pub fn status_to_hresult(status: u32) -> Error {
         kStatusNoFaceDetected => win32_error(1169), // ERROR_NO_MATCH: no face in capture window
         kStatusAuthenticationFailed => win32_error(1326), // ERROR_LOGON_FAILURE
         kStatusProfileNotFound => win32_error(1168), // ERROR_NOT_FOUND
+        kStatusModelMismatch => win32_error(kWin32ErrorInvalidData),
         kStatusUnavailable => win32_error(kWin32ErrorServiceNotActive),
         _ => win32_error(kWin32ErrorInvalidData),
     }

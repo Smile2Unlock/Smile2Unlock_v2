@@ -112,6 +112,8 @@ std::string status_error(Status status) {
     switch (status) {
     case Status::kInvalidRequest: return "auth service rejected an invalid profile request";
     case Status::kAccessDenied: return "auth service denied profile access";
+    case Status::kModelMismatch:
+        return "enrolled face samples incompatible with current model";
     case Status::kUnavailable: return "secure profile store is unavailable";
     case Status::kStaleOrConsumed: return "profile request is stale";
     case Status::kCorrupt: return "secure profile store is corrupt";

@@ -51,6 +51,7 @@ pub enum SuStatus {
     CryptoError = 9,
     KeyUnavailable = 10,
     MigrationRequired = 11,
+    EmbeddingDimensionMismatch = 12,
 }
 
 #[repr(C)]

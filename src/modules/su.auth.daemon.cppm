@@ -423,6 +423,10 @@ public:
             if (!report) {
                 return {su::control::ControlResult::kUnavailable, report.error()};
             }
+            if (!report->accepted && report->reason.starts_with("embedding dimension mismatch")) {
+                return {su::control::ControlResult::kRejected,
+                        "enrolled face samples incompatible with current model"};
+            }
             if (report->accepted) {
                 auto response =
                     AttemptResult{su::control::ControlResult::kAccepted, "face matched"};
@@ -516,6 +520,10 @@ public:
                     context, paths->profiles.string(), label, sample);
             });
         if (!enrolled) {
+            if (enrolled.error() == su::app::CoreError::kEmbeddingDimensionMismatch) {
+                return {su::control::ControlResult::kRejected,
+                        "enrolled face samples incompatible with current model"};
+            }
             return {su::control::ControlResult::kUnavailable, "failed to encrypt face profile"};
         }
         return list_profiles(username);

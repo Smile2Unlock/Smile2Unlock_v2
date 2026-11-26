@@ -20,7 +20,6 @@ using detail::RestorePending;
 constexpr int kRegionMovePercent = 10;
 constexpr auto kRegionMinInterval = std::chrono::milliseconds{500};
 constexpr auto kLogInterval = std::chrono::seconds{2};
-constexpr int kMaxFaceSearchSteps = 5;
 // A knob that keeps failing with transient errors (busy, I/O) is given up on
 // after this many writes in a row; a rejection drops it at once.
 constexpr int kMaxTransientFailures = 3;
@@ -176,6 +175,37 @@ detail::ExposureTime to_exposure_time(const Clock::time_point now) {
     return std::chrono::duration_cast<detail::ExposureTime>(now.time_since_epoch());
 }
 
+// Reverts manual exposure back to camera auto exposure when maxed-out manual
+// mode leaves the face darker than auto exposure was, dropping the knob for
+// the rest of this camera session.
+bool rollback_regressed_manual(V4L2Camera& camera, ExposureSession& session,
+    const detail::LumaStats& stats, const detail::ExposureTime now_ms) {
+    session.caps.knobs = session.caps.knobs.without(detail::ExposureKnobKind::manual_exposure);
+    const auto reset = camera.reset_exposure_knob(detail::ExposureKnobKind::manual_exposure);
+    if (!reset) {
+        session.restore_pending = detail::record_knob_restore(
+            session.restore_pending, detail::ExposureKnobKind::manual_exposure, reset);
+        session.next_restore_retry = now_ms + detail::ExposureTuning{}.min_settle_time;
+    }
+    session.wrote_control = session.applied_region.has_value()
+        || session.restore_pending.any()
+        || std::ranges::any_of(session.caps.knobs, [&](const detail::ExposureKnob& knob) {
+               return session.loop.levels[std::to_underlying(knob.kind)] != knob.initial;
+           });
+    session.loop.manual_engaged = false;
+    session.loop.last_move.reset();
+    session.loop.observations_since_change = 0;
+    session.loop.last_change_at = now_ms;
+    session.loop.active = session.caps.knobs.empty()
+        ? std::nullopt
+        : std::optional(session.caps.knobs[session.caps.knobs.size() - 1].kind);
+    session.pre_manual_mean.reset();
+    su::log::process_logger().warn("camera.exposure_manual_regressed", {
+        su::log::field("mean", stats.mean),
+        su::log::field("reset", reset ? "ok" : detail::to_string(reset.error()))});
+    return reset.has_value();
+}
+
 }  // namespace
 
 void RecognizerService::set_backlight_compensation(const bool enabled) {
@@ -216,7 +246,8 @@ bool RecognizerService::restart_exposure_loop_unlocked() const {
     }
     exposure_.loop = detail::make_exposure_state(exposure_.caps.knobs);
     exposure_.applied_region.reset();
-    exposure_.face_search_steps = 0;
+    exposure_.face_missing_since.reset();
+    exposure_.pre_manual_mean.reset();
     exposure_.transient_failures = {};
     return restored;
 }
@@ -269,26 +300,46 @@ bool RecognizerService::observe_exposure(const ImageView frame, const std::optio
         return false;
     }
     const auto now = Clock::now();
+    const auto now_ms = to_exposure_time(now);
     if (!region) {
-        // Keep the last ROI on loss: restoring camera-wide metering could
-        // abruptly darken the image. Do not measure background pixels to
-        // steer controls; acquisition is bounded and one-way.
-        if (exposure_.caps.knobs.empty()
-            || exposure_.face_search_steps >= kMaxFaceSearchSteps) return false;
-        const auto step = detail::next_exposure_step(exposure_.loop, {}, exposure_.caps.knobs,
-            to_exposure_time(now), {}, true);
-        const auto changed = apply_step(*camera_, exposure_, step);
-        if (changed) ++exposure_.face_search_steps;
-        return changed;
+        if (exposure_.restore_pending.any()) {
+            return retry_pending_restores_unlocked();
+        }
+        if (!exposure_.wrote_control) {
+            exposure_.face_missing_since.reset();
+            return false;
+        }
+        if (!exposure_.face_missing_since) {
+            exposure_.face_missing_since = now_ms;
+            return false;
+        }
+        if (!detail::face_loss_restore_due(exposure_.face_missing_since, now_ms)) {
+            return false;
+        }
+        return restart_exposure_loop_unlocked();
     }
-    exposure_.face_search_steps = 0;
+    exposure_.face_missing_since.reset();
+    if (exposure_.restore_pending.any()) {
+        return retry_pending_restores_unlocked();
+    }
     update_metering_region(*camera_, exposure_, *region, frame, now);
     if (exposure_.caps.knobs.empty()) {
         return false;
     }
-    const auto step = detail::next_exposure_step(exposure_.loop, stats, exposure_.caps.knobs,
-        std::chrono::duration_cast<detail::ExposureTime>(now.time_since_epoch()));
+    if (detail::manual_exposure_regressed(exposure_.loop, exposure_.caps.knobs, stats, now_ms,
+            exposure_.pre_manual_mean)) {
+        return rollback_regressed_manual(*camera_, exposure_, stats, now_ms);
+    }
+    const auto was_manual = exposure_.loop.manual_engaged;
+    const auto step = detail::next_exposure_step(exposure_.loop, stats, exposure_.caps.knobs, now_ms);
     const auto changed = apply_step(*camera_, exposure_, step);
+    if (changed) {
+        if (!was_manual && exposure_.loop.manual_engaged) {
+            exposure_.pre_manual_mean = stats.mean;
+        } else if (!exposure_.loop.manual_engaged) {
+            exposure_.pre_manual_mean.reset();
+        }
+    }
     log_decision(exposure_, stats, now);
     return changed;
 }

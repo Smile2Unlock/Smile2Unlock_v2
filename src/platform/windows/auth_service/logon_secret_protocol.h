@@ -42,6 +42,7 @@ enum class Status : std::uint32_t {
     kAuthenticationFailed = 6,
     kProfileNotFound = 7,
     kNoFaceDetected = 8,
+    kModelMismatch = 9,
 };
 
 struct Request {
@@ -92,8 +93,8 @@ struct RecognitionSettingsPayload {
     std::uint32_t capture_enabled = 0;
     std::uint32_t capture_retention_days = 7;
     std::uint32_t capture_max_count = 50;
-    // Appended last (issue #137). 0/1; 1 when a legacy client did not send it.
-    std::uint32_t backlight_compensation = 1;
+    // Appended last (issue #137). 0/1; defaults to 0 (off).
+    std::uint32_t backlight_compensation = 0;
 };
 
 static_assert(sizeof(RecognitionSettingsPayload) == 48);
